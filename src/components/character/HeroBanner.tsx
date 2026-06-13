@@ -1,0 +1,69 @@
+import { Coins, Zap } from 'lucide-react';
+import { useGameStore } from '@/store/useGameStore';
+import { selectLevelProgress, selectTopStats } from '@/store/selectors';
+import { MOOD_META } from '@/engine/mood';
+import { avatarCrest } from '@/lib/sprites';
+import { Panel } from '@/components/ui/Panel';
+import { Frame } from '@/components/ui/Frame';
+import { Sprite } from '@/components/ui/Sprite';
+
+/** Landing-page hero card: the character's avatar (stand-in crest) + identity + progress. */
+export function HeroBanner() {
+  const character = useGameStore((s) => s.character);
+  const progress = useGameStore(selectLevelProgress);
+  const topStat = useGameStore(selectTopStats)[0];
+  const mood = MOOD_META[character.mood];
+
+  const title = character.classId ?? 'Adventurer';
+  const crest = avatarCrest(character.classId, topStat);
+  const spriteKey = `avatar:${character.classId ?? 'adventurer'}`;
+
+  return (
+    <Panel tone="wood" className="flex items-center gap-4 p-4">
+      <Frame tone="parchment" className="shrink-0">
+        <Sprite spriteKey={spriteKey} look={crest} size="xl" alt={`${title} avatar`} />
+      </Frame>
+
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          <h1 className="truncate font-display text-2xl font-bold text-gold-bright">{title}</h1>
+          <span className="font-display text-sm text-parchment-300">Lv {character.level}</span>
+        </div>
+
+        <div className="mt-0.5 flex items-center gap-2 text-sm text-parchment-300">
+          <span title={mood.note}>{mood.emoji}</span>
+          <span className="italic">{mood.label}</span>
+        </div>
+
+        {/* XP to next level */}
+        <div className="mt-3">
+          <div className="mb-1 flex justify-between font-display text-[11px] uppercase tracking-wider text-parchment-300/80">
+            <span>Experience</span>
+            <span className="tabular-nums">
+              {progress.intoLevel} / {progress.neededForNext}
+            </span>
+          </div>
+          <div className="h-3 overflow-hidden rounded-full border border-gold-deep/60 bg-wood-900">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-gold-deep to-gold-bright shadow-glow transition-all"
+              style={{ width: `${Math.round(progress.ratio * 100)}%` }}
+            />
+          </div>
+        </div>
+
+        {/* Currencies */}
+        <div className="mt-3 flex items-center gap-4 text-sm">
+          <span className="flex items-center gap-1.5 text-gold-bright">
+            <Coins className="h-4 w-4" />
+            <span className="tabular-nums">{character.gold}</span>
+          </span>
+          <span className="flex items-center gap-1.5 text-stat-AG">
+            <Zap className="h-4 w-4" />
+            <span className="tabular-nums">{character.energy}</span>
+            <span className="text-parchment-300/70">energy</span>
+          </span>
+        </div>
+      </div>
+    </Panel>
+  );
+}

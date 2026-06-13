@@ -14,7 +14,82 @@ body,
 
 body {
   margin: 0;
-  background: #0b0f1a;
-  color: #e5e7eb;
-  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color: theme('colors.parchment.200');
+  font-family: theme('fontFamily.serif');
+  font-size: 17px;
+  /* Dark wood backdrop: vertical gradient + faint vertical grain. */
+  background-color: #160c06;
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      rgba(0, 0, 0, 0.18) 0px,
+      rgba(0, 0, 0, 0.18) 1px,
+      rgba(120, 80, 40, 0.04) 2px,
+      rgba(120, 80, 40, 0.04) 5px
+    ),
+    radial-gradient(ellipse at 50% 0%, #3a2616 0%, #241710 45%, #160c06 100%);
+  background-attachment: fixed;
+}
+
+@layer components {
+  /* Aged parchment surface — light, mottled. */
+  .texture-parchment {
+    background-color: #f1e4c3;
+    background-image:
+      radial-gradient(circle at 18% 22%, rgba(168, 130, 70, 0.16) 0%, transparent 32%),
+      radial-gradient(circle at 82% 18%, rgba(168, 130, 70, 0.12) 0%, transparent 30%),
+      radial-gradient(circle at 70% 84%, rgba(150, 110, 55, 0.16) 0%, transparent 36%),
+      radial-gradient(circle at 25% 78%, rgba(150, 110, 55, 0.1) 0%, transparent 30%),
+      linear-gradient(180deg, #f6ecd2 0%, #efe1bf 55%, #e6d4ac 100%);
+    color: theme('colors.ink.DEFAULT');
+  }
+
+  /* Carved dark-wood surface — for dark panels / bars. */
+  .texture-wood {
+    background-color: #241710;
+    background-image:
+      repeating-linear-gradient(
+        90deg,
+        rgba(0, 0, 0, 0.22) 0px,
+        rgba(0, 0, 0, 0.22) 1px,
+        rgba(150, 100, 50, 0.05) 2px,
+        rgba(150, 100, 50, 0.05) 6px
+      ),
+      linear-gradient(180deg, #33210f 0%, #241710 60%, #1a0f09 100%);
+  }
+
+  /* Worn scroll surface — battle log / notices. */
+  .texture-scroll {
+    background-color: #e8d8b0;
+    background-image: linear-gradient(180deg, #efe1bf 0%, #e2cfa0 100%);
+    color: theme('colors.ink.DEFAULT');
+  }
+}
+
+@layer utilities {
+  /* Heraldic shield silhouette for crest stand-ins. */
+  .clip-shield {
+    clip-path: polygon(50% 0%, 100% 14%, 100% 58%, 50% 100%, 0% 58%, 0% 14%);
+  }
+}
+
+/* Themed scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #1a0f09;
+}
+::-webkit-scrollbar-thumb {
+  background: #6b541a;
+  border-radius: 6px;
+  border: 2px solid #1a0f09;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #8a6d1f;
+}
+
+::selection {
+  background: rgba(201, 162, 39, 0.4);
 }

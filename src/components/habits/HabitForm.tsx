@@ -4,6 +4,7 @@ import { type Difficulty } from '@/engine/xp';
 import { type HabitType, type Frequency } from '@/engine/habits';
 import { useGameStore, type NewHabitInput } from '@/store/useGameStore';
 import { Modal } from '@/components/ui/Modal';
+import { Button } from '@/components/ui/Button';
 
 const DIFFICULTIES: { id: Difficulty; label: string; xp: number }[] = [
   { id: 'easy', label: 'Easy', xp: 10 },
@@ -15,8 +16,8 @@ const DIFFICULTIES: { id: Difficulty; label: string; xp: number }[] = [
 const TAGS = ['Health', 'Fitness', 'Study', 'Creativity', 'Social', 'Chores', 'Mental health', 'Work', 'Sleep'];
 
 const fieldCls =
-  'w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none';
-const labelCls = 'mb-1 block text-xs font-medium text-gray-400';
+  'w-full rounded-md border border-ink-light/40 bg-parchment-100 px-3 py-2 text-sm text-ink focus:border-gold-deep focus:outline-none';
+const labelCls = 'mb-1 block font-display text-[11px] font-semibold uppercase tracking-wide text-ink-muted';
 
 export function HabitForm({ onClose }: { onClose: () => void }) {
   const addHabit = useGameStore((s) => s.addHabit);
@@ -91,8 +92,10 @@ export function HabitForm({ onClose }: { onClose: () => void }) {
               <button
                 key={t}
                 onClick={() => setType(t)}
-                className={`flex-1 rounded-lg border px-3 py-2 text-sm ${
-                  type === t ? 'border-indigo-500 bg-indigo-500/10 text-indigo-300' : 'border-gray-700 text-gray-400'
+                className={`flex-1 rounded-md border px-3 py-2 text-sm ${
+                  type === t
+                    ? 'border-gold-deep bg-gold/15 font-semibold text-ink'
+                    : 'border-ink-light/40 text-ink-muted hover:border-gold-deep/60'
                 }`}
               >
                 {t === 'binary' ? 'Yes / No' : 'Quantity'}
@@ -135,26 +138,22 @@ export function HabitForm({ onClose }: { onClose: () => void }) {
               <button
                 key={d.id}
                 onClick={() => setDifficulty(d.id)}
-                className={`rounded-lg border px-2 py-2 text-center text-xs ${
+                className={`rounded-md border px-2 py-2 text-center text-xs ${
                   difficulty === d.id
-                    ? 'border-indigo-500 bg-indigo-500/10 text-indigo-300'
-                    : 'border-gray-700 text-gray-400'
+                    ? 'border-gold-deep bg-gold/15 text-ink'
+                    : 'border-ink-light/40 text-ink-muted hover:border-gold-deep/60'
                 }`}
               >
-                <div className="font-semibold">{d.label}</div>
-                <div className="text-[10px] text-gray-500">{d.xp} XP</div>
+                <div className="font-display font-semibold">{d.label}</div>
+                <div className="text-[10px] text-ink-light">{d.xp} XP</div>
               </button>
             ))}
           </div>
         </div>
 
-        <button
-          onClick={submit}
-          disabled={!name.trim()}
-          className="w-full rounded-lg bg-indigo-600 py-2.5 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-40"
-        >
-          Create Habit
-        </button>
+        <Button onClick={submit} disabled={!name.trim()} className="w-full py-2.5">
+          Inscribe Habit
+        </Button>
       </div>
     </Modal>
   );

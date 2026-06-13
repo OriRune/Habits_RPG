@@ -3,6 +3,7 @@ import { type Habit } from '@/engine/habits';
 import { computeXp } from '@/engine/xp';
 import { useGameStore } from '@/store/useGameStore';
 import { Modal } from '@/components/ui/Modal';
+import { Button } from '@/components/ui/Button';
 
 /** Quantity-habit completion: enter how much was done, see the XP preview. */
 export function CompleteHabitDialog({ habit, onClose }: { habit: Habit; onClose: () => void }) {
@@ -15,30 +16,30 @@ export function CompleteHabitDialog({ habit, onClose }: { habit: Habit; onClose:
   return (
     <Modal title={habit.name} onClose={onClose}>
       <div className="space-y-4">
-        <p className="text-sm text-gray-400">
+        <p className="text-sm text-ink-muted">
           Goal: {habit.target} {habit.unit ?? ''}. How much did you complete?
         </p>
         <input
           autoFocus
           type="number"
           min={0}
-          className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+          className="w-full rounded-md border border-ink-light/40 bg-parchment-100 px-3 py-2 text-sm text-ink focus:border-gold-deep focus:outline-none"
           value={actual}
           onChange={(e) => setActual(e.target.value)}
         />
-        <div className="rounded-lg bg-gray-900 px-3 py-2 text-sm text-gray-300">
-          Reward: <span className="font-semibold text-indigo-300">{xp} XP</span>
-          {habit.target ? <span className="text-gray-500"> ({Math.round((amount / habit.target) * 100)}%)</span> : null}
+        <div className="rounded-md border border-gold-deep/40 bg-parchment-300/60 px-3 py-2 text-sm text-ink">
+          Reward: <span className="font-display font-semibold text-ember">{xp} XP</span>
+          {habit.target ? <span className="text-ink-light"> ({Math.round((amount / habit.target) * 100)}%)</span> : null}
         </div>
-        <button
+        <Button
           onClick={() => {
             completeHabit(habit.id, amount);
             onClose();
           }}
-          className="w-full rounded-lg bg-indigo-600 py-2.5 text-sm font-semibold hover:bg-indigo-500"
+          className="w-full py-2.5"
         >
           Log Completion
-        </button>
+        </Button>
       </div>
     </Modal>
   );
