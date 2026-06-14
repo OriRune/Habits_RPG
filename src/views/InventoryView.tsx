@@ -1,10 +1,10 @@
-import { Coins, Snowflake, Sword, BookOpen } from 'lucide-react';
+import { Coins, Snowflake, BookOpen } from 'lucide-react';
 import { useGameStore, SHOP_ITEMS } from '@/store/useGameStore';
 import { getItem } from '@/engine/items';
 import { getMaterial } from '@/engine/materials';
 import { WEAPONS, getWeapon } from '@/engine/weapons';
 import { isHabitDoneToday } from '@/store/selectors';
-import { itemCrest, materialCrest } from '@/lib/sprites';
+import { itemCrest, materialCrest, weaponCrest } from '@/lib/sprites';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { Sprite } from '@/components/ui/Sprite';
@@ -86,8 +86,8 @@ export function InventoryView() {
             const equipped = key === equippedWeapon;
             return (
               <div key={key} className="flex items-center justify-between gap-3 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-2.5">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Sword className="h-4 w-4 shrink-0 text-ink-muted" />
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <Sprite spriteKey={`weapon:${key}`} look={weaponCrest(w.name, w.attackStat)} size="sm" />
                   <div className="min-w-0">
                     <div className="text-sm font-semibold text-ink">{w.name}</div>
                     <div className="truncate text-[11px] text-ink-muted">
@@ -161,7 +161,7 @@ export function InventoryView() {
         {weaponsForSale.map((w) => (
           <div key={w.key} className="flex items-center justify-between gap-3 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-2.5">
             <div className="flex min-w-0 items-center gap-3">
-              <Sword className="h-5 w-5 shrink-0 text-ink-muted" />
+              <Sprite spriteKey={`weapon:${w.key}`} look={weaponCrest(w.name, w.attackStat)} size="sm" />
               <div className="min-w-0">
                 <div className="text-sm font-semibold text-ink">{w.name}</div>
                 <div className="truncate text-[11px] text-ink-muted">{w.description}</div>

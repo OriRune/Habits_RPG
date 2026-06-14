@@ -6,7 +6,7 @@ import { StatBar } from '@/components/character/StatBar';
 import { HeroBanner } from '@/components/character/HeroBanner';
 import { LoadoutPanel } from '@/components/character/LoadoutPanel';
 import { Panel } from '@/components/ui/Panel';
-import { Crest } from '@/components/ui/Crest';
+import { Sprite } from '@/components/ui/Sprite';
 import { SectionTitle } from '@/components/ui/Divider';
 
 // All discoverable classes (unique names from the chart) for the Codex.
@@ -51,7 +51,7 @@ export function CharacterView() {
             const adv = ADVANCED_CLASSES[name];
             return (
               <div key={name} className="flex flex-col items-center gap-1.5 text-center">
-                <Crest look={classCrest(name)} size="md" shrouded={!found} />
+                <Sprite spriteKey={`class:${name}`} look={classCrest(name)} size="md" shrouded={!found} label={found ? name : undefined} />
                 <div className={`text-xs font-semibold ${found ? 'text-ink' : 'text-ink-light'}`}>
                   {found ? name : '???'}
                 </div>

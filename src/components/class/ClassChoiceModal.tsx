@@ -1,7 +1,7 @@
 import { getStat } from '@/engine/stats';
 import { useGameStore } from '@/store/useGameStore';
 import { Modal } from '@/components/ui/Modal';
-import { Crest } from '@/components/ui/Crest';
+import { Sprite } from '@/components/ui/Sprite';
 import { classCrest } from '@/lib/sprites';
 
 /** Shown when stats tie at the class-unlock milestone (brief: "if tied, player chooses"). */
@@ -22,7 +22,7 @@ export function ClassChoiceModal() {
             onClick={() => chooseClass(opt.primary, opt.secondary)}
             className="flex w-full items-center gap-3 rounded-md border border-ink-light/40 bg-parchment-100/70 p-3 text-left transition-colors hover:border-gold-deep hover:bg-gold/10"
           >
-            <Crest look={classCrest(opt.classId)} size="sm" />
+            <Sprite spriteKey={`class:${opt.classId}`} look={classCrest(opt.classId)} size="sm" label={opt.classId} />
             <span className="flex-1 font-display font-semibold text-ink">{opt.classId}</span>
             <span className="text-xs text-ink-light">
               {getStat(opt.primary).short} · {getStat(opt.secondary).short}

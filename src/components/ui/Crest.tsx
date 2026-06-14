@@ -1,9 +1,10 @@
 import { cn } from '@/lib/cn';
 import { type CrestLook } from '@/lib/sprites';
 
-type CrestSize = 'sm' | 'md' | 'lg' | 'xl';
+type CrestSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl';
 
 const SIZES: Record<CrestSize, { box: string; text: string }> = {
+  xs: { box: 'h-6 w-6', text: 'text-[10px]' },
   sm: { box: 'h-8 w-8', text: 'text-sm' },
   md: { box: 'h-14 w-14', text: 'text-xl' },
   lg: { box: 'h-20 w-20', text: 'text-3xl' },

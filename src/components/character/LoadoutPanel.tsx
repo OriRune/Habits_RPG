@@ -1,4 +1,4 @@
-import { Sword, Sparkles } from 'lucide-react';
+import { Sparkles } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { getWeapon } from '@/engine/weapons';
 import { getSpell, SCHOOL_STAT, type SpellSchool } from '@/engine/spells';
@@ -6,6 +6,8 @@ import { getGear, aggregateGear, type GearSlot } from '@/engine/gear';
 import { getStat, type StatId } from '@/engine/stats';
 import { COMBAT_STAT_META, combatLevel, mitigation } from '@/engine/combatStats';
 import { Panel } from '@/components/ui/Panel';
+import { Sprite } from '@/components/ui/Sprite';
+import { weaponCrest, spellCrest, gearCrest } from '@/lib/sprites';
 import { SectionTitle } from '@/components/ui/Divider';
 
 const SCHOOL_LABEL: Record<SpellSchool, string> = {
@@ -53,8 +55,8 @@ export function LoadoutPanel() {
     <Panel tone="parchment" className="space-y-4 p-4">
       <SectionTitle>Loadout</SectionTitle>
 
-      <div className="flex items-center gap-2 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3">
-        <Sword className="h-5 w-5 text-ink-muted" />
+      <div className="flex items-center gap-3 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3">
+        <Sprite spriteKey={`weapon:${equippedWeapon}`} look={weaponCrest(weapon.name, weapon.attackStat)} size="sm" />
         <div className="flex-1">
           <div className="text-sm font-semibold text-ink">{weapon.name}</div>
           <div className="text-xs text-ink-muted">
@@ -68,8 +70,15 @@ export function LoadoutPanel() {
         {slots.map((sl) => {
           const def = equipment[sl] ? getGear(equipment[sl]!) : undefined;
           return (
-            <div key={sl} className="flex justify-between text-xs">
-              <span className="capitalize text-ink-muted">{sl}</span>
+            <div key={sl} className="flex items-center justify-between text-xs">
+              <span className="flex items-center gap-2">
+                {def ? (
+                  <Sprite spriteKey={`gear:${equipment[sl]}`} look={gearCrest(def.name, def.slot)} size="xs" />
+                ) : (
+                  <span className="h-6 w-6 shrink-0 rounded-md border border-dashed border-ink-light/40" />
+                )}
+                <span className="capitalize text-ink-muted">{sl}</span>
+              </span>
               <span className={def ? 'text-ink' : 'text-ink-light'}>{def?.name ?? '—'}</span>
             </div>
           );
@@ -99,10 +108,11 @@ export function LoadoutPanel() {
             return (
               <span
                 key={key}
-                className="rounded-md border px-2 py-1 text-xs"
+                className="flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs"
                 style={{ borderColor: `${color}80`, color }}
                 title={`${SCHOOL_LABEL[spell.school]} · ${spell.mpCost} MP`}
               >
+                <Sprite spriteKey={`spell:${key}`} look={spellCrest(spell.name, spell.school)} size="xs" />
                 {spell.name}
               </span>
             );

@@ -4,6 +4,8 @@ import { getStat } from '@/engine/stats';
 import { type Habit } from '@/engine/habits';
 import { useGameStore } from '@/store/useGameStore';
 import { isHabitDoneToday, isHabitSuspended, selectWeekProgress } from '@/store/selectors';
+import { statCrest } from '@/lib/sprites';
+import { Sprite } from '@/components/ui/Sprite';
 import { cn } from '@/lib/cn';
 import { CompleteHabitDialog } from './CompleteHabitDialog';
 import { SuspendDialog } from './SuspendDialog';
@@ -63,6 +65,14 @@ export function HabitCard({ habit }: { habit: Habit }) {
         >
           {done && <Check className="h-5 w-5" />}
         </button>
+
+        <Sprite
+          spriteKey={`stat:${habit.stat}`}
+          look={statCrest(habit.stat)}
+          size="sm"
+          label={stat.name}
+          className={cn(done && 'opacity-60')}
+        />
 
         <div className="min-w-0 flex-1">
           <div className={cn('truncate font-medium text-ink', done && 'text-ink-muted line-through')}>

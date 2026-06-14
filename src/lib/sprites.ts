@@ -4,6 +4,8 @@
 import { getStat, type StatId } from '@/engine/stats';
 import { CLASS_CHART } from '@/engine/classes';
 import { getMaterial } from '@/engine/materials';
+import { SCHOOL_STAT, type SpellSchool } from '@/engine/spells';
+import { framedSvg } from '@/lib/placeholderArt';
 
 /** Reverse map: class name -> its primary stat (the chart row it sits in). */
 const CLASS_TO_STAT: Record<string, StatId> = (() => {
@@ -65,6 +67,45 @@ export function materialCrest(key: string): CrestLook {
 export function gearCrest(name: string, slot?: string): CrestLook {
   const color = slot === 'armor' ? '#7a8590' : slot === 'tool' ? '#8a5a2b' : GOLD;
   return { glyph: firstLetter(name), color };
+}
+
+/** Weapon crest: initial tinted by its attack stat (Strength ember, Dexterity gold). */
+export function weaponCrest(name: string, attackStat?: StatId): CrestLook {
+  return { glyph: firstLetter(name), color: attackStat === 'ST' ? EMBER : GOLD };
+}
+
+/** Spell crest: initial tinted by the spell school's stat color. */
+export function spellCrest(name: string, school: SpellSchool): CrestLook {
+  return { glyph: firstLetter(name), color: getStat(SCHOOL_STAT[school]).color };
+}
+
+/** Stat emblem: the stat's short name on its signature color (habit cards, equipment). */
+export function statCrest(stat: StatId): CrestLook {
+  const meta = getStat(stat);
+  return { glyph: meta.short, color: meta.color };
+}
+
+/** Challenge-kind emblem: a short tag tinted per kind. */
+const KIND_LOOK: Record<string, CrestLook> = {
+  count: { glyph: 'CNT', color: GOLD },
+  quantity: { glyph: 'QTY', color: '#3b82f6' },
+  streak: { glyph: 'STK', color: EMBER },
+  recovery: { glyph: 'RCV', color: '#5e8a2e' },
+  class: { glyph: 'CLS', color: '#a78bfa' },
+  rival: { glyph: 'RIV', color: '#ec4899' },
+};
+export function challengeKindCrest(kind: string): CrestLook {
+  return KIND_LOOK[kind] ?? { glyph: '★', color: GOLD };
+}
+
+/** The app's wordmark placeholder. */
+export function brandLook(): CrestLook {
+  return { glyph: 'HR', color: GOLD };
+}
+
+/** A generated "framed image box" placeholder for any crest. The real-art swap seam below. */
+export function placeholderImage(look: CrestLook, label?: string): string {
+  return framedSvg({ glyph: look.glyph, color: look.color, label });
 }
 
 // --- The swap seam -------------------------------------------------------------

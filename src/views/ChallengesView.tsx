@@ -6,9 +6,11 @@ import { weeklyRotation } from '@/engine/weekly';
 import { getStat, type StatId } from '@/engine/stats';
 import { rankStats } from '@/engine/classes';
 import { toISODate, daysBetween, weekKey } from '@/engine/date';
+import { challengeKindCrest } from '@/lib/sprites';
 import { cn } from '@/lib/cn';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
+import { Sprite } from '@/components/ui/Sprite';
 import { SectionTitle } from '@/components/ui/Divider';
 import { ChallengeBuilder } from '@/components/challenges/ChallengeBuilder';
 
@@ -91,12 +93,15 @@ export function ChallengesView() {
             return (
               <Panel key={i} tone="parchment" className="p-4">
                 <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-display text-sm font-bold text-ink">{c.def.name}</span>
-                      <KindChip kind={c.def.kind} />
+                  <div className="flex items-start gap-2.5">
+                    <Sprite spriteKey={`challenge:${c.def.kind}`} look={challengeKindCrest(c.def.kind)} size="sm" className="mt-0.5" />
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-display text-sm font-bold text-ink">{c.def.name}</span>
+                        <KindChip kind={c.def.kind} />
+                      </div>
+                      <div className="text-xs text-ink-muted">{c.def.description}</div>
                     </div>
-                    <div className="text-xs text-ink-muted">{c.def.description}</div>
                   </div>
                   {status === 'active' && (
                     <span className="flex shrink-0 items-center gap-1 text-xs text-ink-light">
@@ -179,13 +184,16 @@ function AvailableRow({
 }) {
   return (
     <Panel tone="parchment" className="flex items-center justify-between gap-3 p-3">
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="font-display text-sm font-bold text-ink">{def.name}</span>
-          <KindChip kind={def.kind} />
-        </div>
-        <div className="text-xs text-ink-muted">
-          {def.description} · {def.durationDays}d · {rewardText(def.reward)}
+      <div className="flex min-w-0 items-center gap-2.5">
+        <Sprite spriteKey={`challenge:${def.kind}`} look={challengeKindCrest(def.kind)} size="sm" />
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="font-display text-sm font-bold text-ink">{def.name}</span>
+            <KindChip kind={def.kind} />
+          </div>
+          <div className="text-xs text-ink-muted">
+            {def.description} · {def.durationDays}d · {rewardText(def.reward)}
+          </div>
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1.5">

@@ -1,5 +1,6 @@
 // Dungeon event illustrations. Every event has a placeholder scene now; real art swaps
 // in later via `resolveSceneImage` (same seam pattern as resolveSpriteImage in sprites.ts).
+import { framedSvg } from '@/lib/placeholderArt';
 
 export interface SceneLook {
   glyph: string;
@@ -50,4 +51,9 @@ const SCENE_REGISTRY: Record<string, string> = {};
 
 export function resolveSceneImage(key: string): string | undefined {
   return SCENE_REGISTRY[key];
+}
+
+/** Generated wide "framed image box" placeholder for a scene banner. */
+export function scenePlaceholderImage(look: SceneLook, caption?: string): string {
+  return framedSvg({ glyph: look.glyph, color: look.color, label: caption ?? look.caption, wide: true });
 }
