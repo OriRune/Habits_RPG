@@ -1,5 +1,6 @@
-// Crafting materials (design brief §15 economy). Earned from dungeons/challenges,
-// spent later by the Crafting milestone. Pure data.
+// Material types + helpers. The editable material DATA lives in
+// src/content/materials.ts. Earned from dungeons/challenges; (later) spent on crafting.
+import { MATERIALS } from '@/content/materials';
 
 export interface MaterialDef {
   key: string;
@@ -9,13 +10,8 @@ export interface MaterialDef {
   color: string;
 }
 
-export const MATERIALS: Record<string, MaterialDef> = {
-  leather: { key: 'leather', name: 'Leather', glyph: 'L', color: '#8a5a2b' },
-  cloth: { key: 'cloth', name: 'Cloth', glyph: 'C', color: '#b8487f' },
-  iron: { key: 'iron', name: 'Iron', glyph: 'I', color: '#7a8590' },
-  herb: { key: 'herb', name: 'Herb', glyph: 'H', color: '#5e8a2e' },
-  essence: { key: 'essence', name: 'Essence', glyph: 'E', color: '#6a4fb0' },
-};
+// Re-export the editable catalog so existing imports (`@/engine/materials`) keep working.
+export { MATERIALS } from '@/content/materials';
 
 export const MATERIAL_KEYS = Object.keys(MATERIALS);
 

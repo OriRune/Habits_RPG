@@ -73,6 +73,7 @@ function randomFrom<T>(arr: T[], rng: RNG): T {
   return arr[Math.floor(rng() * arr.length)];
 }
 
+// Loot tables — keys must exist in src/content/items.ts and src/content/weapons.ts.
 const SPELLBOOK_DROPS = ['spellbook_firebolt', 'spellbook_bless', 'spellbook_dazzle', 'spellbook_hex'];
 const WEAPON_DROPS = ['iron_mace', 'short_bow'];
 
