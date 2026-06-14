@@ -3,7 +3,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-import { type StatId, emptyStatXP } from '@/engine/stats';
+import { type StatId, emptyStatXP, getStat } from '@/engine/stats';
 import { type Difficulty } from '@/engine/xp';
 import {
   type Habit,
@@ -14,9 +14,9 @@ import {
   effectiveStatus,
   currentStreak,
 } from '@/engine/habits';
-import { toISODate, daysBetween } from '@/engine/date';
+import { toISODate, daysBetween, weekKey, addDays } from '@/engine/date';
 import { levelForTotalXp } from '@/engine/leveling';
-import { assignClass, classFor, CLASS_UNLOCK_LEVEL } from '@/engine/classes';
+import { assignClass, classFor, rankStats, CLASS_UNLOCK_LEVEL } from '@/engine/classes';
 import { bossForLevel } from '@/engine/bosses';
 import {
   type BattleState,
@@ -34,12 +34,17 @@ import { getRecipe, canCraft } from '@/engine/crafting';
 import { getItem, ITEMS } from '@/engine/items';
 import {
   type ActiveChallenge,
+  type ChallengeDef,
+  type ChallengeKind,
   type Reward,
   CHALLENGE_TEMPLATES,
-  challengeContribution,
+  challengeProgress,
   resolveChallenge,
+  suggestReward,
+  rivalGoal,
   isExpired,
 } from '@/engine/challenges';
+import { type WeeklyReport, buildWeeklyReport, weeklyRotation } from '@/engine/weekly';
 import {
   type DungeonRoom,
   generateFloor,
@@ -85,6 +90,17 @@ export interface NewHabitInput {
 /** Pending class choice when level-10 stats tie (brief: "if tied, player chooses"). */
 export interface PendingClassChoice {
   options: { primary: StatId; secondary: StatId; classId: string }[];
+}
+
+/** Player-authored challenge form (challenge builder). Reward is auto-suggested unless overridden. */
+export interface CustomChallengeDraft {
+  name: string;
+  description?: string;
+  kind: ChallengeKind;
+  stat?: StatId;
+  tag?: string;
+  goal: number;
+  durationDays: number;
 }
 
 /** An in-progress Dungeon Expedition (brief §7.2) — an endless descent through floors.
@@ -143,6 +159,12 @@ export interface GameState {
   combatStats: CombatStats;
   codex: string[];
   challenges: ActiveChallenge[];
+  /** Player-authored challenge templates (challenge builder). */
+  customChallenges: ChallengeDef[];
+  /** weekKey of the last processed week — the rollover sentinel for the weekly loop. */
+  lastWeekKey: string;
+  /** Set on week rollover; the weekly recap modal shows it, then it's dismissed. */
+  pendingReport: WeeklyReport | null;
   battle: BattleState | null;
   dungeon: DungeonRun | null;
   /** Target level the player is currently trying to reach (boss is live or pending). */
@@ -173,6 +195,11 @@ export interface GameState {
 
   startChallenge: (defId: string) => void;
   claimChallenge: (index: number) => void;
+  createCustomChallenge: (draft: CustomChallengeDraft, rewardOverride?: Reward) => void;
+  deleteCustomChallenge: (id: string) => void;
+  /** Detect a week boundary and surface the weekly report (call on mount). */
+  checkWeeklyRollover: () => void;
+  dismissWeeklyReport: () => void;
 
   buyItem: (itemKey: string) => void;
   useStreakFreeze: (habitId: string) => void;
@@ -337,6 +364,48 @@ function finishRun(run: DungeonRun, cleared: boolean, hp: number, keepFactor: nu
   };
 }
 
+/** Auto-generated description for a custom challenge when the player leaves it blank. */
+function describeDraft(draft: CustomChallengeDraft): string {
+  const where = draft.stat ? ` ${getStat(draft.stat).name}` : '';
+  const span = `in ${draft.durationDays} day${draft.durationDays === 1 ? '' : 's'}`;
+  switch (draft.kind) {
+    case 'streak':
+      return `Keep a ${draft.goal}-day${where} streak.`;
+    case 'recovery':
+      return `Bounce back ${draft.goal} times after a missed day.`;
+    case 'class':
+      return `Train${where || ' a stat'} on ${draft.goal} separate days ${span}.`;
+    case 'quantity':
+      return `Log ${draft.goal}${where} total ${span}.`;
+    case 'rival':
+      return `Beat last week's${where} tally.`;
+    default:
+      return `Complete ${draft.goal}${where} habits ${span}.`;
+  }
+}
+
+/** The stat that anchors class challenges/rotation — the class's primary stat, or null pre-class. */
+function classStatOf(state: GameState): StatId | null {
+  return state.character.classId ? rankStats(state.character.statXp)[0] : null;
+}
+
+/**
+ * If the calendar has crossed into a new week, build the recap for the week we're leaving
+ * and advance the sentinel. Mutates `state` in place (no-op within the same week).
+ */
+function applyWeeklyRollover(state: GameState, todayIso: string): void {
+  const current = weekKey(todayIso);
+  if (current === state.lastWeekKey) return;
+  state.pendingReport = buildWeeklyReport(
+    state.lastWeekKey,
+    state.habits,
+    state.completionLog,
+    state.challenges,
+    state.character.mood,
+  );
+  state.lastWeekKey = current;
+}
+
 /** After XP changes, queue a Level-Up Trial if the player is XP-eligible. */
 function checkLevelUp(state: GameState): void {
   if (state.pendingLevelUp || state.battle) return;
@@ -361,6 +430,9 @@ export const useGameStore = create<GameState>()(
       combatStats: emptyCombatStats(),
       codex: [],
       challenges: [],
+      customChallenges: [],
+      lastWeekKey: weekKey(toISODate()),
+      pendingReport: null,
       battle: null,
       dungeon: null,
       pendingLevelUp: null,
@@ -462,18 +534,17 @@ export const useGameStore = create<GameState>()(
           next.completionLog[today] = (next.completionLog[today] ?? 0) + 1;
           next.lastActiveISO = today;
 
-          // Advance any active challenges this completion qualifies for.
+          // Recompute every active challenge's progress from the updated logs.
           next.challenges = s.challenges.map((c) => {
             if (c.status !== 'active') return c;
             if (isExpired(c, today)) return { ...c, status: 'expired' as const };
-            const add = challengeContribution(c.def, habit, actual);
-            if (add <= 0) return c;
-            const progress = c.progress + add;
+            const progress = challengeProgress(c.def, c.startISO, next.habits, today);
             const status = progress >= c.def.goal ? ('completed' as const) : c.status;
             return { ...c, progress, status };
           });
 
           recomputeMood(next, today, result.recovery);
+          applyWeeklyRollover(next, today); // completing on a new week surfaces the recap
           checkLevelUp(next);
           return next;
         }),
@@ -557,15 +628,22 @@ export const useGameStore = create<GameState>()(
 
       startChallenge: (defId) =>
         set((s) => {
-          const def = CHALLENGE_TEMPLATES.find((d) => d.id === defId);
+          const today = toISODate();
+          // Resolve from the full pool: this week's rotation, custom challenges, then base templates.
+          const pool = [
+            ...weeklyRotation(weekKey(today), classStatOf(s)),
+            ...s.customChallenges,
+            ...CHALLENGE_TEMPLATES,
+          ];
+          const def = pool.find((d) => d.id === defId);
           if (!def) return s;
           if (s.challenges.some((c) => c.def.id === defId && c.status === 'active')) return s;
-          const active: ActiveChallenge = {
-            def,
-            startISO: toISODate(),
-            progress: 0,
-            status: 'active',
-          };
+          // Rival goal is frozen at start: beat last week's qualifying tally (vs. past self).
+          const frozen: ChallengeDef =
+            def.kind === 'rival'
+              ? { ...def, goal: rivalGoal(def.stat, s.habits, addDays(weekKey(today), -7)) }
+              : def;
+          const active: ActiveChallenge = { def: frozen, startISO: today, progress: 0, status: 'active' };
           return { challenges: [...s.challenges, active] };
         }),
 
@@ -587,6 +665,40 @@ export const useGameStore = create<GameState>()(
           checkLevelUp(next);
           return next;
         }),
+
+      createCustomChallenge: (draft, rewardOverride) =>
+        set((s) => {
+          const goal = Math.max(1, Math.round(draft.goal));
+          const durationDays = Math.max(1, Math.round(draft.durationDays));
+          const base = { kind: draft.kind, goal, durationDays, stat: draft.stat };
+          const def: ChallengeDef = {
+            id: `custom_${uid()}`,
+            name: draft.name.trim() || 'Custom Challenge',
+            description: draft.description?.trim() || describeDraft(draft),
+            kind: draft.kind,
+            stat: draft.stat,
+            tag: draft.tag,
+            goal,
+            durationDays,
+            reward: rewardOverride ?? suggestReward(base),
+            custom: true,
+          };
+          return { customChallenges: [...s.customChallenges, def] };
+        }),
+
+      deleteCustomChallenge: (id) =>
+        set((s) => ({ customChallenges: s.customChallenges.filter((d) => d.id !== id) })),
+
+      checkWeeklyRollover: () =>
+        set((s) => {
+          const today = toISODate();
+          if (weekKey(today) === s.lastWeekKey) return s;
+          const next: GameState = { ...s };
+          applyWeeklyRollover(next, today);
+          return next;
+        }),
+
+      dismissWeeklyReport: () => set((s) => (s.pendingReport ? { pendingReport: null } : s)),
 
       buyItem: (itemKey) =>
         set((s) => {
@@ -862,6 +974,9 @@ export const useGameStore = create<GameState>()(
           combatStats: emptyCombatStats(),
           codex: [],
           challenges: [],
+          customChallenges: [],
+          lastWeekKey: weekKey(toISODate()),
+          pendingReport: null,
           battle: null,
           dungeon: null,
           pendingLevelUp: null,
@@ -873,13 +988,16 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 5,
+      version: 6,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
       //     materials survive; new equipment fields fall back to defaults on merge.
       // v5: dungeon reshaped into the endless-descent model — clear any in-progress run
       //     (dungeon: null below); all other save data is preserved.
+      // v6: challenges gained `kind` (replacing `metric`) + the weekly loop. Backfill
+      //     kind from the old metric; lastWeekKey/pendingReport/customChallenges fall back
+      //     to initializer defaults on merge.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {
@@ -895,7 +1013,12 @@ export const useGameStore = create<GameState>()(
           const k = RENAME[key] ?? key;
           materials[k] = (materials[k] ?? 0) + (qty as number);
         }
-        return { ...p, habits, materials, battle: null, dungeon: null } as GameState;
+        const challenges = (p.challenges ?? []).map((c) => {
+          const def = c.def as ChallengeDef & { metric?: ChallengeKind };
+          if (def.kind) return c;
+          return { ...c, def: { ...def, kind: def.metric ?? 'count' } as ChallengeDef };
+        });
+        return { ...p, habits, materials, challenges, battle: null, dungeon: null } as GameState;
       },
     },
   ),

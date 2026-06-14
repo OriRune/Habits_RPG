@@ -4,7 +4,7 @@ import { emptyStatXP } from '@/engine/stats';
 import { type BattleState } from '@/engine/combat';
 import { type DungeonRoom } from '@/engine/dungeon';
 import { getEncounter, startEncounter } from '@/engine/encounters';
-import { toISODate } from '@/engine/date';
+import { toISODate, weekKey } from '@/engine/date';
 
 function makeRun(over: Partial<DungeonRun> & { rooms: DungeonRoom[] }): DungeonRun {
   return {
@@ -157,6 +157,66 @@ describe('challenges', () => {
     expect(get().challenges[0].status).toBe('claimed');
     expect(get().character.statXp.KN).toBe(knBefore + 150); // reward XP
     expect(get().inventory['focus_potion']).toBe(1); // reward item
+  });
+
+  it('a streak challenge progresses via recompute on completion', () => {
+    get().addHabit({ name: 'Meditate', stat: 'WI', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    get().createCustomChallenge({ name: 'Zen', kind: 'streak', goal: 3, durationDays: 7 });
+    const customId = get().customChallenges[0].id;
+    get().startChallenge(customId);
+    get().completeHabit(get().habits[0].id);
+    expect(get().challenges[0].def.kind).toBe('streak');
+    expect(get().challenges[0].progress).toBe(1); // one day so far
+  });
+});
+
+describe('custom challenges & weekly loop', () => {
+  it('creates a custom challenge with an auto-suggested reward', () => {
+    get().createCustomChallenge({ name: 'My Trial', kind: 'count', stat: 'ST', goal: 5, durationDays: 7 });
+    const def = get().customChallenges[0];
+    expect(def.custom).toBe(true);
+    expect(def.reward.gold).toBeGreaterThan(0);
+    expect(def.reward.statXp?.ST).toBeGreaterThan(0);
+  });
+
+  it('honors a manual reward override', () => {
+    get().createCustomChallenge({ name: 'Override', kind: 'count', goal: 5, durationDays: 7 }, { gold: 12 });
+    expect(get().customChallenges[0].reward).toEqual({ gold: 12 });
+  });
+
+  it('starts a custom challenge from the combined pool', () => {
+    get().createCustomChallenge({ name: 'Run It', kind: 'count', goal: 3, durationDays: 7 });
+    const id = get().customChallenges[0].id;
+    get().startChallenge(id);
+    expect(get().challenges.some((c) => c.def.id === id && c.status === 'active')).toBe(true);
+  });
+
+  it('deletes a custom challenge', () => {
+    get().createCustomChallenge({ name: 'Doomed', kind: 'count', goal: 3, durationDays: 7 });
+    const id = get().customChallenges[0].id;
+    get().deleteCustomChallenge(id);
+    expect(get().customChallenges).toHaveLength(0);
+  });
+
+  it('freezes a rival goal from last week at start', () => {
+    get().startChallenge('rival_week');
+    const rival = get().challenges.find((c) => c.def.kind === 'rival');
+    expect(rival).toBeDefined();
+    expect(rival!.def.goal).toBeGreaterThanOrEqual(1);
+  });
+
+  it('surfaces a weekly report only when the week changes', () => {
+    expect(get().pendingReport).toBeNull();
+    get().checkWeeklyRollover(); // same week → no-op
+    expect(get().pendingReport).toBeNull();
+
+    useGameStore.setState({ lastWeekKey: '2000-01-02' }); // a Sunday far in the past
+    get().checkWeeklyRollover();
+    expect(get().pendingReport).not.toBeNull();
+    expect(get().lastWeekKey).toBe(weekKey(toISODate()));
+
+    get().dismissWeeklyReport();
+    expect(get().pendingReport).toBeNull();
   });
 });
 

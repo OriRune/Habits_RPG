@@ -1,9 +1,10 @@
-// Challenge system (design brief Section 9). Local, single-player for the MVP.
+// Challenge system (design brief Section 9). Local, single-player.
 // Each challenge follows the brief's template: goal, time limit, eligible habits,
-// reward, partial-reward rules.
+// reward, partial-reward rules. Progress is recomputed from habit logs (not bumped
+// incrementally) so every kind — including streak/recovery/class — stays correct.
 import type { StatId } from './stats';
-import type { Habit } from './habits';
-import { daysBetween } from './date';
+import { type Habit, isScheduledOn, isCompletedOn } from './habits';
+import { daysBetween, addDays } from './date';
 
 export interface Reward {
   gold?: number;
@@ -17,14 +18,22 @@ export interface Reward {
   gear?: string[];
 }
 
-export type ChallengeMetric = 'count' | 'quantity';
+/**
+ * What a challenge measures (brief §9 Challenge Types):
+ * - count    — number of qualifying completions
+ * - quantity — summed amount logged on quantity habits
+ * - streak   — longest run of consecutive days each with a qualifying completion
+ * - recovery — qualifying completions made the day after a missed scheduled day (§14)
+ * - class    — distinct days in the window with a qualifying completion (e.g. "5 days")
+ * - rival    — beat a target snapshotted from last week (single-player "vs. past self")
+ */
+export type ChallengeKind = 'count' | 'quantity' | 'streak' | 'recovery' | 'class' | 'rival';
 
 export interface ChallengeDef {
   id: string;
   name: string;
   description: string;
-  /** 'count' = number of qualifying completions; 'quantity' = summed amount. */
-  metric: ChallengeMetric;
+  kind: ChallengeKind;
   /** Only count completions for this stat, if set. */
   stat?: StatId;
   /** Only count completions for this tag, if set. */
@@ -34,6 +43,10 @@ export interface ChallengeDef {
   reward: Reward;
   /** Optional partial reward granted if progress reaches this fraction of the goal. */
   partial?: { atRatio: number; reward: Reward };
+  /** rival only: which metric to accumulate toward the snapshotted goal (default 'count'). */
+  accumulate?: 'count' | 'quantity';
+  /** Marks a player-authored challenge (built in the challenge builder). */
+  custom?: boolean;
 }
 
 export interface ActiveChallenge {
@@ -43,13 +56,13 @@ export interface ActiveChallenge {
   status: 'active' | 'completed' | 'claimed' | 'expired';
 }
 
-/** Starter challenge templates (brief Section 9, incl. "The Scholar's Week"). */
+/** Starter challenge templates (brief Section 9). */
 export const CHALLENGE_TEMPLATES: ChallengeDef[] = [
   {
     id: 'scholars_week',
     name: "The Scholar's Week",
     description: 'Read 100 pages total this week.',
-    metric: 'quantity',
+    kind: 'quantity',
     stat: 'KN',
     goal: 100,
     durationDays: 7,
@@ -60,7 +73,7 @@ export const CHALLENGE_TEMPLATES: ChallengeDef[] = [
     id: 'consistency_week',
     name: 'Week of Consistency',
     description: 'Complete 20 habits total this week.',
-    metric: 'count',
+    kind: 'count',
     goal: 20,
     durationDays: 7,
     reward: { gold: 100, items: ['streak_freeze'] },
@@ -70,26 +83,137 @@ export const CHALLENGE_TEMPLATES: ChallengeDef[] = [
     id: 'iron_week',
     name: 'Iron Week',
     description: 'Complete 5 Strength habits this week.',
-    metric: 'count',
+    kind: 'count',
     stat: 'ST',
     goal: 5,
     durationDays: 7,
     reward: { statXp: { ST: 80 }, gold: 40 },
     partial: { atRatio: 0.6, reward: { gold: 20 } },
   },
+  {
+    id: 'unbroken_week',
+    name: 'Unbroken',
+    description: 'Keep a 7-day completion streak going.',
+    kind: 'streak',
+    goal: 7,
+    durationDays: 9,
+    reward: { gold: 80, items: ['streak_freeze'] },
+    partial: { atRatio: 0.5, reward: { gold: 30 } },
+  },
+  {
+    id: 'phoenix_week',
+    name: 'Phoenix',
+    description: 'Bounce back 3 times after a missed day.',
+    kind: 'recovery',
+    goal: 3,
+    durationDays: 7,
+    reward: { gold: 60, items: ['focus_potion'] },
+    partial: { atRatio: 0.5, reward: { gold: 25 } },
+  },
+  {
+    id: 'sages_devotion',
+    name: "Sage's Devotion",
+    description: 'Train Wisdom on 5 separate days this week.',
+    kind: 'class',
+    stat: 'WI',
+    goal: 5,
+    durationDays: 7,
+    reward: { statXp: { WI: 120 }, gold: 50 },
+    partial: { atRatio: 0.6, reward: { gold: 20 } },
+  },
 ];
 
-/** How much a single habit completion contributes to a challenge's progress. */
-export function challengeContribution(
+/** Whether a habit is eligible for a challenge (stat/tag filters). */
+export function habitMatches(def: ChallengeDef, habit: Habit): boolean {
+  if (def.stat && habit.stat !== def.stat) return false;
+  if (def.tag && habit.tag !== def.tag) return false;
+  return true;
+}
+
+/** A day's quantity contribution from one habit (entered amount, else 1 for binary). */
+function dayAmount(habit: Habit, iso: string): number {
+  const entry = habit.log[iso];
+  if (entry === undefined) return 0;
+  return habit.type === 'quantity' ? (entry.amount ?? 0) : 1;
+}
+
+/** Inclusive list of ISO dates in the challenge window, capped at today. */
+function windowDates(startISO: string, durationDays: number, todayIso: string): string[] {
+  const out: string[] = [];
+  for (let d = 0; d < durationDays; d++) {
+    const iso = addDays(startISO, d);
+    if (daysBetween(todayIso, iso) < 0) break; // future day — stop
+    out.push(iso);
+  }
+  return out;
+}
+
+/** Whether any eligible habit was completed on `iso`. */
+function anyMatchCompletedOn(def: ChallengeDef, habits: Habit[], iso: string): boolean {
+  return habits.some((h) => habitMatches(def, h) && isCompletedOn(h, iso));
+}
+
+/**
+ * Current progress for a challenge, computed from the habits' logs across its window.
+ * Recompute-from-source keeps streak/recovery/class honest regardless of completion order.
+ */
+export function challengeProgress(
   def: ChallengeDef,
-  habit: Habit,
-  actual: number | undefined,
+  startISO: string,
+  habits: Habit[],
+  todayIso: string,
 ): number {
-  if (def.stat && habit.stat !== def.stat) return 0;
-  if (def.tag && habit.tag !== def.tag) return 0;
-  if (def.metric === 'count') return 1;
-  // quantity: use the entered amount for quantity habits, else count as 1.
-  return habit.type === 'quantity' ? (actual ?? 0) : 1;
+  const days = windowDates(startISO, def.durationDays, todayIso);
+  const eligible = habits.filter((h) => habitMatches(def, h));
+
+  switch (def.kind) {
+    case 'count':
+      return days.reduce(
+        (sum, iso) => sum + eligible.reduce((n, h) => n + (isCompletedOn(h, iso) ? 1 : 0), 0),
+        0,
+      );
+    case 'quantity':
+      return days.reduce(
+        (sum, iso) => sum + eligible.reduce((n, h) => n + dayAmount(h, iso), 0),
+        0,
+      );
+    case 'rival': {
+      const quantity = def.accumulate === 'quantity';
+      return days.reduce(
+        (sum, iso) =>
+          sum + eligible.reduce((n, h) => n + (quantity ? dayAmount(h, iso) : isCompletedOn(h, iso) ? 1 : 0), 0),
+        0,
+      );
+    }
+    case 'class':
+      // Distinct days with an eligible completion.
+      return days.reduce((n, iso) => n + (anyMatchCompletedOn(def, habits, iso) ? 1 : 0), 0);
+    case 'streak': {
+      // Longest run of consecutive qualifying days within the window.
+      let best = 0;
+      let run = 0;
+      for (const iso of days) {
+        if (anyMatchCompletedOn(def, habits, iso)) {
+          run += 1;
+          if (run > best) best = run;
+        } else {
+          run = 0;
+        }
+      }
+      return best;
+    }
+    case 'recovery': {
+      // Completions made the day after a missed *scheduled* day for that habit (§14).
+      let count = 0;
+      for (const iso of days) {
+        const prev = addDays(iso, -1);
+        for (const h of eligible) {
+          if (isCompletedOn(h, iso) && isScheduledOn(h, prev) && !isCompletedOn(h, prev)) count++;
+        }
+      }
+      return count;
+    }
+  }
 }
 
 export function isExpired(active: ActiveChallenge, todayIso: string): boolean {
@@ -113,4 +237,45 @@ export function resolveChallenge(active: ActiveChallenge): ChallengeOutcome {
     return { reward: def.partial.reward, met: false, partial: true };
   }
   return { reward: null, met: false, partial: false };
+}
+
+/** Effort weight per kind — normalizes wildly different goal scales into a fair reward. */
+const KIND_WEIGHT: Record<ChallengeKind, number> = {
+  count: 1,
+  quantity: 0.12,
+  streak: 2,
+  recovery: 2.5,
+  class: 2,
+  rival: 1,
+};
+
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+/**
+ * Suggested, auto-balanced reward for a challenge (used by the builder). Scales gold +
+ * a stat-XP grant by goal × duration × kind weight, clamped so tiny goals can't mint huge rewards.
+ */
+export function suggestReward(def: Pick<ChallengeDef, 'kind' | 'goal' | 'durationDays' | 'stat'>): Reward {
+  const difficulty = Math.max(1, def.goal) * (def.durationDays / 7) * KIND_WEIGHT[def.kind];
+  const gold = Math.round(clamp(difficulty * 4, 20, 300));
+  const reward: Reward = { gold };
+  if (def.stat) reward.statXp = { [def.stat]: Math.round(clamp(difficulty * 6, 30, 400)) };
+  return reward;
+}
+
+/**
+ * Goal for a "rival vs. past self" challenge: beat last week's qualifying count for `stat`
+ * (the week starting at `lastWeekKey`), so the bar is always your own prior performance.
+ */
+export function rivalGoal(stat: StatId | undefined, habits: Habit[], lastWeekKey: string): number {
+  let count = 0;
+  for (let d = 0; d < 7; d++) {
+    const iso = addDays(lastWeekKey, d);
+    for (const h of habits) {
+      if ((!stat || h.stat === stat) && isCompletedOn(h, iso)) count++;
+    }
+  }
+  return Math.max(1, count + 1);
 }

@@ -1,12 +1,25 @@
-import { Gift, Clock } from 'lucide-react';
+import { useState } from 'react';
+import { Gift, Clock, Plus, Trash2 } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
-import { CHALLENGE_TEMPLATES, isExpired, type Reward } from '@/engine/challenges';
+import { isExpired, type ChallengeDef, type ChallengeKind, type Reward } from '@/engine/challenges';
+import { weeklyRotation } from '@/engine/weekly';
 import { getStat, type StatId } from '@/engine/stats';
-import { toISODate, daysBetween } from '@/engine/date';
+import { rankStats } from '@/engine/classes';
+import { toISODate, daysBetween, weekKey } from '@/engine/date';
 import { cn } from '@/lib/cn';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
+import { ChallengeBuilder } from '@/components/challenges/ChallengeBuilder';
+
+const KIND_LABEL: Record<ChallengeKind, string> = {
+  count: 'Completions',
+  quantity: 'Quantity',
+  streak: 'Streak',
+  recovery: 'Recovery',
+  class: 'Devotion',
+  rival: 'Rival',
+};
 
 function rewardText(r: Reward): string {
   const parts: string[] = [];
@@ -18,18 +31,54 @@ function rewardText(r: Reward): string {
   return parts.join(' · ') || 'reward';
 }
 
+/** Progress readout suffix tuned to the challenge kind. */
+function progressText(def: ChallengeDef, progress: number): string {
+  const base = `${progress} / ${def.goal}`;
+  switch (def.kind) {
+    case 'streak':
+      return `${base} day streak`;
+    case 'class':
+      return `${base} days`;
+    case 'recovery':
+      return `${base} comebacks`;
+    default:
+      return base;
+  }
+}
+
+function KindChip({ kind }: { kind: ChallengeKind }) {
+  return (
+    <span className="rounded-full border border-gold-deep/40 bg-wood-900/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gold-deep">
+      {KIND_LABEL[kind]}
+    </span>
+  );
+}
+
 export function ChallengesView() {
   const challenges = useGameStore((s) => s.challenges);
+  const customChallenges = useGameStore((s) => s.customChallenges);
+  const character = useGameStore((s) => s.character);
   const startChallenge = useGameStore((s) => s.startChallenge);
   const claimChallenge = useGameStore((s) => s.claimChallenge);
+  const deleteCustomChallenge = useGameStore((s) => s.deleteCustomChallenge);
+  const [building, setBuilding] = useState(false);
   const today = toISODate();
 
+  const classStat = character.classId ? rankStats(character.statXp)[0] : null;
+  const rotation = weeklyRotation(weekKey(today), classStat);
+
   const activeIds = new Set(challenges.filter((c) => c.status === 'active').map((c) => c.def.id));
-  const available = CHALLENGE_TEMPLATES.filter((d) => !activeIds.has(d.id));
+  const rotationAvail = rotation.filter((d) => !activeIds.has(d.id));
+  const customAvail = customChallenges.filter((d) => !activeIds.has(d.id));
 
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
-      <SectionTitle tone="wood">The Trial Board</SectionTitle>
+      <div className="flex items-center justify-between">
+        <SectionTitle tone="wood">The Trial Board</SectionTitle>
+        <Button variant="secondary" onClick={() => setBuilding(true)} className="flex items-center gap-1.5 px-3 py-1.5">
+          <Plus className="h-4 w-4" /> Create
+        </Button>
+      </div>
 
       {challenges.length > 0 && (
         <div className="space-y-3">
@@ -41,13 +90,16 @@ export function ChallengesView() {
             const claimable = status === 'completed' || status === 'expired';
             return (
               <Panel key={i} tone="parchment" className="p-4">
-                <div className="flex items-start justify-between">
+                <div className="flex items-start justify-between gap-2">
                   <div>
-                    <div className="font-display text-sm font-bold text-ink">{c.def.name}</div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-display text-sm font-bold text-ink">{c.def.name}</span>
+                      <KindChip kind={c.def.kind} />
+                    </div>
                     <div className="text-xs text-ink-muted">{c.def.description}</div>
                   </div>
                   {status === 'active' && (
-                    <span className="flex items-center gap-1 text-xs text-ink-light">
+                    <span className="flex shrink-0 items-center gap-1 text-xs text-ink-light">
                       <Clock className="h-3 w-3" /> {Math.max(0, daysLeft)}d
                     </span>
                   )}
@@ -62,9 +114,7 @@ export function ChallengesView() {
                   />
                 </div>
                 <div className="mt-1 flex justify-between text-xs text-ink-muted">
-                  <span>
-                    {c.progress} / {c.def.goal}
-                  </span>
+                  <span>{progressText(c.def, c.progress)}</span>
                   <span>Reward: {rewardText(c.def.reward)}</span>
                 </div>
 
@@ -86,26 +136,68 @@ export function ChallengesView() {
         </div>
       )}
 
-      {available.length > 0 && (
+      {rotationAvail.length > 0 && (
         <>
-          <SectionTitle tone="wood" className="pt-2">Available</SectionTitle>
+          <SectionTitle tone="wood" className="pt-2">This Week's Trials</SectionTitle>
           <div className="space-y-2">
-            {available.map((d) => (
-              <Panel key={d.id} tone="parchment" className="flex items-center justify-between gap-3 p-3">
-                <div className="min-w-0">
-                  <div className="font-display text-sm font-bold text-ink">{d.name}</div>
-                  <div className="text-xs text-ink-muted">
-                    {d.description} · {d.durationDays}d · {rewardText(d.reward)}
-                  </div>
-                </div>
-                <Button variant="secondary" onClick={() => startChallenge(d.id)} className="shrink-0 px-3 py-1.5">
-                  Accept
-                </Button>
-              </Panel>
+            {rotationAvail.map((d) => (
+              <AvailableRow key={d.id} def={d} onStart={() => startChallenge(d.id)} />
             ))}
           </div>
         </>
       )}
+
+      {customAvail.length > 0 && (
+        <>
+          <SectionTitle tone="wood" className="pt-2">Your Challenges</SectionTitle>
+          <div className="space-y-2">
+            {customAvail.map((d) => (
+              <AvailableRow
+                key={d.id}
+                def={d}
+                onStart={() => startChallenge(d.id)}
+                onDelete={() => deleteCustomChallenge(d.id)}
+              />
+            ))}
+          </div>
+        </>
+      )}
+
+      {building && <ChallengeBuilder onClose={() => setBuilding(false)} />}
     </div>
+  );
+}
+
+function AvailableRow({
+  def,
+  onStart,
+  onDelete,
+}: {
+  def: ChallengeDef;
+  onStart: () => void;
+  onDelete?: () => void;
+}) {
+  return (
+    <Panel tone="parchment" className="flex items-center justify-between gap-3 p-3">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="font-display text-sm font-bold text-ink">{def.name}</span>
+          <KindChip kind={def.kind} />
+        </div>
+        <div className="text-xs text-ink-muted">
+          {def.description} · {def.durationDays}d · {rewardText(def.reward)}
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        {onDelete && (
+          <button onClick={onDelete} className="p-1.5 text-ink-light hover:text-ember" aria-label="Delete challenge">
+            <Trash2 className="h-4 w-4" />
+          </button>
+        )}
+        <Button variant="secondary" onClick={onStart} className="px-3 py-1.5">
+          Accept
+        </Button>
+      </div>
+    </Panel>
   );
 }

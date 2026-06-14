@@ -3,6 +3,7 @@ import { Header } from '@/components/layout/Header';
 import { TabBar, type Tab } from '@/components/layout/TabBar';
 import { BattleOverlay } from '@/components/combat/BattleOverlay';
 import { ClassChoiceModal } from '@/components/class/ClassChoiceModal';
+import { WeeklyReportModal } from '@/components/weekly/WeeklyReportModal';
 import { DashboardView } from '@/views/DashboardView';
 import { CharacterView } from '@/views/CharacterView';
 import { ChallengesView } from '@/views/ChallengesView';
@@ -17,9 +18,13 @@ export default function App() {
   const battle = useGameStore((s) => s.battle);
   const classChoice = useGameStore((s) => s.pendingClassChoice);
   const normalizeHabits = useGameStore((s) => s.normalizeHabits);
+  const checkWeeklyRollover = useGameStore((s) => s.checkWeeklyRollover);
 
-  // Resume any habits whose suspension has elapsed.
-  useEffect(() => normalizeHabits(), [normalizeHabits]);
+  // Resume elapsed suspensions and surface the weekly report if a new week has begun.
+  useEffect(() => {
+    normalizeHabits();
+    checkWeeklyRollover();
+  }, [normalizeHabits, checkWeeklyRollover]);
 
   return (
     <div className="flex min-h-full flex-col">
@@ -36,6 +41,7 @@ export default function App() {
       {historyOpen && <HistoryView onClose={() => setHistoryOpen(false)} />}
       {battle && <BattleOverlay />}
       {classChoice && <ClassChoiceModal />}
+      <WeeklyReportModal />
     </div>
   );
 }
