@@ -8,10 +8,12 @@ import { CharacterView } from '@/views/CharacterView';
 import { ChallengesView } from '@/views/ChallengesView';
 import { DungeonView } from '@/views/DungeonView';
 import { InventoryView } from '@/views/InventoryView';
+import { HistoryView } from '@/views/HistoryView';
 import { useGameStore } from '@/store/useGameStore';
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('habits');
+  const [historyOpen, setHistoryOpen] = useState(false);
   const battle = useGameStore((s) => s.battle);
   const classChoice = useGameStore((s) => s.pendingClassChoice);
   const normalizeHabits = useGameStore((s) => s.normalizeHabits);
@@ -23,7 +25,7 @@ export default function App() {
     <div className="flex min-h-full flex-col">
       <Header />
       <main className="flex-1">
-        {tab === 'habits' && <DashboardView />}
+        {tab === 'habits' && <DashboardView onOpenHistory={() => setHistoryOpen(true)} />}
         {tab === 'character' && <CharacterView />}
         {tab === 'challenges' && <ChallengesView />}
         {tab === 'dungeon' && <DungeonView />}
@@ -31,6 +33,7 @@ export default function App() {
       </main>
       <TabBar active={tab} onChange={setTab} />
 
+      {historyOpen && <HistoryView onClose={() => setHistoryOpen(false)} />}
       {battle && <BattleOverlay />}
       {classChoice && <ClassChoiceModal />}
     </div>

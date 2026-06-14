@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, Swords, AlertTriangle } from 'lucide-react';
+import { Plus, Swords, AlertTriangle, BarChart3 } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import {
   selectDashboardHabits,
@@ -14,7 +14,7 @@ import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
 
-export function DashboardView() {
+export function DashboardView({ onOpenHistory }: { onOpenHistory: () => void }) {
   const dashboard = useGameStore(selectDashboardHabits);
   const warning = useGameStore(selectHabitLoadWarning);
   const pendingLevelUp = useGameStore((s) => s.pendingLevelUp);
@@ -53,8 +53,16 @@ export function DashboardView() {
       )}
 
       <Panel tone="parchment" className="p-4">
-        <div className="mb-3 flex items-center gap-3">
+        <div className="mb-3 flex items-center gap-2">
           <SectionTitle className="flex-1">Quest Log · Today</SectionTitle>
+          <Button
+            variant="secondary"
+            onClick={onOpenHistory}
+            className="flex items-center gap-1 px-2.5 py-1.5"
+            aria-label="History"
+          >
+            <BarChart3 className="h-4 w-4" />
+          </Button>
           <Button onClick={() => setShowForm(true)} className="flex items-center gap-1 px-3 py-1.5">
             <Plus className="h-4 w-4" /> Habit
           </Button>
