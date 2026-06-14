@@ -18,8 +18,6 @@ export function CharacterView() {
   const character = useGameStore((s) => s.character);
   const codex = useGameStore((s) => s.codex);
 
-  const maxXp = Math.max(1, ...STATS.map((s) => character.statXp[s.id]));
-
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
       <HeroBanner />
@@ -29,9 +27,12 @@ export function CharacterView() {
       {/* Attributes */}
       <Panel tone="parchment" className="p-4">
         <SectionTitle className="mb-3">Attributes</SectionTitle>
+        <p className="mb-2 text-[11px] text-ink-muted">
+          Stat points are earned at each level-up, steered toward the stats you've trained most.
+        </p>
         <div className="space-y-2.5">
           {STATS.map((s) => (
-            <StatBar key={s.id} stat={s.id} xp={character.statXp[s.id]} maxXp={maxXp} />
+            <StatBar key={s.id} stat={s.id} level={character.statLevels[s.id]} xp={character.statXp[s.id]} />
           ))}
         </div>
       </Panel>

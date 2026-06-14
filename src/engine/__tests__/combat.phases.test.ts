@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { emptyStatXP } from '../stats';
+import { emptyStatLevels, STAT_CAP } from '../progression';
 import { emptyCombatStats } from '../combatStats';
 import { deriveCombatant, createBattle, playerAction, type Fighter, type RNG } from '../combat';
 import { getWeapon, STARTER_WEAPON } from '../weapons';
@@ -8,11 +8,11 @@ import type { BossDef } from '../bosses';
 const fixed = (v: number): RNG => () => v;
 
 function strongFighter(): Fighter {
-  const xp = emptyStatXP();
-  xp.ST = 10000; // huge melee
-  xp.DX = 10000; // huge ranged (whichever the starter weapon uses)
-  xp.HP = 10000; // survive the foe's turn
-  return { c: deriveCombatant(xp, emptyCombatStats(), {}), weapon: getWeapon(STARTER_WEAPON) };
+  const lv = emptyStatLevels();
+  lv.ST = STAT_CAP; // huge melee
+  lv.DX = STAT_CAP; // huge ranged (whichever the starter weapon uses)
+  lv.HP = STAT_CAP; // survive the foe's turn
+  return { c: deriveCombatant(lv, 10, emptyCombatStats(), {}), weapon: getWeapon(STARTER_WEAPON) };
 }
 
 const twoPhase: BossDef = {

@@ -1,7 +1,7 @@
 // Turn-based combat (Level-Up Trials + dungeon fights share this engine).
 // Stats drive a weapon Attack, MP-gated Spells, an Endurance Stamina pool, and the new
 // combat-trained Defense/Ward mitigations. Pure; randomness is injected for testing.
-import { statPoints, type StatId } from './stats';
+import { type StatId } from './stats';
 import type { BossDef, BossPhase } from './bosses';
 import { getItem } from './items';
 import { getSpell, SCHOOL_STAT, type StatusKey } from './spells';
@@ -33,19 +33,26 @@ export interface Fighter {
   weapon: WeaponDef;
 }
 
+/**
+ * Build a combat profile from **stat levels** (the post-rework stat values, ~1–25), the
+ * character level (a small survivability floor so HP tracks progression), the combat-trained
+ * Defense/Ward, and any temporary buffs. Attack is the raw Strength/Dexterity level plus the
+ * weapon bonus (added in the attack action), so each point matters and weapons stay relevant.
+ */
 export function deriveCombatant(
-  statXp: Record<StatId, number>,
+  statLevels: Record<StatId, number>,
+  charLevel: number,
   combat: CombatStats,
   buffs: Partial<Record<StatId, number>> = {},
 ): Combatant {
-  const p = (s: StatId) => statPoints(statXp[s]) + (buffs[s] ?? 0);
+  const p = (s: StatId) => statLevels[s] + (buffs[s] ?? 0);
   return {
-    maxHp: 60 + p('HP') * 8,
-    maxMp: 10 + p('KN') * 4,
-    maxSta: 5 + Math.round(p('EN') * 1.5),
-    meleePower: Math.round(p('ST') * 1.5),
-    rangedPower: Math.round(p('DX') * 1.5),
-    dodge: Math.min(0.4, p('AG') * 0.015),
+    maxHp: 50 + p('HP') * 7 + charLevel * 3,
+    maxMp: 8 + p('KN') * 3,
+    maxSta: 4 + p('EN'),
+    meleePower: p('ST'),
+    rangedPower: p('DX'),
+    dodge: Math.min(0.4, p('AG') * 0.02),
     flee: Math.min(0.9, 0.4 + p('AG') * 0.03),
     damageSpell: p('WI'),
     supportSpell: p('KN'),

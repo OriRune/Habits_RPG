@@ -2,6 +2,7 @@ import { Coins, Zap } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { selectLevelProgress, selectTopStats } from '@/store/selectors';
 import { MOOD_META } from '@/engine/mood';
+import { MAX_LEVEL } from '@/engine/progression';
 import { avatarCrest } from '@/lib/sprites';
 import { Panel } from '@/components/ui/Panel';
 import { Frame } from '@/components/ui/Frame';
@@ -27,7 +28,10 @@ export function HeroBanner() {
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           <h1 className="truncate font-display text-2xl font-bold text-gold-bright">{title}</h1>
-          <span className="font-display text-sm text-parchment-300">Lv {character.level}</span>
+          <span className="font-display text-sm text-parchment-300">
+            Lv {character.level}
+            {character.level >= MAX_LEVEL && <span className="ml-1 text-gold-bright">MAX</span>}
+          </span>
         </div>
 
         <div className="mt-0.5 flex items-center gap-2 text-sm text-parchment-300">

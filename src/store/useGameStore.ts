@@ -3,7 +3,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-import { type StatId, emptyStatXP, getStat } from '@/engine/stats';
+import { type StatId, STAT_IDS, emptyStatXP, getStat } from '@/engine/stats';
 import { type Difficulty } from '@/engine/xp';
 import {
   type Habit,
@@ -16,6 +16,14 @@ import {
 } from '@/engine/habits';
 import { toISODate, daysBetween, weekKey, addDays } from '@/engine/date';
 import { levelForTotalXp } from '@/engine/leveling';
+import {
+  allocateStatGains,
+  emptyStatLevels,
+  statLevelsFromXp,
+  POINTS_PER_LEVEL,
+  MAX_LEVEL,
+  BOSS_GATE_LEVEL,
+} from '@/engine/progression';
 import { assignClass, classFor, rankStats, CLASS_UNLOCK_LEVEL } from '@/engine/classes';
 import { bossForLevel } from '@/engine/bosses';
 import {
@@ -64,9 +72,14 @@ import { enemyFor } from '@/engine/enemies';
 import { type Mood, computeMood } from '@/engine/mood';
 
 export interface Character {
-  /** Committed level — only advances by winning a Level-Up Trial. */
+  /** Committed level. Levels 1→4 advance automatically; 5+ require a Level-Up Trial win. */
   level: number;
+  /** Effort ledger — habits/challenges/dungeons add XP; its sum drives the character level. */
   statXp: Record<StatId, number>;
+  /** Actual stat values used by combat and checks. Granted on level-up, frozen between. */
+  statLevels: Record<StatId, number>;
+  /** Snapshot of statXp at the last level-up, so a level-up can see recent per-stat effort. */
+  statXpAtLastLevel: Record<StatId, number>;
   gold: number;
   energy: number;
   classId: string | null;
@@ -250,6 +263,8 @@ function freshCharacter(): Character {
   return {
     level: 1,
     statXp: emptyStatXP(),
+    statLevels: emptyStatLevels(),
+    statXpAtLastLevel: emptyStatXP(),
     gold: 0,
     energy: 0,
     classId: null,
@@ -332,7 +347,7 @@ function fighterFor(state: GameState, buffs: Partial<Record<StatId, number>> = {
   for (const [stat, n] of Object.entries(gear.statBonuses)) {
     merged[stat as StatId] = (merged[stat as StatId] ?? 0) + (n ?? 0);
   }
-  const c = deriveCombatant(state.character.statXp, state.combatStats, merged);
+  const c = deriveCombatant(state.character.statLevels, state.character.level, state.combatStats, merged);
   c.defense += gear.defense;
   c.ward += gear.ward;
   return { c, weapon: getWeapon(state.equippedWeapon) };
@@ -435,12 +450,50 @@ function topUpFighter(b: BattleState): BattleState {
   };
 }
 
-/** After XP changes, queue a Level-Up Trial if the player is XP-eligible. */
+/**
+ * Advance to `toLevel`, granting this level's stat points. Points are distributed by the XP
+ * earned per stat since the last level-up (recent effort) plus a nudge toward the class's two
+ * stats; the snapshot is then reset. Also handles the level-10 class unlock. Mutates `state`.
+ */
+function applyLevelUp(state: GameState, toLevel: number): void {
+  const ch = state.character;
+  const delta = {} as Record<StatId, number>;
+  for (const s of STAT_IDS) delta[s] = ch.statXp[s] - (ch.statXpAtLastLevel[s] ?? 0);
+  const favored = ch.classId ? rankStats(ch.statXp).slice(0, 2) : [];
+  const gains = allocateStatGains(POINTS_PER_LEVEL, delta, ch.statLevels, favored);
+
+  ch.statLevels = { ...ch.statLevels };
+  for (const s of STAT_IDS) ch.statLevels[s] += gains[s];
+  ch.statXpAtLastLevel = { ...ch.statXp };
+  ch.level = Math.min(MAX_LEVEL, toLevel);
+
+  // Class unlock at the milestone level (brief Section 6).
+  if (ch.level >= CLASS_UNLOCK_LEVEL && !ch.classId) {
+    const a = assignClass(ch.statXp);
+    if (a.ambiguous) {
+      state.pendingClassChoice = buildClassChoice(ch.statXp);
+    } else {
+      ch.classId = a.classId;
+      if (!state.codex.includes(a.classId)) state.codex.push(a.classId);
+    }
+  }
+}
+
+/**
+ * Reconcile committed level with XP. Levels below BOSS_GATE_LEVEL advance automatically;
+ * reaching that level (or higher) queues a Level-Up Trial the player must win. No-op during a
+ * live trial battle.
+ */
 function checkLevelUp(state: GameState): void {
-  if (state.pendingLevelUp || state.battle) return;
-  const eligible = levelForTotalXp(totalXp(state.character.statXp));
-  if (eligible > state.character.level) {
-    state.pendingLevelUp = state.character.level + 1;
+  if (state.battle) return;
+  const eligible = Math.min(MAX_LEVEL, levelForTotalXp(totalXp(state.character.statXp)));
+  while (state.character.level < eligible) {
+    const next = state.character.level + 1;
+    if (next >= BOSS_GATE_LEVEL) {
+      if (!state.pendingLevelUp) state.pendingLevelUp = next;
+      return;
+    }
+    applyLevelUp(state, next);
   }
 }
 
@@ -619,20 +672,9 @@ export const useGameStore = create<GameState>()(
               battle: null,
               pendingLevelUp: null,
             };
-            next.character.level = target;
             const boss = bossForLevel(target);
             applyReward(next, { gold: boss.rewards.gold, items: boss.rewards.items });
-
-            // Class unlock at the milestone level (brief Section 6).
-            if (target >= CLASS_UNLOCK_LEVEL && !next.character.classId) {
-              const a = assignClass(next.character.statXp);
-              if (a.ambiguous) {
-                next.pendingClassChoice = buildClassChoice(next.character.statXp);
-              } else {
-                next.character.classId = a.classId;
-                if (!next.codex.includes(a.classId)) next.codex.push(a.classId);
-              }
-            }
+            applyLevelUp(next, target);
             checkLevelUp(next);
             return next;
           }
@@ -870,7 +912,7 @@ export const useGameStore = create<GameState>()(
             run.encounter,
             def,
             choiceIndex,
-            s.character.statXp,
+            s.character.statLevels,
             gearBonuses(s).statBonuses,
           );
           const inv = s.settings.invincible;
@@ -1032,7 +1074,7 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 6,
+      version: 7,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -1043,6 +1085,8 @@ export const useGameStore = create<GameState>()(
       //     kind from the old metric; lastWeekKey/pendingReport/customChallenges fall back
       //     to initializer defaults on merge.
       // (developer `settings` added later — a new top-level field, also defaulted on merge.)
+      // v7: stats rework — derive `statLevels` from the existing statXp ledger (old sqrt curve,
+      //     so veterans keep their power) and snapshot `statXpAtLastLevel` to current statXp.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {
@@ -1063,7 +1107,14 @@ export const useGameStore = create<GameState>()(
           if (def.kind) return c;
           return { ...c, def: { ...def, kind: def.metric ?? 'count' } as ChallengeDef };
         });
-        return { ...p, habits, materials, challenges, battle: null, dungeon: null } as GameState;
+        const character = p.character
+          ? {
+              ...p.character,
+              statLevels: p.character.statLevels ?? statLevelsFromXp(p.character.statXp ?? emptyStatXP()),
+              statXpAtLastLevel: p.character.statXpAtLastLevel ?? { ...(p.character.statXp ?? emptyStatXP()) },
+            }
+          : p.character;
+        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null } as GameState;
       },
     },
   ),

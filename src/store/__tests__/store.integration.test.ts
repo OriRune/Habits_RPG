@@ -61,15 +61,27 @@ describe('completeHabit', () => {
     expect(get().character.statXp.EN).toBe(10);
   });
 
-  it('queues a Level-Up Trial once XP crosses the level-2 threshold', () => {
-    // 5 epic habits = 250 XP > 100 needed for level 2.
+  it('auto-levels (no trial) and grants stat points crossing the level-2 threshold', () => {
+    // 5 epic habits = 250 XP > 100 needed for level 2 (< 383 for level 3).
     for (let i = 0; i < 5; i++) {
       get().addHabit({ name: `H${i}`, stat: 'ST', type: 'binary', frequency: 'daily', difficulty: 'epic' });
     }
     for (const h of get().habits) get().completeHabit(h.id);
 
-    expect(get().character.level).toBe(1); // not auto-leveled
-    expect(get().pendingLevelUp).toBe(2); // boss queued
+    expect(get().character.level).toBe(2); // auto-leveled (below the boss gate)
+    expect(get().pendingLevelUp).toBeNull(); // no trial needed yet
+    expect(get().character.statLevels.ST).toBeGreaterThan(1); // points landed on the trained stat
+  });
+
+  it('queues a Level-Up Trial when reaching the boss-gate level (5)', () => {
+    // ~1800 XP > 1703 cumulative for level 5; auto-levels 2→4 then gates at 5.
+    for (let i = 0; i < 36; i++) {
+      get().addHabit({ name: `H${i}`, stat: 'KN', type: 'binary', frequency: 'daily', difficulty: 'epic' });
+    }
+    for (const h of get().habits) get().completeHabit(h.id);
+
+    expect(get().character.level).toBe(4); // auto up to 4
+    expect(get().pendingLevelUp).toBe(5); // trial required to reach 5
   });
 });
 

@@ -107,7 +107,7 @@ export function chooseEncounter(
   state: EncounterRunState,
   def: EncounterDef,
   choiceIndex: number,
-  statXp: Record<StatId, number>,
+  statLevels: Record<StatId, number>,
   bonuses: Partial<Record<StatId, number>> = {},
   rng: RNG = Math.random,
 ): { state: EncounterRunState; step: EncounterStep } {
@@ -128,7 +128,7 @@ export function chooseEncounter(
   let text = choice.successText ?? null;
 
   if (choice.stat) {
-    const power = statPower(statXp, [choice.stat]) + (bonuses[choice.stat] ?? 0);
+    const power = statPower(statLevels, [choice.stat]) + (bonuses[choice.stat] ?? 0);
     const success = rng() < checkChance(power, choice.difficulty ?? 12);
     outcome = success ? 'success' : 'fail';
     nextId = (success ? choice.goSuccess : choice.goFail) ?? state.nodeId;

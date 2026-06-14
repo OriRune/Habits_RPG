@@ -1,15 +1,17 @@
 import { getStat, type StatId } from '@/engine/stats';
+import { STAT_CAP } from '@/engine/progression';
 
 interface StatBarProps {
   stat: StatId;
+  /** The stat's current value (1–STAT_CAP), granted on level-up. */
+  level: number;
+  /** Lifetime XP invested in this stat — steers where future level-up points go. */
   xp: number;
-  /** Max XP across stats, used to scale the bar fill. */
-  maxXp: number;
 }
 
-export function StatBar({ stat, xp, maxXp }: StatBarProps) {
+export function StatBar({ stat, level, xp }: StatBarProps) {
   const meta = getStat(stat);
-  const pct = maxXp > 0 ? Math.max(4, Math.round((xp / maxXp) * 100)) : 4;
+  const pct = Math.max(4, Math.round((level / STAT_CAP) * 100));
   return (
     <div className="flex items-center gap-3">
       <div className="w-10 shrink-0 font-display text-xs font-semibold text-ink-muted">{meta.short}</div>
@@ -22,7 +24,10 @@ export function StatBar({ stat, xp, maxXp }: StatBarProps) {
           }}
         />
       </div>
-      <div className="w-12 shrink-0 text-right text-xs font-semibold tabular-nums text-ink">{xp}</div>
+      <div className="w-[4.5rem] shrink-0 text-right tabular-nums text-ink" title={`${xp} XP invested`}>
+        <span className="text-xs font-semibold">Lv {level}</span>
+        <span className="ml-1 text-[10px] text-ink-light">{xp}xp</span>
+      </div>
     </div>
   );
 }

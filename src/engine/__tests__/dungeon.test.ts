@@ -7,16 +7,16 @@ import { type RNG } from '../combat';
 const fixed = (v: number): RNG => () => v;
 
 describe('statPoints / statPower', () => {
-  it('tapers XP via sqrt', () => {
+  it('tapers XP via sqrt (combat-stat mitigation curve)', () => {
     expect(statPoints(0)).toBe(0);
     expect(statPoints(100)).toBe(10);
     expect(statPoints(400)).toBe(20);
   });
-  it('sums favored stats', () => {
-    const xp = emptyStatXP();
-    xp.DX = 400; // 20
-    xp.AG = 100; // 10
-    expect(statPower(xp, ['DX', 'AG'])).toBe(30);
+  it('sums favored stat levels', () => {
+    const lv = emptyStatXP();
+    lv.DX = 20;
+    lv.AG = 10;
+    expect(statPower(lv, ['DX', 'AG'])).toBe(30);
   });
 });
 

@@ -46,14 +46,15 @@ export function emptyStatXP(): Record<StatId, number> {
 }
 
 /**
- * Derived "points" for a stat from its XP. Effort (XP) tapers via sqrt so combat and
- * dungeon checks scale sub-linearly. Shared by combat derivation and dungeon rooms.
+ * Sqrt taper of XP. Retained only for the combat-trained Defense/Ward mitigations
+ * (engine/combatStats.ts), which still progress on their own XP. Habit stats now use the
+ * level-based values in engine/progression.ts, not this.
  */
 export function statPoints(xp: number): number {
   return Math.floor(Math.sqrt(Math.max(0, xp)));
 }
 
-/** Combined favored-stat power for a stat-check (sum of the favored stats' points). */
-export function statPower(statXp: Record<StatId, number>, stats: StatId[]): number {
-  return stats.reduce((sum, s) => sum + statPoints(statXp[s]), 0);
+/** Combined favored-stat power for a stat-check — sum of the favored stats' levels. */
+export function statPower(statLevels: Record<StatId, number>, stats: StatId[]): number {
+  return stats.reduce((sum, s) => sum + statLevels[s], 0);
 }

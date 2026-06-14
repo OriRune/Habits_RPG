@@ -5,9 +5,9 @@ import { type RNG } from '../combat';
 
 const fixed = (v: number): RNG => () => v;
 const strong = (...stats: Array<keyof ReturnType<typeof emptyStatXP>>) => {
-  const xp = emptyStatXP();
-  for (const s of stats) xp[s] = 900; // 30 points
-  return xp;
+  const lv = emptyStatXP();
+  for (const s of stats) lv[s] = 30; // high stat level — passes any check
+  return lv;
 };
 
 describe('checkChance', () => {
