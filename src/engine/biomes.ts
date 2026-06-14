@@ -38,7 +38,7 @@ export function biomeForDepth(depth: number): BiomeDef {
 
 /** The biome's boss scaled for the run's depth + player level (mirrors enemyFor). */
 export function bossFor(biome: BiomeDef, depth: number, level: number): BossDef {
-  const scale = 1 + (depth - 1) * 0.16 + (level - 1) * 0.12;
+  const scale = 1 + (depth - 1) * 0.1 + (level - 1) * 0.06;
   const base = biome.boss;
   const phases = (base.phases ?? []).map((p) => ({
     ...p,
