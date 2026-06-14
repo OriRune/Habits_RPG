@@ -1,6 +1,21 @@
 // Level-Up Trial bosses (design brief Sections 4 & 7).
 import type { StatId } from './stats';
 
+/** One stage of a multi-phase fight. When a boss has phases, defeating one HP bar
+ *  advances to the next (new HP/stats/mechanics) instead of ending the battle. */
+export interface BossPhase {
+  hp: number;
+  attack: number;
+  defense: number;
+  ward?: number;
+  attackSchool?: 'physical' | 'magic';
+  weakTo: StatId[];
+  /** Stats the foe resists — actions powered by these deal reduced damage. */
+  resistTo?: StatId[];
+  /** Line shown when the fight enters this phase (omit for the opening phase). */
+  transitionMsg?: string;
+}
+
 export interface BossDef {
   id: string;
   name: string;
@@ -15,6 +30,10 @@ export interface BossDef {
   attackSchool?: 'physical' | 'magic';
   /** Stats the boss is weak to — actions powered by these deal bonus damage. */
   weakTo: StatId[];
+  /** Stats the boss resists — actions powered by these deal reduced damage. */
+  resistTo?: StatId[];
+  /** Optional multi-phase script. If set (and non-empty), overrides baseHp/attack/etc. */
+  phases?: BossPhase[];
   rewards: { gold: number; items: string[] };
 }
 

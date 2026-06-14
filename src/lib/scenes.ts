@@ -17,7 +17,14 @@ const SCENES: Record<string, SceneLook> = {
   'room:survival': { glyph: '🔥', color: '#5e8a2e', caption: 'Harsh conditions' },
   'room:treasure': { glyph: '💰', color: '#c9a227', caption: 'A glittering hoard' },
   'room:rest': { glyph: '🏕️', color: '#2e8a5e', caption: 'A quiet alcove' },
+  'room:boss': { glyph: '☠️', color: '#8a2f6a', caption: 'A boss bars the way' },
+  'room:encounter': { glyph: '📜', color: '#7a5a2e', caption: 'A choice to make' },
   'dungeon:entrance': { glyph: '🚪', color: '#4a3320', caption: 'The dungeon mouth' },
+  'dungeon:checkpoint': { glyph: '🏕️', color: '#2e8a5e', caption: 'A safe respite' },
+  // Biomes (regions)
+  'biome:catacombs': { glyph: '💀', color: '#4a3a55', caption: 'The Catacombs' },
+  'biome:ruins': { glyph: '🌿', color: '#2f5a3a', caption: 'Overgrown Ruins' },
+  'biome:frozen': { glyph: '❄️', color: '#33586b', caption: 'Frozen Caverns' },
   // Outcomes
   'outcome:success': { glyph: '✨', color: '#c9a227', caption: 'Success!' },
   'outcome:partial': { glyph: '😬', color: '#b8860b', caption: 'A near miss' },

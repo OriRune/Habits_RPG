@@ -42,12 +42,19 @@ import {
 } from '@/engine/challenges';
 import {
   type DungeonRoom,
-  type RoomResolution,
-  generateDungeon,
-  resolveStatRoom,
+  generateFloor,
+  resolveTreasure,
   mergeReward,
+  scaleReward,
   DUNGEON_ENERGY_COST,
 } from '@/engine/dungeon';
+import { biomeForDepth, getBiome, bossFor } from '@/engine/biomes';
+import {
+  type EncounterRunState,
+  getEncounter,
+  startEncounter,
+  chooseEncounter,
+} from '@/engine/encounters';
 import { enemyFor } from '@/engine/enemies';
 import { type Mood, computeMood } from '@/engine/mood';
 
@@ -80,25 +87,41 @@ export interface PendingClassChoice {
   options: { primary: StatId; secondary: StatId; classId: string }[];
 }
 
-/** An in-progress Dungeon Expedition (brief §7.2). Persisted so a run resumes on reload. */
+/** An in-progress Dungeon Expedition (brief §7.2) — an endless descent through floors.
+ *  Persisted so a run resumes on reload. */
 export interface DungeonRun {
+  /** Current floor number (1-based); drives biome + difficulty scaling. */
+  depth: number;
+  biomeKey: string;
+  /** The current floor's rooms. */
   rooms: DungeonRoom[];
   index: number;
   hp: number;
   maxHp: number;
-  /** Mana, persisted across rooms (partial regen each room, full at Rest). */
+  /** Mana + Stamina, persisted across rooms; restored to full at each checkpoint. */
   mp: number;
   maxMp: number;
-  /** Loot accumulated so far; applied on collect. */
-  reward: Reward;
-  /** Result of the most recent stat/rest room, shown before advancing. */
-  lastResult: RoomResolution | null;
-  /** Active combat for a combat room (reuses the combat engine). */
+  sta: number;
+  maxSta: number;
+  /** Loot locked in at the last checkpoint — safe even if you fall. */
+  bankedReward: Reward;
+  /** Loot gathered on the current floor — partly forfeit if you fall mid-floor. */
+  floorReward: Reward;
+  /** Active branching text encounter (encounter rooms). */
+  encounter: EncounterRunState | null;
+  /** Loot revealed in a treasure room, shown before continuing. */
+  roomLoot: Reward | null;
+  /** Active combat for a combat/boss room (reuses the combat engine). */
   battle: BattleState | null;
+  /** True between floors: the player chooses to Bank & Leave or Descend Deeper. */
+  atCheckpoint: boolean;
   status: 'active' | 'ended';
-  /** True when the run reached the end alive (vs. ended by defeat). */
+  /** True when the run ended by banking (vs. ended by defeat). */
   cleared: boolean;
 }
+
+/** Share of the current floor's loot kept when you fall mid-floor (the rest is forfeit). */
+const FLOOR_LOSS_KEEP = 0.25;
 
 export interface GameState {
   habits: Habit[];
@@ -162,9 +185,11 @@ export interface GameState {
   unequipGear: (slot: GearSlot) => void;
 
   startDungeon: () => void;
-  dungeonResolveRoom: () => void;
+  dungeonEncounterChoose: (choiceIndex: number) => void;
   dungeonBattleAction: (action: CombatAction) => void;
   dungeonAdvance: () => void;
+  dungeonBank: () => void;
+  dungeonDescend: () => void;
   collectDungeon: () => void;
 
   resetGame: () => void;
@@ -268,19 +293,48 @@ function fighterFor(state: GameState, buffs: Partial<Record<StatId, number>> = {
   return { c, weapon: getWeapon(state.equippedWeapon) };
 }
 
-/** Set up the run's current room — spawns a seeded combat for combat rooms. */
+/** Set up the run's current room — seeds combat/boss fights and branching encounters. */
 function enterRoom(run: DungeonRun, state: GameState): void {
   const room = run.rooms[run.index];
-  run.lastResult = null;
+  run.battle = null;
+  run.encounter = null;
+  run.roomLoot = null;
+  const biome = getBiome(run.biomeKey);
   if (room.type === 'combat') {
-    const fighter = fighterFor(state);
-    run.battle = createBattle(fighter, enemyFor(run.index, state.character.level), {
+    run.battle = createBattle(fighterFor(state), enemyFor(run.depth, state.character.level, biome.enemies), {
       startingHp: run.hp,
       startingMp: run.mp,
+      startingSta: run.sta,
     });
-  } else {
-    run.battle = null;
+  } else if (room.type === 'boss') {
+    run.battle = createBattle(fighterFor(state), bossFor(biome, run.depth, state.character.level), {
+      startingHp: run.hp,
+      startingMp: run.mp,
+      startingSta: run.sta,
+    });
+  } else if (room.type === 'encounter') {
+    const def = getEncounter(room.key);
+    run.encounter = def ? startEncounter(def) : null;
+  } else if (room.type === 'treasure') {
+    const loot = resolveTreasure(run.depth);
+    run.roomLoot = loot;
+    run.floorReward = mergeReward(run.floorReward, loot);
   }
+}
+
+/** Finalize an ended run: bank the survivable share of floor loot (keepFactor 1 = all). */
+function finishRun(run: DungeonRun, cleared: boolean, hp: number, keepFactor: number): DungeonRun {
+  const kept = keepFactor >= 1 ? run.floorReward : scaleReward(run.floorReward, keepFactor);
+  return {
+    ...run,
+    hp,
+    status: 'ended',
+    cleared,
+    bankedReward: mergeReward(run.bankedReward, kept),
+    floorReward: {},
+    battle: null,
+    encounter: null,
+  };
 }
 
 /** After XP changes, queue a Level-Up Trial if the player is XP-eligible. */
@@ -624,18 +678,25 @@ export const useGameStore = create<GameState>()(
       startDungeon: () =>
         set((s) => {
           if (s.dungeon || s.character.energy < DUNGEON_ENERGY_COST) return s;
-          const rooms = generateDungeon();
           const { c } = fighterFor(s);
+          const biome = biomeForDepth(1);
           const run: DungeonRun = {
-            rooms,
+            depth: 1,
+            biomeKey: biome.key,
+            rooms: generateFloor(1, biome),
             index: 0,
             hp: c.maxHp,
             maxHp: c.maxHp,
             mp: c.maxMp,
             maxMp: c.maxMp,
-            reward: {},
-            lastResult: null,
+            sta: c.maxSta,
+            maxSta: c.maxSta,
+            bankedReward: {},
+            floorReward: {},
+            encounter: null,
+            roomLoot: null,
             battle: null,
+            atCheckpoint: false,
             status: 'active',
             cleared: false,
           };
@@ -646,29 +707,32 @@ export const useGameStore = create<GameState>()(
           };
         }),
 
-      dungeonResolveRoom: () =>
+      dungeonEncounterChoose: (choiceIndex) =>
         set((s) => {
           const run = s.dungeon;
-          if (!run || run.status !== 'active' || run.lastResult) return s;
+          if (!run || run.status !== 'active' || !run.encounter || run.encounter.done) return s;
           const room = run.rooms[run.index];
-          if (room.type === 'combat') return s; // resolved via combat, not a stat check
+          if (room.type !== 'encounter') return s;
+          const def = getEncounter(room.key);
+          if (!def) return s;
 
-          const res = resolveStatRoom(room, s.character.statXp, run.maxHp, Math.random, gearBonuses(s).statBonuses);
-          const hp = Math.max(0, Math.min(run.maxHp, run.hp + res.hpDelta));
-          // Rest rooms also restore Mana to full.
-          const mp = room.type === 'rest' ? run.maxMp : run.mp;
-          const next: DungeonRun = {
-            ...run,
-            hp,
-            mp,
-            reward: mergeReward(run.reward, res.reward),
-            lastResult: res,
-          };
+          const { state: encState, step } = chooseEncounter(
+            run.encounter,
+            def,
+            choiceIndex,
+            s.character.statXp,
+            gearBonuses(s).statBonuses,
+          );
+          const hp = Math.max(0, Math.min(run.maxHp, run.hp + step.hpDelta));
+          const mp = Math.max(0, Math.min(run.maxMp, run.mp + step.mpDelta));
+          const sta = Math.max(0, Math.min(run.maxSta, run.sta + step.staDelta));
+          const floorReward = mergeReward(run.floorReward, step.reward);
+
           if (hp <= 0) {
-            next.status = 'ended';
-            next.cleared = false;
+            // Fell during the encounter — forfeit most of the floor's loot.
+            return { dungeon: finishRun({ ...run, encounter: encState, mp, sta, floorReward }, false, 0, FLOOR_LOSS_KEEP) };
           }
-          return { dungeon: next };
+          return { dungeon: { ...run, encounter: encState, hp, mp, sta, floorReward } };
         }),
 
       dungeonBattleAction: (action) =>
@@ -687,47 +751,86 @@ export const useGameStore = create<GameState>()(
       dungeonAdvance: () =>
         set((s) => {
           const run = s.dungeon;
-          if (!run || run.status !== 'active') return s;
+          if (!run || run.status !== 'active' || run.atCheckpoint) return s;
           const room = run.rooms[run.index];
 
           let hp = run.hp;
           let mp = run.mp;
+          let sta = run.sta;
           let combatStats: CombatStats | null = null;
 
-          if (room.type === 'combat') {
+          if (room.type === 'combat' || room.type === 'boss') {
             const b = run.battle;
             if (!b || b.status === 'active') return s; // can't leave mid-fight
             if (b.status === 'fled') {
-              // Escaped: a safe retreat, keep the loot gathered so far.
-              return { dungeon: { ...run, status: 'ended', cleared: false, hp: b.playerHp } };
+              // Escaped alive — a clean retreat keeps everything gathered so far.
+              return { dungeon: finishRun(run, false, b.playerHp, 1) };
             }
             if (b.status === 'lost') {
-              return { dungeon: { ...run, status: 'ended', cleared: false, hp: 0 } };
+              return { dungeon: finishRun(run, false, 0, FLOOR_LOSS_KEEP) };
             }
-            // Won: carry HP/MP forward and train a combat stat (caster → Ward, else Defense).
+            // Won: carry HP/MP/Sta forward and train a combat stat (caster → Ward, else Defense).
             hp = b.playerHp;
             mp = b.playerMp;
+            sta = b.playerSta;
             const xp = combatXpForWin(b.bossMaxHp);
             combatStats =
               b.attackSchool === 'magic'
                 ? { ...s.combatStats, wardXp: s.combatStats.wardXp + xp }
                 : { ...s.combatStats, defenseXp: s.combatStats.defenseXp + xp };
-          } else if (!run.lastResult) {
-            return s; // stat room not yet resolved
+          } else if (room.type === 'encounter') {
+            if (!run.encounter || !run.encounter.done) return s; // encounter not finished
           }
+          // treasure rooms loot on entry (enterRoom) — advancing just moves on.
 
-          // Partial mana regen when pressing onward.
+          // Partial mana regen when pressing onward (full restore happens at checkpoints).
           mp = Math.min(run.maxMp, mp + Math.round(run.maxMp * 0.15));
 
           const nextIndex = run.index + 1;
-          const next: DungeonRun = { ...run, index: nextIndex, hp, mp, battle: null, lastResult: null };
+          const next: DungeonRun = { ...run, index: nextIndex, hp, mp, sta, battle: null, encounter: null, roomLoot: null };
+
           if (nextIndex >= run.rooms.length) {
-            next.status = 'ended';
-            next.cleared = true;
+            // Floor cleared → checkpoint: lock in loot and restore HP/MP/Stamina fully.
+            next.atCheckpoint = true;
+            next.bankedReward = mergeReward(next.bankedReward, next.floorReward);
+            next.floorReward = {};
+            next.hp = next.maxHp;
+            next.mp = next.maxMp;
+            next.sta = next.maxSta;
           } else {
             enterRoom(next, combatStats ? { ...s, combatStats } : s);
           }
           return combatStats ? { dungeon: next, combatStats } : { dungeon: next };
+        }),
+
+      dungeonBank: () =>
+        set((s) => {
+          const run = s.dungeon;
+          if (!run || run.status !== 'active' || !run.atCheckpoint) return s;
+          // Floor loot was locked into bankedReward at the checkpoint; just end safely.
+          return { dungeon: { ...run, status: 'ended', cleared: true } };
+        }),
+
+      dungeonDescend: () =>
+        set((s) => {
+          const run = s.dungeon;
+          if (!run || run.status !== 'active' || !run.atCheckpoint) return s;
+          const depth = run.depth + 1;
+          const biome = biomeForDepth(depth);
+          const next: DungeonRun = {
+            ...run,
+            depth,
+            biomeKey: biome.key,
+            rooms: generateFloor(depth, biome),
+            index: 0,
+            atCheckpoint: false,
+            floorReward: {},
+            roomLoot: null,
+            battle: null,
+            encounter: null,
+          };
+          enterRoom(next, s);
+          return { dungeon: next };
         }),
 
       collectDungeon: () =>
@@ -739,9 +842,11 @@ export const useGameStore = create<GameState>()(
             character: { ...s.character, statXp: { ...s.character.statXp } },
             inventory: { ...s.inventory },
             materials: { ...s.materials },
+            ownedWeapons: [...s.ownedWeapons],
+            ownedGear: [...s.ownedGear],
             dungeon: null,
           };
-          applyReward(next, run.reward); // gold/materials/items only — dungeons grant no XP
+          applyReward(next, run.bankedReward); // gold/materials/items/weapons/gear — no XP
           return next;
         }),
 
@@ -768,11 +873,13 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 4,
+      version: 5,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
       //     materials survive; new equipment fields fall back to defaults on merge.
+      // v5: dungeon reshaped into the endless-descent model — clear any in-progress run
+      //     (dungeon: null below); all other save data is preserved.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {

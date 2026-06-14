@@ -1,13 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { emptyStatXP, statPoints, statPower } from '../stats';
-import {
-  generateDungeon,
-  resolveStatRoom,
-  restHeal,
-  mergeReward,
-  ROOM_FAVORED,
-  DUNGEON_ENERGY_COST,
-} from '../dungeon';
+import { generateFloor, resolveTreasure, mergeReward, scaleReward, DUNGEON_ENERGY_COST } from '../dungeon';
+import { biomeForDepth } from '../biomes';
 import { type RNG } from '../combat';
 
 const fixed = (v: number): RNG => () => v;
@@ -26,75 +20,70 @@ describe('statPoints / statPower', () => {
   });
 });
 
-describe('ROOM_FAVORED', () => {
-  it('matches the brief table', () => {
-    expect(ROOM_FAVORED.trap).toEqual(['DX', 'AG']);
-    expect(ROOM_FAVORED.combat).toEqual(['ST', 'HP', 'EN']);
-    expect(ROOM_FAVORED.puzzle).toEqual(['KN', 'WI']);
-    expect(ROOM_FAVORED.treasure).toEqual(['DX', 'KN']);
-  });
-});
-
-describe('generateDungeon', () => {
-  it('builds a 4-room delve with combat, rest, and treasure', () => {
-    const rooms = generateDungeon(fixed(0));
-    expect(rooms).toHaveLength(4);
-    const types = rooms.map((r) => r.type);
-    expect(types[0]).toBe('trap'); // first stat room, rng=0 -> pool[0]
-    expect(types).toContain('combat');
-    expect(types).toContain('rest');
-    expect(types[3]).toBe('treasure');
-  });
-
+describe('generateFloor', () => {
   it('costs 3 energy per the brief', () => {
     expect(DUNGEON_ENERGY_COST).toBe(3);
   });
+
+  it('builds a normal floor of combat + encounter (+ treasure on a roll)', () => {
+    const biome = biomeForDepth(1);
+    const rooms = generateFloor(1, biome, fixed(0)); // rng 0 → treasure appended
+    const types = rooms.map((r) => r.type);
+    expect(types).toContain('combat');
+    expect(types).toContain('encounter');
+    expect(types).toContain('treasure');
+  });
+
+  it('omits treasure on a high roll', () => {
+    const biome = biomeForDepth(1);
+    const rooms = generateFloor(1, biome, fixed(0.99));
+    expect(rooms.map((r) => r.type)).not.toContain('treasure');
+    expect(rooms).toHaveLength(2);
+  });
+
+  it('every 5th depth is a boss floor (lead-in encounter + boss)', () => {
+    const biome = biomeForDepth(5);
+    const rooms = generateFloor(5, biome, fixed(0.5));
+    expect(rooms.map((r) => r.type)).toEqual(['encounter', 'boss']);
+  });
+
+  it('draws encounters from the biome pool', () => {
+    const biome = biomeForDepth(1); // catacombs
+    const rooms = generateFloor(1, biome, fixed(0));
+    const enc = rooms.find((r) => r.type === 'encounter') as { type: 'encounter'; key: string };
+    expect(biome.encounters).toContain(enc.key);
+  });
 });
 
-describe('resolveStatRoom', () => {
-  it('a strong character succeeds and earns loot, no HP loss', () => {
-    const xp = emptyStatXP();
-    xp.DX = 400; // 20
-    xp.AG = 400; // 20  -> power 40, well above trap threshold
-    const res = resolveStatRoom({ type: 'trap' }, xp, 100, fixed(0));
-    expect(res.outcome).toBe('success');
-    expect(res.hpDelta).toBe(0);
-    expect(res.reward.gold).toBeGreaterThan(0);
-    expect(Object.keys(res.reward.materials ?? {}).length).toBeGreaterThan(0);
-  });
-
-  it('a weak character fails and takes damage', () => {
-    const res = resolveStatRoom({ type: 'trap' }, emptyStatXP(), 100, fixed(0.99));
-    expect(res.outcome).toBe('fail');
-    expect(res.hpDelta).toBeLessThan(0);
-    expect(res.reward.gold ?? 0).toBe(0);
-  });
-
-  it('treasure rooms grant richer rewards including crystals', () => {
-    const xp = emptyStatXP();
-    xp.DX = 900; // 30
-    xp.KN = 900; // 30
-    const res = resolveStatRoom({ type: 'treasure' }, xp, 100, fixed(0));
-    expect(res.outcome).toBe('success');
-    expect(res.reward.gold).toBeGreaterThanOrEqual(80);
-    expect(res.reward.materials?.crystals).toBe(1);
-  });
-
-  it('rest rooms heal and never harm', () => {
-    const res = resolveStatRoom({ type: 'rest' }, emptyStatXP(), 100, fixed(0.99));
-    expect(res.outcome).toBe('success');
-    expect(res.hpDelta).toBe(restHeal(100));
-    expect(res.hpDelta).toBeGreaterThan(0);
+describe('resolveTreasure', () => {
+  it('scales gold with depth and always yields crystals', () => {
+    const shallow = resolveTreasure(1, fixed(0));
+    const deep = resolveTreasure(10, fixed(0));
+    expect(shallow.gold!).toBeGreaterThanOrEqual(70);
+    expect(deep.gold!).toBeGreaterThan(shallow.gold!);
+    expect(shallow.materials?.crystals).toBeGreaterThanOrEqual(1);
   });
 });
 
 describe('mergeReward', () => {
-  it('sums gold, materials, and items', () => {
-    const a = { gold: 50, materials: { iron: 1 }, items: ['healing_potion'] };
-    const b = { gold: 30, materials: { iron: 2, leather: 1 } };
+  it('sums gold, materials, items, weapons, and gear', () => {
+    const a = { gold: 50, materials: { iron_bar: 1 }, items: ['healing_potion'], weapons: ['iron_mace'] };
+    const b = { gold: 30, materials: { iron_bar: 2, leather: 1 }, gear: ['leather_vest'] };
     const merged = mergeReward(a, b);
     expect(merged.gold).toBe(80);
-    expect(merged.materials).toEqual({ iron: 3, leather: 1 });
+    expect(merged.materials).toEqual({ iron_bar: 3, leather: 1 });
     expect(merged.items).toEqual(['healing_potion']);
+    expect(merged.weapons).toEqual(['iron_mace']);
+    expect(merged.gear).toEqual(['leather_vest']);
+  });
+});
+
+describe('scaleReward', () => {
+  it('keeps a fraction of gold/materials and drops all relics', () => {
+    const kept = scaleReward({ gold: 100, materials: { iron_bar: 4, leather: 1 }, items: ['x'], weapons: ['y'] }, 0.25);
+    expect(kept.gold).toBe(25);
+    expect(kept.materials).toEqual({ iron_bar: 1 }); // floor(4*.25)=1, floor(1*.25)=0 dropped
+    expect(kept.items).toEqual([]);
+    expect(kept.weapons).toEqual([]);
   });
 });

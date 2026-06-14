@@ -3,18 +3,26 @@ import { useGameStore, type DungeonRun } from '../useGameStore';
 import { emptyStatXP } from '@/engine/stats';
 import { type BattleState } from '@/engine/combat';
 import { type DungeonRoom } from '@/engine/dungeon';
+import { getEncounter, startEncounter } from '@/engine/encounters';
 import { toISODate } from '@/engine/date';
 
 function makeRun(over: Partial<DungeonRun> & { rooms: DungeonRoom[] }): DungeonRun {
   return {
+    depth: 1,
+    biomeKey: 'catacombs',
     index: 0,
     hp: 100,
     maxHp: 100,
     mp: 30,
     maxMp: 30,
-    reward: {},
-    lastResult: null,
+    sta: 10,
+    maxSta: 10,
+    bankedReward: {},
+    floorReward: {},
+    encounter: null,
+    roomLoot: null,
     battle: null,
+    atCheckpoint: false,
     status: 'active',
     cleared: false,
     ...over,
@@ -78,6 +86,10 @@ describe('level-up trial resolution', () => {
       enemyWard: 0,
       attackSchool: 'physical' as const,
       weakTo: [],
+      resistTo: [],
+      phases: [],
+      phaseIndex: 0,
+      relief: 0,
       playerMaxHp: 60,
       playerHp: 40,
       playerMaxMp: 20,
@@ -178,46 +190,41 @@ describe('dungeon expeditions', () => {
     expect(get().dungeon).toBeNull();
   });
 
-  it('spends energy and starts a 4-room run', () => {
+  it('spends energy and starts a descent at depth 1', () => {
     useGameStore.setState({ character: { ...get().character, energy: 5 } });
     get().startDungeon();
     const run = get().dungeon!;
     expect(run).not.toBeNull();
     expect(get().character.energy).toBe(2); // 5 - 3
-    expect(run.rooms).toHaveLength(4);
+    expect(run.depth).toBe(1);
+    expect(run.rooms.length).toBeGreaterThan(0);
     expect(run.status).toBe('active');
   });
 
-  it('resolving a stat room records a result', () => {
-    useGameStore.setState({ dungeon: makeRun({ rooms: [{ type: 'survival' }, { type: 'rest' }] }) });
-    get().dungeonResolveRoom();
+  it('an encounter choice advances the encounter and may accrue floor loot', () => {
+    useGameStore.setState({
+      dungeon: makeRun({
+        rooms: [{ type: 'encounter', key: 'sealed_door' }],
+        encounter: startEncounter(getEncounter('sealed_door')!),
+      }),
+    });
+    get().dungeonEncounterChoose(0);
     const run = get().dungeon!;
-    expect(run.lastResult).not.toBeNull();
+    expect(run.encounter!.nodeId).not.toBe('door'); // moved off the opening node
     expect(run.hp).toBeLessThanOrEqual(run.maxHp);
   });
 
-  it('advancing a resolved stat room moves to the next room', () => {
-    useGameStore.setState({
-      dungeon: makeRun({
-        rooms: [{ type: 'survival' }, { type: 'rest' }],
-        lastResult: { outcome: 'success', hpDelta: 0, reward: {}, message: '' },
-      }),
-    });
-    get().dungeonAdvance();
-    expect(get().dungeon!.index).toBe(1);
-    expect(get().dungeon!.lastResult).toBeNull();
-  });
-
-  it('a won combat room carries remaining HP and trains a combat stat', () => {
+  it('a won combat room carries HP/Stamina forward and trains a combat stat', () => {
     get().resetGame();
     useGameStore.setState({
       dungeon: makeRun({
-        rooms: [{ type: 'combat' }, { type: 'rest' }],
+        rooms: [{ type: 'combat' }, { type: 'encounter', key: 'sealed_door' }],
         hp: 80,
         battle: {
           status: 'won',
           playerHp: 42,
           playerMp: 12,
+          playerSta: 5,
           bossMaxHp: 50,
           attackSchool: 'physical',
         } as BattleState,
@@ -227,44 +234,83 @@ describe('dungeon expeditions', () => {
     const run = get().dungeon!;
     expect(run.index).toBe(1);
     expect(run.hp).toBe(42);
+    expect(run.sta).toBe(5);
     expect(run.battle).toBeNull();
     expect(get().combatStats.defenseXp).toBeGreaterThan(0); // physical foe trains Defense
   });
 
-  it('fleeing a combat room ends the run as a safe retreat', () => {
+  it('clearing a floor reaches a checkpoint, banking loot and restoring resources', () => {
     useGameStore.setState({
       dungeon: makeRun({
         rooms: [{ type: 'combat' }],
+        hp: 30,
+        floorReward: { gold: 20 },
+        battle: {
+          status: 'won',
+          playerHp: 18,
+          playerMp: 4,
+          playerSta: 2,
+          bossMaxHp: 50,
+          attackSchool: 'physical',
+        } as BattleState,
+      }),
+    });
+    get().dungeonAdvance();
+    const run = get().dungeon!;
+    expect(run.atCheckpoint).toBe(true);
+    expect(run.status).toBe('active');
+    expect(run.bankedReward.gold).toBe(20); // floor loot locked in
+    expect(run.hp).toBe(run.maxHp); // fully restored
+  });
+
+  it('fleeing keeps all gathered loot; defeat forfeits most of the floor', () => {
+    useGameStore.setState({
+      dungeon: makeRun({
+        rooms: [{ type: 'combat' }],
+        floorReward: { gold: 100 },
         battle: { status: 'fled', playerHp: 25 } as BattleState,
       }),
     });
     get().dungeonAdvance();
     expect(get().dungeon!.status).toBe('ended');
     expect(get().dungeon!.cleared).toBe(false);
-  });
+    expect(get().dungeon!.bankedReward.gold).toBe(100); // clean escape keeps it all
 
-  it('a lost combat room ends the run', () => {
-    useGameStore.setState({
-      dungeon: makeRun({ rooms: [{ type: 'combat' }], battle: { status: 'lost' } as BattleState }),
-    });
-    get().dungeonAdvance();
-    expect(get().dungeon!.status).toBe('ended');
-    expect(get().dungeon!.cleared).toBe(false);
-  });
-
-  it('clearing the final room ends the run as cleared', () => {
     useGameStore.setState({
       dungeon: makeRun({
-        rooms: [{ type: 'treasure' }],
-        lastResult: { outcome: 'success', hpDelta: 0, reward: {}, message: '' },
+        rooms: [{ type: 'combat' }],
+        floorReward: { gold: 100 },
+        battle: { status: 'lost', playerHp: 0 } as BattleState,
       }),
     });
     get().dungeonAdvance();
     expect(get().dungeon!.status).toBe('ended');
+    expect(get().dungeon!.bankedReward.gold).toBe(25); // 25% kept on defeat
+  });
+
+  it('banking at a checkpoint ends the run as cleared', () => {
+    useGameStore.setState({
+      dungeon: makeRun({ rooms: [{ type: 'combat' }], atCheckpoint: true, bankedReward: { gold: 50 } }),
+    });
+    get().dungeonBank();
+    expect(get().dungeon!.status).toBe('ended');
     expect(get().dungeon!.cleared).toBe(true);
   });
 
-  it('collect grants gold + materials but no XP, and clears the run', () => {
+  it('descending from a checkpoint builds a deeper floor', () => {
+    useGameStore.setState({
+      dungeon: makeRun({ rooms: [{ type: 'combat' }], atCheckpoint: true, depth: 1 }),
+    });
+    get().dungeonDescend();
+    const run = get().dungeon!;
+    expect(run.depth).toBe(2);
+    expect(run.atCheckpoint).toBe(false);
+    expect(run.status).toBe('active');
+    expect(run.index).toBe(0);
+    expect(run.rooms.length).toBeGreaterThan(0);
+  });
+
+  it('collect grants banked gold + materials but no XP, and clears the run', () => {
     const xpBefore = { ...get().character.statXp };
     useGameStore.setState({
       character: { ...get().character, gold: 10 },
@@ -272,19 +318,19 @@ describe('dungeon expeditions', () => {
         rooms: [{ type: 'treasure' }],
         status: 'ended',
         cleared: true,
-        reward: { gold: 100, materials: { iron: 2, leather: 1 } },
+        bankedReward: { gold: 100, materials: { iron_bar: 2, leather: 1 } },
       }),
     });
     get().collectDungeon();
     expect(get().character.gold).toBe(110);
-    expect(get().materials).toEqual({ iron: 2, leather: 1 });
+    expect(get().materials).toEqual({ iron_bar: 2, leather: 1 });
     expect(get().character.statXp).toEqual(xpBefore); // dungeons grant no XP
     expect(get().character.level).toBe(1);
     expect(get().dungeon).toBeNull();
   });
 
   it('does not collect while a run is still active', () => {
-    useGameStore.setState({ dungeon: makeRun({ rooms: [{ type: 'rest' }] }) });
+    useGameStore.setState({ dungeon: makeRun({ rooms: [{ type: 'combat' }] }) });
     get().collectDungeon();
     expect(get().dungeon).not.toBeNull();
   });

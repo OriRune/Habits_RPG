@@ -2,7 +2,7 @@
 // Stats drive a weapon Attack, MP-gated Spells, an Endurance Stamina pool, and the new
 // combat-trained Defense/Ward mitigations. Pure; randomness is injected for testing.
 import { statPoints, type StatId } from './stats';
-import type { BossDef } from './bosses';
+import type { BossDef, BossPhase } from './bosses';
 import { getItem } from './items';
 import { getSpell, SCHOOL_STAT, type StatusKey } from './spells';
 import type { WeaponDef } from './weapons';
@@ -78,6 +78,12 @@ export interface BattleState {
   enemyWard: number;
   attackSchool: 'physical' | 'magic';
   weakTo: StatId[];
+  resistTo: StatId[];
+  /** Multi-phase script + current stage. Single-phase foes have one entry. */
+  phases: BossPhase[];
+  phaseIndex: number;
+  /** Anti-frustration HP relief, reapplied to each phase's HP. */
+  relief: number;
   playerMaxHp: number;
   playerHp: number;
   playerMaxMp: number;
@@ -97,9 +103,23 @@ const ANTI_FRUSTRATION_LOSS_THRESHOLD = 3;
 
 export interface CreateBattleOpts {
   lossesBefore?: number;
-  /** Carry a dungeon run's current HP/MP into the fight (defaults to full). */
+  /** Carry a dungeon run's current HP/MP/Stamina into the fight (defaults to full). */
   startingHp?: number;
   startingMp?: number;
+  startingSta?: number;
+}
+
+/** Load a phase's stats onto the battle (sets a fresh HP bar from its hp, with relief). */
+function applyPhase(s: BattleState, phase: BossPhase, relief: number): void {
+  const hp = Math.max(1, Math.round(phase.hp * (1 - relief)));
+  s.bossMaxHp = hp;
+  s.bossHp = hp;
+  s.bossAttack = phase.attack;
+  s.bossDefense = phase.defense;
+  s.enemyWard = phase.ward ?? 0;
+  s.attackSchool = phase.attackSchool ?? 'physical';
+  s.weakTo = phase.weakTo;
+  s.resistTo = phase.resistTo ?? [];
 }
 
 export function createBattle(fighter: Fighter, boss: BossDef, opts: CreateBattleOpts = {}): BattleState {
@@ -109,25 +129,42 @@ export function createBattle(fighter: Fighter, boss: BossDef, opts: CreateBattle
     lossesBefore >= ANTI_FRUSTRATION_LOSS_THRESHOLD
       ? Math.min(0.4, (lossesBefore - ANTI_FRUSTRATION_LOSS_THRESHOLD + 1) * 0.1)
       : 0;
-  const bossMaxHp = Math.round(boss.baseHp * (1 - relief));
+  const phases: BossPhase[] =
+    boss.phases && boss.phases.length > 0
+      ? boss.phases
+      : [
+          {
+            hp: boss.baseHp,
+            attack: boss.attack,
+            defense: boss.defense,
+            ward: boss.ward,
+            attackSchool: boss.attackSchool,
+            weakTo: boss.weakTo,
+            resistTo: boss.resistTo,
+          },
+        ];
   const log = [`${boss.name} appears!`];
   if (relief > 0) log.push(`The foe looks weakened (you've earned some relief).`);
-  return {
+  const s: BattleState = {
     bossId: boss.id,
     bossName: boss.name,
-    bossMaxHp,
-    bossHp: bossMaxHp,
-    bossAttack: boss.attack,
-    bossDefense: boss.defense,
-    enemyWard: boss.ward ?? 0,
-    attackSchool: boss.attackSchool ?? 'physical',
-    weakTo: boss.weakTo,
+    bossMaxHp: 0,
+    bossHp: 0,
+    bossAttack: 0,
+    bossDefense: 0,
+    enemyWard: 0,
+    attackSchool: 'physical',
+    weakTo: [],
+    resistTo: [],
+    phases,
+    phaseIndex: 0,
+    relief,
     playerMaxHp: c.maxHp,
     playerHp: opts.startingHp != null ? Math.min(opts.startingHp, c.maxHp) : c.maxHp,
     playerMaxMp: c.maxMp,
     playerMp: opts.startingMp != null ? Math.min(opts.startingMp, c.maxMp) : c.maxMp,
     playerMaxSta: c.maxSta,
-    playerSta: c.maxSta,
+    playerSta: opts.startingSta != null ? Math.min(opts.startingSta, c.maxSta) : c.maxSta,
     playerStatuses: [],
     enemyStatuses: [],
     defending: false,
@@ -136,6 +173,23 @@ export function createBattle(fighter: Fighter, boss: BossDef, opts: CreateBattle
     status: 'active',
     consumedItems: [],
   };
+  applyPhase(s, phases[0], relief);
+  return s;
+}
+
+/** Called when bossHp hits 0: advance to the next phase, or declare victory if final. */
+function resolveBossDown(s: BattleState): void {
+  if (s.phaseIndex < s.phases.length - 1) {
+    s.phaseIndex += 1;
+    const phase = s.phases[s.phaseIndex];
+    applyPhase(s, phase, s.relief);
+    s.enemyStatuses = []; // a new form sheds old afflictions
+    s.log.push(phase.transitionMsg ?? `${s.bossName} shifts into a new form!`);
+  } else {
+    s.bossHp = 0;
+    s.status = 'won';
+    s.log.push(`${s.bossName} is defeated! Victory!`);
+  }
 }
 
 function variance(base: number, rng: RNG): number {
@@ -174,14 +228,15 @@ export function playerAction(
       s.playerSta = Math.max(0, s.playerSta - weapon.staminaCost);
       const base = (weapon.attackStat === 'DX' ? c.rangedPower : c.meleePower) + weapon.bonus;
       const weak = state.weakTo.includes(weapon.attackStat);
+      const resist = state.resistTo.includes(weapon.attackStat);
       let dmg = variance(base, rng);
       if (weak) dmg *= 1.25;
+      if (resist) dmg *= 0.6;
       if (!full) dmg *= 0.5; // exhausted — weak swing
       const dealt = Math.max(1, Math.round(dmg) - s.bossDefense);
       s.bossHp -= dealt;
-      s.log.push(
-        `You attack with ${weapon.name} for ${dealt}${weak ? ' — weak to it!' : ''}${full ? '' : ' (exhausted)'}.`,
-      );
+      const tag = weak ? ' — weak to it!' : resist ? ' — resisted' : '';
+      s.log.push(`You attack with ${weapon.name} for ${dealt}${tag}${full ? '' : ' (exhausted)'}.`);
       break;
     }
     case 'spell': {
@@ -198,11 +253,14 @@ export function playerAction(
       if (spell.school === 'damage') {
         const base = spell.power + c.damageSpell * 1.2;
         const weak = state.weakTo.includes(schoolStat) || state.weakTo.includes('WI');
+        const resist = state.resistTo.includes(schoolStat) || state.resistTo.includes('WI');
         let dmg = variance(base, rng);
         if (weak) dmg *= 1.25;
+        if (resist) dmg *= 0.6;
         const dealt = Math.max(1, Math.round(dmg) - s.enemyWard);
         s.bossHp -= dealt;
-        s.log.push(`${spell.name} sears the foe for ${dealt}${weak ? ' — super effective!' : ''}.`);
+        const tag = weak ? ' — super effective!' : resist ? ' — resisted' : '';
+        s.log.push(`${spell.name} sears the foe for ${dealt}${tag}.`);
         if (spell.status) applyStatus(s.enemyStatuses, spell.status);
       } else if (spell.school === 'support') {
         if (spell.power > 0) {
@@ -264,10 +322,9 @@ export function playerAction(
   }
 
   if (s.bossHp <= 0) {
-    s.bossHp = 0;
-    s.status = 'won';
-    s.log.push(`${s.bossName} is defeated! Victory!`);
-    return s;
+    resolveBossDown(s);
+    if (s.status === 'won') return s;
+    // A phase fell but the foe fights on in a new form — it still gets its turn.
   }
 
   enemyTurn(s, c, rng);
@@ -322,11 +379,7 @@ function tickStatuses(s: BattleState): void {
     const d = Math.round(enemyBurn.magnitude);
     s.bossHp -= d;
     s.log.push(`The foe burns for ${d}.`);
-    if (s.bossHp <= 0) {
-      s.bossHp = 0;
-      s.status = 'won';
-      s.log.push(`${s.bossName} is defeated! Victory!`);
-    }
+    if (s.bossHp <= 0) resolveBossDown(s);
   }
   const playerBurn = hasStatus(s.playerStatuses, 'burn');
   if (playerBurn && s.status === 'active') {
