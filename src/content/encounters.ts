@@ -10,7 +10,7 @@
 //    ends at that node. The run reaches a checkpoint after the floor's last room.
 //  • A choice with a `stat` is a check: on success it goes to `goSuccess`, on fail to
 //    `goFail`; `successText`/`failText` are the result lines. A choice without a stat
-//    just goes to `go`. `difficulty` ~10–14 (higher = harder). Tune freely.
+//    just goes to `go`. `difficulty` ~3–8 (higher = harder), measured in stat levels. Tune freely.
 //  • Loot/heals: `reward` (always) / `rewardOnSuccess`; `hpOnFail` (damage on a miss);
 //    `hpOnSuccess` / `staOnSuccess` / `mpOnSuccess` (restore on a hit). Material keys
 //    come from content/materials.ts.
@@ -31,7 +31,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Decipher the runes (Knowledge)',
             stat: 'KN',
-            difficulty: 12,
+            difficulty: 5,
             goSuccess: 'opened',
             goFail: 'locked',
             successText: 'The glyphs align and the bolts slide free.',
@@ -42,7 +42,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Wrench it open (Strength)',
             stat: 'ST',
-            difficulty: 14,
+            difficulty: 7,
             goSuccess: 'forced',
             goFail: 'locked',
             successText: 'Hinges scream and give way.',
@@ -59,7 +59,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Search for a hidden catch (Dexterity)',
             stat: 'DX',
-            difficulty: 12,
+            difficulty: 5,
             goSuccess: 'opened',
             goFail: 'giveup',
             successText: 'Your fingers find a recessed catch — click.',
@@ -88,7 +88,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Charm it (Charisma)',
             stat: 'CH',
-            difficulty: 12,
+            difficulty: 5,
             goSuccess: 'passed',
             goFail: 'angered',
             successText: 'Flattery softens the wraith; it waves you through.',
@@ -98,7 +98,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Reason with it (Wisdom)',
             stat: 'WI',
-            difficulty: 13,
+            difficulty: 6,
             goSuccess: 'passed',
             goFail: 'angered',
             successText: 'You name the old compact; bound by it, the gatekeeper yields.',
@@ -114,7 +114,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Slip past it (Agility)',
             stat: 'AG',
-            difficulty: 13,
+            difficulty: 6,
             goSuccess: 'passed',
             goFail: 'struck',
             successText: 'You dart through the gate before it can react.',
@@ -124,7 +124,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Force the gate (Strength)',
             stat: 'ST',
-            difficulty: 14,
+            difficulty: 7,
             goSuccess: 'forced',
             goFail: 'struck',
             successText: 'You batter the gate from its hinges.',
@@ -152,7 +152,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Power through the morass (Endurance)',
             stat: 'EN',
-            difficulty: 12,
+            difficulty: 5,
             goSuccess: 'climbed',
             goFail: 'sinking',
             successText: 'Lungs burning, you haul yourself free.',
@@ -163,7 +163,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Pick a careful path (Dexterity)',
             stat: 'DX',
-            difficulty: 13,
+            difficulty: 6,
             goSuccess: 'climbed',
             goFail: 'sinking',
             successText: 'You step from skull to skull and cross clean.',
@@ -180,7 +180,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Thrash free by main strength (Strength)',
             stat: 'ST',
-            difficulty: 12,
+            difficulty: 5,
             goSuccess: 'climbed',
             goFail: 'crawl',
             successText: 'You burst out in a shower of bone.',
@@ -191,7 +191,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Stay calm and let the bones settle (Wisdom)',
             stat: 'WI',
-            difficulty: 11,
+            difficulty: 4,
             goSuccess: 'climbed',
             goFail: 'crawl',
             successText: 'You still yourself and rise; the heap releases you.',
@@ -218,7 +218,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Sprint across (Agility)',
             stat: 'AG',
-            difficulty: 13,
+            difficulty: 6,
             goSuccess: 'across',
             goFail: 'falling',
             successText: 'You race the collapse and leap to safety.',
@@ -229,7 +229,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Cross carefully, plank by plank (Dexterity)',
             stat: 'DX',
-            difficulty: 12,
+            difficulty: 5,
             goSuccess: 'across',
             goFail: 'falling',
             successText: 'Sure-footed, you pick your way over.',
@@ -246,7 +246,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Haul yourself up (Strength)',
             stat: 'ST',
-            difficulty: 12,
+            difficulty: 5,
             goSuccess: 'across',
             goFail: 'drop',
             successText: 'Muscles screaming, you climb to safety.',
@@ -256,7 +256,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Swing to a ledge (Dexterity)',
             stat: 'DX',
-            difficulty: 13,
+            difficulty: 6,
             goSuccess: 'across',
             goFail: 'drop',
             successText: 'You swing and roll onto solid stone.',
@@ -282,7 +282,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Offer respect and parley (Charisma)',
             stat: 'CH',
-            difficulty: 12,
+            difficulty: 5,
             goSuccess: 'blessed',
             goFail: 'spurned',
             successText: "The dryad warms to you and shares the grove's gifts.",
@@ -293,7 +293,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: "Read the grove's lore (Knowledge)",
             stat: 'KN',
-            difficulty: 13,
+            difficulty: 6,
             goSuccess: 'blessed',
             goFail: 'spurned',
             successText: 'You speak the old names; the dryad bows and gifts you.',
@@ -310,7 +310,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Soothe it with a song (Wisdom)',
             stat: 'WI',
-            difficulty: 12,
+            difficulty: 5,
             goSuccess: 'blessed',
             goFail: 'lashed',
             successText: 'Your calm reaches it; the grove relents.',
@@ -320,7 +320,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Back away slowly (Agility)',
             stat: 'AG',
-            difficulty: 11,
+            difficulty: 4,
             goSuccess: 'retreat',
             goFail: 'lashed',
             successText: 'You slip out of the grove unharmed.',
@@ -348,7 +348,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Leap the gap (Strength)',
             stat: 'ST',
-            difficulty: 13,
+            difficulty: 6,
             goSuccess: 'crossed',
             goFail: 'slipped',
             successText: 'You clear the chasm and roll to a stop.',
@@ -359,7 +359,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Endure the cold and climb around (Endurance)',
             stat: 'EN',
-            difficulty: 12,
+            difficulty: 5,
             goSuccess: 'crossed',
             goFail: 'slipped',
             successText: 'Numb but unbroken, you work your way across.',
@@ -377,7 +377,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Find handholds and climb (Dexterity)',
             stat: 'DX',
-            difficulty: 12,
+            difficulty: 5,
             goSuccess: 'crossed',
             goFail: 'frostbit',
             successText: 'Inch by inch, you climb to safety.',
@@ -387,7 +387,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Will yourself through the pain (Wisdom)',
             stat: 'WI',
-            difficulty: 12,
+            difficulty: 5,
             goSuccess: 'crossed',
             goFail: 'frostbit',
             successText: 'You focus past the cold and pull through.',
@@ -413,7 +413,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Forage the hollow for supplies (Knowledge)',
             stat: 'KN',
-            difficulty: 12,
+            difficulty: 5,
             goSuccess: 'supplied',
             goFail: 'empty',
             successText: 'You find cached rations and herbs, still good.',
@@ -424,7 +424,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Pray at the shrine (Wisdom)',
             stat: 'WI',
-            difficulty: 12,
+            difficulty: 5,
             goSuccess: 'blessed',
             goFail: 'empty',
             successText: 'A faint warmth answers — the shrine restores you.',
@@ -441,7 +441,7 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
           {
             label: 'Rest a moment to gather strength (Endurance)',
             stat: 'EN',
-            difficulty: 11,
+            difficulty: 4,
             goSuccess: 'rested',
             goFail: 'weary',
             successText: 'A brief rest steadies you.',

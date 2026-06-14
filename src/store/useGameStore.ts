@@ -23,6 +23,7 @@ import {
   POINTS_PER_LEVEL,
   MAX_LEVEL,
   BOSS_GATE_LEVEL,
+  DUNGEON_UNLOCK_LEVEL,
 } from '@/engine/progression';
 import { assignClass, classFor, rankStats, CLASS_UNLOCK_LEVEL } from '@/engine/classes';
 import { bossForLevel } from '@/engine/bosses';
@@ -480,6 +481,33 @@ function applyLevelUp(state: GameState, toLevel: number): void {
 }
 
 /**
+ * Award habit stat XP (dungeon wins / passed checks) into the ledger, then reconcile levels.
+ * Returns just the fields a `set` patch needs. Safe to call mid-dungeon: auto-levels apply
+ * immediately and a queued trial is only flagged (taken after the run, since the trial uses
+ * `battle` while the dungeon uses `dungeon.battle`).
+ */
+function grantStatXp(
+  s: GameState,
+  gains: Partial<Record<StatId, number>>,
+): Pick<GameState, 'character' | 'pendingLevelUp' | 'pendingClassChoice' | 'codex'> {
+  const temp: GameState = {
+    ...s,
+    character: { ...s.character, statXp: { ...s.character.statXp } },
+    codex: [...s.codex],
+  };
+  for (const [stat, amt] of Object.entries(gains)) {
+    temp.character.statXp[stat as StatId] += amt ?? 0;
+  }
+  checkLevelUp(temp);
+  return {
+    character: temp.character,
+    pendingLevelUp: temp.pendingLevelUp,
+    pendingClassChoice: temp.pendingClassChoice,
+    codex: temp.codex,
+  };
+}
+
+/**
  * Reconcile committed level with XP. Levels below BOSS_GATE_LEVEL advance automatically;
  * reaching that level (or higher) queues a Level-Up Trial the player must win. No-op during a
  * live trial battle.
@@ -866,7 +894,8 @@ export const useGameStore = create<GameState>()(
       startDungeon: () =>
         set((s) => {
           const freeEnergy = s.settings.unlimitedEnergy;
-          if (s.dungeon || (!freeEnergy && s.character.energy < DUNGEON_ENERGY_COST)) return s;
+          if (s.dungeon || s.character.level < DUNGEON_UNLOCK_LEVEL) return s;
+          if (!freeEnergy && s.character.energy < DUNGEON_ENERGY_COST) return s;
           const { c } = fighterFor(s);
           const biome = biomeForDepth(1);
           const run: DungeonRun = {
@@ -908,6 +937,7 @@ export const useGameStore = create<GameState>()(
           const def = getEncounter(room.key);
           if (!def) return s;
 
+          const checkedStat = def.nodes[run.encounter.nodeId]?.choices?.[choiceIndex]?.stat;
           const { state: encState, step } = chooseEncounter(
             run.encounter,
             def,
@@ -921,11 +951,18 @@ export const useGameStore = create<GameState>()(
           const sta = inv ? run.maxSta : Math.max(0, Math.min(run.maxSta, run.sta + step.staDelta));
           const floorReward = mergeReward(run.floorReward, step.reward);
 
+          // Passing a stat check exercises that stat — award habit XP toward the character level.
+          const statXpPatch =
+            checkedStat && encState.lastOutcome === 'success' ? grantStatXp(s, { [checkedStat]: 10 }) : null;
+
           if (hp <= 0) {
             // Fell during the encounter — forfeit most of the floor's loot.
             return { dungeon: finishRun({ ...run, encounter: encState, mp, sta, floorReward }, false, 0, FLOOR_LOSS_KEEP) };
           }
-          return { dungeon: { ...run, encounter: encState, hp, mp, sta, floorReward } };
+          return {
+            dungeon: { ...run, encounter: encState, hp, mp, sta, floorReward },
+            ...(statXpPatch ?? {}),
+          };
         }),
 
       dungeonBattleAction: (action) =>
@@ -952,6 +989,7 @@ export const useGameStore = create<GameState>()(
           let mp = run.mp;
           let sta = run.sta;
           let combatStats: CombatStats | null = null;
+          let statXpPatch: ReturnType<typeof grantStatXp> | null = null;
 
           if (room.type === 'combat' || room.type === 'boss') {
             const b = run.battle;
@@ -972,6 +1010,12 @@ export const useGameStore = create<GameState>()(
               b.attackSchool === 'magic'
                 ? { ...s.combatStats, wardXp: s.combatStats.wardXp + xp }
                 : { ...s.combatStats, defenseXp: s.combatStats.defenseXp + xp };
+            // Also award habit stat XP toward the character level: the attack stat you fight with,
+            // plus HP for enduring the fight.
+            const winXp = 8 + Math.round(b.bossMaxHp / 10);
+            const atkStat = getWeapon(s.equippedWeapon).attackStat;
+            const toAtk = Math.round(winXp * 0.6);
+            statXpPatch = grantStatXp(s, { [atkStat]: toAtk, HP: winXp - toAtk });
           } else if (room.type === 'encounter') {
             if (!run.encounter || !run.encounter.done) return s; // encounter not finished
           }
@@ -992,9 +1036,18 @@ export const useGameStore = create<GameState>()(
             next.mp = next.maxMp;
             next.sta = next.maxSta;
           } else {
-            enterRoom(next, combatStats ? { ...s, combatStats } : s);
+            const advState: GameState = {
+              ...s,
+              ...(statXpPatch ?? {}),
+              ...(combatStats ? { combatStats } : {}),
+            };
+            enterRoom(next, advState);
           }
-          return combatStats ? { dungeon: next, combatStats } : { dungeon: next };
+          return {
+            dungeon: next,
+            ...(combatStats ? { combatStats } : {}),
+            ...(statXpPatch ?? {}),
+          };
         }),
 
       dungeonBank: () =>

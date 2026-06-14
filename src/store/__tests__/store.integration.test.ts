@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useGameStore, type DungeonRun } from '../useGameStore';
 import { emptyStatXP } from '@/engine/stats';
 import { type BattleState } from '@/engine/combat';
@@ -274,7 +274,7 @@ describe('creative mode (developer settings)', () => {
 
   it('unlimited energy enters a dungeon for free', () => {
     useGameStore.setState({
-      character: { ...get().character, energy: 0 },
+      character: { ...get().character, level: 3, energy: 0 },
       settings: { ...get().settings, unlimitedEnergy: true },
     });
     get().startDungeon();
@@ -297,13 +297,13 @@ describe('creative mode (developer settings)', () => {
 
 describe('dungeon expeditions', () => {
   it('requires 3 energy to enter', () => {
-    useGameStore.setState({ character: { ...get().character, energy: 2 } });
+    useGameStore.setState({ character: { ...get().character, level: 3, energy: 2 } });
     get().startDungeon();
     expect(get().dungeon).toBeNull();
   });
 
   it('spends energy and starts a descent at depth 1', () => {
-    useGameStore.setState({ character: { ...get().character, energy: 5 } });
+    useGameStore.setState({ character: { ...get().character, level: 3, energy: 5 } });
     get().startDungeon();
     const run = get().dungeon!;
     expect(run).not.toBeNull();
@@ -349,6 +349,32 @@ describe('dungeon expeditions', () => {
     expect(run.sta).toBe(5);
     expect(run.battle).toBeNull();
     expect(get().combatStats.defenseXp).toBeGreaterThan(0); // physical foe trains Defense
+    expect(get().character.statXp.ST).toBeGreaterThan(0); // win grants the attack-stat XP
+    expect(get().character.statXp.HP).toBeGreaterThan(0); // ...and HP for enduring the fight
+  });
+
+  it('is gated until the dungeon unlock level (3)', () => {
+    get().resetGame(); // level 1
+    useGameStore.setState({ character: { ...get().character, energy: 10 } });
+    get().startDungeon();
+    expect(get().dungeon).toBeNull(); // locked at level 1
+
+    useGameStore.setState({ character: { ...get().character, level: 3, energy: 10 } });
+    get().startDungeon();
+    expect(get().dungeon).not.toBeNull(); // unlocked at level 3
+  });
+
+  it('passing a dungeon stat check grants stat XP toward leveling', () => {
+    get().resetGame();
+    const rng = vi.spyOn(Math, 'random').mockReturnValue(0); // force the check to succeed
+    const def = getEncounter('sealed_door')!;
+    useGameStore.setState({
+      dungeon: makeRun({ rooms: [{ type: 'encounter', key: 'sealed_door' }], encounter: startEncounter(def) }),
+    });
+    const before = get().character.statXp.KN;
+    get().dungeonEncounterChoose(0); // "Decipher the runes (Knowledge)" — a KN check
+    expect(get().character.statXp.KN).toBe(before + 10);
+    rng.mockRestore();
   });
 
   it('clearing a floor reaches a checkpoint, banking loot and restoring resources', () => {

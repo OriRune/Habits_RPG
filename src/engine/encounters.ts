@@ -74,9 +74,9 @@ export function getEncounter(key: string): EncounterDef | undefined {
   return ENCOUNTERS[key];
 }
 
-/** Success probability of a stat check (shared shape with dungeon stat rooms). */
+/** Success probability of a stat check. Tuned to the stat-level scale (difficulties ~3–8). */
 export function checkChance(power: number, threshold: number): number {
-  return Math.min(0.95, Math.max(0.05, 0.3 + (power - threshold) * 0.04));
+  return Math.min(0.95, Math.max(0.05, 0.3 + (power - threshold) * 0.07));
 }
 
 function isTerminal(def: EncounterDef, nodeId: string): boolean {
@@ -129,7 +129,7 @@ export function chooseEncounter(
 
   if (choice.stat) {
     const power = statPower(statLevels, [choice.stat]) + (bonuses[choice.stat] ?? 0);
-    const success = rng() < checkChance(power, choice.difficulty ?? 12);
+    const success = rng() < checkChance(power, choice.difficulty ?? 5);
     outcome = success ? 'success' : 'fail';
     nextId = (success ? choice.goSuccess : choice.goFail) ?? state.nodeId;
     text = (success ? choice.successText : choice.failText) ?? null;
