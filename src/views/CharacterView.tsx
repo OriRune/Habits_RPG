@@ -17,7 +17,6 @@ const ALL_CLASSES = Array.from(
 export function CharacterView() {
   const character = useGameStore((s) => s.character);
   const codex = useGameStore((s) => s.codex);
-  const resetGame = useGameStore((s) => s.resetGame);
 
   const maxXp = Math.max(1, ...STATS.map((s) => character.statXp[s.id]));
 
@@ -61,17 +60,6 @@ export function CharacterView() {
           })}
         </div>
       </Panel>
-
-      <div className="text-center">
-        <button
-          onClick={() => {
-            if (confirm('Reset all progress? This cannot be undone.')) resetGame();
-          }}
-          className="font-display text-xs uppercase tracking-wider text-ink-light/70 hover:text-ember"
-        >
-          Reset game
-        </button>
-      </div>
     </div>
   );
 }

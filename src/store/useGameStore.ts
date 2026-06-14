@@ -139,6 +139,20 @@ export interface DungeonRun {
 /** Share of the current floor's loot kept when you fall mid-floor (the rest is forfeit). */
 const FLOOR_LOSS_KEEP = 0.25;
 
+/** Developer "creative mode" switches (Settings → Developer). All off in normal play. */
+export interface GameSettings {
+  /** Purchases & crafting ignore their gold cost. */
+  unlimitedGold: boolean;
+  /** Dungeon entry ignores its energy cost. */
+  unlimitedEnergy: boolean;
+  /** Player HP/MP/Stamina stay full in combat — you can't die. */
+  invincible: boolean;
+}
+
+function freshSettings(): GameSettings {
+  return { unlimitedGold: false, unlimitedEnergy: false, invincible: false };
+}
+
 export interface GameState {
   habits: Habit[];
   character: Character;
@@ -175,6 +189,8 @@ export interface GameState {
   /** Date -> number of habit completions, powers mood + weekly views. */
   completionLog: Record<string, number>;
   lastActiveISO: string;
+  /** Developer creative-mode switches. */
+  settings: GameSettings;
 
   // --- actions ---
   addHabit: (input: NewHabitInput) => void;
@@ -218,6 +234,8 @@ export interface GameState {
   dungeonBank: () => void;
   dungeonDescend: () => void;
   collectDungeon: () => void;
+
+  updateSettings: (patch: Partial<GameSettings>) => void;
 
   resetGame: () => void;
 }
@@ -406,6 +424,17 @@ function applyWeeklyRollover(state: GameState, todayIso: string): void {
   state.lastWeekKey = current;
 }
 
+/** Creative-mode invincibility: keep the player's resources full and prevent a loss. */
+function topUpFighter(b: BattleState): BattleState {
+  return {
+    ...b,
+    playerHp: b.playerMaxHp,
+    playerMp: b.playerMaxMp,
+    playerSta: b.playerMaxSta,
+    status: b.status === 'lost' ? 'active' : b.status,
+  };
+}
+
 /** After XP changes, queue a Level-Up Trial if the player is XP-eligible. */
 function checkLevelUp(state: GameState): void {
   if (state.pendingLevelUp || state.battle) return;
@@ -440,6 +469,7 @@ export const useGameStore = create<GameState>()(
       bossLosses: {},
       completionLog: {},
       lastActiveISO: toISODate(),
+      settings: freshSettings(),
 
       addHabit: (input) =>
         set((s) => ({
@@ -561,7 +591,8 @@ export const useGameStore = create<GameState>()(
       battleAction: (action) =>
         set((s) => {
           if (!s.battle || s.battle.status !== 'active') return s;
-          const battle = playerAction(s.battle, fighterFor(s, s.battle.buffs), action);
+          let battle = playerAction(s.battle, fighterFor(s, s.battle.buffs), action);
+          if (s.settings.invincible) battle = topUpFighter(battle);
 
           // Item used mid-battle: decrement inventory immediately.
           const inventory = { ...s.inventory };
@@ -704,9 +735,10 @@ export const useGameStore = create<GameState>()(
         set((s) => {
           const item = getItem(itemKey);
           if (!item || item.price === undefined) return s;
-          if (s.character.gold < item.price) return s;
+          const free = s.settings.unlimitedGold;
+          if (!free && s.character.gold < item.price) return s;
           return {
-            character: { ...s.character, gold: s.character.gold - item.price },
+            character: { ...s.character, gold: free ? s.character.gold : s.character.gold - item.price },
             inventory: { ...s.inventory, [itemKey]: (s.inventory[itemKey] ?? 0) + 1 },
           };
         }),
@@ -737,9 +769,10 @@ export const useGameStore = create<GameState>()(
           const weapon = WEAPONS[weaponKey];
           if (!weapon || weapon.price === undefined) return s;
           if (s.ownedWeapons.includes(weaponKey)) return s;
-          if (s.character.gold < weapon.price) return s;
+          const free = s.settings.unlimitedGold;
+          if (!free && s.character.gold < weapon.price) return s;
           return {
-            character: { ...s.character, gold: s.character.gold - weapon.price },
+            character: { ...s.character, gold: free ? s.character.gold : s.character.gold - weapon.price },
             ownedWeapons: [...s.ownedWeapons, weaponKey],
           };
         }),
@@ -759,12 +792,13 @@ export const useGameStore = create<GameState>()(
       craft: (recipeKey) =>
         set((s) => {
           const recipe = getRecipe(recipeKey);
-          if (!recipe || !canCraft(recipe, s.materials, s.character.gold)) return s;
+          const freeGold = s.settings.unlimitedGold;
+          if (!recipe || !canCraft(recipe, s.materials, freeGold ? Infinity : s.character.gold)) return s;
           const materials = { ...s.materials };
           for (const [key, qty] of Object.entries(recipe.materials)) {
             materials[key] = (materials[key] ?? 0) - qty;
           }
-          const gold = s.character.gold - (recipe.gold ?? 0);
+          const gold = freeGold ? s.character.gold : s.character.gold - (recipe.gold ?? 0);
           const { kind, key } = recipe.result;
           const next: Partial<GameState> = { materials, character: { ...s.character, gold } };
           if (kind === 'gear') {
@@ -789,7 +823,8 @@ export const useGameStore = create<GameState>()(
 
       startDungeon: () =>
         set((s) => {
-          if (s.dungeon || s.character.energy < DUNGEON_ENERGY_COST) return s;
+          const freeEnergy = s.settings.unlimitedEnergy;
+          if (s.dungeon || (!freeEnergy && s.character.energy < DUNGEON_ENERGY_COST)) return s;
           const { c } = fighterFor(s);
           const biome = biomeForDepth(1);
           const run: DungeonRun = {
@@ -814,7 +849,10 @@ export const useGameStore = create<GameState>()(
           };
           enterRoom(run, s);
           return {
-            character: { ...s.character, energy: s.character.energy - DUNGEON_ENERGY_COST },
+            character: {
+              ...s.character,
+              energy: freeEnergy ? s.character.energy : s.character.energy - DUNGEON_ENERGY_COST,
+            },
             dungeon: run,
           };
         }),
@@ -835,9 +873,10 @@ export const useGameStore = create<GameState>()(
             s.character.statXp,
             gearBonuses(s).statBonuses,
           );
-          const hp = Math.max(0, Math.min(run.maxHp, run.hp + step.hpDelta));
-          const mp = Math.max(0, Math.min(run.maxMp, run.mp + step.mpDelta));
-          const sta = Math.max(0, Math.min(run.maxSta, run.sta + step.staDelta));
+          const inv = s.settings.invincible;
+          const hp = inv ? run.maxHp : Math.max(0, Math.min(run.maxHp, run.hp + step.hpDelta));
+          const mp = inv ? run.maxMp : Math.max(0, Math.min(run.maxMp, run.mp + step.mpDelta));
+          const sta = inv ? run.maxSta : Math.max(0, Math.min(run.maxSta, run.sta + step.staDelta));
           const floorReward = mergeReward(run.floorReward, step.reward);
 
           if (hp <= 0) {
@@ -851,7 +890,8 @@ export const useGameStore = create<GameState>()(
         set((s) => {
           const run = s.dungeon;
           if (!run || !run.battle || run.battle.status !== 'active') return s;
-          const battle = playerAction(run.battle, fighterFor(s, run.battle.buffs), action);
+          let battle = playerAction(run.battle, fighterFor(s, run.battle.buffs), action);
+          if (s.settings.invincible) battle = topUpFighter(battle);
 
           const inventory = { ...s.inventory };
           if (action.kind === 'item' && (inventory[action.itemKey] ?? 0) > 0) {
@@ -962,6 +1002,9 @@ export const useGameStore = create<GameState>()(
           return next;
         }),
 
+      updateSettings: (patch) =>
+        set((s) => ({ settings: { ...s.settings, ...patch } })),
+
       resetGame: () =>
         set(() => ({
           habits: [],
@@ -984,6 +1027,7 @@ export const useGameStore = create<GameState>()(
           bossLosses: {},
           completionLog: {},
           lastActiveISO: toISODate(),
+          settings: freshSettings(),
         })),
     }),
     {
@@ -998,6 +1042,7 @@ export const useGameStore = create<GameState>()(
       // v6: challenges gained `kind` (replacing `metric`) + the weekly loop. Backfill
       //     kind from the old metric; lastWeekKey/pendingReport/customChallenges fall back
       //     to initializer defaults on merge.
+      // (developer `settings` added later — a new top-level field, also defaulted on merge.)
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {

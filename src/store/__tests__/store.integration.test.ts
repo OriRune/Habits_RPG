@@ -243,6 +243,46 @@ describe('shop & streak freeze', () => {
   });
 });
 
+describe('creative mode (developer settings)', () => {
+  it('updateSettings flips a flag', () => {
+    expect(get().settings.invincible).toBe(false);
+    get().updateSettings({ invincible: true });
+    expect(get().settings.invincible).toBe(true);
+  });
+
+  it('unlimited gold buys for free without spending', () => {
+    useGameStore.setState({
+      character: { ...get().character, gold: 0 },
+      settings: { ...get().settings, unlimitedGold: true },
+    });
+    get().buyItem('streak_freeze');
+    expect(get().inventory['streak_freeze']).toBe(1);
+    expect(get().character.gold).toBe(0); // never went negative
+  });
+
+  it('unlimited energy enters a dungeon for free', () => {
+    useGameStore.setState({
+      character: { ...get().character, energy: 0 },
+      settings: { ...get().settings, unlimitedEnergy: true },
+    });
+    get().startDungeon();
+    expect(get().dungeon).not.toBeNull();
+    expect(get().character.energy).toBe(0); // no deduction
+  });
+
+  it('invincibility keeps the player at full HP and prevents a loss', () => {
+    useGameStore.setState({ pendingLevelUp: 2, settings: { ...get().settings, invincible: true } });
+    get().startBattle();
+    expect(get().battle).not.toBeNull();
+    // Drop the player to the brink, then act — the top-up should restore full HP.
+    useGameStore.setState({ battle: { ...get().battle!, playerHp: 1 } });
+    get().battleAction({ kind: 'defend' });
+    const b = get().battle!;
+    expect(b.playerHp).toBe(b.playerMaxHp);
+    expect(b.status).not.toBe('lost');
+  });
+});
+
 describe('dungeon expeditions', () => {
   it('requires 3 energy to enter', () => {
     useGameStore.setState({ character: { ...get().character, energy: 2 } });

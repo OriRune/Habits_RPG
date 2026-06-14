@@ -1,12 +1,14 @@
-import { Coins, Zap } from 'lucide-react';
+import { Coins, Zap, Settings } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { Sprite } from '@/components/ui/Sprite';
 import { brandLook } from '@/lib/sprites';
 
-/** Slim carved-wood title bar with the wordmark and persistent currency chips. */
-export function Header() {
+/** Slim carved-wood title bar with the wordmark, currency chips, and a settings gear. */
+export function Header({ onOpenSettings }: { onOpenSettings?: () => void }) {
   const gold = useGameStore((s) => s.character.gold);
   const energy = useGameStore((s) => s.character.energy);
+  const settings = useGameStore((s) => s.settings);
+  const devActive = settings.unlimitedGold || settings.unlimitedEnergy || settings.invincible;
 
   return (
     <header className="texture-wood sticky top-0 z-10 border-b-2 border-gold-deep shadow-wood">
@@ -18,12 +20,24 @@ export function Header() {
         <div className="flex items-center gap-4 text-sm">
           <span className="flex items-center gap-1.5 text-gold-bright">
             <Coins className="h-4 w-4" />
-            <span className="tabular-nums">{gold}</span>
+            <span className="tabular-nums">{settings.unlimitedGold ? '∞' : gold}</span>
           </span>
           <span className="flex items-center gap-1.5 text-stat-AG">
             <Zap className="h-4 w-4" />
-            <span className="tabular-nums">{energy}</span>
+            <span className="tabular-nums">{settings.unlimitedEnergy ? '∞' : energy}</span>
           </span>
+          {devActive && (
+            <span className="rounded-sm border border-gold-deep/60 bg-gold/15 px-1.5 py-0.5 font-display text-[10px] font-bold uppercase tracking-wider text-gold-bright">
+              Dev
+            </span>
+          )}
+          <button
+            onClick={onOpenSettings}
+            className="text-parchment-300/70 transition-colors hover:text-gold-bright"
+            aria-label="Settings"
+          >
+            <Settings className="h-5 w-5" />
+          </button>
         </div>
       </div>
     </header>

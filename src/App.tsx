@@ -10,11 +10,13 @@ import { ChallengesView } from '@/views/ChallengesView';
 import { DungeonView } from '@/views/DungeonView';
 import { InventoryView } from '@/views/InventoryView';
 import { HistoryView } from '@/views/HistoryView';
+import { SettingsView } from '@/views/SettingsView';
 import { useGameStore } from '@/store/useGameStore';
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('habits');
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const battle = useGameStore((s) => s.battle);
   const classChoice = useGameStore((s) => s.pendingClassChoice);
   const normalizeHabits = useGameStore((s) => s.normalizeHabits);
@@ -28,7 +30,7 @@ export default function App() {
 
   return (
     <div className="flex min-h-full flex-col">
-      <Header />
+      <Header onOpenSettings={() => setSettingsOpen(true)} />
       <main className="flex-1">
         {tab === 'habits' && <DashboardView onOpenHistory={() => setHistoryOpen(true)} />}
         {tab === 'character' && <CharacterView />}
@@ -39,6 +41,7 @@ export default function App() {
       <TabBar active={tab} onChange={setTab} />
 
       {historyOpen && <HistoryView onClose={() => setHistoryOpen(false)} />}
+      {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
       {battle && <BattleOverlay />}
       {classChoice && <ClassChoiceModal />}
       <WeeklyReportModal />
