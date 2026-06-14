@@ -1,7 +1,7 @@
 // Item & potion catalog (design brief Section 10).
 import type { StatId } from './stats';
 
-export type ItemKind = 'potion' | 'utility' | 'trinket';
+export type ItemKind = 'potion' | 'utility' | 'trinket' | 'spellbook';
 
 /** Where an item can be used. */
 export type ItemContext = 'battle' | 'overworld';
@@ -15,6 +15,8 @@ export interface ItemEffect {
   streakFreeze?: boolean;
   /** Restores momentum after a missed day (overworld) — clears the broken-streak penalty. */
   recovery?: boolean;
+  /** Spellbook: learn this spell on use (overworld). */
+  learnsSpell?: string;
 }
 
 export interface ItemDef {
@@ -82,6 +84,42 @@ export const ITEMS: Record<string, ItemDef> = {
     description: 'Restores lost momentum after a missed day.',
     effect: { recovery: true },
     price: 70,
+  },
+  spellbook_firebolt: {
+    key: 'spellbook_firebolt',
+    name: 'Tome: Firebolt',
+    kind: 'spellbook',
+    context: 'overworld',
+    description: 'Learn Firebolt — a damage spell that burns (Wisdom).',
+    effect: { learnsSpell: 'firebolt' },
+    price: 150,
+  },
+  spellbook_bless: {
+    key: 'spellbook_bless',
+    name: 'Tome: Bless',
+    kind: 'spellbook',
+    context: 'overworld',
+    description: 'Learn Bless — a support ward that bolsters defense (Knowledge).',
+    effect: { learnsSpell: 'bless' },
+    price: 150,
+  },
+  spellbook_dazzle: {
+    key: 'spellbook_dazzle',
+    name: 'Tome: Dazzle',
+    kind: 'spellbook',
+    context: 'overworld',
+    description: 'Learn Dazzle — an illusion that blinds the foe (Charisma).',
+    effect: { learnsSpell: 'dazzle' },
+    price: 150,
+  },
+  spellbook_hex: {
+    key: 'spellbook_hex',
+    name: 'Tome: Hex',
+    kind: 'spellbook',
+    context: 'overworld',
+    description: 'Learn Hex — an illusion that weakens the foe (Charisma).',
+    effect: { learnsSpell: 'hex' },
+    price: 150,
   },
 };
 

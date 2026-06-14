@@ -1,51 +1,72 @@
-// Turn-based Level-Up Trial combat (design brief Section 7).
-// Stats modify combat per the brief's "Stat Effects in Boss Battles" table.
-// The engine is pure; randomness is injected so battles are deterministically testable.
-import type { StatId } from './stats';
+// Turn-based combat (Level-Up Trials + dungeon fights share this engine).
+// Stats drive a weapon Attack, MP-gated Spells, an Endurance Stamina pool, and the new
+// combat-trained Defense/Ward mitigations. Pure; randomness is injected for testing.
+import { statPoints, type StatId } from './stats';
 import type { BossDef } from './bosses';
 import { getItem } from './items';
+import { getSpell, SCHOOL_STAT, type StatusKey } from './spells';
+import type { WeaponDef } from './weapons';
+import type { CombatStats } from './combatStats';
+import { mitigation } from './combatStats';
 
 export type RNG = () => number;
 
-/** Derived combat profile from per-stat XP. Effort (XP) tapers via sqrt. */
+/** Derived combat profile from habit stat XP + combat stats + temporary buffs. */
 export interface Combatant {
   maxHp: number;
-  attack: number; // physical (Strength)
-  spell: number; // magical (Knowledge)
-  crit: number; // crit chance (Dexterity)
-  dodge: number; // dodge chance (Agility)
-  reduction: number; // damage reduction (Endurance)
-  heal: number; // heal power (Wisdom)
-  assist: number; // ally-assist chance (Charisma)
+  maxMp: number;
+  maxSta: number;
+  meleePower: number; // Strength
+  rangedPower: number; // Dexterity
+  dodge: number; // Agility
+  flee: number; // Agility
+  damageSpell: number; // Wisdom
+  supportSpell: number; // Knowledge
+  illusionPower: number; // Charisma
+  defense: number; // combat stat — physical mitigation
+  ward: number; // combat stat — magical mitigation
 }
 
-function points(xp: number): number {
-  return Math.floor(Math.sqrt(Math.max(0, xp)));
+/** The acting player: derived stats + equipped weapon. */
+export interface Fighter {
+  c: Combatant;
+  weapon: WeaponDef;
 }
 
-/** Build the player's combat profile from stat XP plus any temporary item buffs. */
 export function deriveCombatant(
   statXp: Record<StatId, number>,
+  combat: CombatStats,
   buffs: Partial<Record<StatId, number>> = {},
 ): Combatant {
-  const p = (s: StatId) => points(statXp[s]) + (buffs[s] ?? 0);
+  const p = (s: StatId) => statPoints(statXp[s]) + (buffs[s] ?? 0);
   return {
     maxHp: 60 + p('HP') * 8,
-    attack: 8 + Math.round(p('ST') * 1.5),
-    spell: 6 + Math.round(p('KN') * 1.5),
-    crit: Math.min(0.5, p('DX') * 0.02),
+    maxMp: 10 + p('KN') * 4,
+    maxSta: 5 + Math.round(p('EN') * 1.5),
+    meleePower: Math.round(p('ST') * 1.5),
+    rangedPower: Math.round(p('DX') * 1.5),
     dodge: Math.min(0.4, p('AG') * 0.015),
-    reduction: Math.min(0.5, p('EN') * 0.015),
-    heal: p('WI') * 2,
-    assist: Math.min(0.4, p('CH') * 0.02),
+    flee: Math.min(0.9, 0.4 + p('AG') * 0.03),
+    damageSpell: p('WI'),
+    supportSpell: p('KN'),
+    illusionPower: p('CH'),
+    defense: mitigation(combat.defenseXp),
+    ward: mitigation(combat.wardXp),
   };
 }
 
 export type CombatAction =
   | { kind: 'attack' }
-  | { kind: 'skill' }
+  | { kind: 'spell'; spellKey: string }
+  | { kind: 'item'; itemKey: string }
   | { kind: 'defend' }
-  | { kind: 'item'; itemKey: string };
+  | { kind: 'flee' };
+
+export interface StatusEffect {
+  key: StatusKey;
+  turns: number;
+  magnitude: number;
+}
 
 export interface BattleState {
   bossId: string;
@@ -54,35 +75,43 @@ export interface BattleState {
   bossHp: number;
   bossAttack: number;
   bossDefense: number;
+  enemyWard: number;
+  attackSchool: 'physical' | 'magic';
   weakTo: StatId[];
   playerMaxHp: number;
   playerHp: number;
+  playerMaxMp: number;
+  playerMp: number;
+  playerMaxSta: number;
+  playerSta: number;
+  playerStatuses: StatusEffect[];
+  enemyStatuses: StatusEffect[];
   defending: boolean;
   buffs: Partial<Record<StatId, number>>;
   log: string[];
-  status: 'active' | 'won' | 'lost';
-  /** Consumed item keys, so the store can decrement inventory after the battle. */
+  status: 'active' | 'won' | 'lost' | 'fled';
   consumedItems: string[];
 }
 
 const ANTI_FRUSTRATION_LOSS_THRESHOLD = 3;
 
-/**
- * Start a trial. After repeated losses the boss HP eases off (brief Section 8,
- * "Anti-Frustration Scaling") so a stuck player isn't hard-blocked.
- */
-export function createBattle(
-  player: Combatant,
-  boss: BossDef,
-  lossesBefore = 0,
-): BattleState {
+export interface CreateBattleOpts {
+  lossesBefore?: number;
+  /** Carry a dungeon run's current HP/MP into the fight (defaults to full). */
+  startingHp?: number;
+  startingMp?: number;
+}
+
+export function createBattle(fighter: Fighter, boss: BossDef, opts: CreateBattleOpts = {}): BattleState {
+  const { c } = fighter;
+  const lossesBefore = opts.lossesBefore ?? 0;
   const relief =
     lossesBefore >= ANTI_FRUSTRATION_LOSS_THRESHOLD
       ? Math.min(0.4, (lossesBefore - ANTI_FRUSTRATION_LOSS_THRESHOLD + 1) * 0.1)
       : 0;
   const bossMaxHp = Math.round(boss.baseHp * (1 - relief));
   const log = [`${boss.name} appears!`];
-  if (relief > 0) log.push(`The boss looks weakened (you've earned some relief).`);
+  if (relief > 0) log.push(`The foe looks weakened (you've earned some relief).`);
   return {
     bossId: boss.id,
     bossName: boss.name,
@@ -90,9 +119,17 @@ export function createBattle(
     bossHp: bossMaxHp,
     bossAttack: boss.attack,
     bossDefense: boss.defense,
+    enemyWard: boss.ward ?? 0,
+    attackSchool: boss.attackSchool ?? 'physical',
     weakTo: boss.weakTo,
-    playerMaxHp: player.maxHp,
-    playerHp: player.maxHp,
+    playerMaxHp: c.maxHp,
+    playerHp: opts.startingHp != null ? Math.min(opts.startingHp, c.maxHp) : c.maxHp,
+    playerMaxMp: c.maxMp,
+    playerMp: opts.startingMp != null ? Math.min(opts.startingMp, c.maxMp) : c.maxMp,
+    playerMaxSta: c.maxSta,
+    playerSta: c.maxSta,
+    playerStatuses: [],
+    enemyStatuses: [],
     defending: false,
     buffs: {},
     log,
@@ -101,61 +138,98 @@ export function createBattle(
   };
 }
 
-function rollHit(base: number, weak: boolean, crit: number, rng: RNG): { dmg: number; crit: boolean } {
-  const isCrit = rng() < crit;
-  let dmg = base;
-  if (weak) dmg *= 1.25;
-  if (isCrit) dmg *= 2;
-  // ±15% variance for texture.
-  dmg *= 0.85 + rng() * 0.3;
-  return { dmg: Math.max(1, Math.round(dmg)), crit: isCrit };
+function variance(base: number, rng: RNG): number {
+  return base * (0.85 + rng() * 0.3);
+}
+
+function hasStatus(list: StatusEffect[], key: StatusKey): StatusEffect | undefined {
+  return list.find((s) => s.key === key);
 }
 
 /**
- * Apply one player action, then (if the battle is still active) the boss's turn.
+ * Apply one player action, then (if still active) the foe's turn and status ticks.
  * Returns a new BattleState — never mutates the input.
  */
 export function playerAction(
   state: BattleState,
-  player: Combatant,
+  fighter: Fighter,
   action: CombatAction,
   rng: RNG = Math.random,
 ): BattleState {
   if (state.status !== 'active') return state;
+  const { c, weapon } = fighter;
   const s: BattleState = {
     ...state,
     log: [...state.log],
     buffs: { ...state.buffs },
     consumedItems: [...state.consumedItems],
+    playerStatuses: state.playerStatuses.map((x) => ({ ...x })),
+    enemyStatuses: state.enemyStatuses.map((x) => ({ ...x })),
   };
   s.defending = false;
 
   switch (action.kind) {
     case 'attack': {
-      const weak = state.weakTo.includes('ST');
-      const { dmg, crit } = rollHit(player.attack, weak, player.crit, rng);
-      const dealt = Math.max(1, dmg - s.bossDefense);
+      const full = s.playerSta >= weapon.staminaCost;
+      s.playerSta = Math.max(0, s.playerSta - weapon.staminaCost);
+      const base = (weapon.attackStat === 'DX' ? c.rangedPower : c.meleePower) + weapon.bonus;
+      const weak = state.weakTo.includes(weapon.attackStat);
+      let dmg = variance(base, rng);
+      if (weak) dmg *= 1.25;
+      if (!full) dmg *= 0.5; // exhausted — weak swing
+      const dealt = Math.max(1, Math.round(dmg) - s.bossDefense);
       s.bossHp -= dealt;
-      s.log.push(`You strike for ${dealt}${crit ? ' (CRIT!)' : ''}${weak ? ' — it\'s weak to force!' : ''}.`);
+      s.log.push(
+        `You attack with ${weapon.name} for ${dealt}${weak ? ' — weak to it!' : ''}${full ? '' : ' (exhausted)'}.`,
+      );
       break;
     }
-    case 'skill': {
-      const weak = state.weakTo.includes('KN') || state.weakTo.includes('DX');
-      const { dmg, crit } = rollHit(player.spell * 1.3, weak, player.crit, rng);
-      const dealt = Math.max(1, dmg - Math.floor(s.bossDefense / 2));
-      s.bossHp -= dealt;
-      s.log.push(`Your skill blasts for ${dealt}${crit ? ' (CRIT!)' : ''}${weak ? ' — super effective!' : ''}.`);
+    case 'spell': {
+      const spell = getSpell(action.spellKey);
+      if (!spell) {
+        s.log.push('The spell fizzles.');
+        break;
+      }
+      if (s.playerMp < spell.mpCost) {
+        return state; // not enough MP — no turn spent (UI also disables)
+      }
+      s.playerMp -= spell.mpCost;
+      const schoolStat = SCHOOL_STAT[spell.school];
+      if (spell.school === 'damage') {
+        const base = spell.power + c.damageSpell * 1.2;
+        const weak = state.weakTo.includes(schoolStat) || state.weakTo.includes('WI');
+        let dmg = variance(base, rng);
+        if (weak) dmg *= 1.25;
+        const dealt = Math.max(1, Math.round(dmg) - s.enemyWard);
+        s.bossHp -= dealt;
+        s.log.push(`${spell.name} sears the foe for ${dealt}${weak ? ' — super effective!' : ''}.`);
+        if (spell.status) applyStatus(s.enemyStatuses, spell.status);
+      } else if (spell.school === 'support') {
+        if (spell.power > 0) {
+          const heal = Math.round(spell.power + c.supportSpell * 1.5);
+          const gained = Math.min(heal, s.playerMaxHp - s.playerHp);
+          s.playerHp += gained;
+          s.log.push(`${spell.name} restores ${gained} HP.`);
+        }
+        if (spell.status) {
+          applyStatus(s.playerStatuses, spell.status);
+          s.log.push(`${spell.name} wraps you in a protective ward.`);
+        }
+      } else {
+        // illusion — apply a debuff to the foe, potency boosted by Charisma
+        if (spell.status) {
+          const boosted = { ...spell.status, turns: spell.status.turns + Math.floor(c.illusionPower / 8) };
+          applyStatus(s.enemyStatuses, boosted);
+          s.log.push(`${spell.name} bewilders the foe.`);
+        }
+      }
       break;
     }
     case 'defend': {
       s.defending = true;
-      const heal = Math.min(player.heal, s.playerMaxHp - s.playerHp);
-      if (heal > 0) {
-        s.playerHp += heal;
-        s.log.push(`You brace and recover ${heal} HP.`);
-      } else {
-        s.log.push('You brace for the next blow.');
-      }
+      const regain = Math.round(s.playerMaxSta * 0.5);
+      s.playerSta = Math.min(s.playerMaxSta, s.playerSta + regain);
+      s.log.push(`You brace, recovering ${regain} stamina.`);
       break;
     }
     case 'item': {
@@ -178,6 +252,15 @@ export function playerAction(
       }
       break;
     }
+    case 'flee': {
+      if (rng() < c.flee) {
+        s.status = 'fled';
+        s.log.push('You slip away and escape the fight!');
+        return s;
+      }
+      s.log.push("You can't escape! The foe presses in.");
+      break;
+    }
   }
 
   if (s.bossHp <= 0) {
@@ -187,26 +270,74 @@ export function playerAction(
     return s;
   }
 
-  return bossTurn(s, player, rng);
+  enemyTurn(s, c, rng);
+  if (s.status !== 'active') return s;
+  tickStatuses(s);
+  return s;
 }
 
-function bossTurn(state: BattleState, player: Combatant, rng: RNG): BattleState {
-  const s = state;
-  if (rng() < player.dodge) {
-    s.log.push(`${s.bossName} attacks — you dodge!`);
-    return s;
+function applyStatus(list: StatusEffect[], status: StatusEffect): void {
+  const existing = list.find((x) => x.key === status.key);
+  if (existing) {
+    existing.turns = Math.max(existing.turns, status.turns);
+    existing.magnitude = Math.max(existing.magnitude, status.magnitude);
+  } else {
+    list.push({ ...status });
   }
-  let dmg = s.bossAttack * (0.85 + rng() * 0.3);
-  dmg *= 1 - player.reduction;
+}
+
+function enemyTurn(s: BattleState, c: Combatant, rng: RNG): void {
+  const blind = hasStatus(s.enemyStatuses, 'blind');
+  if (blind && rng() < 0.4) {
+    s.log.push(`${s.bossName} swings blindly and misses!`);
+    return;
+  }
+  if (rng() < c.dodge) {
+    s.log.push(`${s.bossName} attacks — you dodge!`);
+    return;
+  }
+  let dmg = variance(s.bossAttack, rng);
+  const weaken = hasStatus(s.enemyStatuses, 'weaken');
+  if (weaken) dmg *= 1 - weaken.magnitude;
+  // Mitigate by the matching defense, then Defend, then Bless.
+  const mit = s.attackSchool === 'magic' ? c.ward : c.defense;
+  dmg = Math.max(1, dmg - mit);
   if (s.defending) dmg *= 0.5;
+  const bless = hasStatus(s.playerStatuses, 'bless');
+  if (bless) dmg = Math.max(1, dmg - bless.magnitude);
   const dealt = Math.max(1, Math.round(dmg));
   s.playerHp -= dealt;
   s.log.push(`${s.bossName} hits you for ${dealt}.`);
-
   if (s.playerHp <= 0) {
     s.playerHp = 0;
     s.status = 'lost';
     s.log.push('You fall... but you keep your XP. Train more and try again.');
   }
-  return s;
+}
+
+/** End-of-round: apply damage-over-time, then decrement/expire all statuses. */
+function tickStatuses(s: BattleState): void {
+  const enemyBurn = hasStatus(s.enemyStatuses, 'burn');
+  if (enemyBurn) {
+    const d = Math.round(enemyBurn.magnitude);
+    s.bossHp -= d;
+    s.log.push(`The foe burns for ${d}.`);
+    if (s.bossHp <= 0) {
+      s.bossHp = 0;
+      s.status = 'won';
+      s.log.push(`${s.bossName} is defeated! Victory!`);
+    }
+  }
+  const playerBurn = hasStatus(s.playerStatuses, 'burn');
+  if (playerBurn && s.status === 'active') {
+    const d = Math.round(playerBurn.magnitude);
+    s.playerHp -= d;
+    s.log.push(`You burn for ${d}.`);
+    if (s.playerHp <= 0) {
+      s.playerHp = 0;
+      s.status = 'lost';
+    }
+  }
+  s.enemyStatuses = s.enemyStatuses.map((x) => ({ ...x, turns: x.turns - 1 })).filter((x) => x.turns > 0);
+  s.playerStatuses = s.playerStatuses.map((x) => ({ ...x, turns: x.turns - 1 })).filter((x) => x.turns > 0);
 }

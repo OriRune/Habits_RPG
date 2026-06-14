@@ -1,0 +1,44 @@
+// Dungeon event illustrations. Every event has a placeholder scene now; real art swaps
+// in later via `resolveSceneImage` (same seam pattern as resolveSpriteImage in sprites.ts).
+
+export interface SceneLook {
+  glyph: string;
+  /** Background tint (hex). */
+  color: string;
+  caption: string;
+}
+
+const SCENES: Record<string, SceneLook> = {
+  // Rooms
+  'room:combat': { glyph: '⚔️', color: '#b23b2e', caption: 'A foe blocks the way' },
+  'room:trap': { glyph: '🗡️', color: '#b8860b', caption: 'Blades and tripwires' },
+  'room:puzzle': { glyph: '🧩', color: '#2f5fa6', caption: 'An ancient riddle' },
+  'room:negotiation': { glyph: '🗣️', color: '#b8487f', caption: 'A wary guardian' },
+  'room:survival': { glyph: '🔥', color: '#5e8a2e', caption: 'Harsh conditions' },
+  'room:treasure': { glyph: '💰', color: '#c9a227', caption: 'A glittering hoard' },
+  'room:rest': { glyph: '🏕️', color: '#2e8a5e', caption: 'A quiet alcove' },
+  'dungeon:entrance': { glyph: '🚪', color: '#4a3320', caption: 'The dungeon mouth' },
+  // Outcomes
+  'outcome:success': { glyph: '✨', color: '#c9a227', caption: 'Success!' },
+  'outcome:partial': { glyph: '😬', color: '#b8860b', caption: 'A near miss' },
+  'outcome:fail': { glyph: '💥', color: '#9c3a25', caption: 'It goes badly' },
+  // Combat resolution
+  'combat:victory': { glyph: '🏆', color: '#c9a227', caption: 'Victory!' },
+  'combat:defeat': { glyph: '💀', color: '#4a4a4a', caption: 'Defeated' },
+  // Run end
+  'dungeon:cleared': { glyph: '👑', color: '#c9a227', caption: 'Dungeon cleared' },
+  'dungeon:retreat': { glyph: '🏳️', color: '#6b6b6b', caption: 'You retreat' },
+};
+
+const FALLBACK: SceneLook = { glyph: '❓', color: '#4a3320', caption: '' };
+
+export function getScene(key: string): SceneLook {
+  return SCENES[key] ?? FALLBACK;
+}
+
+// --- swap seam: register real images here later, keyed identically ----------------
+const SCENE_REGISTRY: Record<string, string> = {};
+
+export function resolveSceneImage(key: string): string | undefined {
+  return SCENE_REGISTRY[key];
+}

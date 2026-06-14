@@ -1,12 +1,13 @@
-import { ListChecks, User, Trophy, Backpack } from 'lucide-react';
+import { ListChecks, User, Trophy, DoorOpen, Backpack } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
-export type Tab = 'habits' | 'character' | 'challenges' | 'inventory';
+export type Tab = 'habits' | 'character' | 'challenges' | 'dungeon' | 'inventory';
 
 const TABS: { id: Tab; label: string; icon: typeof ListChecks }[] = [
   { id: 'habits', label: 'Quests', icon: ListChecks },
   { id: 'character', label: 'Hero', icon: User },
   { id: 'challenges', label: 'Trials', icon: Trophy },
+  { id: 'dungeon', label: 'Delve', icon: DoorOpen },
   { id: 'inventory', label: 'Satchel', icon: Backpack },
 ];
 

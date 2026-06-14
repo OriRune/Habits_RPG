@@ -19,10 +19,14 @@ import { bossForLevel } from '@/engine/bosses';
 import {
   type BattleState,
   type CombatAction,
+  type Fighter,
   deriveCombatant,
   createBattle,
   playerAction,
 } from '@/engine/combat';
+import { getWeapon, STARTER_WEAPON, WEAPONS } from '@/engine/weapons';
+import { STARTER_SPELLS } from '@/engine/spells';
+import { type CombatStats, emptyCombatStats, combatXpForWin } from '@/engine/combatStats';
 import { getItem, ITEMS } from '@/engine/items';
 import {
   type ActiveChallenge,
@@ -32,6 +36,15 @@ import {
   resolveChallenge,
   isExpired,
 } from '@/engine/challenges';
+import {
+  type DungeonRoom,
+  type RoomResolution,
+  generateDungeon,
+  resolveStatRoom,
+  mergeReward,
+  DUNGEON_ENERGY_COST,
+} from '@/engine/dungeon';
+import { enemyFor } from '@/engine/enemies';
 import { type Mood, computeMood } from '@/engine/mood';
 
 export interface Character {
@@ -61,13 +74,44 @@ export interface PendingClassChoice {
   options: { primary: StatId; secondary: StatId; classId: string }[];
 }
 
+/** An in-progress Dungeon Expedition (brief §7.2). Persisted so a run resumes on reload. */
+export interface DungeonRun {
+  rooms: DungeonRoom[];
+  index: number;
+  hp: number;
+  maxHp: number;
+  /** Mana, persisted across rooms (partial regen each room, full at Rest). */
+  mp: number;
+  maxMp: number;
+  /** Loot accumulated so far; applied on collect. */
+  reward: Reward;
+  /** Result of the most recent stat/rest room, shown before advancing. */
+  lastResult: RoomResolution | null;
+  /** Active combat for a combat room (reuses the combat engine). */
+  battle: BattleState | null;
+  status: 'active' | 'ended';
+  /** True when the run reached the end alive (vs. ended by defeat). */
+  cleared: boolean;
+}
+
 export interface GameState {
   habits: Habit[];
   character: Character;
   inventory: Record<string, number>;
+  /** Crafting materials, keyed by material id (see engine/materials.ts). */
+  materials: Record<string, number>;
+  /** Spells the character knows (combat). Starts with the starter spells. */
+  knownSpells: string[];
+  /** Equipped weapon key (decides the Attack action's stat + bonus). */
+  equippedWeapon: string;
+  /** Weapon keys the character owns (equippable). */
+  ownedWeapons: string[];
+  /** Combat-trained stats (Defense/Ward) — earned in dungeons, not from habits. */
+  combatStats: CombatStats;
   codex: string[];
   challenges: ActiveChallenge[];
   battle: BattleState | null;
+  dungeon: DungeonRun | null;
   /** Target level the player is currently trying to reach (boss is live or pending). */
   pendingLevelUp: number | null;
   pendingClassChoice: PendingClassChoice | null;
@@ -94,6 +138,16 @@ export interface GameState {
 
   buyItem: (itemKey: string) => void;
   useStreakFreeze: (habitId: string) => void;
+
+  equipWeapon: (weaponKey: string) => void;
+  buyWeapon: (weaponKey: string) => void;
+  learnFromSpellbook: (itemKey: string) => void;
+
+  startDungeon: () => void;
+  dungeonResolveRoom: () => void;
+  dungeonBattleAction: (action: CombatAction) => void;
+  dungeonAdvance: () => void;
+  collectDungeon: () => void;
 
   resetGame: () => void;
 }
@@ -131,6 +185,16 @@ function applyReward(state: GameState, reward: Reward): void {
       state.inventory[key] = (state.inventory[key] ?? 0) + 1;
     }
   }
+  if (reward.materials) {
+    for (const [key, amt] of Object.entries(reward.materials)) {
+      state.materials[key] = (state.materials[key] ?? 0) + (amt ?? 0);
+    }
+  }
+  if (reward.weapons) {
+    for (const key of reward.weapons) {
+      if (!state.ownedWeapons.includes(key)) state.ownedWeapons.push(key);
+    }
+  }
 }
 
 /** Recompute mood from the last 7 days of activity. */
@@ -155,6 +219,29 @@ function isoDaysAgo(iso: string, days: number): string {
   return toISODate(dt);
 }
 
+/** Build the acting Fighter from current character state (+ optional in-battle buffs). */
+function fighterFor(state: GameState, buffs: Partial<Record<StatId, number>> = {}): Fighter {
+  return {
+    c: deriveCombatant(state.character.statXp, state.combatStats, buffs),
+    weapon: getWeapon(state.equippedWeapon),
+  };
+}
+
+/** Set up the run's current room — spawns a seeded combat for combat rooms. */
+function enterRoom(run: DungeonRun, state: GameState): void {
+  const room = run.rooms[run.index];
+  run.lastResult = null;
+  if (room.type === 'combat') {
+    const fighter = fighterFor(state);
+    run.battle = createBattle(fighter, enemyFor(run.index, state.character.level), {
+      startingHp: run.hp,
+      startingMp: run.mp,
+    });
+  } else {
+    run.battle = null;
+  }
+}
+
 /** After XP changes, queue a Level-Up Trial if the player is XP-eligible. */
 function checkLevelUp(state: GameState): void {
   if (state.pendingLevelUp || state.battle) return;
@@ -170,9 +257,15 @@ export const useGameStore = create<GameState>()(
       habits: [],
       character: freshCharacter(),
       inventory: {},
+      materials: {},
+      knownSpells: [...STARTER_SPELLS],
+      equippedWeapon: STARTER_WEAPON,
+      ownedWeapons: [STARTER_WEAPON],
+      combatStats: emptyCombatStats(),
       codex: [],
       challenges: [],
       battle: null,
+      dungeon: null,
       pendingLevelUp: null,
       pendingClassChoice: null,
       bossLosses: {},
@@ -247,17 +340,15 @@ export const useGameStore = create<GameState>()(
         set((s) => {
           if (!s.pendingLevelUp || s.battle) return s;
           const target = s.pendingLevelUp;
-          const player = deriveCombatant(s.character.statXp);
           const boss = bossForLevel(target);
-          const battle = createBattle(player, boss, s.bossLosses[target] ?? 0);
+          const battle = createBattle(fighterFor(s), boss, { lossesBefore: s.bossLosses[target] ?? 0 });
           return { battle };
         }),
 
       battleAction: (action) =>
         set((s) => {
           if (!s.battle || s.battle.status !== 'active') return s;
-          const player = deriveCombatant(s.character.statXp);
-          const battle = playerAction(s.battle, player, action);
+          const battle = playerAction(s.battle, fighterFor(s, s.battle.buffs), action);
 
           // Item used mid-battle: decrement inventory immediately.
           const inventory = { ...s.inventory };
@@ -279,6 +370,7 @@ export const useGameStore = create<GameState>()(
               ...s,
               character: { ...s.character, statXp: { ...s.character.statXp } },
               inventory: { ...s.inventory },
+              materials: { ...s.materials },
               codex: [...s.codex],
               battle: null,
               pendingLevelUp: null,
@@ -344,6 +436,7 @@ export const useGameStore = create<GameState>()(
             ...s,
             character: { ...s.character, statXp: { ...s.character.statXp } },
             inventory: { ...s.inventory },
+            materials: { ...s.materials },
             challenges: s.challenges.map((x, i) =>
               i === index ? { ...x, status: 'claimed' as const } : x,
             ),
@@ -379,14 +472,174 @@ export const useGameStore = create<GameState>()(
           };
         }),
 
+      equipWeapon: (weaponKey) =>
+        set((s) => {
+          if (!s.ownedWeapons.includes(weaponKey)) return s;
+          return { equippedWeapon: weaponKey };
+        }),
+
+      buyWeapon: (weaponKey) =>
+        set((s) => {
+          const weapon = WEAPONS[weaponKey];
+          if (!weapon || weapon.price === undefined) return s;
+          if (s.ownedWeapons.includes(weaponKey)) return s;
+          if (s.character.gold < weapon.price) return s;
+          return {
+            character: { ...s.character, gold: s.character.gold - weapon.price },
+            ownedWeapons: [...s.ownedWeapons, weaponKey],
+          };
+        }),
+
+      learnFromSpellbook: (itemKey) =>
+        set((s) => {
+          const item = getItem(itemKey);
+          const spellKey = item?.effect.learnsSpell;
+          if (!spellKey || (s.inventory[itemKey] ?? 0) <= 0) return s;
+          const inventory = { ...s.inventory, [itemKey]: s.inventory[itemKey] - 1 };
+          const knownSpells = s.knownSpells.includes(spellKey)
+            ? s.knownSpells
+            : [...s.knownSpells, spellKey];
+          return { inventory, knownSpells };
+        }),
+
+      startDungeon: () =>
+        set((s) => {
+          if (s.dungeon || s.character.energy < DUNGEON_ENERGY_COST) return s;
+          const rooms = generateDungeon();
+          const { c } = fighterFor(s);
+          const run: DungeonRun = {
+            rooms,
+            index: 0,
+            hp: c.maxHp,
+            maxHp: c.maxHp,
+            mp: c.maxMp,
+            maxMp: c.maxMp,
+            reward: {},
+            lastResult: null,
+            battle: null,
+            status: 'active',
+            cleared: false,
+          };
+          enterRoom(run, s);
+          return {
+            character: { ...s.character, energy: s.character.energy - DUNGEON_ENERGY_COST },
+            dungeon: run,
+          };
+        }),
+
+      dungeonResolveRoom: () =>
+        set((s) => {
+          const run = s.dungeon;
+          if (!run || run.status !== 'active' || run.lastResult) return s;
+          const room = run.rooms[run.index];
+          if (room.type === 'combat') return s; // resolved via combat, not a stat check
+
+          const res = resolveStatRoom(room, s.character.statXp, run.maxHp);
+          const hp = Math.max(0, Math.min(run.maxHp, run.hp + res.hpDelta));
+          // Rest rooms also restore Mana to full.
+          const mp = room.type === 'rest' ? run.maxMp : run.mp;
+          const next: DungeonRun = {
+            ...run,
+            hp,
+            mp,
+            reward: mergeReward(run.reward, res.reward),
+            lastResult: res,
+          };
+          if (hp <= 0) {
+            next.status = 'ended';
+            next.cleared = false;
+          }
+          return { dungeon: next };
+        }),
+
+      dungeonBattleAction: (action) =>
+        set((s) => {
+          const run = s.dungeon;
+          if (!run || !run.battle || run.battle.status !== 'active') return s;
+          const battle = playerAction(run.battle, fighterFor(s, run.battle.buffs), action);
+
+          const inventory = { ...s.inventory };
+          if (action.kind === 'item' && (inventory[action.itemKey] ?? 0) > 0) {
+            inventory[action.itemKey] -= 1;
+          }
+          return { dungeon: { ...run, battle }, inventory };
+        }),
+
+      dungeonAdvance: () =>
+        set((s) => {
+          const run = s.dungeon;
+          if (!run || run.status !== 'active') return s;
+          const room = run.rooms[run.index];
+
+          let hp = run.hp;
+          let mp = run.mp;
+          let combatStats: CombatStats | null = null;
+
+          if (room.type === 'combat') {
+            const b = run.battle;
+            if (!b || b.status === 'active') return s; // can't leave mid-fight
+            if (b.status === 'fled') {
+              // Escaped: a safe retreat, keep the loot gathered so far.
+              return { dungeon: { ...run, status: 'ended', cleared: false, hp: b.playerHp } };
+            }
+            if (b.status === 'lost') {
+              return { dungeon: { ...run, status: 'ended', cleared: false, hp: 0 } };
+            }
+            // Won: carry HP/MP forward and train a combat stat (caster → Ward, else Defense).
+            hp = b.playerHp;
+            mp = b.playerMp;
+            const xp = combatXpForWin(b.bossMaxHp);
+            combatStats =
+              b.attackSchool === 'magic'
+                ? { ...s.combatStats, wardXp: s.combatStats.wardXp + xp }
+                : { ...s.combatStats, defenseXp: s.combatStats.defenseXp + xp };
+          } else if (!run.lastResult) {
+            return s; // stat room not yet resolved
+          }
+
+          // Partial mana regen when pressing onward.
+          mp = Math.min(run.maxMp, mp + Math.round(run.maxMp * 0.15));
+
+          const nextIndex = run.index + 1;
+          const next: DungeonRun = { ...run, index: nextIndex, hp, mp, battle: null, lastResult: null };
+          if (nextIndex >= run.rooms.length) {
+            next.status = 'ended';
+            next.cleared = true;
+          } else {
+            enterRoom(next, combatStats ? { ...s, combatStats } : s);
+          }
+          return combatStats ? { dungeon: next, combatStats } : { dungeon: next };
+        }),
+
+      collectDungeon: () =>
+        set((s) => {
+          const run = s.dungeon;
+          if (!run || run.status !== 'ended') return s;
+          const next: GameState = {
+            ...s,
+            character: { ...s.character, statXp: { ...s.character.statXp } },
+            inventory: { ...s.inventory },
+            materials: { ...s.materials },
+            dungeon: null,
+          };
+          applyReward(next, run.reward); // gold/materials/items only — dungeons grant no XP
+          return next;
+        }),
+
       resetGame: () =>
         set(() => ({
           habits: [],
           character: freshCharacter(),
           inventory: {},
+          materials: {},
+          knownSpells: [...STARTER_SPELLS],
+          equippedWeapon: STARTER_WEAPON,
+          ownedWeapons: [STARTER_WEAPON],
+          combatStats: emptyCombatStats(),
           codex: [],
           challenges: [],
           battle: null,
+          dungeon: null,
           pendingLevelUp: null,
           pendingClassChoice: null,
           bossLosses: {},
@@ -396,9 +649,14 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 1,
-      // Persist data, not action functions (Zustand persists the whole state by
-      // default; functions are stable from the creator so this is fine).
+      version: 2,
+      // v2 reworked combat (MP/stamina/spells/new BattleState + DungeonRun.mp). Old saves
+      // predate those shapes, so clear any in-progress battle/dungeon; new top-level fields
+      // (knownSpells/equippedWeapon/ownedWeapons/combatStats) fall back to defaults on merge.
+      migrate: (persisted: unknown) => {
+        const p = (persisted ?? {}) as Partial<GameState>;
+        return { ...p, battle: null, dungeon: null } as GameState;
+      },
     },
   ),
 );

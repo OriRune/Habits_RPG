@@ -9,6 +9,10 @@ export interface Reward {
   gold?: number;
   statXp?: Partial<Record<StatId, number>>;
   items?: string[];
+  /** Crafting materials, keyed by material id (see engine/materials.ts). */
+  materials?: Record<string, number>;
+  /** Weapon keys awarded (added to owned weapons; see engine/weapons.ts). */
+  weapons?: string[];
 }
 
 export type ChallengeMetric = 'count' | 'quantity';

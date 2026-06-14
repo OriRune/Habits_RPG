@@ -3,6 +3,7 @@
 // real sprite images later — register a URL there and `Sprite` uses it automatically.
 import { getStat, type StatId } from '@/engine/stats';
 import { CLASS_CHART } from '@/engine/classes';
+import { getMaterial } from '@/engine/materials';
 
 /** Reverse map: class name -> its primary stat (the chart row it sits in). */
 const CLASS_TO_STAT: Record<string, StatId> = (() => {
@@ -52,6 +53,12 @@ export function bossCrest(name: string): CrestLook {
 export function itemCrest(name: string, kind?: string): CrestLook {
   const color = kind === 'potion' ? '#5b3f6b' : kind === 'utility' ? '#35506b' : GOLD;
   return { glyph: firstLetter(name), color };
+}
+
+/** Material crest from the materials catalog. */
+export function materialCrest(key: string): CrestLook {
+  const m = getMaterial(key);
+  return m ? { glyph: m.glyph, color: m.color } : { glyph: '?', color: GOLD };
 }
 
 // --- The swap seam -------------------------------------------------------------

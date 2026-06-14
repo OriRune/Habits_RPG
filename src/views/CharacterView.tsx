@@ -4,6 +4,7 @@ import { CLASS_CHART, ADVANCED_CLASSES } from '@/engine/classes';
 import { classCrest } from '@/lib/sprites';
 import { StatBar } from '@/components/character/StatBar';
 import { HeroBanner } from '@/components/character/HeroBanner';
+import { LoadoutPanel } from '@/components/character/LoadoutPanel';
 import { Panel } from '@/components/ui/Panel';
 import { Crest } from '@/components/ui/Crest';
 import { SectionTitle } from '@/components/ui/Divider';
@@ -23,6 +24,8 @@ export function CharacterView() {
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
       <HeroBanner />
+
+      <LoadoutPanel />
 
       {/* Attributes */}
       <Panel tone="parchment" className="p-4">

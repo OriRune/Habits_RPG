@@ -44,3 +44,16 @@ export function emptyStatXP(): Record<StatId, number> {
     {} as Record<StatId, number>,
   );
 }
+
+/**
+ * Derived "points" for a stat from its XP. Effort (XP) tapers via sqrt so combat and
+ * dungeon checks scale sub-linearly. Shared by combat derivation and dungeon rooms.
+ */
+export function statPoints(xp: number): number {
+  return Math.floor(Math.sqrt(Math.max(0, xp)));
+}
+
+/** Combined favored-stat power for a stat-check (sum of the favored stats' points). */
+export function statPower(statXp: Record<StatId, number>, stats: StatId[]): number {
+  return stats.reduce((sum, s) => sum + statPoints(statXp[s]), 0);
+}

@@ -7,8 +7,12 @@ export interface BossDef {
   flavor: string;
   baseHp: number;
   attack: number;
-  /** Flat damage reduction applied to the player's hits. */
+  /** Flat damage reduction applied to the player's physical hits. */
   defense: number;
+  /** Flat reduction applied to the player's magical (spell) hits. */
+  ward?: number;
+  /** Whether the foe's own attacks are physical (vs. player Defense) or magical (vs. Ward). */
+  attackSchool?: 'physical' | 'magic';
   /** Stats the boss is weak to — actions powered by these deal bonus damage. */
   weakTo: StatId[];
   rewards: { gold: number; items: string[] };

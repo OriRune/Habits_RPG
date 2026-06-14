@@ -1,7 +1,24 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useGameStore } from '../useGameStore';
+import { useGameStore, type DungeonRun } from '../useGameStore';
 import { emptyStatXP } from '@/engine/stats';
 import { type BattleState } from '@/engine/combat';
+import { type DungeonRoom } from '@/engine/dungeon';
+
+function makeRun(over: Partial<DungeonRun> & { rooms: DungeonRoom[] }): DungeonRun {
+  return {
+    index: 0,
+    hp: 100,
+    maxHp: 100,
+    mp: 30,
+    maxMp: 30,
+    reward: {},
+    lastResult: null,
+    battle: null,
+    status: 'active',
+    cleared: false,
+    ...over,
+  };
+}
 
 const get = () => useGameStore.getState();
 
@@ -50,22 +67,30 @@ describe('completeHabit', () => {
 describe('level-up trial resolution', () => {
   it('winning commits the level and grants boss rewards', () => {
     useGameStore.setState({ pendingLevelUp: 2 });
-    const wonBattle: BattleState = {
+    const wonBattle = {
       bossId: 'x',
       bossName: 'Trial',
       bossMaxHp: 100,
       bossHp: 0,
       bossAttack: 5,
       bossDefense: 0,
+      enemyWard: 0,
+      attackSchool: 'physical' as const,
       weakTo: [],
       playerMaxHp: 60,
       playerHp: 40,
+      playerMaxMp: 20,
+      playerMp: 10,
+      playerMaxSta: 8,
+      playerSta: 8,
+      playerStatuses: [],
+      enemyStatuses: [],
       defending: false,
       buffs: {},
       log: [],
-      status: 'won',
+      status: 'won' as const,
       consumedItems: [],
-    };
+    } satisfies BattleState;
     useGameStore.setState({ battle: wonBattle });
     const goldBefore = get().character.gold;
 
@@ -142,5 +167,153 @@ describe('shop & streak freeze', () => {
     get().useStreakFreeze(id);
     expect(get().inventory['streak_freeze']).toBe(0);
     expect(get().habits[0].lastCompletedISO).toBeDefined();
+  });
+});
+
+describe('dungeon expeditions', () => {
+  it('requires 3 energy to enter', () => {
+    useGameStore.setState({ character: { ...get().character, energy: 2 } });
+    get().startDungeon();
+    expect(get().dungeon).toBeNull();
+  });
+
+  it('spends energy and starts a 4-room run', () => {
+    useGameStore.setState({ character: { ...get().character, energy: 5 } });
+    get().startDungeon();
+    const run = get().dungeon!;
+    expect(run).not.toBeNull();
+    expect(get().character.energy).toBe(2); // 5 - 3
+    expect(run.rooms).toHaveLength(4);
+    expect(run.status).toBe('active');
+  });
+
+  it('resolving a stat room records a result', () => {
+    useGameStore.setState({ dungeon: makeRun({ rooms: [{ type: 'survival' }, { type: 'rest' }] }) });
+    get().dungeonResolveRoom();
+    const run = get().dungeon!;
+    expect(run.lastResult).not.toBeNull();
+    expect(run.hp).toBeLessThanOrEqual(run.maxHp);
+  });
+
+  it('advancing a resolved stat room moves to the next room', () => {
+    useGameStore.setState({
+      dungeon: makeRun({
+        rooms: [{ type: 'survival' }, { type: 'rest' }],
+        lastResult: { outcome: 'success', hpDelta: 0, reward: {}, message: '' },
+      }),
+    });
+    get().dungeonAdvance();
+    expect(get().dungeon!.index).toBe(1);
+    expect(get().dungeon!.lastResult).toBeNull();
+  });
+
+  it('a won combat room carries remaining HP and trains a combat stat', () => {
+    get().resetGame();
+    useGameStore.setState({
+      dungeon: makeRun({
+        rooms: [{ type: 'combat' }, { type: 'rest' }],
+        hp: 80,
+        battle: {
+          status: 'won',
+          playerHp: 42,
+          playerMp: 12,
+          bossMaxHp: 50,
+          attackSchool: 'physical',
+        } as BattleState,
+      }),
+    });
+    get().dungeonAdvance();
+    const run = get().dungeon!;
+    expect(run.index).toBe(1);
+    expect(run.hp).toBe(42);
+    expect(run.battle).toBeNull();
+    expect(get().combatStats.defenseXp).toBeGreaterThan(0); // physical foe trains Defense
+  });
+
+  it('fleeing a combat room ends the run as a safe retreat', () => {
+    useGameStore.setState({
+      dungeon: makeRun({
+        rooms: [{ type: 'combat' }],
+        battle: { status: 'fled', playerHp: 25 } as BattleState,
+      }),
+    });
+    get().dungeonAdvance();
+    expect(get().dungeon!.status).toBe('ended');
+    expect(get().dungeon!.cleared).toBe(false);
+  });
+
+  it('a lost combat room ends the run', () => {
+    useGameStore.setState({
+      dungeon: makeRun({ rooms: [{ type: 'combat' }], battle: { status: 'lost' } as BattleState }),
+    });
+    get().dungeonAdvance();
+    expect(get().dungeon!.status).toBe('ended');
+    expect(get().dungeon!.cleared).toBe(false);
+  });
+
+  it('clearing the final room ends the run as cleared', () => {
+    useGameStore.setState({
+      dungeon: makeRun({
+        rooms: [{ type: 'treasure' }],
+        lastResult: { outcome: 'success', hpDelta: 0, reward: {}, message: '' },
+      }),
+    });
+    get().dungeonAdvance();
+    expect(get().dungeon!.status).toBe('ended');
+    expect(get().dungeon!.cleared).toBe(true);
+  });
+
+  it('collect grants gold + materials but no XP, and clears the run', () => {
+    const xpBefore = { ...get().character.statXp };
+    useGameStore.setState({
+      character: { ...get().character, gold: 10 },
+      dungeon: makeRun({
+        rooms: [{ type: 'treasure' }],
+        status: 'ended',
+        cleared: true,
+        reward: { gold: 100, materials: { iron: 2, leather: 1 } },
+      }),
+    });
+    get().collectDungeon();
+    expect(get().character.gold).toBe(110);
+    expect(get().materials).toEqual({ iron: 2, leather: 1 });
+    expect(get().character.statXp).toEqual(xpBefore); // dungeons grant no XP
+    expect(get().character.level).toBe(1);
+    expect(get().dungeon).toBeNull();
+  });
+
+  it('does not collect while a run is still active', () => {
+    useGameStore.setState({ dungeon: makeRun({ rooms: [{ type: 'rest' }] }) });
+    get().collectDungeon();
+    expect(get().dungeon).not.toBeNull();
+  });
+});
+
+describe('loadout: weapons & spells', () => {
+  it('starts with a worn sword and the starter spells', () => {
+    expect(get().equippedWeapon).toBe('worn_sword');
+    expect(get().knownSpells).toEqual(['sparks', 'mend']);
+    expect(get().ownedWeapons).toContain('worn_sword');
+  });
+
+  it('buys and equips a weapon', () => {
+    useGameStore.setState({ character: { ...get().character, gold: 200 } });
+    get().buyWeapon('short_bow');
+    expect(get().ownedWeapons).toContain('short_bow');
+    expect(get().character.gold).toBe(80); // 200 - 120
+    get().equipWeapon('short_bow');
+    expect(get().equippedWeapon).toBe('short_bow');
+  });
+
+  it('will not equip an unowned weapon', () => {
+    get().equipWeapon('iron_mace');
+    expect(get().equippedWeapon).toBe('worn_sword');
+  });
+
+  it('learns a spell from a spellbook, consuming it', () => {
+    useGameStore.setState({ inventory: { spellbook_firebolt: 1 } });
+    get().learnFromSpellbook('spellbook_firebolt');
+    expect(get().knownSpells).toContain('firebolt');
+    expect(get().inventory['spellbook_firebolt']).toBe(0);
   });
 });
