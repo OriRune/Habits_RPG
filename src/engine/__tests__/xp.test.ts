@@ -35,6 +35,10 @@ describe('computeXp', () => {
     expect(computeXp({ difficulty: 'normal', type: 'quantity', actual: 40, target: 20 })).toBe(30);
   });
 
+  it('uncapped quantity scales XP linearly past 150%', () => {
+    expect(computeXp({ difficulty: 'normal', type: 'quantity', actual: 40, target: 20, uncapped: true })).toBe(40);
+  });
+
   it('applies the +10% recovery bonus', () => {
     expect(computeXp({ difficulty: 'normal', type: 'binary', recovery: true })).toBe(22);
   });

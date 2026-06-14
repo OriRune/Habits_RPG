@@ -1,7 +1,12 @@
 import { useState } from 'react';
 import { Plus, Swords, AlertTriangle } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
-import { selectDueToday, selectHabitLoadWarning, isHabitDoneToday } from '@/store/selectors';
+import {
+  selectDashboardHabits,
+  selectHabitLoadWarning,
+  isHabitDoneToday,
+  isHabitSuspended,
+} from '@/store/selectors';
 import { HabitCard } from '@/components/habits/HabitCard';
 import { HabitForm } from '@/components/habits/HabitForm';
 import { HeroBanner } from '@/components/character/HeroBanner';
@@ -10,14 +15,16 @@ import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
 
 export function DashboardView() {
-  const due = useGameStore(selectDueToday);
+  const dashboard = useGameStore(selectDashboardHabits);
   const warning = useGameStore(selectHabitLoadWarning);
   const pendingLevelUp = useGameStore((s) => s.pendingLevelUp);
   const startBattle = useGameStore((s) => s.startBattle);
   const [showForm, setShowForm] = useState(false);
 
-  const pending = due.filter((h) => !isHabitDoneToday(h));
-  const done = due.filter((h) => isHabitDoneToday(h));
+  const suspended = dashboard.filter((h) => isHabitSuspended(h));
+  const active = dashboard.filter((h) => !isHabitSuspended(h));
+  const pending = active.filter((h) => !isHabitDoneToday(h));
+  const done = active.filter((h) => isHabitDoneToday(h));
 
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
@@ -53,7 +60,7 @@ export function DashboardView() {
           </Button>
         </div>
 
-        {due.length === 0 ? (
+        {dashboard.length === 0 ? (
           <div className="rounded-md border border-dashed border-ink-light/50 p-8 text-center text-sm text-ink-muted">
             No quests yet. Inscribe your first habit to begin shaping your hero.
           </div>
@@ -68,6 +75,16 @@ export function DashboardView() {
                   Completed ({done.length})
                 </div>
                 {done.map((h) => (
+                  <HabitCard key={h.id} habit={h} />
+                ))}
+              </>
+            )}
+            {suspended.length > 0 && (
+              <>
+                <div className="pt-3 font-display text-[11px] uppercase tracking-[0.18em] text-ink-light">
+                  Suspended ({suspended.length})
+                </div>
+                {suspended.map((h) => (
                   <HabitCard key={h.id} habit={h} />
                 ))}
               </>

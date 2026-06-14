@@ -30,3 +30,13 @@ export function addDays(iso: string, n: number): string {
 export function weekdayOf(iso: string): number {
   return parseISODate(iso).getDay();
 }
+
+/** ISO date of the Sunday that starts the week containing `iso`. */
+export function startOfWeek(iso: string): string {
+  return addDays(iso, -weekdayOf(iso));
+}
+
+/** Stable key for the week containing `iso` (its starting Sunday). */
+export function weekKey(iso: string): string {
+  return startOfWeek(iso);
+}

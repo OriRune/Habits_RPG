@@ -11,7 +11,13 @@ export function CompleteHabitDialog({ habit, onClose }: { habit: Habit; onClose:
   const [actual, setActual] = useState(String(habit.target ?? 0));
 
   const amount = Math.max(0, Number(actual) || 0);
-  const xp = computeXp({ difficulty: habit.difficulty, type: 'quantity', actual: amount, target: habit.target });
+  const xp = computeXp({
+    difficulty: habit.difficulty,
+    type: 'quantity',
+    actual: amount,
+    target: habit.target,
+    uncapped: habit.uncapped,
+  });
 
   return (
     <Modal title={habit.name} onClose={onClose}>

@@ -22,12 +22,14 @@ export function baseXp(difficulty: Difficulty): number {
 }
 
 /**
- * Completion ratio for a quantity habit, capped at COMPLETION_CAP.
- * target <= 0 is treated as fully complete (1.0).
+ * Completion ratio for a quantity habit, capped at COMPLETION_CAP unless `uncapped`.
+ * target <= 0 is treated as fully complete (1.0). Uncapped lets effort scale linearly
+ * (e.g. miles run → endurance per mile, no ceiling).
  */
-export function completionRatio(actual: number, target: number): number {
+export function completionRatio(actual: number, target: number, uncapped = false): number {
   if (target <= 0) return 1;
-  return Math.min(actual / target, COMPLETION_CAP);
+  const ratio = actual / target;
+  return uncapped ? ratio : Math.min(ratio, COMPLETION_CAP);
 }
 
 export interface XpInput {
@@ -38,6 +40,8 @@ export interface XpInput {
   target?: number;
   /** Apply the +10% recovery bonus (missed yesterday, done today). */
   recovery?: boolean;
+  /** Quantity only: remove the 150% completion cap so XP scales linearly with amount. */
+  uncapped?: boolean;
 }
 
 /**
@@ -52,7 +56,7 @@ export function computeXp(input: XpInput): number {
   const base = baseXp(input.difficulty);
   const ratio =
     input.type === 'quantity'
-      ? completionRatio(input.actual ?? 0, input.target ?? 0)
+      ? completionRatio(input.actual ?? 0, input.target ?? 0, input.uncapped)
       : 1;
   const recovery = input.recovery ? RECOVERY_BONUS : 1;
   return Math.round(base * ratio * recovery);

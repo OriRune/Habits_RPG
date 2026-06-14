@@ -1,10 +1,19 @@
-// Habit model + completion logic (design brief Sections 2, 3, 14, 18).
+// Habit model + completion/scheduling logic (design brief Sections 2, 3, 14, 18).
 import type { StatId } from './stats';
 import { computeXp, type Difficulty } from './xp';
-import { daysBetween, weekdayOf } from './date';
+import { daysBetween, weekdayOf, addDays, startOfWeek } from './date';
 
 export type HabitType = 'binary' | 'quantity';
-export type Frequency = 'daily' | 'weekdays' | 'custom';
+export type Frequency = 'daily' | 'weekdays' | 'custom' | 'times_per_week' | 'as_needed';
+export type HabitStatus = 'active' | 'retired' | 'suspended';
+
+/** One day's completion record (presence of the date key in `log` = completed). */
+export interface HabitEntry {
+  /** Amount logged for quantity habits. */
+  amount?: number;
+  /** XP earned that day (drives "total points" stats). */
+  xp: number;
+}
 
 export interface Habit {
   id: string;
@@ -14,19 +23,32 @@ export interface Habit {
   /** Goal amount for quantity habits (e.g. 20 pages). */
   target?: number;
   unit?: string;
+  /** Quantity: remove the 150% XP cap (e.g. miles run → endurance per mile). */
+  uncapped?: boolean;
   frequency: Frequency;
   /** For 'custom' frequency: weekdays 0(Sun)..6(Sat) the habit is due. */
   days?: number[];
+  /** For 'times_per_week': how many completions make a successful week. */
+  timesPerWeek?: number;
   difficulty: Difficulty;
   tag?: string;
+  /** Lifecycle: active (tracked), retired (hidden, kept), suspended (paused, marked). */
+  status: HabitStatus;
+  /** Suspended habits auto-resume on/after this date. */
+  suspendUntilISO?: string;
+  /** Cached current streak (see currentStreak). */
   streak: number;
-  /** ISO date (YYYY-MM-DD) the habit was last completed. */
+  /** ISO date the habit was last completed (cached convenience). */
   lastCompletedISO?: string;
+  /** Per-day completion history, keyed by ISO date. The source of truth for stats. */
+  log: Record<string, HabitEntry>;
   createdISO: string;
 }
 
-/** Whether the habit is scheduled for the given day (brief: frequency / rest days). */
-export function isDueOn(habit: Habit, iso: string): boolean {
+const DAY_SCHEDULED: Frequency[] = ['daily', 'weekdays', 'custom'];
+
+/** Whether the habit is scheduled (has a planned obligation) on a specific day. */
+export function isScheduledOn(habit: Habit, iso: string): boolean {
   switch (habit.frequency) {
     case 'daily':
       return true;
@@ -36,47 +58,117 @@ export function isDueOn(habit: Habit, iso: string): boolean {
     }
     case 'custom':
       return habit.days?.includes(weekdayOf(iso)) ?? false;
+    case 'times_per_week':
+    case 'as_needed':
+      return false; // no specific planned day — never "missed/red"
   }
 }
 
+/** Effective status accounting for an elapsed suspension (auto-resume). */
+export function effectiveStatus(habit: Habit, today: string): HabitStatus {
+  if (habit.status === 'suspended' && habit.suspendUntilISO && today >= habit.suspendUntilISO) {
+    return 'active';
+  }
+  return habit.status;
+}
+
+/** Whether the habit can be logged today (shown & actionable on the dashboard). */
+export function isLoggableOn(habit: Habit, today: string): boolean {
+  if (effectiveStatus(habit, today) !== 'active') return false;
+  return (
+    isScheduledOn(habit, today) ||
+    habit.frequency === 'times_per_week' ||
+    habit.frequency === 'as_needed'
+  );
+}
+
 export function isCompletedOn(habit: Habit, iso: string): boolean {
-  return habit.lastCompletedISO === iso;
+  return habit.log[iso] !== undefined;
+}
+
+/** Completions logged in the (Sunday-started) week containing `iso`. */
+export function weekCompletions(habit: Habit, iso: string): number {
+  const start = startOfWeek(iso);
+  let n = 0;
+  for (let d = 0; d < 7; d++) {
+    if (isCompletedOn(habit, addDays(start, d))) n++;
+  }
+  return n;
+}
+
+function weeklyTargetMet(habit: Habit, weekStartIso: string): boolean {
+  return weekCompletions(habit, weekStartIso) >= (habit.timesPerWeek ?? 1);
+}
+
+const STREAK_MAX_ITERS = 366 * 3;
+
+/**
+ * Current streak: consecutive scheduled days completed (day habits); consecutive weeks
+ * meeting the target (times_per_week). Not meaningful for as_needed (returns 0).
+ */
+export function currentStreak(habit: Habit, today: string): number {
+  if (habit.frequency === 'as_needed') return 0;
+
+  if (habit.frequency === 'times_per_week') {
+    let streak = 0;
+    let wk = startOfWeek(today);
+    for (let i = 0; i < STREAK_MAX_ITERS && wk >= startOfWeek(habit.createdISO); i++) {
+      if (!weeklyTargetMet(habit, wk)) break;
+      streak++;
+      wk = addDays(wk, -7);
+    }
+    return streak;
+  }
+
+  // Day-scheduled: walk back over scheduled days while they're completed.
+  let cursor = today;
+  // If today is scheduled but not yet done, the streak runs up to the previous day.
+  if (isScheduledOn(habit, cursor) && !isCompletedOn(habit, cursor)) {
+    cursor = addDays(cursor, -1);
+  }
+  let streak = 0;
+  for (let i = 0; i < STREAK_MAX_ITERS && cursor >= habit.createdISO; i++) {
+    if (!isScheduledOn(habit, cursor)) {
+      cursor = addDays(cursor, -1);
+      continue;
+    }
+    if (isCompletedOn(habit, cursor)) {
+      streak++;
+      cursor = addDays(cursor, -1);
+    } else {
+      break;
+    }
+  }
+  return streak;
 }
 
 export interface CompletionResult {
   xp: number;
   recovery: boolean;
-  newStreak: number;
 }
 
 /**
- * Resolve a completion: XP earned, whether a recovery bonus applied, and the
- * updated streak. A recovery bonus (brief Section 14) is granted when the habit
- * was missed the day before but is completed today.
+ * Resolve a completion: XP earned and whether a recovery bonus applied. The store writes
+ * the day's log entry and recomputes the streak via currentStreak. Recovery (brief §14)
+ * only applies to day-scheduled habits.
  */
 export function resolveCompletion(
   habit: Habit,
   todayIso: string,
   opts: { actual?: number } = {},
 ): CompletionResult {
-  const gap = habit.lastCompletedISO
-    ? daysBetween(todayIso, habit.lastCompletedISO)
-    : Infinity;
-
-  // Recovery: there was a previous completion, but not yesterday or today
-  // (i.e. at least one day was missed in between).
-  const recovery = Number.isFinite(gap) && gap > 1;
-
-  // Streak continues if completed on consecutive due days; resets otherwise.
-  const newStreak = gap === 1 ? habit.streak + 1 : 1;
+  const dayScheduled = DAY_SCHEDULED.includes(habit.frequency);
+  const gap = habit.lastCompletedISO ? daysBetween(todayIso, habit.lastCompletedISO) : Infinity;
+  const recovery = dayScheduled && Number.isFinite(gap) && gap > 1;
 
   const xp = computeXp({
     difficulty: habit.difficulty,
     type: habit.type,
     actual: opts.actual,
     target: habit.target,
+    uncapped: habit.uncapped,
     recovery,
   });
 
-  return { xp, recovery, newStreak };
+  return { xp, recovery };
 }

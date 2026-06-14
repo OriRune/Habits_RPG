@@ -26,12 +26,20 @@ export function HabitForm({ onClose }: { onClose: () => void }) {
   const [type, setType] = useState<HabitType>('binary');
   const [target, setTarget] = useState('20');
   const [unit, setUnit] = useState('');
+  const [uncapped, setUncapped] = useState(false);
   const [frequency, setFrequency] = useState<Frequency>('daily');
+  const [days, setDays] = useState<number[]>([1, 3, 5]);
+  const [timesPerWeek, setTimesPerWeek] = useState('3');
   const [difficulty, setDifficulty] = useState<Difficulty>('normal');
   const [tag, setTag] = useState('');
 
+  function toggleDay(d: number) {
+    setDays((cur) => (cur.includes(d) ? cur.filter((x) => x !== d) : [...cur, d].sort()));
+  }
+
   function submit() {
     if (!name.trim()) return;
+    if (frequency === 'custom' && days.length === 0) return;
     const input: NewHabitInput = {
       name: name.trim(),
       stat,
@@ -40,7 +48,11 @@ export function HabitForm({ onClose }: { onClose: () => void }) {
       difficulty,
       tag: tag || undefined,
       ...(type === 'quantity'
-        ? { target: Math.max(1, Number(target) || 1), unit: unit || undefined }
+        ? { target: Math.max(1, Number(target) || 1), unit: unit || undefined, uncapped }
+        : {}),
+      ...(frequency === 'custom' ? { days } : {}),
+      ...(frequency === 'times_per_week'
+        ? { timesPerWeek: Math.max(1, Math.min(7, Number(timesPerWeek) || 1)) }
         : {}),
     };
     addHabit(input);
@@ -120,6 +132,10 @@ export function HabitForm({ onClose }: { onClose: () => void }) {
               <label className={labelCls}>Unit (optional)</label>
               <input className={fieldCls} value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="pages, min" />
             </div>
+            <label className="col-span-2 flex items-center gap-2 text-sm text-ink">
+              <input type="checkbox" checked={uncapped} onChange={(e) => setUncapped(e.target.checked)} />
+              Allow unlimited — no XP cap (e.g. miles run)
+            </label>
           </div>
         )}
 
@@ -128,8 +144,46 @@ export function HabitForm({ onClose }: { onClose: () => void }) {
           <select className={fieldCls} value={frequency} onChange={(e) => setFrequency(e.target.value as Frequency)}>
             <option value="daily">Daily</option>
             <option value="weekdays">Weekdays</option>
+            <option value="custom">Certain days</option>
+            <option value="times_per_week">X times per week</option>
+            <option value="as_needed">As needed (no penalty)</option>
           </select>
         </div>
+
+        {frequency === 'custom' && (
+          <div>
+            <label className={labelCls}>Days</label>
+            <div className="flex gap-1">
+              {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => (
+                <button
+                  key={i}
+                  onClick={() => toggleDay(i)}
+                  className={`h-9 flex-1 rounded-md border text-sm font-semibold ${
+                    days.includes(i)
+                      ? 'border-gold-deep bg-gold/15 text-ink'
+                      : 'border-ink-light/40 text-ink-muted hover:border-gold-deep/60'
+                  }`}
+                >
+                  {d}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {frequency === 'times_per_week' && (
+          <div>
+            <label className={labelCls}>Times per week</label>
+            <input
+              type="number"
+              min={1}
+              max={7}
+              className={fieldCls}
+              value={timesPerWeek}
+              onChange={(e) => setTimesPerWeek(e.target.value)}
+            />
+          </div>
+        )}
 
         <div>
           <label className={labelCls}>Difficulty</label>

@@ -10,7 +10,9 @@ import {
   type HabitType,
   type Frequency,
   resolveCompletion,
-  isDueOn,
+  isScheduledOn,
+  effectiveStatus,
+  currentStreak,
 } from '@/engine/habits';
 import { toISODate, daysBetween } from '@/engine/date';
 import { levelForTotalXp } from '@/engine/leveling';
@@ -63,8 +65,10 @@ export interface NewHabitInput {
   type: HabitType;
   target?: number;
   unit?: string;
+  uncapped?: boolean;
   frequency: Frequency;
   days?: number[];
+  timesPerWeek?: number;
   difficulty: Difficulty;
   tag?: string;
 }
@@ -126,6 +130,11 @@ export interface GameState {
   updateHabit: (id: string, patch: Partial<NewHabitInput>) => void;
   removeHabit: (id: string) => void;
   completeHabit: (id: string, actual?: number) => void;
+  retireHabit: (id: string) => void;
+  reactivateHabit: (id: string) => void;
+  suspendHabit: (id: string, untilISO: string) => void;
+  /** Flip any suspensions whose date has passed back to active (call on mount). */
+  normalizeHabits: () => void;
 
   startBattle: () => void;
   battleAction: (action: CombatAction) => void;
@@ -204,11 +213,12 @@ function recomputeMood(state: GameState, todayIso: string, recentlyRecovered: bo
     const ago = daysBetween(todayIso, iso);
     if (ago >= 0 && ago < 7) completions += n;
   }
-  // Expected: due habit-days over the same window.
+  // Expected: scheduled habit-days over the same window (weekly/as-needed don't count,
+  // so they never drag mood down).
   let expected = 0;
   for (let d = 0; d < 7; d++) {
     const iso = isoDaysAgo(todayIso, d);
-    expected += state.habits.filter((h) => isDueOn(h, iso)).length;
+    expected += state.habits.filter((h) => isScheduledOn(h, iso)).length;
   }
   state.character.mood = computeMood(completions, expected, recentlyRecovered);
 }
@@ -278,7 +288,9 @@ export const useGameStore = create<GameState>()(
             ...s.habits,
             {
               id: uid(),
+              status: 'active',
               streak: 0,
+              log: {},
               createdISO: toISODate(),
               ...input,
             },
@@ -293,12 +305,48 @@ export const useGameStore = create<GameState>()(
       removeHabit: (id) =>
         set((s) => ({ habits: s.habits.filter((h) => h.id !== id) })),
 
+      retireHabit: (id) =>
+        set((s) => ({
+          habits: s.habits.map((h) =>
+            h.id === id ? { ...h, status: 'retired' as const, suspendUntilISO: undefined } : h,
+          ),
+        })),
+
+      reactivateHabit: (id) =>
+        set((s) => ({
+          habits: s.habits.map((h) =>
+            h.id === id ? { ...h, status: 'active' as const, suspendUntilISO: undefined } : h,
+          ),
+        })),
+
+      suspendHabit: (id, untilISO) =>
+        set((s) => ({
+          habits: s.habits.map((h) =>
+            h.id === id ? { ...h, status: 'suspended' as const, suspendUntilISO: untilISO } : h,
+          ),
+        })),
+
+      normalizeHabits: () =>
+        set((s) => {
+          const today = toISODate();
+          let changed = false;
+          const habits = s.habits.map((h) => {
+            if (h.status === 'suspended' && effectiveStatus(h, today) === 'active') {
+              changed = true;
+              return { ...h, status: 'active' as const, suspendUntilISO: undefined };
+            }
+            return h;
+          });
+          return changed ? { habits } : s;
+        }),
+
       completeHabit: (id, actual) =>
         set((s) => {
           const today = toISODate();
           const habit = s.habits.find((h) => h.id === id);
           if (!habit) return s;
-          if (habit.lastCompletedISO === today) return s; // already done today
+          if (habit.log[today] !== undefined) return s; // already done today
+          if (effectiveStatus(habit, today) !== 'active') return s; // retired/suspended
 
           const result = resolveCompletion(habit, today, { actual });
 
@@ -308,11 +356,16 @@ export const useGameStore = create<GameState>()(
             character: { ...s.character, statXp: { ...s.character.statXp } },
             inventory: { ...s.inventory },
             completionLog: { ...s.completionLog },
-            habits: s.habits.map((h) =>
-              h.id === id
-                ? { ...h, streak: result.newStreak, lastCompletedISO: today }
-                : h,
-            ),
+            habits: s.habits.map((h) => {
+              if (h.id !== id) return h;
+              const updated: Habit = {
+                ...h,
+                log: { ...h.log, [today]: { amount: actual, xp: result.xp } },
+                lastCompletedISO: today,
+              };
+              updated.streak = currentStreak(updated, today);
+              return updated;
+            }),
           };
 
           next.character.statXp[habit.stat] += result.xp;
@@ -649,13 +702,21 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 2,
-      // v2 reworked combat (MP/stamina/spells/new BattleState + DungeonRun.mp). Old saves
-      // predate those shapes, so clear any in-progress battle/dungeon; new top-level fields
-      // (knownSpells/equippedWeapon/ownedWeapons/combatStats) fall back to defaults on merge.
+      version: 3,
+      // v2: cleared stale battle/dungeon for the combat rework.
+      // v3: habits gained status/log + new frequency/scoring fields — backfill them so old
+      //     saves load cleanly and the per-day history starts recording.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
-        return { ...p, battle: null, dungeon: null } as GameState;
+        const habits = (p.habits ?? []).map((h) => {
+          const log: Habit['log'] = h.log ?? {};
+          // Preserve the last known completion as a history cell so it isn't lost.
+          if (h.lastCompletedISO && log[h.lastCompletedISO] === undefined) {
+            log[h.lastCompletedISO] = { xp: 0 };
+          }
+          return { ...h, status: h.status ?? 'active', log } as Habit;
+        });
+        return { ...p, habits, battle: null, dungeon: null } as GameState;
       },
     },
   ),

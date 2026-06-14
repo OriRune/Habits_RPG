@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Header } from '@/components/layout/Header';
 import { TabBar, type Tab } from '@/components/layout/TabBar';
 import { BattleOverlay } from '@/components/combat/BattleOverlay';
@@ -14,6 +14,10 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('habits');
   const battle = useGameStore((s) => s.battle);
   const classChoice = useGameStore((s) => s.pendingClassChoice);
+  const normalizeHabits = useGameStore((s) => s.normalizeHabits);
+
+  // Resume any habits whose suspension has elapsed.
+  useEffect(() => normalizeHabits(), [normalizeHabits]);
 
   return (
     <div className="flex min-h-full flex-col">

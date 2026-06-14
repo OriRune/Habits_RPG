@@ -3,6 +3,7 @@ import { useGameStore, type DungeonRun } from '../useGameStore';
 import { emptyStatXP } from '@/engine/stats';
 import { type BattleState } from '@/engine/combat';
 import { type DungeonRoom } from '@/engine/dungeon';
+import { toISODate } from '@/engine/date';
 
 function makeRun(over: Partial<DungeonRun> & { rooms: DungeonRoom[] }): DungeonRun {
   return {
@@ -286,6 +287,55 @@ describe('dungeon expeditions', () => {
     useGameStore.setState({ dungeon: makeRun({ rooms: [{ type: 'rest' }] }) });
     get().collectDungeon();
     expect(get().dungeon).not.toBeNull();
+  });
+});
+
+describe('habit lifecycle', () => {
+  it('completeHabit records a per-day log entry and updates streak', () => {
+    get().addHabit({ name: 'Read', stat: 'KN', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    get().completeHabit(id);
+    const h = get().habits[0];
+    expect(h.log[toISODate()]).toBeDefined();
+    expect(h.log[toISODate()].xp).toBe(20);
+    expect(h.streak).toBe(1);
+  });
+
+  it('cannot complete a retired or suspended habit', () => {
+    get().addHabit({ name: 'Run', stat: 'EN', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+
+    get().retireHabit(id);
+    get().completeHabit(id);
+    expect(Object.keys(get().habits[0].log)).toHaveLength(0);
+
+    get().reactivateHabit(id);
+    get().completeHabit(id);
+    expect(Object.keys(get().habits[0].log)).toHaveLength(1);
+  });
+
+  it('suspend then normalize auto-resumes once the date has passed', () => {
+    get().addHabit({ name: 'Gym', stat: 'ST', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    get().suspendHabit(id, '2000-01-01'); // already in the past
+    expect(get().habits[0].status).toBe('suspended');
+    get().normalizeHabits();
+    expect(get().habits[0].status).toBe('active');
+  });
+
+  it('an uncapped quantity habit grants XP past the 150% cap', () => {
+    get().addHabit({
+      name: 'Running',
+      stat: 'EN',
+      type: 'quantity',
+      target: 3,
+      uncapped: true,
+      frequency: 'as_needed',
+      difficulty: 'normal',
+    });
+    const id = get().habits[0].id;
+    get().completeHabit(id, 9); // 9/3 = 3.0 × 20 = 60 (capped would be 30)
+    expect(get().character.statXp.EN).toBe(60);
   });
 });
 
