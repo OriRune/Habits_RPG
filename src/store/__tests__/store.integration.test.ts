@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { useGameStore, type DungeonRun } from '../useGameStore';
-import { emptyStatXP } from '@/engine/stats';
+import { useGameStore, withCharacterDefaults, type DungeonRun } from '../useGameStore';
+import { STAT_IDS, emptyStatXP } from '@/engine/stats';
 import { type BattleState } from '@/engine/combat';
 import { type DungeonRoom } from '@/engine/dungeon';
 import { getEncounter, startEncounter } from '@/engine/encounters';
@@ -33,6 +33,24 @@ const get = () => useGameStore.getState();
 
 beforeEach(() => {
   get().resetGame();
+});
+
+describe('withCharacterDefaults (persist merge guard)', () => {
+  it('backfills statLevels/statXpAtLastLevel for a pre-rework saved character', () => {
+    // A v6-style character with no statLevels would crash the Attributes panel.
+    const legacy = { level: 4, statXp: emptyStatXP(), gold: 50, energy: 3, classId: null, mood: 'steady' } as never;
+    const c = withCharacterDefaults(legacy);
+    expect(c.statLevels).toBeDefined();
+    for (const s of STAT_IDS) expect(c.statLevels[s]).toBeGreaterThanOrEqual(1);
+    expect(c.statXpAtLastLevel).toBeDefined();
+    expect(c.level).toBe(4); // existing fields preserved
+    expect(c.gold).toBe(50);
+  });
+
+  it('preserves an already-migrated character unchanged', () => {
+    const c = withCharacterDefaults(get().character);
+    expect(c.statLevels).toEqual(get().character.statLevels);
+  });
 });
 
 describe('completeHabit', () => {

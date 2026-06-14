@@ -273,6 +273,11 @@ function freshCharacter(): Character {
   };
 }
 
+/** Backfill any character fields missing from a persisted save (defends nested persist merges). */
+export function withCharacterDefaults(c: Partial<Character> | undefined): Character {
+  return { ...freshCharacter(), ...(c ?? {}) };
+}
+
 export function totalXp(statXp: Record<StatId, number>): number {
   return (Object.values(statXp) as number[]).reduce((a, b) => a + b, 0);
 }
@@ -1168,6 +1173,18 @@ export const useGameStore = create<GameState>()(
             }
           : p.character;
         return { ...p, habits, materials, challenges, character, battle: null, dungeon: null } as GameState;
+      },
+      // Deep-merge the nested `character`/`settings` objects so fields added in later versions
+      // (e.g. statLevels) always fall back to their defaults instead of being dropped by the
+      // default shallow merge — which would replace the whole object and crash the UI.
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<GameState>;
+        return {
+          ...current,
+          ...p,
+          character: withCharacterDefaults(p.character),
+          settings: { ...current.settings, ...(p.settings ?? {}) },
+        };
       },
     },
   ),
