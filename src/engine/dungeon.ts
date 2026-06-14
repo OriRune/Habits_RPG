@@ -91,6 +91,8 @@ export function resolveStatRoom(
   statXp: Record<StatId, number>,
   maxHp: number,
   rng: RNG = Math.random,
+  /** Flat per-stat bonuses (e.g. from equipped gear) added to the favored-stat power. */
+  bonuses: Partial<Record<StatId, number>> = {},
 ): RoomResolution {
   if (room.type === 'rest') {
     const heal = restHeal(maxHp);
@@ -98,7 +100,7 @@ export function resolveStatRoom(
   }
 
   const favored = ROOM_FAVORED[room.type];
-  const power = statPower(statXp, favored);
+  const power = statPower(statXp, favored) + favored.reduce((s, st) => s + (bonuses[st] ?? 0), 0);
   const threshold = ROOM_THRESHOLD[room.type];
   const successChance = Math.min(0.95, Math.max(0.05, 0.3 + (power - threshold) * 0.04));
 
@@ -112,7 +114,7 @@ export function resolveStatRoom(
   if (outcome === 'success') {
     const gold = isTreasure ? 80 + Math.floor(rng() * 40) : 25 + Math.floor(rng() * 15);
     const materials: Record<string, number> = { [randomMaterial(rng)]: isTreasure ? 2 : 1 };
-    if (isTreasure) materials['essence'] = (materials['essence'] ?? 0) + 1;
+    if (isTreasure) materials['crystals'] = (materials['crystals'] ?? 0) + 1;
     const reward: Reward = { gold, materials };
     // Treasure rooms can drop a spellbook (and rarely a weapon).
     if (isTreasure) {

@@ -70,14 +70,14 @@ describe('resolveStatRoom', () => {
     expect(res.reward.gold ?? 0).toBe(0);
   });
 
-  it('treasure rooms grant richer rewards including essence', () => {
+  it('treasure rooms grant richer rewards including crystals', () => {
     const xp = emptyStatXP();
     xp.DX = 900; // 30
     xp.KN = 900; // 30
     const res = resolveStatRoom({ type: 'treasure' }, xp, 100, fixed(0));
     expect(res.outcome).toBe('success');
     expect(res.reward.gold).toBeGreaterThanOrEqual(80);
-    expect(res.reward.materials?.essence).toBe(1);
+    expect(res.reward.materials?.crystals).toBe(1);
   });
 
   it('rest rooms heal and never harm', () => {

@@ -16,8 +16,9 @@ import type { MaterialDef } from '@/engine/materials';
 
 export const MATERIALS: Record<string, MaterialDef> = {
   leather: { key: 'leather', name: 'Leather', glyph: 'L', color: '#8a5a2b' },
-  cloth: { key: 'cloth', name: 'Cloth', glyph: 'C', color: '#b8487f' },
-  iron: { key: 'iron', name: 'Iron', glyph: 'I', color: '#7a8590' },
-  herb: { key: 'herb', name: 'Herb', glyph: 'H', color: '#5e8a2e' },
-  essence: { key: 'essence', name: 'Essence', glyph: 'E', color: '#6a4fb0' },
+  iron_bar: { key: 'iron_bar', name: 'Iron Bar', glyph: 'I', color: '#7a8590' },
+  cloth_roll: { key: 'cloth_roll', name: 'Roll of Cloth', glyph: 'R', color: '#b8487f' },
+  bronze_bar: { key: 'bronze_bar', name: 'Bronze Bar', glyph: 'B', color: '#a06a3a' },
+  herbs: { key: 'herbs', name: 'Herbs', glyph: 'H', color: '#5e8a2e' },
+  crystals: { key: 'crystals', name: 'Crystals', glyph: '◆', color: '#6a4fb0' },
 };

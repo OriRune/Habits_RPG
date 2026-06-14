@@ -61,6 +61,12 @@ export function materialCrest(key: string): CrestLook {
   return m ? { glyph: m.glyph, color: m.color } : { glyph: '?', color: GOLD };
 }
 
+/** Gear crest: initial tinted by slot (armor steel, trinket gold, tool leather-brown). */
+export function gearCrest(name: string, slot?: string): CrestLook {
+  const color = slot === 'armor' ? '#7a8590' : slot === 'tool' ? '#8a5a2b' : GOLD;
+  return { glyph: firstLetter(name), color };
+}
+
 // --- The swap seam -------------------------------------------------------------
 // Map a stable sprite key -> real image URL once art exists, e.g.:
 //   import slime from '@/assets/sprites/procrastination_slime.png';

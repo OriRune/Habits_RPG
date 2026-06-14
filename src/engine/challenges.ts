@@ -13,6 +13,8 @@ export interface Reward {
   materials?: Record<string, number>;
   /** Weapon keys awarded (added to owned weapons; see engine/weapons.ts). */
   weapons?: string[];
+  /** Gear keys awarded (added to owned gear; see engine/gear.ts). */
+  gear?: string[];
 }
 
 export type ChallengeMetric = 'count' | 'quantity';

@@ -29,6 +29,8 @@ import {
 import { getWeapon, STARTER_WEAPON, WEAPONS } from '@/engine/weapons';
 import { STARTER_SPELLS } from '@/engine/spells';
 import { type CombatStats, emptyCombatStats, combatXpForWin } from '@/engine/combatStats';
+import { type GearDef, type GearSlot, getGear, aggregateGear, gearXpMultiplier } from '@/engine/gear';
+import { getRecipe, canCraft } from '@/engine/crafting';
 import { getItem, ITEMS } from '@/engine/items';
 import {
   type ActiveChallenge,
@@ -110,6 +112,10 @@ export interface GameState {
   equippedWeapon: string;
   /** Weapon keys the character owns (equippable). */
   ownedWeapons: string[];
+  /** Gear keys the character owns (equippable into the slots below). */
+  ownedGear: string[];
+  /** Equipped gear per slot (armor/trinket/tool). Weapon is `equippedWeapon` above. */
+  equipment: Record<GearSlot, string | null>;
   /** Combat-trained stats (Defense/Ward) — earned in dungeons, not from habits. */
   combatStats: CombatStats;
   codex: string[];
@@ -151,6 +157,9 @@ export interface GameState {
   equipWeapon: (weaponKey: string) => void;
   buyWeapon: (weaponKey: string) => void;
   learnFromSpellbook: (itemKey: string) => void;
+  craft: (recipeKey: string) => void;
+  equipGear: (gearKey: string) => void;
+  unequipGear: (slot: GearSlot) => void;
 
   startDungeon: () => void;
   dungeonResolveRoom: () => void;
@@ -204,6 +213,11 @@ function applyReward(state: GameState, reward: Reward): void {
       if (!state.ownedWeapons.includes(key)) state.ownedWeapons.push(key);
     }
   }
+  if (reward.gear) {
+    for (const key of reward.gear) {
+      if (!state.ownedGear.includes(key)) state.ownedGear.push(key);
+    }
+  }
 }
 
 /** Recompute mood from the last 7 days of activity. */
@@ -229,12 +243,29 @@ function isoDaysAgo(iso: string, days: number): string {
   return toISODate(dt);
 }
 
+/** Equipped gear pieces (skips empty slots). */
+function gearFor(state: GameState): GearDef[] {
+  return (Object.values(state.equipment) as (string | null)[])
+    .map((key) => (key ? getGear(key) : undefined))
+    .filter((g): g is GearDef => g !== undefined);
+}
+
+function gearBonuses(state: GameState) {
+  return aggregateGear(gearFor(state));
+}
+
 /** Build the acting Fighter from current character state (+ optional in-battle buffs). */
 function fighterFor(state: GameState, buffs: Partial<Record<StatId, number>> = {}): Fighter {
-  return {
-    c: deriveCombatant(state.character.statXp, state.combatStats, buffs),
-    weapon: getWeapon(state.equippedWeapon),
-  };
+  const gear = gearBonuses(state);
+  // Fold gear stat bonuses into the buffs map deriveCombatant already understands.
+  const merged: Partial<Record<StatId, number>> = { ...buffs };
+  for (const [stat, n] of Object.entries(gear.statBonuses)) {
+    merged[stat as StatId] = (merged[stat as StatId] ?? 0) + (n ?? 0);
+  }
+  const c = deriveCombatant(state.character.statXp, state.combatStats, merged);
+  c.defense += gear.defense;
+  c.ward += gear.ward;
+  return { c, weapon: getWeapon(state.equippedWeapon) };
 }
 
 /** Set up the run's current room — spawns a seeded combat for combat rooms. */
@@ -271,6 +302,8 @@ export const useGameStore = create<GameState>()(
       knownSpells: [...STARTER_SPELLS],
       equippedWeapon: STARTER_WEAPON,
       ownedWeapons: [STARTER_WEAPON],
+      ownedGear: [],
+      equipment: { armor: null, trinket: null, tool: null },
       combatStats: emptyCombatStats(),
       codex: [],
       challenges: [],
@@ -349,6 +382,8 @@ export const useGameStore = create<GameState>()(
           if (effectiveStatus(habit, today) !== 'active') return s; // retired/suspended
 
           const result = resolveCompletion(habit, today, { actual });
+          // Equipped gear can boost XP for matching habits (tag/stat perks).
+          const xp = Math.round(result.xp * gearXpMultiplier(gearFor(s), habit));
 
           // Deep-ish clone of the slices we mutate.
           const next: GameState = {
@@ -360,7 +395,7 @@ export const useGameStore = create<GameState>()(
               if (h.id !== id) return h;
               const updated: Habit = {
                 ...h,
-                log: { ...h.log, [today]: { amount: actual, xp: result.xp } },
+                log: { ...h.log, [today]: { amount: actual, xp } },
                 lastCompletedISO: today,
               };
               updated.streak = currentStreak(updated, today);
@@ -368,7 +403,7 @@ export const useGameStore = create<GameState>()(
             }),
           };
 
-          next.character.statXp[habit.stat] += result.xp;
+          next.character.statXp[habit.stat] += xp;
           next.character.energy += 1;
           next.completionLog[today] = (next.completionLog[today] ?? 0) + 1;
           next.lastActiveISO = today;
@@ -555,6 +590,37 @@ export const useGameStore = create<GameState>()(
           return { inventory, knownSpells };
         }),
 
+      craft: (recipeKey) =>
+        set((s) => {
+          const recipe = getRecipe(recipeKey);
+          if (!recipe || !canCraft(recipe, s.materials, s.character.gold)) return s;
+          const materials = { ...s.materials };
+          for (const [key, qty] of Object.entries(recipe.materials)) {
+            materials[key] = (materials[key] ?? 0) - qty;
+          }
+          const gold = s.character.gold - (recipe.gold ?? 0);
+          const { kind, key } = recipe.result;
+          const next: Partial<GameState> = { materials, character: { ...s.character, gold } };
+          if (kind === 'gear') {
+            next.ownedGear = s.ownedGear.includes(key) ? s.ownedGear : [...s.ownedGear, key];
+          } else if (kind === 'weapon') {
+            next.ownedWeapons = s.ownedWeapons.includes(key) ? s.ownedWeapons : [...s.ownedWeapons, key];
+          } else {
+            next.inventory = { ...s.inventory, [key]: (s.inventory[key] ?? 0) + 1 };
+          }
+          return next;
+        }),
+
+      equipGear: (gearKey) =>
+        set((s) => {
+          const gear = getGear(gearKey);
+          if (!gear || !s.ownedGear.includes(gearKey)) return s;
+          return { equipment: { ...s.equipment, [gear.slot]: gearKey } };
+        }),
+
+      unequipGear: (slot) =>
+        set((s) => ({ equipment: { ...s.equipment, [slot]: null } })),
+
       startDungeon: () =>
         set((s) => {
           if (s.dungeon || s.character.energy < DUNGEON_ENERGY_COST) return s;
@@ -587,7 +653,7 @@ export const useGameStore = create<GameState>()(
           const room = run.rooms[run.index];
           if (room.type === 'combat') return s; // resolved via combat, not a stat check
 
-          const res = resolveStatRoom(room, s.character.statXp, run.maxHp);
+          const res = resolveStatRoom(room, s.character.statXp, run.maxHp, Math.random, gearBonuses(s).statBonuses);
           const hp = Math.max(0, Math.min(run.maxHp, run.hp + res.hpDelta));
           // Rest rooms also restore Mana to full.
           const mp = room.type === 'rest' ? run.maxMp : run.mp;
@@ -702,21 +768,27 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 3,
+      version: 4,
       // v2: cleared stale battle/dungeon for the combat rework.
-      // v3: habits gained status/log + new frequency/scoring fields — backfill them so old
-      //     saves load cleanly and the per-day history starts recording.
+      // v3: habits gained status/log + new frequency/scoring fields.
+      // v4: material set revamp — remap old material keys to the new ones so accrued
+      //     materials survive; new equipment fields fall back to defaults on merge.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {
           const log: Habit['log'] = h.log ?? {};
-          // Preserve the last known completion as a history cell so it isn't lost.
           if (h.lastCompletedISO && log[h.lastCompletedISO] === undefined) {
             log[h.lastCompletedISO] = { xp: 0 };
           }
           return { ...h, status: h.status ?? 'active', log } as Habit;
         });
-        return { ...p, habits, battle: null, dungeon: null } as GameState;
+        const RENAME: Record<string, string> = { iron: 'iron_bar', cloth: 'cloth_roll', herb: 'herbs', essence: 'crystals' };
+        const materials: Record<string, number> = {};
+        for (const [key, qty] of Object.entries(p.materials ?? {})) {
+          const k = RENAME[key] ?? key;
+          materials[k] = (materials[k] ?? 0) + (qty as number);
+        }
+        return { ...p, habits, materials, battle: null, dungeon: null } as GameState;
       },
     },
   ),

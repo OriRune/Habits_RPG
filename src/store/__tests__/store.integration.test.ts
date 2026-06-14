@@ -339,6 +339,51 @@ describe('habit lifecycle', () => {
   });
 });
 
+describe('crafting & equipment', () => {
+  it('crafts gear, consuming materials and gold', () => {
+    useGameStore.setState({
+      materials: { iron_bar: 1, crystals: 1 },
+      character: { ...get().character, gold: 30 },
+    });
+    get().craft('scholars_lantern'); // needs iron_bar:1, crystals:1, gold:30
+    expect(get().ownedGear).toContain('scholars_lantern');
+    expect(get().materials.iron_bar).toBe(0);
+    expect(get().materials.crystals).toBe(0);
+    expect(get().character.gold).toBe(0);
+  });
+
+  it('will not craft without enough materials', () => {
+    useGameStore.setState({ materials: { leather: 1 } }); // leather_vest needs 3
+    get().craft('leather_vest');
+    expect(get().ownedGear).not.toContain('leather_vest');
+    expect(get().materials.leather).toBe(1); // unchanged
+  });
+
+  it('equips gear into the right slot and unequips it', () => {
+    useGameStore.setState({ ownedGear: ['sage_ring'] });
+    get().equipGear('sage_ring');
+    expect(get().equipment.trinket).toBe('sage_ring');
+    get().unequipGear('trinket');
+    expect(get().equipment.trinket).toBeNull();
+  });
+
+  it('will not equip unowned gear', () => {
+    get().equipGear('bronze_plate');
+    expect(get().equipment.armor).toBeNull();
+  });
+
+  it('equipped gear boosts matching habit XP', () => {
+    useGameStore.setState({
+      ownedGear: ['scholars_lantern'],
+      equipment: { armor: null, trinket: 'scholars_lantern', tool: null },
+    });
+    get().addHabit({ name: 'Study Spanish', stat: 'KN', type: 'binary', frequency: 'daily', difficulty: 'normal', tag: 'Study' });
+    const id = get().habits[0].id;
+    get().completeHabit(id);
+    expect(get().character.statXp.KN).toBe(22); // 20 × 1.10 (Scholar's Lantern, Study)
+  });
+});
+
 describe('loadout: weapons & spells', () => {
   it('starts with a worn sword and the starter spells', () => {
     expect(get().equippedWeapon).toBe('worn_sword');

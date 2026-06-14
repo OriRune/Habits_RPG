@@ -9,6 +9,8 @@ import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { Sprite } from '@/components/ui/Sprite';
 import { SectionTitle } from '@/components/ui/Divider';
+import { GearSection } from '@/components/inventory/GearSection';
+import { ForgeSection } from '@/components/inventory/ForgeSection';
 
 export function InventoryView() {
   const inventory = useGameStore((s) => s.inventory);
@@ -107,6 +109,8 @@ export function InventoryView() {
         </div>
       </Panel>
 
+      <GearSection />
+
       {ownedMaterials.length > 0 && (
         <Panel tone="parchment" className="p-4">
           <SectionTitle className="mb-3">Materials</SectionTitle>
@@ -121,6 +125,8 @@ export function InventoryView() {
           </div>
         </Panel>
       )}
+
+      <ForgeSection />
 
       {protectable.length > 0 && (
         <Panel tone="parchment" className="p-4">

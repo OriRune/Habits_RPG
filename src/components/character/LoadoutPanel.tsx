@@ -2,7 +2,8 @@ import { Sword, Sparkles } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { getWeapon } from '@/engine/weapons';
 import { getSpell, SCHOOL_STAT, type SpellSchool } from '@/engine/spells';
-import { getStat } from '@/engine/stats';
+import { getGear, aggregateGear, type GearSlot } from '@/engine/gear';
+import { getStat, type StatId } from '@/engine/stats';
 import { COMBAT_STAT_META, combatLevel, mitigation } from '@/engine/combatStats';
 import { Panel } from '@/components/ui/Panel';
 import { SectionTitle } from '@/components/ui/Divider';
@@ -37,7 +38,16 @@ export function LoadoutPanel() {
   const equippedWeapon = useGameStore((s) => s.equippedWeapon);
   const knownSpells = useGameStore((s) => s.knownSpells);
   const combatStats = useGameStore((s) => s.combatStats);
+  const equipment = useGameStore((s) => s.equipment);
   const weapon = getWeapon(equippedWeapon);
+
+  const slots: GearSlot[] = ['armor', 'trinket', 'tool'];
+  const agg = aggregateGear(slots.map((sl) => (equipment[sl] ? getGear(equipment[sl]!) : undefined)));
+  const bonusParts: string[] = [];
+  for (const [s, n] of Object.entries(agg.statBonuses)) bonusParts.push(`+${n} ${getStat(s as StatId).short}`);
+  if (agg.defense) bonusParts.push(`+${agg.defense} Def`);
+  if (agg.ward) bonusParts.push(`+${agg.ward} Ward`);
+  for (const xb of agg.xpBonuses) bonusParts.push(`+${xb.pct}% ${xb.tag ?? (xb.stat ? getStat(xb.stat).short : '')} XP`);
 
   return (
     <Panel tone="parchment" className="space-y-4 p-4">
@@ -51,6 +61,24 @@ export function LoadoutPanel() {
             Attack scales with {weapon.attackStat === 'DX' ? 'Dexterity' : 'Strength'} · +{weapon.bonus}
           </div>
         </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <div className="font-display text-[11px] uppercase tracking-wider text-ink-muted">Equipment</div>
+        {slots.map((sl) => {
+          const def = equipment[sl] ? getGear(equipment[sl]!) : undefined;
+          return (
+            <div key={sl} className="flex justify-between text-xs">
+              <span className="capitalize text-ink-muted">{sl}</span>
+              <span className={def ? 'text-ink' : 'text-ink-light'}>{def?.name ?? '—'}</span>
+            </div>
+          );
+        })}
+        {bonusParts.length > 0 && (
+          <div className="rounded bg-parchment-300/50 px-2 py-1 text-[11px] text-ink">
+            Bonuses: {bonusParts.join(' · ')}
+          </div>
+        )}
       </div>
 
       <div className="space-y-2">
