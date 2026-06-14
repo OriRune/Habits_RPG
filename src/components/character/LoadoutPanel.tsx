@@ -1,20 +1,15 @@
-import { Sparkles } from 'lucide-react';
+import { useState } from 'react';
+import { Sparkles, ChevronRight } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { getWeapon } from '@/engine/weapons';
-import { getSpell, SCHOOL_STAT, type SpellSchool } from '@/engine/spells';
 import { getGear, aggregateGear, type GearSlot } from '@/engine/gear';
 import { getStat, type StatId } from '@/engine/stats';
 import { COMBAT_STAT_META, combatLevel, mitigation } from '@/engine/combatStats';
 import { Panel } from '@/components/ui/Panel';
 import { Sprite } from '@/components/ui/Sprite';
-import { weaponCrest, spellCrest, gearCrest } from '@/lib/sprites';
+import { weaponCrest, gearCrest } from '@/lib/sprites';
 import { SectionTitle } from '@/components/ui/Divider';
-
-const SCHOOL_LABEL: Record<SpellSchool, string> = {
-  damage: 'Damage',
-  support: 'Support',
-  illusion: 'Illusion',
-};
+import { GrimoireView } from '@/views/GrimoireView';
 
 function CombatStatBar({ label, xp, color }: { label: string; xp: number; color: string }) {
   const lvl = combatLevel(xp);
@@ -42,6 +37,7 @@ export function LoadoutPanel() {
   const combatStats = useGameStore((s) => s.combatStats);
   const equipment = useGameStore((s) => s.equipment);
   const weapon = getWeapon(equippedWeapon);
+  const [grimoireOpen, setGrimoireOpen] = useState(false);
 
   const slots: GearSlot[] = ['armor', 'trinket', 'tool'];
   const agg = aggregateGear(slots.map((sl) => (equipment[sl] ? getGear(equipment[sl]!) : undefined)));
@@ -96,29 +92,21 @@ export function LoadoutPanel() {
         <CombatStatBar label={COMBAT_STAT_META.ward.name} xp={combatStats.wardXp} color={COMBAT_STAT_META.ward.color} />
       </div>
 
-      <div className="space-y-1.5">
-        <div className="flex items-center gap-1.5 font-display text-[11px] uppercase tracking-wider text-ink-muted">
-          <Sparkles className="h-3.5 w-3.5" /> Grimoire
+      <button
+        onClick={() => setGrimoireOpen(true)}
+        className="flex w-full items-center gap-3 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3 text-left transition-colors hover:border-gold-deep/60 hover:bg-parchment-300/50"
+      >
+        <Sparkles className="h-5 w-5 shrink-0 text-gold-deep" />
+        <div className="flex-1">
+          <div className="text-sm font-semibold text-ink">Grimoire</div>
+          <div className="text-xs text-ink-muted">
+            {knownSpells.length} {knownSpells.length === 1 ? 'spell' : 'spells'} known — open your spellbook
+          </div>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {knownSpells.map((key) => {
-            const spell = getSpell(key);
-            if (!spell) return null;
-            const color = getStat(SCHOOL_STAT[spell.school]).color;
-            return (
-              <span
-                key={key}
-                className="flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs"
-                style={{ borderColor: `${color}80`, color }}
-                title={`${SCHOOL_LABEL[spell.school]} · ${spell.mpCost} MP`}
-              >
-                <Sprite spriteKey={`spell:${key}`} look={spellCrest(spell.name, spell.school)} size="xs" />
-                {spell.name}
-              </span>
-            );
-          })}
-        </div>
-      </div>
+        <ChevronRight className="h-5 w-5 shrink-0 text-ink-light" />
+      </button>
+
+      {grimoireOpen && <GrimoireView onClose={() => setGrimoireOpen(false)} />}
     </Panel>
   );
 }
