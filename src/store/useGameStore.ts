@@ -18,6 +18,7 @@ import { toISODate, daysBetween, weekKey, addDays } from '@/engine/date';
 import { levelForTotalXp } from '@/engine/leveling';
 import {
   allocateStatGains,
+  creationStatLevels,
   emptyStatLevels,
   statLevelsFromXp,
   POINTS_PER_LEVEL,
@@ -76,6 +77,8 @@ import { enemyFor } from '@/engine/enemies';
 import { type Mood, computeMood } from '@/engine/mood';
 
 export interface Character {
+  /** Hero name chosen at character creation. */
+  name: string;
   /** Committed level. Levels 1→4 advance automatically; 5+ require a Level-Up Trial win. */
   level: number;
   /** Effort ledger — habits/challenges/dungeons add XP; its sum drives the character level. */
@@ -268,8 +271,17 @@ export interface GameState {
   lastActiveISO: string;
   /** Developer creative-mode switches. */
   settings: GameSettings;
+  /** False until the player finishes the character-creation screen (gates onboarding). */
+  created: boolean;
 
   // --- actions ---
+  /** Commit the character-creation screen: seed name, starting stat levels, weapon, and spell. */
+  createCharacter: (input: {
+    name: string;
+    allocations: Partial<Record<StatId, number>>;
+    weaponKey: string;
+    spellKey: string;
+  }) => void;
   addHabit: (input: NewHabitInput) => void;
   updateHabit: (id: string, patch: Partial<NewHabitInput>) => void;
   removeHabit: (id: string) => void;
@@ -338,6 +350,7 @@ function uid(): string {
 
 function freshCharacter(): Character {
   return {
+    name: 'Adventurer',
     level: 1,
     statXp: emptyStatXP(),
     statLevels: emptyStatLevels(),
@@ -645,6 +658,25 @@ export const useGameStore = create<GameState>()(
       completionLog: {},
       lastActiveISO: toISODate(),
       settings: freshSettings(),
+      created: false,
+
+      createCharacter: ({ name, allocations, weaponKey, spellKey }) =>
+        set((s) => {
+          const weapon = WEAPONS[weaponKey] ? weaponKey : STARTER_WEAPON;
+          const spells = [...STARTER_SPELLS];
+          if (spellKey && !spells.includes(spellKey)) spells.push(spellKey);
+          return {
+            character: {
+              ...s.character,
+              name: name.trim() || 'Adventurer',
+              statLevels: creationStatLevels(allocations),
+            },
+            equippedWeapon: weapon,
+            ownedWeapons: [weapon],
+            knownSpells: spells,
+            created: true,
+          };
+        }),
 
       addHabit: (input) =>
         set((s) => ({
@@ -1319,11 +1351,12 @@ export const useGameStore = create<GameState>()(
           completionLog: {},
           lastActiveISO: toISODate(),
           settings: freshSettings(),
+          created: false,
         })),
     }),
     {
       name: 'habits-rpg-save',
-      version: 10,
+      version: 11,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -1342,6 +1375,8 @@ export const useGameStore = create<GameState>()(
       //     again cleared (dungeon: null) so an in-progress run regenerates.
       // v10: new room types (shrine/merchant/elite/rest) + DungeonRun.merchant; cleared so an
       //      in-progress run regenerates with the richer room variety.
+      // v11: character-creation onboarding — any existing save already has a hero, so stamp
+      //      `created: true` to skip the creation screen (new saves default to false).
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {
@@ -1369,7 +1404,7 @@ export const useGameStore = create<GameState>()(
               statXpAtLastLevel: p.character.statXpAtLastLevel ?? { ...(p.character.statXp ?? emptyStatXP()) },
             }
           : p.character;
-        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null } as GameState;
+        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, created: true } as GameState;
       },
       // Deep-merge the nested `character`/`settings` objects so fields added in later versions
       // (e.g. statLevels) always fall back to their defaults instead of being dropped by the

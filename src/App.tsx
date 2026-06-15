@@ -5,6 +5,7 @@ import { BattleOverlay } from '@/components/combat/BattleOverlay';
 import { BoonChoice } from '@/components/dungeon/BoonChoice';
 import { ClassChoiceModal } from '@/components/class/ClassChoiceModal';
 import { WeeklyReportModal } from '@/components/weekly/WeeklyReportModal';
+import { CreationView } from '@/views/CreationView';
 import { DashboardView } from '@/views/DashboardView';
 import { CharacterView } from '@/views/CharacterView';
 import { ChallengesView } from '@/views/ChallengesView';
@@ -18,16 +19,21 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('habits');
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const created = useGameStore((s) => s.created);
   const battle = useGameStore((s) => s.battle);
   const classChoice = useGameStore((s) => s.pendingClassChoice);
   const normalizeHabits = useGameStore((s) => s.normalizeHabits);
   const checkWeeklyRollover = useGameStore((s) => s.checkWeeklyRollover);
 
   // Resume elapsed suspensions and surface the weekly report if a new week has begun.
+  // Only for an established save — a brand-new hero hasn't finished creation yet.
   useEffect(() => {
+    if (!created) return;
     normalizeHabits();
     checkWeeklyRollover();
-  }, [normalizeHabits, checkWeeklyRollover]);
+  }, [created, normalizeHabits, checkWeeklyRollover]);
+
+  if (!created) return <CreationView />;
 
   return (
     <div className="flex min-h-full flex-col">

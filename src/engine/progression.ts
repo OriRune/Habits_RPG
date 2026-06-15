@@ -19,6 +19,10 @@ export const BOSS_GATE_LEVEL = 5;
 export const DUNGEON_UNLOCK_LEVEL = 3;
 /** Every stat starts here for a new character. */
 export const BASE_STAT_LEVEL = 1;
+/** Stat points the player distributes during character creation. */
+export const STARTING_STAT_POINTS = 5;
+/** Most a single stat can be raised to during creation (keeps a primary + secondary lean). */
+export const CREATION_STAT_MAX = BASE_STAT_LEVEL + 3;
 
 type StatRecord = Record<StatId, number>;
 
@@ -35,6 +39,24 @@ export function emptyStatLevels(): StatRecord {
     acc[id] = BASE_STAT_LEVEL;
     return acc;
   }, {} as StatRecord);
+}
+
+/**
+ * Build a new character's stat levels from a creation-screen allocation. Starts every stat at the
+ * base level, then adds the player's points — clamping each stat to `CREATION_STAT_MAX` and the
+ * total points spent to `STARTING_STAT_POINTS`. Ignores unknown/negative entries. Pure.
+ */
+export function creationStatLevels(allocations: Partial<StatRecord>): StatRecord {
+  const levels = emptyStatLevels();
+  let spent = 0;
+  for (const id of STAT_IDS) {
+    const want = Math.max(0, Math.floor(allocations[id] ?? 0));
+    const room = Math.min(want, CREATION_STAT_MAX - BASE_STAT_LEVEL, STARTING_STAT_POINTS - spent);
+    if (room <= 0) continue;
+    levels[id] = BASE_STAT_LEVEL + room;
+    spent += room;
+  }
+  return levels;
 }
 
 /**

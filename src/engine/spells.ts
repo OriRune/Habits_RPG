@@ -27,7 +27,7 @@ export interface SpellDef {
 }
 
 // Re-export the editable catalog so existing imports (`@/engine/spells`) keep working.
-export { SPELLS, STARTER_SPELLS } from '@/content/spells';
+export { SPELLS, STARTER_SPELLS, SIGNATURE_SPELL_CHOICES } from '@/content/spells';
 
 export function getSpell(key: string): SpellDef | undefined {
   return SPELLS[key];

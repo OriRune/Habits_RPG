@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
   allocateStatGains,
+  creationStatLevels,
   emptyStatLevels,
   statLevelsFromXp,
   POINTS_PER_LEVEL,
   STAT_CAP,
   BASE_STAT_LEVEL,
+  CREATION_STAT_MAX,
+  STARTING_STAT_POINTS,
 } from '../progression';
 import { STAT_IDS, emptyStatXP, type StatId } from '../stats';
 
@@ -15,6 +18,38 @@ describe('emptyStatLevels', () => {
   it('starts every stat at the base level', () => {
     const lv = emptyStatLevels();
     for (const s of STAT_IDS) expect(lv[s]).toBe(BASE_STAT_LEVEL);
+  });
+});
+
+describe('creationStatLevels', () => {
+  it('floors every stat at the base level with no allocation', () => {
+    const lv = creationStatLevels({});
+    for (const s of STAT_IDS) expect(lv[s]).toBe(BASE_STAT_LEVEL);
+  });
+
+  it('adds the allocated points on top of the base', () => {
+    const lv = creationStatLevels({ ST: 2, WI: 1 });
+    expect(lv.ST).toBe(BASE_STAT_LEVEL + 2);
+    expect(lv.WI).toBe(BASE_STAT_LEVEL + 1);
+    expect(lv.AG).toBe(BASE_STAT_LEVEL);
+  });
+
+  it('clamps any single stat to the creation max', () => {
+    const lv = creationStatLevels({ ST: 99 });
+    expect(lv.ST).toBe(CREATION_STAT_MAX);
+  });
+
+  it('never spends more than the starting pool', () => {
+    // Asks for far more than the pool across several stats.
+    const lv = creationStatLevels({ ST: 3, DX: 3, EN: 3, KN: 3 });
+    const spent = STAT_IDS.reduce((a, s) => a + (lv[s] - BASE_STAT_LEVEL), 0);
+    expect(spent).toBe(STARTING_STAT_POINTS);
+  });
+
+  it('ignores negative or fractional requests', () => {
+    const lv = creationStatLevels({ ST: -5, DX: 1.9 });
+    expect(lv.ST).toBe(BASE_STAT_LEVEL);
+    expect(lv.DX).toBe(BASE_STAT_LEVEL + 1); // floored
   });
 });
 

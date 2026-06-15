@@ -15,6 +15,7 @@ export function HeroBanner() {
   const topStat = useGameStore(selectTopStats)[0];
   const mood = MOOD_META[character.mood];
 
+  const name = character.name || 'Adventurer';
   const title = character.classId ?? 'Adventurer';
   const crest = avatarCrest(character.classId, topStat);
   const spriteKey = `avatar:${character.classId ?? 'adventurer'}`;
@@ -27,12 +28,13 @@ export function HeroBanner() {
 
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <h1 className="truncate font-display text-2xl font-bold text-gold-bright">{title}</h1>
+          <h1 className="truncate font-display text-2xl font-bold text-gold-bright">{name}</h1>
           <span className="font-display text-sm text-parchment-300">
             Lv {character.level}
             {character.level >= MAX_LEVEL && <span className="ml-1 text-gold-bright">MAX</span>}
           </span>
         </div>
+        <div className="font-display text-sm italic text-parchment-300/90">the {title}</div>
 
         <div className="mt-0.5 flex items-center gap-2 text-sm text-parchment-300">
           <span title={mood.note}>{mood.emoji}</span>

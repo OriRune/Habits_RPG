@@ -53,3 +53,6 @@ export const WEAPONS: Record<string, WeaponDef> = {
 
 /** The weapon every new character starts equipped with. Must exist in WEAPONS. */
 export const STARTER_WEAPON = 'worn_sword';
+
+/** Weapons offered on the character-creation screen (melee / ranged / heavy). Keys must exist above. */
+export const STARTER_WEAPON_CHOICES = ['worn_sword', 'short_bow', 'iron_mace'];

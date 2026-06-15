@@ -19,7 +19,7 @@ export interface WeaponDef {
 }
 
 // Re-export the editable catalog so existing imports (`@/engine/weapons`) keep working.
-export { WEAPONS, STARTER_WEAPON } from '@/content/weapons';
+export { WEAPONS, STARTER_WEAPON, STARTER_WEAPON_CHOICES } from '@/content/weapons';
 
 export function getWeapon(key: string): WeaponDef {
   return WEAPONS[key] ?? WEAPONS[STARTER_WEAPON];

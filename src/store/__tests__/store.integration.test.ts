@@ -75,6 +75,42 @@ describe('withCharacterDefaults (persist merge guard)', () => {
   });
 });
 
+describe('createCharacter (onboarding)', () => {
+  it('seeds name, starting stat levels, weapon and signature spell, and flips created', () => {
+    useGameStore.setState({ created: false });
+    get().createCharacter({
+      name: '  Mira  ',
+      allocations: { ST: 2, WI: 1 },
+      weaponKey: 'short_bow',
+      spellKey: 'firebolt',
+    });
+    const s = get();
+    expect(s.created).toBe(true);
+    expect(s.character.name).toBe('Mira'); // trimmed
+    expect(s.character.statLevels.ST).toBe(3); // base 1 + 2
+    expect(s.character.statLevels.WI).toBe(2);
+    expect(s.character.statLevels.AG).toBe(1); // untouched -> base
+    expect(s.equippedWeapon).toBe('short_bow');
+    expect(s.ownedWeapons).toEqual(['short_bow']);
+    expect(s.knownSpells).toContain('firebolt');
+    expect(s.knownSpells).toEqual(expect.arrayContaining(['sparks', 'mend'])); // safety net kept
+  });
+
+  it('defaults a blank name to Adventurer and tolerates an empty spell pick', () => {
+    get().createCharacter({ name: '   ', allocations: {}, weaponKey: 'worn_sword', spellKey: '' });
+    expect(get().character.name).toBe('Adventurer');
+    expect(get().knownSpells).toEqual(['sparks', 'mend']);
+  });
+
+  it('resetGame returns the player to onboarding', () => {
+    get().createCharacter({ name: 'X', allocations: {}, weaponKey: 'worn_sword', spellKey: 'bless' });
+    expect(get().created).toBe(true);
+    get().resetGame();
+    expect(get().created).toBe(false);
+    expect(get().character.name).toBe('Adventurer');
+  });
+});
+
 describe('completeHabit', () => {
   it('grants XP to the habit stat, energy, and logs the completion', () => {
     get().addHabit({ name: 'Read', stat: 'KN', type: 'binary', frequency: 'daily', difficulty: 'normal' });

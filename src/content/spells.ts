@@ -94,3 +94,6 @@ export const SPELLS: Record<string, SpellDef> = {
 
 /** Spells every new character knows. Keys must exist in SPELLS above. */
 export const STARTER_SPELLS = ['sparks', 'mend'];
+
+/** Signature spells offered on the character-creation screen (one pick, added to STARTER_SPELLS). */
+export const SIGNATURE_SPELL_CHOICES = ['firebolt', 'bless', 'dazzle', 'hex'];
