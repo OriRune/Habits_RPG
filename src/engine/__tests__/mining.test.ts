@@ -58,6 +58,7 @@ function makeState(over: Partial<MineState> = {}): MineState {
     status: 'active',
     lastHitAtMs: -1000,
     deepest: 1,
+    killsThisFloor: 0,
     ...over,
   };
 }
@@ -156,7 +157,10 @@ describe('strike', () => {
     });
     const after = strike(s, rngFrom(5));
     expect(after.monsters).toHaveLength(0);
-    expect(after.haul.gold ?? 0).toBeGreaterThan(0);
+    // The kill banks its bounty — gold or a material from the floor's loot pool.
+    const bankedGold = after.haul.gold ?? 0;
+    const bankedMats = Object.values(after.haul.materials ?? {}).reduce((a, n) => a + n, 0);
+    expect(bankedGold + bankedMats).toBeGreaterThan(0);
   });
 
   it('cannot swing with no stamina', () => {

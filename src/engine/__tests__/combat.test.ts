@@ -32,7 +32,7 @@ describe('deriveCombatant', () => {
     const c = deriveCombatant(lv, 1, emptyCombatStats());
     expect(c.maxHp).toBe(123); // 50 + 10*7 + 1*3
     expect(c.maxMp).toBe(38); // 8 + 10*3
-    expect(c.maxSta).toBe(14); // 4 + 10
+    expect(c.maxSta).toBe(22); // 12 + 10
     expect(c.meleePower).toBe(10); // raw Strength level
   });
 

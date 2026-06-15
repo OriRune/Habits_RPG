@@ -1,7 +1,7 @@
-import { ListChecks, User, Trophy, DoorOpen, Pickaxe, Backpack } from 'lucide-react';
+import { ListChecks, User, Trophy, DoorOpen, Pickaxe, Trees, Backpack } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
-export type Tab = 'habits' | 'character' | 'challenges' | 'dungeon' | 'mine' | 'inventory';
+export type Tab = 'habits' | 'character' | 'challenges' | 'dungeon' | 'mine' | 'forest' | 'inventory';
 
 const TABS: { id: Tab; label: string; icon: typeof ListChecks }[] = [
   { id: 'habits', label: 'Quests', icon: ListChecks },
@@ -9,6 +9,7 @@ const TABS: { id: Tab; label: string; icon: typeof ListChecks }[] = [
   { id: 'challenges', label: 'Trials', icon: Trophy },
   { id: 'dungeon', label: 'Delve', icon: DoorOpen },
   { id: 'mine', label: 'Mine', icon: Pickaxe },
+  { id: 'forest', label: 'Forest', icon: Trees },
   { id: 'inventory', label: 'Satchel', icon: Backpack },
 ];
 

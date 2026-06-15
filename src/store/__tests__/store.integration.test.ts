@@ -7,6 +7,7 @@ import { type BattleState } from '@/engine/combat';
 import { type DungeonRoom, merchantOffers } from '@/engine/dungeon';
 import { type FloorMap } from '@/engine/dungeonMap';
 import { type MineState, type MineTile } from '@/engine/mining';
+import { type ForestState, type ForestTile } from '@/engine/forest';
 import { getEncounter, startEncounter } from '@/engine/encounters';
 import { toISODate, weekKey } from '@/engine/date';
 
@@ -740,7 +741,7 @@ describe('deep mine', () => {
       floor: 1, rows, cols, tiles,
       player: { r: 2, c: 2, facing: 'right' },
       hp: 50, maxHp: 50, sta: 10, maxSta: 10, meleePower: 5,
-      monsters: [], haul: {}, status: 'active', lastHitAtMs: -1000, deepest: 1,
+      monsters: [], haul: {}, status: 'active', lastHitAtMs: -1000, deepest: 1, killsThisFloor: 0,
       ...over,
     };
   }
@@ -782,7 +783,7 @@ describe('deep mine', () => {
     expect(get().character.statXp.ST).toBeGreaterThan(0); // labour trickle
   });
 
-  it('mineTick commits the haul when the miner falls', () => {
+  it('mineTick flips to ended on death; endMining then banks the haul', () => {
     useGameStore.setState({
       mining: makeMine({
         hp: 3,
@@ -792,14 +793,102 @@ describe('deep mine', () => {
       }),
     });
     const goldBefore = get().character.gold;
-    get().mineTick(1000); // cave_slug touchDamage 4 > 3 hp → run ends + commits
+    get().mineTick(1000); // cave_slug touchDamage 4 > 3 hp → run ends (death screen), not yet committed
+    expect(get().mining).not.toBeNull();
+    expect(get().mining!.status).toBe('ended');
+    expect(get().character.gold).toBe(goldBefore); // nothing banked until the player leaves
+    get().endMining();
     expect(get().mining).toBeNull();
     expect(get().character.gold).toBe(goldBefore + 12);
     expect(get().deepestMineFloor).toBe(2);
   });
 
-  it('persists at version 12', () => {
-    expect(useGameStore.persist.getOptions().version).toBe(12);
+  it('persists at version 13', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(13);
+  });
+});
+
+describe('wild forest', () => {
+  /** A small hand-built forest: thicket border, trail interior, player centred, fully lit. */
+  function makeForest(over: Partial<ForestState> = {}): ForestState {
+    const rows = 5;
+    const cols = 5;
+    const tiles: ForestTile[][] = [];
+    for (let r = 0; r < rows; r++) {
+      const row: ForestTile[] = [];
+      for (let c = 0; c < cols; c++) {
+        const border = r === 0 || c === 0 || r === rows - 1 || c === cols - 1;
+        row.push(border ? { kind: 'thicket' } : { kind: 'trail' });
+      }
+      tiles.push(row);
+    }
+    return {
+      stage: 1, rows, cols, tiles,
+      seen: Array.from({ length: rows }, () => new Array(cols).fill(true)),
+      player: { r: 2, c: 2, facing: 'right' },
+      hp: 50, maxHp: 50, sta: 10, maxSta: 10, meleePower: 5,
+      beasts: [], haul: {}, status: 'active', lastHitAtMs: -1000, deepest: 1, killsThisStage: 0,
+      ...over,
+    };
+  }
+
+  it('beginForest starts a run and charges energy once the gate is met', () => {
+    get().devSetLevel(5);
+    useGameStore.setState({ character: { ...get().character, energy: 10 } });
+    get().beginForest();
+    expect(get().forest).not.toBeNull();
+    expect(get().forest!.stage).toBe(1);
+    expect(get().character.energy).toBe(8); // FOREST_ENERGY_COST = 2
+  });
+
+  it('beginForest is blocked below the unlock level', () => {
+    useGameStore.setState({ character: { ...get().character, energy: 10 } });
+    get().beginForest();
+    expect(get().forest).toBeNull();
+  });
+
+  it('forestAct gathers a faced node into the haul', () => {
+    const tiles = makeForest().tiles;
+    tiles[2][3] = { kind: 'node', nodeKey: 'flower_bush' };
+    useGameStore.setState({ forest: makeForest({ tiles }) });
+    get().forestAct();
+    expect(get().forest!.tiles[2][3].kind).toBe('trail');
+    expect(get().forest!.haul.materials?.herbs ?? 0).toBeGreaterThan(0);
+  });
+
+  it('beginForestBanking shows the summary, and endForest banks the full haul', () => {
+    useGameStore.setState({ forest: makeForest({ haul: { gold: 20, materials: { herbs: 3 } }, deepest: 3 }) });
+    get().beginForestBanking();
+    expect(get().forest!.status).toBe('banking');
+    const goldBefore = get().character.gold;
+    const herbsBefore = get().materials.herbs ?? 0;
+    get().endForest();
+    expect(get().forest).toBeNull();
+    expect(get().character.gold).toBe(goldBefore + 20); // full haul kept on a voluntary bank
+    expect(get().materials.herbs).toBe(herbsBefore + 3);
+    expect(get().deepestForestStage).toBe(3);
+  });
+
+  it('forestTick flips to ended on death without committing; endForest then forfeits half', () => {
+    useGameStore.setState({
+      forest: makeForest({
+        hp: 3,
+        haul: { gold: 10, materials: { herbs: 4 } },
+        deepest: 2,
+        beasts: [{ id: 'a', key: 'wild_boar', r: 2, c: 3, hp: 8, maxHp: 8, readyAtMs: 999999, asleep: false }],
+      }),
+    });
+    const goldBefore = get().character.gold;
+    get().forestTick(1000); // wild_boar touchDamage 4 > 3 hp → status 'ended', not yet committed
+    expect(get().forest).not.toBeNull();
+    expect(get().forest!.status).toBe('ended');
+    expect(get().character.gold).toBe(goldBefore); // nothing banked until the player leaves
+
+    get().endForest();
+    expect(get().forest).toBeNull();
+    expect(get().character.gold).toBe(goldBefore + 5); // floor(10 * 0.5) kept, the rest forfeit
+    expect(get().materials.herbs ?? 0).toBe(2); // floor(4 * 0.5)
+    expect(get().deepestForestStage).toBe(2);
   });
 });
 

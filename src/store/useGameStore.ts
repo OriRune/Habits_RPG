@@ -87,6 +87,7 @@ import {
   splitHaul,
   FOREST_ENERGY_COST,
   FOREST_UNLOCK_LEVEL,
+  FOREST_DEATH_KEEP,
 } from '@/engine/forest';
 import { biomeForDepth, getBiome, bossFor } from '@/engine/biomes';
 import {
@@ -299,8 +300,6 @@ export interface GameState {
   forest: ForestState | null;
   /** Deepest forest stage ever reached — a persistent record (mirrors deepestMineFloor). */
   deepestForestStage: number;
-  /** Set when a forest run ends in death — the split haul to show on the death screen. */
-  forestDeath: { kept: Reward; lost: Reward; stage: number } | null;
   /** Target level the player is currently trying to reach (boss is live or pending). */
   pendingLevelUp: number | null;
   pendingClassChoice: PendingClassChoice | null;
@@ -404,13 +403,13 @@ export interface GameState {
   forestMove: (dir: Dir) => void;
   /** Act on the faced cell (slash a beast or gather a node). */
   forestAct: () => void;
-  /** Advance beasts on the loop's clock; triggers the death screen if the forager falls. */
+  /** Advance beasts on the loop's clock; flips the run to 'ended' if the forager falls. */
   forestTick: (nowMs: number) => void;
-  /** Dismiss the death screen and clear the fallen run. */
-  dismissForestDeath: () => void;
+  /** Pause the run and show the banking summary screen (voluntary leave). */
+  beginForestBanking: () => void;
   /** Push on through the far tree line into a deeper, richer stage. */
   forestAdvance: () => void;
-  /** End the run and bank the haul into the economy (also the death path). */
+  /** Commit the haul and close the run — full on confirmed banking, halved on death. */
   endForest: () => void;
 
   updateSettings: (patch: Partial<GameSettings>) => void;
@@ -524,15 +523,12 @@ function commitForest(state: GameState, run: ForestState): GameState {
   return next;
 }
 
-/** Forfeit fraction of the haul kept when a forest run ends in death (the rest is lost). */
-const FOREST_DEATH_KEEP = 0.5;
-
 /**
- * Bank only the kept half of a fallen forager's haul, keep the run frozen for the death screen,
- * and stash the split so the overlay can show what was forfeit. The run is cleared on dismissal.
+ * Bank only the kept half of a fallen forager's haul (the rest is forfeit to the wild) and clear
+ * the run. Mirrors commitForest but for the death path; the overlay shows the split beforehand.
  */
 function commitForestDeath(state: GameState, run: ForestState): GameState {
-  const { kept, lost } = splitHaul(run.haul, FOREST_DEATH_KEEP);
+  const { kept } = splitHaul(run.haul, FOREST_DEATH_KEEP);
   const next: GameState = {
     ...state,
     character: { ...state.character, statXp: { ...state.character.statXp } },
@@ -540,9 +536,8 @@ function commitForestDeath(state: GameState, run: ForestState): GameState {
     materials: { ...state.materials },
     ownedWeapons: [...state.ownedWeapons],
     ownedGear: [...state.ownedGear],
-    forest: run, // keep the run frozen (status 'ended') behind the death screen
+    forest: null,
     deepestForestStage: Math.max(state.deepestForestStage, run.deepest),
-    forestDeath: { kept, lost, stage: run.stage },
   };
   // The trek still earns its Dexterity/Endurance trickle — only the haul is docked.
   const trickle = 4 + 3 * run.deepest;
@@ -1663,8 +1658,17 @@ export const useGameStore = create<GameState>()(
           if (!s.forest || s.forest.status !== 'active') return s;
           const forest = stepBeasts(s.forest, nowMs, Math.random);
           if (forest === s.forest) return s;
-          return forest.status === 'ended' ? commitForest(s, forest) : { forest };
+          // Death flips status to 'ended' but doesn't commit — the overlay shows the forfeit
+          // first, then endForest banks the kept half (mirrors the mine's banking flow).
+          return { forest };
         }),
+
+      beginForestBanking: () =>
+        set((s) =>
+          s.forest && s.forest.status === 'active'
+            ? { forest: { ...s.forest, status: 'banking' as const } }
+            : s,
+        ),
 
       forestAdvance: () =>
         set((s) => {
@@ -1674,7 +1678,15 @@ export const useGameStore = create<GameState>()(
           return { forest, deepestForestStage: Math.max(s.deepestForestStage, forest.deepest) };
         }),
 
-      endForest: () => set((s) => (s.forest ? commitForest(s, s.forest) : s)),
+      // Death forfeits half the haul; a confirmed bank keeps it all.
+      endForest: () =>
+        set((s) =>
+          !s.forest
+            ? s
+            : s.forest.status === 'ended'
+              ? commitForestDeath(s, s.forest)
+              : commitForest(s, s.forest),
+        ),
 
       resetGame: () =>
         set(() => ({

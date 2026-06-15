@@ -12,6 +12,8 @@ import { ChallengesView } from '@/views/ChallengesView';
 import { DungeonView } from '@/views/DungeonView';
 import { MiningView } from '@/views/MiningView';
 import { MineRunOverlay } from '@/components/mining/MineRunOverlay';
+import { ForestView } from '@/views/ForestView';
+import { ForestRunOverlay } from '@/components/forest/ForestRunOverlay';
 import { InventoryView } from '@/views/InventoryView';
 import { HistoryView } from '@/views/HistoryView';
 import { SettingsView } from '@/views/SettingsView';
@@ -25,6 +27,7 @@ export default function App() {
   const created = useGameStore((s) => s.created);
   const battle = useGameStore((s) => s.battle);
   const mining = useGameStore((s) => s.mining);
+  const forest = useGameStore((s) => s.forest);
   const classChoice = useGameStore((s) => s.pendingClassChoice);
   const normalizeHabits = useGameStore((s) => s.normalizeHabits);
   const checkWeeklyRollover = useGameStore((s) => s.checkWeeklyRollover);
@@ -56,6 +59,7 @@ export default function App() {
         {tab === 'challenges' && <ChallengesView />}
         {tab === 'dungeon' && <DungeonView />}
         {tab === 'mine' && <MiningView />}
+        {tab === 'forest' && <ForestView />}
         {tab === 'inventory' && <InventoryView />}
       </main>
       <TabBar active={tab} onChange={setTab} />
@@ -63,6 +67,7 @@ export default function App() {
       {historyOpen && <HistoryView onClose={() => setHistoryOpen(false)} />}
       {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
       {mining && <MineRunOverlay />}
+      {forest && <ForestRunOverlay />}
       {battle && <BattleOverlay />}
       <BoonChoice />
       {classChoice && <ClassChoiceModal />}
