@@ -21,4 +21,5 @@ export const MATERIALS: Record<string, MaterialDef> = {
   bronze_bar: { key: 'bronze_bar', name: 'Bronze Bar', glyph: 'B', color: '#a06a3a' },
   herbs: { key: 'herbs', name: 'Herbs', glyph: 'H', color: '#5e8a2e' },
   crystals: { key: 'crystals', name: 'Crystals', glyph: '◆', color: '#6a4fb0' },
+  gemstone: { key: 'gemstone', name: 'Gemstone', glyph: '◆', color: '#b8487f' },
 };

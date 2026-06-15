@@ -4,6 +4,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 import { type StatId, STAT_IDS, emptyStatXP, getStat } from '@/engine/stats';
+import { type PaletteColors } from '@/engine/palettes';
 import { type Difficulty } from '@/engine/xp';
 import {
   type Habit,
@@ -65,6 +66,17 @@ import {
   DUNGEON_ENERGY_COST,
 } from '@/engine/dungeon';
 import { type FloorMap, generateFloorMap } from '@/engine/dungeonMap';
+import {
+  type MineState,
+  type Dir,
+  generateMine,
+  tryMove,
+  strike,
+  stepMonsters,
+  descend,
+  MINE_ENERGY_COST,
+  MINE_UNLOCK_LEVEL,
+} from '@/engine/mining';
 import { biomeForDepth, getBiome, bossFor } from '@/engine/biomes';
 import {
   type EncounterRunState,
@@ -217,7 +229,7 @@ function resolveCurrentNode(run: DungeonRun, hp: number, mp: number, sta: number
   return next;
 }
 
-/** Developer "creative mode" switches (Settings → Developer). All off in normal play. */
+/** Developer "creative mode" switches (Settings → Developer) + appearance. */
 export interface GameSettings {
   /** Purchases & crafting ignore their gold cost. */
   unlimitedGold: boolean;
@@ -225,10 +237,20 @@ export interface GameSettings {
   unlimitedEnergy: boolean;
   /** Player HP/MP/Stamina stay full in combat — you can't die. */
   invincible: boolean;
+  /** Selected color palette id (see engine/palettes.ts). 'default' uses the baseline theme. */
+  paletteId: string;
+  /** The user's last-built/imported custom palette, applied when paletteId === 'custom'. */
+  customPalette: PaletteColors | null;
 }
 
 function freshSettings(): GameSettings {
-  return { unlimitedGold: false, unlimitedEnergy: false, invincible: false };
+  return {
+    unlimitedGold: false,
+    unlimitedEnergy: false,
+    invincible: false,
+    paletteId: 'default',
+    customPalette: null,
+  };
 }
 
 export interface GameState {
@@ -259,6 +281,10 @@ export interface GameState {
   pendingReport: WeeklyReport | null;
   battle: BattleState | null;
   dungeon: DungeonRun | null;
+  /** Active Deep Mine run (real-time minigame), or null when not mining. */
+  mining: MineState | null;
+  /** Deepest mine floor ever reached — a persistent record (mirrors deepestFloor). */
+  deepestMineFloor: number;
   /** Target level the player is currently trying to reach (boss is live or pending). */
   pendingLevelUp: number | null;
   pendingClassChoice: PendingClassChoice | null;
@@ -339,6 +365,20 @@ export interface GameState {
   /** Leave a non-combat room (merchant) and continue to the next path choice. */
   dungeonLeaveRoom: () => void;
 
+  // Deep Mine (real-time mining minigame; see src/engine/mining.ts).
+  /** Start a run: gate on level/energy, charge energy, generate floor 1. */
+  beginMining: () => void;
+  /** Step/turn the miner one cell. */
+  mineMove: (dir: Dir) => void;
+  /** Swing the pick at the faced cell (dig rock/ore or hit a monster). */
+  mineStrike: () => void;
+  /** Advance monsters on the loop's clock; commits the haul if the miner falls. */
+  mineTick: (nowMs: number) => void;
+  /** Descend the shaft to a deeper, richer floor. */
+  mineDescend: () => void;
+  /** End the run and bank the haul into the economy (also the death path). */
+  endMining: () => void;
+
   updateSettings: (patch: Partial<GameSettings>) => void;
 
   // Developer testing tools (Settings → Developer). Jump straight to level-locked content.
@@ -410,6 +450,25 @@ function applyReward(state: GameState, reward: Reward): void {
       if (!state.ownedGear.includes(key)) state.ownedGear.push(key);
     }
   }
+}
+
+/** Bank a finished mine run's haul into the economy, clear the run, and reconcile level. */
+function commitMining(state: GameState, run: MineState): GameState {
+  const next: GameState = {
+    ...state,
+    character: { ...state.character, statXp: { ...state.character.statXp } },
+    inventory: { ...state.inventory },
+    materials: { ...state.materials },
+    ownedWeapons: [...state.ownedWeapons],
+    ownedGear: [...state.ownedGear],
+    mining: null,
+    deepestMineFloor: Math.max(state.deepestMineFloor, run.deepest),
+  };
+  // The run's gold/materials, plus a modest Strength/Endurance trickle for the labour.
+  const trickle = 4 + 3 * run.deepest;
+  applyReward(next, { ...run.haul, statXp: { ST: trickle, EN: trickle } });
+  checkLevelUp(next);
+  return next;
 }
 
 /** Recompute mood from the last 7 days of activity. */
@@ -663,6 +722,8 @@ export const useGameStore = create<GameState>()(
       pendingReport: null,
       battle: null,
       dungeon: null,
+      mining: null,
+      deepestMineFloor: 0,
       pendingLevelUp: null,
       pendingClassChoice: null,
       bossLosses: {},
@@ -1428,6 +1489,55 @@ export const useGameStore = create<GameState>()(
       devClearClass: () =>
         set((s) => ({ character: { ...s.character, classId: null } })),
 
+      // --- Deep Mine (real-time mining minigame) ---
+      beginMining: () =>
+        set((s) => {
+          const free = s.settings.unlimitedEnergy;
+          if (s.mining || s.character.level < MINE_UNLOCK_LEVEL) return s;
+          if (!free && s.character.energy < MINE_ENERGY_COST) return s;
+          const { c } = fighterFor(s);
+          const mining = generateMine(
+            1,
+            { meleePower: c.meleePower, maxHp: c.maxHp, maxSta: c.maxSta },
+            Math.random,
+          );
+          return {
+            character: {
+              ...s.character,
+              energy: free ? s.character.energy : s.character.energy - MINE_ENERGY_COST,
+            },
+            mining,
+          };
+        }),
+
+      mineMove: (dir) =>
+        set((s) =>
+          s.mining && s.mining.status === 'active' ? { mining: tryMove(s.mining, dir) } : s,
+        ),
+
+      mineStrike: () =>
+        set((s) =>
+          s.mining && s.mining.status === 'active' ? { mining: strike(s.mining, Math.random) } : s,
+        ),
+
+      mineTick: (nowMs) =>
+        set((s) => {
+          if (!s.mining || s.mining.status !== 'active') return s;
+          const mining = stepMonsters(s.mining, nowMs, Math.random);
+          if (mining === s.mining) return s;
+          return mining.status === 'ended' ? commitMining(s, mining) : { mining };
+        }),
+
+      mineDescend: () =>
+        set((s) => {
+          if (!s.mining || s.mining.status !== 'active') return s;
+          const mining = descend(s.mining, Math.random);
+          if (mining === s.mining) return s;
+          return { mining, deepestMineFloor: Math.max(s.deepestMineFloor, mining.deepest) };
+        }),
+
+      endMining: () => set((s) => (s.mining ? commitMining(s, s.mining) : s)),
+
       resetGame: () =>
         set(() => ({
           habits: [],
@@ -1445,6 +1555,8 @@ export const useGameStore = create<GameState>()(
           pendingReport: null,
           battle: null,
           dungeon: null,
+          mining: null,
+          deepestMineFloor: 0,
           pendingLevelUp: null,
           pendingClassChoice: null,
           bossLosses: {},
@@ -1456,7 +1568,7 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 11,
+      version: 12,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -1477,6 +1589,8 @@ export const useGameStore = create<GameState>()(
       //      in-progress run regenerates with the richer room variety.
       // v11: character-creation onboarding — any existing save already has a hero, so stamp
       //      `created: true` to skip the creation screen (new saves default to false).
+      // v12: Deep Mine minigame — new top-level `mining`/`deepestMineFloor`; `mining` is cleared
+      //      below (no in-progress run survives the upgrade) and `deepestMineFloor` defaults via merge.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {
@@ -1504,7 +1618,7 @@ export const useGameStore = create<GameState>()(
               statXpAtLastLevel: p.character.statXpAtLastLevel ?? { ...(p.character.statXp ?? emptyStatXP()) },
             }
           : p.character;
-        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, created: true } as GameState;
+        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, created: true } as GameState;
       },
       // Deep-merge the nested `character`/`settings` objects so fields added in later versions
       // (e.g. statLevels) always fall back to their defaults instead of being dropped by the

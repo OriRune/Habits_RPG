@@ -6,6 +6,7 @@ import { bossForLevel } from '@/engine/bosses';
 import { type BattleState } from '@/engine/combat';
 import { type DungeonRoom, merchantOffers } from '@/engine/dungeon';
 import { type FloorMap } from '@/engine/dungeonMap';
+import { type MineState, type MineTile } from '@/engine/mining';
 import { getEncounter, startEncounter } from '@/engine/encounters';
 import { toISODate, weekKey } from '@/engine/date';
 
@@ -718,6 +719,87 @@ describe('developer testing tools', () => {
     expect(get().character.classId).toBe('Knight');
     get().devClearClass();
     expect(get().character.classId).toBeNull();
+  });
+});
+
+describe('deep mine', () => {
+  /** A small hand-built cavern with the player centred and facing right. */
+  function makeMine(over: Partial<MineState> = {}): MineState {
+    const rows = 5;
+    const cols = 5;
+    const tiles: MineTile[][] = [];
+    for (let r = 0; r < rows; r++) {
+      const row: MineTile[] = [];
+      for (let c = 0; c < cols; c++) {
+        const border = r === 0 || c === 0 || r === rows - 1 || c === cols - 1;
+        row.push(border ? { kind: 'bedrock' } : { kind: 'floor' });
+      }
+      tiles.push(row);
+    }
+    return {
+      floor: 1, rows, cols, tiles,
+      player: { r: 2, c: 2, facing: 'right' },
+      hp: 50, maxHp: 50, sta: 10, maxSta: 10, meleePower: 5,
+      monsters: [], haul: {}, status: 'active', lastHitAtMs: -1000, deepest: 1,
+      ...over,
+    };
+  }
+
+  it('beginMining starts a run and charges energy once the gate is met', () => {
+    get().devSetLevel(5);
+    useGameStore.setState({ character: { ...get().character, energy: 10 } });
+    get().beginMining();
+    expect(get().mining).not.toBeNull();
+    expect(get().mining!.floor).toBe(1);
+    expect(get().character.energy).toBe(8); // MINE_ENERGY_COST = 2
+  });
+
+  it('beginMining is blocked below the unlock level', () => {
+    // Fresh character is level 1 (< MINE_UNLOCK_LEVEL).
+    useGameStore.setState({ character: { ...get().character, energy: 10 } });
+    get().beginMining();
+    expect(get().mining).toBeNull();
+  });
+
+  it('mineStrike breaks the faced ore vein and accrues the haul', () => {
+    const tiles = makeMine().tiles;
+    tiles[2][3] = { kind: 'ore', oreKey: 'rubble', durability: 1 };
+    useGameStore.setState({ mining: makeMine({ tiles }) });
+    get().mineStrike();
+    expect(get().mining!.tiles[2][3].kind).toBe('floor');
+    expect(get().mining!.haul.gold ?? 0).toBeGreaterThan(0);
+  });
+
+  it('endMining banks the haul into the economy and records the deepest floor', () => {
+    useGameStore.setState({ mining: makeMine({ haul: { gold: 50, materials: { iron_bar: 3 } }, deepest: 4 }) });
+    const goldBefore = get().character.gold;
+    const ironBefore = get().materials.iron_bar ?? 0;
+    get().endMining();
+    expect(get().mining).toBeNull();
+    expect(get().character.gold).toBe(goldBefore + 50);
+    expect(get().materials.iron_bar).toBe(ironBefore + 3);
+    expect(get().deepestMineFloor).toBe(4);
+    expect(get().character.statXp.ST).toBeGreaterThan(0); // labour trickle
+  });
+
+  it('mineTick commits the haul when the miner falls', () => {
+    useGameStore.setState({
+      mining: makeMine({
+        hp: 3,
+        haul: { gold: 12 },
+        deepest: 2,
+        monsters: [{ id: 'a', key: 'cave_slug', r: 2, c: 3, hp: 6, maxHp: 6, readyAtMs: 999999 }],
+      }),
+    });
+    const goldBefore = get().character.gold;
+    get().mineTick(1000); // cave_slug touchDamage 4 > 3 hp → run ends + commits
+    expect(get().mining).toBeNull();
+    expect(get().character.gold).toBe(goldBefore + 12);
+    expect(get().deepestMineFloor).toBe(2);
+  });
+
+  it('persists at version 12', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(12);
   });
 });
 

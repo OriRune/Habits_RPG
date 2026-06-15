@@ -1,0 +1,32 @@
+Alternative color schemes: 
+Golden Summer Glow:
+/* CSS HEX */
+--regal-navy: #0d3b66ff;
+--lemon-chiffon: #faf0caff;
+--royal-gold: #f4d35eff;
+--sandy-brown: #ee964bff;
+--tomato: #f95738ff;
+
+Golden Glow:
+/* CSS HEX */
+--olive: #7c6a0aff;
+--dry-sage: #babd8dff;
+--peach-fuzz: #ffdac6ff;
+--deep-saffron: #fa9500ff;
+--cayenne-red: #eb6424ff;
+
+Sunset Synphony:
+/* CSS HEX */
+--dusk-blue: #485696ff;
+--alabaster-grey: #e7e7e7ff;
+--apricot-cream: #f9c784ff;
+--pumpkin-spice: #fc7a1eff;
+--molten-orange: #f24c00ff;
+
+Sunset Coral Hues: 
+/* CSS HEX */
+--canary-yellow: #fffd82ff;
+--tangerine-dream: #ff9b71ff;
+--watermelon: #e84855ff;
+--cinnamon-wood: #b56b45ff;
+--twilight-indigo: #2b3a67ff;

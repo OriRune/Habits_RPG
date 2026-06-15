@@ -4,41 +4,46 @@ export default {
   theme: {
     extend: {
       colors: {
+        // Themeable tokens resolve through CSS variables (channel form) so color
+        // palettes can be swapped at runtime — see src/engine/palettes.ts and the
+        // :root defaults in src/index.css. The `<alpha-value>` placeholder keeps
+        // opacity modifiers like `bg-gold/40` working.
         // Aged parchment — panel fills (light surfaces)
         parchment: {
-          DEFAULT: '#f3e7c9',
-          100: '#f8f0db',
-          200: '#f3e7c9',
-          300: '#e9d9b2',
-          400: '#dcc79a',
+          DEFAULT: 'rgb(var(--c-parchment) / <alpha-value>)',
+          100: 'rgb(var(--c-parchment-100) / <alpha-value>)',
+          200: 'rgb(var(--c-parchment-200) / <alpha-value>)',
+          300: 'rgb(var(--c-parchment-300) / <alpha-value>)',
+          400: 'rgb(var(--c-parchment-400) / <alpha-value>)',
         },
         // Ink — text on parchment
         ink: {
-          DEFAULT: '#3a2a16',
-          muted: '#6b5538',
-          light: '#8a7350',
+          DEFAULT: 'rgb(var(--c-ink) / <alpha-value>)',
+          muted: 'rgb(var(--c-ink-muted) / <alpha-value>)',
+          light: 'rgb(var(--c-ink-light) / <alpha-value>)',
         },
         // Dark wood — app background / dark panels
         wood: {
-          DEFAULT: '#241710',
-          900: '#140c06',
-          800: '#1a0f09',
-          700: '#241710',
-          600: '#33210f',
-          500: '#4a3320',
+          DEFAULT: 'rgb(var(--c-wood) / <alpha-value>)',
+          900: 'rgb(var(--c-wood-900) / <alpha-value>)',
+          800: 'rgb(var(--c-wood-800) / <alpha-value>)',
+          700: 'rgb(var(--c-wood-700) / <alpha-value>)',
+          600: 'rgb(var(--c-wood-600) / <alpha-value>)',
+          500: 'rgb(var(--c-wood-500) / <alpha-value>)',
         },
         // Aged gold — trim & accents
         gold: {
-          DEFAULT: '#c9a227',
-          bright: '#e8c860',
-          deep: '#8a6d1f',
-          dim: '#6b541a',
+          DEFAULT: 'rgb(var(--c-gold) / <alpha-value>)',
+          bright: 'rgb(var(--c-gold-bright) / <alpha-value>)',
+          deep: 'rgb(var(--c-gold-deep) / <alpha-value>)',
+          dim: 'rgb(var(--c-gold-dim) / <alpha-value>)',
         },
         // Ember — primary actions / alerts
         ember: {
-          DEFAULT: '#9c3a25',
-          bright: '#c25a3a',
+          DEFAULT: 'rgb(var(--c-ember) / <alpha-value>)',
+          bright: 'rgb(var(--c-ember-bright) / <alpha-value>)',
         },
+        // Jewel tones — decorative, intentionally NOT themed (fixed identity).
         jewel: {
           green: '#3f6b4a',
           blue: '#35506b',
@@ -61,14 +66,14 @@ export default {
         serif: ['"EB Garamond"', 'Georgia', 'serif'],
       },
       boxShadow: {
-        // Double gold frame + drop shadow for panels/frames
-        gold: '0 0 0 2px #8a6d1f, 0 0 0 4px #c9a227, 0 6px 16px rgba(0,0,0,0.55)',
-        'gold-sm': '0 0 0 1px #8a6d1f, 0 0 0 2px #c9a227',
+        // Double gold frame + drop shadow for panels/frames (gold trim follows the palette)
+        gold: '0 0 0 2px rgb(var(--c-gold-deep)), 0 0 0 4px rgb(var(--c-gold)), 0 6px 16px rgba(0,0,0,0.55)',
+        'gold-sm': '0 0 0 1px rgb(var(--c-gold-deep)), 0 0 0 2px rgb(var(--c-gold))',
         // Soft emboss for parchment surfaces
         parchment: 'inset 0 1px 0 rgba(255,255,255,0.45), inset 0 -3px 8px rgba(120,86,40,0.18)',
         // Carved wood
         wood: 'inset 0 1px 0 rgba(255,200,120,0.08), 0 4px 14px rgba(0,0,0,0.6)',
-        glow: '0 0 12px rgba(232,200,96,0.55)',
+        glow: '0 0 12px rgb(var(--c-gold-bright) / 0.55)',
       },
     },
   },

@@ -10,10 +10,13 @@ import { DashboardView } from '@/views/DashboardView';
 import { CharacterView } from '@/views/CharacterView';
 import { ChallengesView } from '@/views/ChallengesView';
 import { DungeonView } from '@/views/DungeonView';
+import { MiningView } from '@/views/MiningView';
+import { MineRunOverlay } from '@/components/mining/MineRunOverlay';
 import { InventoryView } from '@/views/InventoryView';
 import { HistoryView } from '@/views/HistoryView';
 import { SettingsView } from '@/views/SettingsView';
 import { useGameStore } from '@/store/useGameStore';
+import { applyPalette, resolvePalette } from '@/engine/palettes';
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('habits');
@@ -21,9 +24,18 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const created = useGameStore((s) => s.created);
   const battle = useGameStore((s) => s.battle);
+  const mining = useGameStore((s) => s.mining);
   const classChoice = useGameStore((s) => s.pendingClassChoice);
   const normalizeHabits = useGameStore((s) => s.normalizeHabits);
   const checkWeeklyRollover = useGameStore((s) => s.checkWeeklyRollover);
+  const paletteId = useGameStore((s) => s.settings.paletteId);
+  const customPalette = useGameStore((s) => s.settings.customPalette);
+
+  // Single apply path: re-skin the app whenever the selected palette changes
+  // (and once on mount, after the store has hydrated from localStorage).
+  useEffect(() => {
+    applyPalette(resolvePalette({ paletteId, customPalette }));
+  }, [paletteId, customPalette]);
 
   // Resume elapsed suspensions and surface the weekly report if a new week has begun.
   // Only for an established save — a brand-new hero hasn't finished creation yet.
@@ -43,12 +55,14 @@ export default function App() {
         {tab === 'character' && <CharacterView />}
         {tab === 'challenges' && <ChallengesView />}
         {tab === 'dungeon' && <DungeonView />}
+        {tab === 'mine' && <MiningView />}
         {tab === 'inventory' && <InventoryView />}
       </main>
       <TabBar active={tab} onChange={setTab} />
 
       {historyOpen && <HistoryView onClose={() => setHistoryOpen(false)} />}
       {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
+      {mining && <MineRunOverlay />}
       {battle && <BattleOverlay />}
       <BoonChoice />
       {classChoice && <ClassChoiceModal />}

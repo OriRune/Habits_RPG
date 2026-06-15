@@ -7,6 +7,7 @@ import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { Toggle } from '@/components/ui/Toggle';
 import { SectionTitle } from '@/components/ui/Divider';
+import { AppearanceSection } from '@/components/settings/AppearanceSection';
 
 const LEVEL_JUMPS = [3, 5, 10, 20, 50];
 const FLOOR_JUMPS = [0, 5, 8, 10];
@@ -66,6 +67,9 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             Reset game
           </button>
         </Panel>
+
+        {/* Appearance */}
+        <AppearanceSection />
 
         {/* Developer */}
         <Panel tone="parchment" className="space-y-3 p-4">
