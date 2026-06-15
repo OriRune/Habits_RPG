@@ -16,6 +16,8 @@ export interface MineTile {
   kind: MineTileKind;
   /** Pick swings left before it breaks (rock/ore only). */
   durability?: number;
+  /** Original durability at spawn — used to render the HP bar. */
+  maxDurability?: number;
   /** Which ore vein this tile holds (ore only — keys MINE_ORES). */
   oreKey?: string;
 }
@@ -57,6 +59,8 @@ export interface MineState {
   lastHitAtMs: number;
   /** Deepest floor reached this run (drives the persistent milestone). */
   deepest: number;
+  /** Monsters killed on this floor — drives the per-floor kill bonus. */
+  killsThisFloor: number;
 }
 
 export const MINE_ROWS = 11;
@@ -108,7 +112,7 @@ function eligibleOres(floor: number): MineOreDef[] {
 }
 
 function weightedOre(floor: number, rng: RNG): MineOreDef {
-  const pool = eligibleOres(floor);
+  const pool = eligibleOres(floor).filter((o) => o.weight > 0);
   const total = pool.reduce((a, o) => a + o.weight, 0);
   let roll = rng() * total;
   for (const o of pool) {
@@ -118,10 +122,28 @@ function weightedOre(floor: number, rng: RNG): MineOreDef {
   return pool[pool.length - 1];
 }
 
+type LootEntry = { kind: 'gold' } | { kind: 'material'; material: string };
+
+function monsterLootPool(floor: number): LootEntry[] {
+  const pool: LootEntry[] = [{ kind: 'gold' }];
+  pool.push({ kind: 'material', material: 'bronze_bar' });
+  if (floor >= 3) pool.push({ kind: 'material', material: 'iron_bar' });
+  if (floor >= 6) pool.push({ kind: 'material', material: 'crystals' });
+  return pool;
+}
+
+function avgNodeDurability(floor: number): number {
+  const ores = eligibleOres(floor).filter((o) => o.weight > 0);
+  if (ores.length === 0) return 1;
+  const totalWeight = ores.reduce((a, o) => a + o.weight, 0);
+  return ores.reduce((a, o) => a + o.durability * o.weight, 0) / totalWeight;
+}
+
 /** Loot dropped by breaking one ore tile. */
 export function oreYield(oreKey: string, rng: RNG): Reward {
   const def = MINE_ORES[oreKey];
   if (!def) return {};
+  if (def.grants.kind === 'stamina') return {}; // stamina handled in engine, not haul
   if (def.grants.kind === 'gold') {
     return { gold: randInt(def.grants.amount[0], def.grants.amount[1], rng) };
   }
@@ -140,7 +162,8 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
     const row: MineTile[] = [];
     for (let c = 0; c < cols; c++) {
       const border = r === 0 || c === 0 || r === rows - 1 || c === cols - 1;
-      row.push(border ? { kind: 'bedrock' } : { kind: 'rock', durability: 2 });
+      const rockDur = floor <= 2 ? 1 : 2;
+      row.push(border ? { kind: 'bedrock' } : { kind: 'rock', durability: rockDur, maxDurability: rockDur });
     }
     tiles.push(row);
   }
@@ -174,21 +197,38 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
     if (idx >= 0) interior.splice(idx, 1);
   }
 
+  // One energy gem per floor — placed separately from the weighted ore pool.
+  const gemCell = takeCell();
+  if (gemCell) {
+    tiles[gemCell[0]][gemCell[1]] = { kind: 'ore', oreKey: 'energy_gem', durability: 1, maxDurability: 1 };
+  }
+
   // Scatter ore veins (more, richer with depth).
   const oreCount = Math.min(interior.length, 5 + floor);
   for (let i = 0; i < oreCount; i++) {
     const cell = takeCell();
     if (!cell) break;
     const def = weightedOre(floor, rng);
-    tiles[cell[0]][cell[1]] = { kind: 'ore', oreKey: def.key, durability: def.durability };
+    tiles[cell[0]][cell[1]] = { kind: 'ore', oreKey: def.key, durability: def.durability, maxDurability: def.durability };
   }
 
-  // Spawn monsters in carved pockets so they can roam toward the player.
+  // Spawn monsters in carved pockets — never adjacent to the player's entrance.
+  const takeMonsterCell = (): [number, number] | undefined => {
+    const safe = interior.filter(
+      ([r, c]) => Math.abs(r - startR) + Math.abs(c - startC) > 1,
+    );
+    if (safe.length === 0) return takeCell();
+    const i = Math.floor(rng() * safe.length);
+    const cell = safe[i];
+    const idx = interior.findIndex(([r, c]) => r === cell[0] && c === cell[1]);
+    if (idx >= 0) interior.splice(idx, 1);
+    return cell;
+  };
   const monsters: MineMonster[] = [];
   const eligibleMon = Object.values(MINE_MONSTERS).filter((m) => m.floorMin <= floor);
   const monCount = eligibleMon.length === 0 ? 0 : Math.min(4, 1 + Math.floor(floor / 2));
   for (let i = 0; i < monCount; i++) {
-    const cell = takeCell();
+    const cell = takeMonsterCell();
     if (!cell) break;
     const def = eligibleMon[Math.floor(rng() * eligibleMon.length)];
     tiles[cell[0]][cell[1]] = { kind: 'floor' };
@@ -211,6 +251,7 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
     status: 'active',
     lastHitAtMs: -MINE_IFRAME_MS,
     deepest: floor,
+    killsThisFloor: 0,
   };
 }
 
@@ -247,13 +288,19 @@ export function strike(state: MineState, rng: RNG): MineState {
   if (mon) {
     const hp = mon.hp - state.meleePower;
     if (hp <= 0) {
-      const def = MINE_MONSTERS[mon.key];
-      const bounty = def ? { gold: randInt(def.bounty[0], def.bounty[1], rng) } : {};
+      const killBonus = state.killsThisFloor + 1;
+      const swingsToKill = Math.ceil(mon.maxHp / Math.max(1, state.meleePower));
+      const qty = Math.max(1, Math.round(swingsToKill / avgNodeDurability(state.floor)) + killBonus);
+      const pool = monsterLootPool(state.floor);
+      const pick = pool[Math.floor(rng() * pool.length)];
+      const drop: Reward =
+        pick.kind === 'gold' ? { gold: qty } : { materials: { [pick.material]: qty } };
       return {
         ...state,
-        sta: state.sta - STRIKE_STA_COST,
+        sta: Math.min(state.maxSta, state.sta - STRIKE_STA_COST + 2),
         monsters: state.monsters.filter((m) => m.id !== mon.id),
-        haul: mergeReward(state.haul, bounty),
+        haul: mergeReward(state.haul, drop),
+        killsThisFloor: state.killsThisFloor + 1,
       };
     }
     return {
@@ -269,13 +316,20 @@ export function strike(state: MineState, rng: RNG): MineState {
   const durability = (tile.durability ?? 1) - 1;
   const tiles = state.tiles.map((row) => row.slice());
   let haul = state.haul;
+  const oreBroke = durability <= 0 && tile.kind === 'ore';
   if (durability <= 0) {
     if (tile.kind === 'ore' && tile.oreKey) haul = mergeReward(haul, oreYield(tile.oreKey, rng));
     tiles[r][c] = { kind: 'floor' };
   } else {
     tiles[r][c] = { ...tile, durability };
   }
-  return { ...state, sta: state.sta - STRIKE_STA_COST, tiles, haul };
+  if (durability <= 0 && tile.kind === 'rock' && rng() < 0.1) {
+    haul = mergeReward(haul, oreYield(weightedOre(state.floor, rng).key, rng));
+  }
+  const staDef = oreBroke && tile.oreKey ? MINE_ORES[tile.oreKey] : undefined;
+  const staRestore = staDef?.grants.kind === 'stamina' ? staDef.grants.amount[0] : oreBroke ? 1 : 0;
+  const newSta = Math.min(state.maxSta, state.sta - STRIKE_STA_COST + staRestore);
+  return { ...state, sta: newSta, tiles, haul };
 }
 
 // --- monsters ----------------------------------------------------------------

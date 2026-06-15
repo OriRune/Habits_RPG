@@ -34,7 +34,8 @@ export interface MineOreDef {
   durability: number;
   grants:
     | { kind: 'gold'; amount: [number, number] }
-    | { kind: 'material'; material: string; amount: [number, number] };
+    | { kind: 'material'; material: string; amount: [number, number] }
+    | { kind: 'stamina'; amount: [number, number] };
 }
 
 export interface MineMonsterDef {
@@ -73,6 +74,10 @@ export const MINE_ORES: Record<string, MineOreDef> = {
   gemstone_node: {
     key: 'gemstone_node', name: 'Gemstone Node', glyph: '◆', color: '#b8487f',
     floorMin: 10, weight: 0.8, durability: 5, grants: { kind: 'material', material: 'gemstone', amount: [1, 1] },
+  },
+  energy_gem: {
+    key: 'energy_gem', name: 'Energy Gem', glyph: '⚡', color: '#22d3ee',
+    floorMin: 1, weight: 0, durability: 1, grants: { kind: 'stamina', amount: [11, 11] },
   },
 };
 

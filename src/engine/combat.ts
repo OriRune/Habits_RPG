@@ -49,7 +49,7 @@ export function deriveCombatant(
   return {
     maxHp: 50 + p('HP') * 7 + charLevel * 3,
     maxMp: 8 + p('KN') * 3,
-    maxSta: 4 + p('EN'),
+    maxSta: 12 + p('EN'),
     meleePower: p('ST'),
     rangedPower: p('DX'),
     dodge: Math.min(0.4, p('AG') * 0.02),
