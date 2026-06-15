@@ -1,14 +1,44 @@
+import { useState } from 'react';
 import { ChevronLeft, FlaskConical } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
+import { STATS, type StatId } from '@/engine/stats';
+import { classFor } from '@/engine/classes';
 import { Panel } from '@/components/ui/Panel';
+import { Button } from '@/components/ui/Button';
 import { Toggle } from '@/components/ui/Toggle';
 import { SectionTitle } from '@/components/ui/Divider';
+
+const LEVEL_JUMPS = [3, 5, 10, 20, 50];
+const FLOOR_JUMPS = [0, 5, 8, 10];
+const TRIALS = [
+  { level: 5, label: 'Slime (Lv 5)' },
+  { level: 10, label: 'Guardian (Lv 10)' },
+  { level: 20, label: 'Golem (Lv 20)' },
+];
 
 /** Full-screen Settings overlay: general options + a Developer "creative mode" section. */
 export function SettingsView({ onClose }: { onClose: () => void }) {
   const settings = useGameStore((s) => s.settings);
   const updateSettings = useGameStore((s) => s.updateSettings);
   const resetGame = useGameStore((s) => s.resetGame);
+
+  const level = useGameStore((s) => s.character.level);
+  const classId = useGameStore((s) => s.character.classId);
+  const deepestFloor = useGameStore((s) => s.deepestFloor);
+  const devSetLevel = useGameStore((s) => s.devSetLevel);
+  const devSetDeepestFloor = useGameStore((s) => s.devSetDeepestFloor);
+  const devSpawnTrial = useGameStore((s) => s.devSpawnTrial);
+  const devClearClass = useGameStore((s) => s.devClearClass);
+  const chooseClass = useGameStore((s) => s.chooseClass);
+
+  const [primary, setPrimary] = useState<StatId>('ST');
+  const [secondary, setSecondary] = useState<StatId>('DX');
+  const previewClass = classFor(primary, secondary);
+
+  const spawn = (lvl: number) => {
+    devSpawnTrial(lvl);
+    onClose(); // surface the BattleOverlay over the dashboard
+  };
 
   return (
     <div className="texture-wood fixed inset-0 z-50 overflow-y-auto">
@@ -67,6 +97,148 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
               checked={settings.invincible}
               onChange={(v) => updateSettings({ invincible: v })}
             />
+          </div>
+
+          {/* Testing tools — jump straight to level-locked content. */}
+          <div className="space-y-4 border-t border-gold-deep/20 pt-3">
+            <p className="text-xs text-ink-muted">
+              Testing jumps — set progression directly to reach gated content.
+            </p>
+
+            {/* Level jump */}
+            <div className="space-y-1.5">
+              <div className="flex items-baseline justify-between">
+                <span className="font-display text-xs font-bold uppercase tracking-wider text-ink">
+                  Set level
+                </span>
+                <span className="text-[11px] text-ink-muted">
+                  current <span className="font-bold tabular-nums text-gold-deep">Lv {level}</span>
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {LEVEL_JUMPS.map((lvl) => (
+                  <Button
+                    key={lvl}
+                    variant="secondary"
+                    onClick={() => devSetLevel(lvl)}
+                    className="px-3 py-1 text-xs"
+                  >
+                    Lv {lvl}
+                  </Button>
+                ))}
+              </div>
+              <p className="text-[10px] text-ink-light">
+                Opens dungeons (3), trials (5), and class assignment (10).
+              </p>
+            </div>
+
+            {/* Deepest floor */}
+            <div className="space-y-1.5">
+              <div className="flex items-baseline justify-between">
+                <span className="font-display text-xs font-bold uppercase tracking-wider text-ink">
+                  Deepest floor
+                </span>
+                <span className="text-[11px] text-ink-muted">
+                  reached{' '}
+                  <span className="font-bold tabular-nums text-gold-deep">{deepestFloor}</span>
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {FLOOR_JUMPS.map((n) => (
+                  <Button
+                    key={n}
+                    variant="secondary"
+                    onClick={() => devSetDeepestFloor(n)}
+                    className="px-3 py-1 text-xs"
+                  >
+                    {n === 0 ? 'Reset' : `Floor ${n}`}
+                  </Button>
+                ))}
+              </div>
+              <p className="text-[10px] text-ink-light">
+                Unlocks Merchant (5), Elite (8), and Tier-3 relic (10) rooms on the next run.
+              </p>
+            </div>
+
+            {/* Spawn trial */}
+            <div className="space-y-1.5">
+              <span className="font-display text-xs font-bold uppercase tracking-wider text-ink">
+                Spawn boss trial
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {TRIALS.map((t) => (
+                  <Button
+                    key={t.level}
+                    variant="secondary"
+                    onClick={() => spawn(t.level)}
+                    className="px-3 py-1 text-xs"
+                  >
+                    {t.label}
+                  </Button>
+                ))}
+              </div>
+              <p className="text-[10px] text-ink-light">
+                Starts the fight at once; winning advances you to that level.
+              </p>
+            </div>
+
+            {/* Class */}
+            <div className="space-y-1.5">
+              <div className="flex items-baseline justify-between">
+                <span className="font-display text-xs font-bold uppercase tracking-wider text-ink">
+                  Class
+                </span>
+                <span className="text-[11px] text-ink-muted">
+                  current{' '}
+                  <span className="font-bold text-gold-deep">{classId ?? 'none'}</span>
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <select
+                  value={primary}
+                  onChange={(e) => setPrimary(e.target.value as StatId)}
+                  aria-label="Primary stat"
+                  className="rounded-md border border-gold-deep/50 bg-parchment-100/80 px-2 py-1 text-xs text-ink focus:border-gold-deep focus:outline-none"
+                >
+                  {STATS.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-xs text-ink-light">+</span>
+                <select
+                  value={secondary}
+                  onChange={(e) => setSecondary(e.target.value as StatId)}
+                  aria-label="Secondary stat"
+                  className="rounded-md border border-gold-deep/50 bg-parchment-100/80 px-2 py-1 text-xs text-ink focus:border-gold-deep focus:outline-none"
+                >
+                  {STATS.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-xs italic text-gold-deep">→ {previewClass}</span>
+              </div>
+              <div className="flex gap-1.5">
+                <Button
+                  variant="secondary"
+                  onClick={() => chooseClass(primary, secondary)}
+                  className="px-3 py-1 text-xs"
+                >
+                  Assign
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() => devClearClass()}
+                  className="px-3 py-1 text-xs"
+                  disabled={!classId}
+                >
+                  Clear
+                </Button>
+              </div>
+            </div>
           </div>
         </Panel>
       </div>

@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { useGameStore, withCharacterDefaults, type DungeonRun } from '../useGameStore';
+import { useGameStore, totalXp, withCharacterDefaults, type DungeonRun } from '../useGameStore';
 import { STAT_IDS, emptyStatXP } from '@/engine/stats';
+import { levelForTotalXp } from '@/engine/leveling';
+import { bossForLevel } from '@/engine/bosses';
 import { type BattleState } from '@/engine/combat';
 import { type DungeonRoom, merchantOffers } from '@/engine/dungeon';
 import { type FloorMap } from '@/engine/dungeonMap';
@@ -665,6 +667,57 @@ describe('dungeon expeditions', () => {
     useGameStore.setState({ dungeon: makeRun({ rooms: [{ type: 'combat' }] }) });
     get().collectDungeon();
     expect(get().dungeon).not.toBeNull();
+  });
+});
+
+describe('developer testing tools', () => {
+  it('devSetLevel jumps the level with consistent XP and no queued trial', () => {
+    get().resetGame();
+    get().devSetLevel(10);
+    expect(get().character.level).toBe(10);
+    // XP total derives back to exactly the same level — the bar stays consistent.
+    expect(levelForTotalXp(totalXp(get().character.statXp))).toBe(10);
+    expect(get().pendingLevelUp).toBeNull();
+  });
+
+  it('devSetLevel(3) opens the dungeon gate', () => {
+    get().resetGame();
+    get().devSetLevel(3);
+    useGameStore.setState({ character: { ...get().character, energy: 10 } });
+    get().startDungeon();
+    expect(get().dungeon).not.toBeNull();
+  });
+
+  it('devSetLevel clamps to [1, MAX_LEVEL]', () => {
+    get().devSetLevel(999);
+    expect(get().character.level).toBe(50);
+    get().devSetLevel(0);
+    expect(get().character.level).toBe(1);
+  });
+
+  it('devSetDeepestFloor records the deepest floor reached', () => {
+    get().devSetDeepestFloor(8);
+    expect(get().deepestFloor).toBe(8);
+  });
+
+  it('devSpawnTrial opens the matching boss fight, and winning advances the level', () => {
+    get().resetGame();
+    get().devSpawnTrial(5);
+    expect(get().pendingLevelUp).toBe(5);
+    expect(get().battle).not.toBeNull();
+    expect(get().battle!.bossName).toBe(bossForLevel(5).name);
+
+    useGameStore.setState({ battle: { ...get().battle!, status: 'won' } });
+    get().dismissBattle();
+    expect(get().character.level).toBe(5);
+    expect(get().pendingLevelUp).toBeNull();
+  });
+
+  it('devClearClass strips an assigned class', () => {
+    get().chooseClass('ST', 'DX'); // Knight
+    expect(get().character.classId).toBe('Knight');
+    get().devClearClass();
+    expect(get().character.classId).toBeNull();
   });
 });
 

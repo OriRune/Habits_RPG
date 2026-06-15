@@ -15,7 +15,7 @@ import {
   currentStreak,
 } from '@/engine/habits';
 import { toISODate, daysBetween, weekKey, addDays } from '@/engine/date';
-import { levelForTotalXp } from '@/engine/leveling';
+import { levelForTotalXp, cumulativeXpToReach } from '@/engine/leveling';
 import {
   allocateStatGains,
   creationStatLevels,
@@ -338,6 +338,16 @@ export interface GameState {
   dungeonLeaveRoom: () => void;
 
   updateSettings: (patch: Partial<GameSettings>) => void;
+
+  // Developer testing tools (Settings → Developer). Jump straight to level-locked content.
+  /** Direct level jump: seed statXp to match `target` so all level gates open at once. */
+  devSetLevel: (target: number) => void;
+  /** Set the deepest dungeon floor reached (unlocks Merchant/Elite/Tier-3 relic rooms). */
+  devSetDeepestFloor: (n: number) => void;
+  /** Open a Level-Up Trial boss fight for `level` immediately. */
+  devSpawnTrial: (level: number) => void;
+  /** Strip the current class so it can be reassigned. */
+  devClearClass: () => void;
 
   resetGame: () => void;
 }
@@ -1327,6 +1337,44 @@ export const useGameStore = create<GameState>()(
 
       updateSettings: (patch) =>
         set((s) => ({ settings: { ...s.settings, ...patch } })),
+
+      devSetLevel: (target) =>
+        set((s) => {
+          const level = Math.max(1, Math.min(MAX_LEVEL, Math.floor(target)));
+          // Seed statXp to exactly the total this level requires, spread across the stats,
+          // so the derived level (and the XP bar) stays consistent and no trial is queued.
+          const total = cumulativeXpToReach(level);
+          const per = Math.floor(total / STAT_IDS.length);
+          const remainder = total - per * STAT_IDS.length;
+          const statXp = emptyStatXP();
+          STAT_IDS.forEach((id, i) => {
+            statXp[id] = per + (i === 0 ? remainder : 0);
+          });
+          return {
+            character: {
+              ...s.character,
+              level,
+              statXp,
+              statXpAtLastLevel: { ...statXp },
+            },
+            pendingLevelUp: null,
+          };
+        }),
+
+      devSetDeepestFloor: (n) =>
+        set(() => ({ deepestFloor: Math.max(0, Math.floor(n)) })),
+
+      devSpawnTrial: (level) =>
+        set((s) => {
+          if (s.battle) return s;
+          const target = Math.max(1, Math.min(MAX_LEVEL, Math.floor(level)));
+          const boss = bossForLevel(target);
+          const battle = createBattle(fighterFor(s), boss, { lossesBefore: s.bossLosses[target] ?? 0 });
+          return { pendingLevelUp: target, battle };
+        }),
+
+      devClearClass: () =>
+        set((s) => ({ character: { ...s.character, classId: null } })),
 
       resetGame: () =>
         set(() => ({
