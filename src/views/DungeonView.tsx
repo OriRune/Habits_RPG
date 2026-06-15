@@ -24,6 +24,14 @@ import { ShrineRoom } from '@/components/dungeon/ShrineRoom';
 import { MerchantRoom } from '@/components/dungeon/MerchantRoom';
 import { RestRoom } from '@/components/dungeon/RestRoom';
 
+/** What the next depth milestone unlocks (gates mirror engine/dungeonMap weights). */
+function milestoneHint(deepest: number): string {
+  if (deepest < 5) return 'Reach Floor 5 to unlock Merchants.';
+  if (deepest < 8) return 'Reach Floor 8 to unlock Elite foes.';
+  if (deepest < 10) return 'Reach Floor 10 to unlock rare (Tier 3) relics.';
+  return 'All depths unlocked — chase a new record.';
+}
+
 function RunGauge({
   icon,
   value,
@@ -93,6 +101,7 @@ export function DungeonView() {
   const dungeon = useGameStore((s) => s.dungeon);
   const energy = useGameStore((s) => s.character.energy);
   const level = useGameStore((s) => s.character.level);
+  const deepestFloor = useGameStore((s) => s.deepestFloor);
   const startDungeon = useGameStore((s) => s.startDungeon);
   const dungeonChoosePath = useGameStore((s) => s.dungeonChoosePath);
   const dungeonEncounterChoose = useGameStore((s) => s.dungeonEncounterChoose);
@@ -127,6 +136,16 @@ export function DungeonView() {
               <Zap className="h-4 w-4 text-stat-AG" /> Cost: {DUNGEON_ENERGY_COST} energy
             </span>
             <span className="text-sm text-ink-muted">You have {energy} ⚡</span>
+          </div>
+
+          <div className="rounded-md border border-gold-deep/30 bg-parchment-300/40 p-3 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="font-display text-ink">Deepest descent</span>
+              <span className="font-display font-bold text-gold-deep">
+                {deepestFloor > 0 ? `Floor ${deepestFloor}` : '—'}
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] text-ink-muted">{milestoneHint(deepestFloor)}</div>
           </div>
 
           <Button onClick={startDungeon} disabled={!canEnter} className="w-full py-2.5">
@@ -184,14 +203,13 @@ export function DungeonView() {
           <div>
             <div className="font-display text-base font-bold text-ink">Checkpoint</div>
             <div className="text-sm text-ink-muted">
-              You rest and recover fully. Your spoils so far are safe — bank them, or press your luck.
+              Your spoils so far are safe. Mana and stamina return — but your wounds carry into the
+              dark. Heal up, or press on for a boon{nextIsBoss ? ' before the boss' : ''}.
             </div>
           </div>
 
           <Panel tone="wood" className="space-y-2 p-3">
             <RunGauge icon={<Heart className="h-4 w-4 text-stat-HP" />} value={dungeon.hp} max={dungeon.maxHp} fill="#2e8a5e" />
-            <RunGauge icon={<Sparkles className="h-4 w-4 text-stat-KN" />} value={dungeon.mp} max={dungeon.maxMp} fill="#3b82f6" />
-            <RunGauge icon={<Wind className="h-4 w-4 text-stat-EN" />} value={dungeon.sta} max={dungeon.maxSta} fill="#c98a3a" />
             <RelicTray relics={dungeon.relics} />
           </Panel>
 
@@ -201,13 +219,16 @@ export function DungeonView() {
           </div>
 
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <Button variant="secondary" onClick={dungeonBank} className="flex items-center justify-center gap-1.5 py-2.5">
-              <DoorOpen className="h-4 w-4" /> Bank &amp; Leave
+            <Button variant="secondary" onClick={() => dungeonDescend('rest')} className="flex items-center justify-center gap-1.5 py-2.5">
+              <Heart className="h-4 w-4" /> Rest (+{Math.round(dungeon.maxHp * 0.4)} HP)
             </Button>
-            <Button onClick={dungeonDescend} className="flex items-center justify-center gap-1.5 py-2.5">
-              <ChevronsDown className="h-4 w-4" /> Descend{nextIsBoss ? ' (Boss!)' : ' Deeper'}
+            <Button onClick={() => dungeonDescend('pressOn')} className="flex items-center justify-center gap-1.5 py-2.5">
+              <ChevronsDown className="h-4 w-4" /> Press On{nextIsBoss ? ' (Boss!)' : ''} — take a boon
             </Button>
           </div>
+          <Button variant="secondary" onClick={dungeonBank} className="flex w-full items-center justify-center gap-1.5 py-2">
+            <DoorOpen className="h-4 w-4" /> Bank &amp; Leave
+          </Button>
           <p className="text-center text-[11px] text-ink-light">
             Falling on the next floor forfeits most of what you gather there — but not what's banked.
           </p>

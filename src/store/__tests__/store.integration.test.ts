@@ -437,11 +437,12 @@ describe('dungeon expeditions', () => {
     rng.mockRestore();
   });
 
-  it('clearing a floor reaches a checkpoint, banking loot and restoring resources', () => {
+  it('clearing a floor reaches a checkpoint with wounds carried (attrition)', () => {
     useGameStore.setState({
       dungeon: makeRun({
         rooms: [{ type: 'combat' }],
         hp: 30,
+        maxHp: 100,
         floorReward: { gold: 20 },
         battle: {
           status: 'won',
@@ -458,9 +459,8 @@ describe('dungeon expeditions', () => {
     expect(run.atCheckpoint).toBe(true);
     expect(run.status).toBe('active');
     expect(run.bankedReward.gold).toBe(20); // floor loot locked in
-    expect(run.hp).toBe(run.maxHp); // fully restored
-    expect(run.pendingBoon).not.toBeNull(); // a boon is offered on floor clear
-    expect(run.pendingBoon!.length).toBe(3);
+    expect(run.hp).toBe(18); // HP carries over — no free full heal
+    expect(run.pendingBoon).toBeNull(); // the boon now comes from Press On, not floor clear
   });
 
   it('chooseBoon adds a relic, clears the offer, and a +maxHp boon raises run maxHp', () => {
@@ -579,17 +579,31 @@ describe('dungeon expeditions', () => {
     expect(get().dungeon!.cleared).toBe(true);
   });
 
-  it('descending from a checkpoint builds a deeper floor', () => {
+  it('descending from a checkpoint builds a deeper floor and records the depth', () => {
+    get().resetGame();
     useGameStore.setState({
-      dungeon: makeRun({ rooms: [{ type: 'combat' }], atCheckpoint: true, depth: 1 }),
+      dungeon: makeRun({ rooms: [{ type: 'combat' }], atCheckpoint: true, depth: 1, hp: 30, maxHp: 100 }),
     });
-    get().dungeonDescend();
+    get().dungeonDescend('pressOn');
     const run = get().dungeon!;
     expect(run.depth).toBe(2);
     expect(run.atCheckpoint).toBe(false);
     expect(run.status).toBe('active');
     expect(run.nodeId).toBeNull(); // new floor starts at a path choice
     expect(run.choices.length).toBeGreaterThan(0);
+    expect(run.hp).toBe(30); // Press On keeps your wounds
+    expect(run.pendingBoon).not.toBeNull(); // ...and grants a boon
+    expect(get().deepestFloor).toBe(2); // record updated
+  });
+
+  it('resting at a checkpoint heals but grants no boon', () => {
+    useGameStore.setState({
+      dungeon: makeRun({ rooms: [{ type: 'combat' }], atCheckpoint: true, depth: 1, hp: 30, maxHp: 100, pendingBoon: null }),
+    });
+    get().dungeonDescend('rest');
+    const run = get().dungeon!;
+    expect(run.hp).toBe(70); // +40% of max
+    expect(run.pendingBoon).toBeNull();
   });
 
   it('collect grants banked gold + materials but no XP, and clears the run', () => {

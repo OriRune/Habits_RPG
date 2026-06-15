@@ -167,16 +167,17 @@ export interface DungeonRun {
 /** Share of the current floor's loot kept when you fall mid-floor (the rest is forfeit). */
 const FLOOR_LOSS_KEEP = 0.25;
 
-/** Boon tiers unlock with depth: tier 2 from depth 4, tier 3 from depth 10. */
-function boonMaxTier(depth: number): number {
-  if (depth >= 10) return 3;
-  if (depth >= 4) return 2;
+/** Boon tiers unlock with how deep you've gone: tier 2 from depth 4, tier 3 from depth 10. */
+function boonMaxTier(depth: number, deepest: number): number {
+  const d = Math.max(depth, deepest);
+  if (d >= 10) return 3;
+  if (d >= 4) return 2;
   return 1;
 }
 
-/** Offer three boon choices on a run (floor clear / shrine / elite). No-op if the pool is empty. */
-function offerBoon(run: DungeonRun): void {
-  const choices = rollBoons(3, run.relics, boonMaxTier(run.depth));
+/** Offer three boon choices on a run (press-on / shrine / elite). No-op if the pool is empty. */
+function offerBoon(run: DungeonRun, maxTier: number): void {
+  const choices = rollBoons(3, run.relics, maxTier);
   run.pendingBoon = choices.length ? choices : null;
 }
 
@@ -201,14 +202,12 @@ function resolveCurrentNode(run: DungeonRun, hp: number, mp: number, sta: number
     merchant: null,
   };
   if (!node || node.to.length === 0) {
+    // Floor cleared → checkpoint. HP carries over (attrition); the Rest/Press-On/Bank choice and
+    // any MP/Stamina restore happen at the checkpoint (dungeonDescend). No free full heal.
     next.choices = [];
     next.atCheckpoint = true;
     next.bankedReward = mergeReward(next.bankedReward, next.floorReward);
     next.floorReward = {};
-    next.hp = next.maxHp;
-    next.mp = next.maxMp;
-    next.sta = next.maxSta;
-    if (!next.pendingBoon) offerBoon(next); // don't clobber a boon a shrine/elite already offered
   } else {
     next.choices = node.to;
   }
@@ -262,6 +261,8 @@ export interface GameState {
   pendingClassChoice: PendingClassChoice | null;
   /** Boss losses per target level, drives anti-frustration scaling. */
   bossLosses: Record<number, number>;
+  /** Deepest dungeon floor ever reached — a persistent record that gates content. */
+  deepestFloor: number;
   /** Date -> number of habit completions, powers mood + weekly views. */
   completionLog: Record<string, number>;
   lastActiveISO: string;
@@ -310,7 +311,8 @@ export interface GameState {
   dungeonBattleAction: (action: CombatAction) => void;
   dungeonAdvance: () => void;
   dungeonBank: () => void;
-  dungeonDescend: () => void;
+  /** Leave the checkpoint for the next floor: 'rest' (partial heal) or 'pressOn' (a boon instead). */
+  dungeonDescend: (mode: 'rest' | 'pressOn') => void;
   collectDungeon: () => void;
   /** Pick one of the offered boon relics into the run. */
   chooseBoon: (relicKey: string) => void;
@@ -639,6 +641,7 @@ export const useGameStore = create<GameState>()(
       pendingLevelUp: null,
       pendingClassChoice: null,
       bossLosses: {},
+      deepestFloor: 0,
       completionLog: {},
       lastActiveISO: toISODate(),
       settings: freshSettings(),
@@ -989,7 +992,7 @@ export const useGameStore = create<GameState>()(
           if (!freeEnergy && s.character.energy < DUNGEON_ENERGY_COST) return s;
           const { c } = fighterFor(s);
           const biome = biomeForDepth(1);
-          const map = generateFloorMap(1, biome);
+          const map = generateFloorMap(1, biome, Math.random, { deepest: s.deepestFloor });
           const run: DungeonRun = {
             depth: 1,
             biomeKey: biome.key,
@@ -1137,7 +1140,7 @@ export const useGameStore = create<GameState>()(
           // treasure rooms loot on entry (enterRoom) — advancing just moves on.
 
           const next = resolveCurrentNode(workingRun, hp, mp, sta);
-          if (eliteWin) offerBoon(next);
+          if (eliteWin) offerBoon(next, boonMaxTier(next.depth, s.deepestFloor));
           return {
             dungeon: next,
             ...(combatStats ? { combatStats } : {}),
@@ -1153,13 +1156,15 @@ export const useGameStore = create<GameState>()(
           return { dungeon: { ...run, status: 'ended', cleared: true } };
         }),
 
-      dungeonDescend: () =>
+      dungeonDescend: (mode) =>
         set((s) => {
           const run = s.dungeon;
           if (!run || run.status !== 'active' || !run.atCheckpoint) return s;
           const depth = run.depth + 1;
+          const deepestFloor = Math.max(s.deepestFloor, depth);
           const biome = biomeForDepth(depth);
-          const map = generateFloorMap(depth, biome);
+          const map = generateFloorMap(depth, biome, Math.random, { deepest: s.deepestFloor });
+          // Mana + Stamina reset between floors; HP is the run's attrition currency and carries.
           const next: DungeonRun = {
             ...run,
             depth,
@@ -1173,8 +1178,17 @@ export const useGameStore = create<GameState>()(
             roomLoot: null,
             battle: null,
             encounter: null,
+            mp: run.maxMp,
+            sta: run.maxSta,
           };
-          return { dungeon: next };
+          if (mode === 'rest') {
+            // Rest: recover some HP, forgo this checkpoint's boon.
+            next.hp = Math.min(run.maxHp, run.hp + Math.round(run.maxHp * 0.4));
+          } else {
+            // Press On: keep your wounds, take a boon instead.
+            offerBoon(next, boonMaxTier(depth, deepestFloor));
+          }
+          return { dungeon: next, deepestFloor };
         }),
 
       collectDungeon: () =>
@@ -1216,7 +1230,7 @@ export const useGameStore = create<GameState>()(
             // A check of your best spiritual stat: success blesses you, failure curses you.
             const power = Math.max(s.character.statLevels.WI, s.character.statLevels.CH);
             if (Math.random() < checkChance(power, 6)) {
-              offerBoon(next);
+              offerBoon(next, boonMaxTier(next.depth, s.deepestFloor));
             } else {
               const curse = rollCurse();
               if (curse) {
@@ -1230,7 +1244,7 @@ export const useGameStore = create<GameState>()(
             const cost = Math.round(run.maxHp * 0.25);
             if (run.hp <= cost) return s; // can't pay the toll
             next.hp = run.hp - cost;
-            offerBoon(next);
+            offerBoon(next, boonMaxTier(next.depth, s.deepestFloor));
           }
           // 'leave' = no effect. In every case, resolve the room and present the next path.
           return { dungeon: resolveCurrentNode(next, next.hp, next.mp, next.sta) };
@@ -1253,7 +1267,7 @@ export const useGameStore = create<GameState>()(
           } else if (offer.kind === 'potion' && offer.potionKey) {
             patch.inventory = { ...s.inventory, [offer.potionKey]: (s.inventory[offer.potionKey] ?? 0) + 1 };
           } else if (offer.kind === 'boon') {
-            offerBoon(next);
+            offerBoon(next, boonMaxTier(next.depth, s.deepestFloor));
           }
           return { dungeon: next, ...patch };
         }),
