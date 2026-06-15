@@ -118,8 +118,8 @@ export function MineRunOverlay() {
         newLootPops.push({ key: `ls-${now}`, ...pos, at: now, text: `+${netSta} sta`, color: '#22d3ee' });
       }
       if (newLootPops.length > 0) {
-        setLootPops((ps) => [...ps.filter((p) => now - p.at < 900), ...newLootPops]);
-        setTimeout(() => setLootPops((ps) => ps.filter((p) => Date.now() - p.at < 900)), 950);
+        setLootPops((ps) => [...ps.filter((p) => now - p.at < 1400), ...newLootPops]);
+        setTimeout(() => setLootPops((ps) => ps.filter((p) => Date.now() - p.at < 1400)), 1450);
       }
     }
   }, [mine]);
@@ -233,13 +233,13 @@ export function MineRunOverlay() {
         {lootPops.map((p) => (
           <div
             key={p.key}
-            className="pointer-events-none absolute z-30 whitespace-nowrap font-display text-[11px] font-bold"
+            className="pointer-events-none absolute z-30 whitespace-nowrap font-display text-[13px] font-bold"
             style={{
               left: p.c * CELL + CELL / 2,
-              top: p.r * CELL,
+              top: p.r * CELL + CELL / 2,
               color: p.color,
-              textShadow: '0 1px 3px rgba(0,0,0,0.9)',
-              animation: 'loot-float 0.9s ease-out forwards',
+              textShadow: '0 0 6px rgba(0,0,0,1), 0 1px 3px rgba(0,0,0,0.9)',
+              animation: 'loot-float 1.4s ease-out forwards',
             }}
           >
             {p.text}
