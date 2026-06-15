@@ -121,6 +121,11 @@ body {
   .clip-shield {
     clip-path: polygon(50% 0%, 100% 14%, 100% 58%, 50% 100%, 0% 58%, 0% 14%);
   }
+
+  /* Crisp upscaling for pixel-art sprites (sources are ~90-102px). */
+  .image-pixel {
+    image-rendering: pixelated;
+  }
 }
 
 @keyframes mine-pop {

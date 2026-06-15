@@ -124,7 +124,7 @@ export function PaperDoll() {
               const w = getWeapon(k);
               return (
                 <button key={`w:${k}`} onClick={() => equipWeapon(k)} title={`Equip ${w.name}`}>
-                  <Sprite spriteKey={`weapon:${k}`} look={weaponCrest(w.name, w.attackStat)} size="sm" />
+                  <Sprite spriteKey={`weapon:${k}`} look={weaponCrest(w.name, w.attackStat)} size="md" />
                 </button>
               );
             })}
@@ -133,7 +133,7 @@ export function PaperDoll() {
               if (!g) return null;
               return (
                 <button key={`g:${k}`} onClick={() => equipGear(k)} title={`Equip ${g.name} (${g.slot})`}>
-                  <Sprite spriteKey={`gear:${k}`} look={gearCrest(g.name, g.slot)} size="sm" />
+                  <Sprite spriteKey={`gear:${k}`} look={gearCrest(g.name, g.slot)} size="md" />
                 </button>
               );
             })}
@@ -241,7 +241,7 @@ function EquipPicker({
                     : 'border-gold-deep/25 bg-parchment-100/60 hover:border-gold-deep/60 hover:bg-parchment-300/50'
                 }`}
               >
-                {look && <Sprite spriteKey={`${isWeapon ? 'weapon' : 'gear'}:${k}`} look={look} size="sm" />}
+                {look && <Sprite spriteKey={`${isWeapon ? 'weapon' : 'gear'}:${k}`} look={look} size="md" />}
                 <span className="min-w-0 flex-1">
                   <span className="block text-sm font-semibold text-ink">{name}</span>
                   <span className="block text-[11px] text-ink-muted">{detail}</span>

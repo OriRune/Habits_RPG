@@ -116,10 +116,49 @@ export function placeholderImage(look: CrestLook, label?: string): string {
 }
 
 // --- The swap seam -------------------------------------------------------------
-// Map a stable sprite key -> real image URL once art exists, e.g.:
-//   import slime from '@/assets/sprites/procrastination_slime.png';
-//   const REGISTRY = { 'boss:procrastination_slime': slime };
-const SPRITE_REGISTRY: Record<string, string> = {};
+// Real art lives in src/assets/sprites/<folder>/<name>.png and is auto-registered below.
+// Drop a new PNG into the matching folder and it lights up automatically — no edits here.
+
+/** Asset subfolder -> sprite-key prefix (note the singular `weapon` / `item`). */
+const FOLDER_PREFIX: Record<string, string> = {
+  weapons: 'weapon',
+  gear: 'gear',
+  potions: 'item',
+  materials: 'material',
+  relics: 'relic',
+};
+
+/** One generic tome sprite stands in for every spellbook item. */
+const SPELLBOOK_KEYS = [
+  'item:spellbook_firebolt',
+  'item:spellbook_bless',
+  'item:spellbook_dazzle',
+  'item:spellbook_hex',
+];
+
+const SPRITE_REGISTRY: Record<string, string> = (() => {
+  const registry: Record<string, string> = {};
+  const modules = import.meta.glob('@/assets/sprites/**/*.png', {
+    eager: true,
+    query: '?url',
+    import: 'default',
+  }) as Record<string, string>;
+
+  for (const [path, url] of Object.entries(modules)) {
+    const parts = path.split('/');
+    const folder = parts[parts.length - 2];
+    const base = parts[parts.length - 1].replace(/\.png$/, '');
+    const prefix = FOLDER_PREFIX[folder];
+    if (!prefix) continue;
+
+    if (prefix === 'item' && base === 'spellbook') {
+      for (const key of SPELLBOOK_KEYS) registry[key] = url;
+      continue;
+    }
+    registry[`${prefix}:${base}`] = url;
+  }
+  return registry;
+})();
 
 export function resolveSpriteImage(key: string): string | undefined {
   return SPRITE_REGISTRY[key];

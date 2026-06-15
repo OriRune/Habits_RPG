@@ -40,7 +40,7 @@ export function GearSection() {
           return (
             <div key={key} className="flex items-center justify-between gap-3 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-2.5">
               <div className="flex min-w-0 items-center gap-3">
-                <Sprite spriteKey={`gear:${key}`} look={gearCrest(g.name, g.slot)} size="sm" />
+                <Sprite spriteKey={`gear:${key}`} look={gearCrest(g.name, g.slot)} size="md" />
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5">
                     <span className="truncate text-sm font-semibold text-ink">{g.name}</span>
