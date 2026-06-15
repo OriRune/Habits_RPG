@@ -65,6 +65,8 @@ export interface MineState {
 
 export const MINE_ROWS = 11;
 export const MINE_COLS = 9;
+export const MINE_MAX_ROWS = 21;
+export const MINE_MAX_COLS = 13;
 /** Run entry gates (mirror the dungeon's energy cost + unlock level). */
 export const MINE_ENERGY_COST = 2;
 export const MINE_UNLOCK_LEVEL = 2;
@@ -155,8 +157,9 @@ export function oreYield(oreKey: string, rng: RNG): Reward {
 
 /** Build a fresh cavern for `floor` (full HP/stamina, empty haul). */
 export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): MineState {
-  const rows = MINE_ROWS;
-  const cols = MINE_COLS;
+  const sizeStep = Math.floor((floor - 1) / 5);
+  const rows = Math.min(MINE_MAX_ROWS, MINE_ROWS + sizeStep * 2);
+  const cols = Math.min(MINE_MAX_COLS, MINE_COLS + sizeStep * 2);
   const tiles: MineTile[][] = [];
   for (let r = 0; r < rows; r++) {
     const row: MineTile[] = [];

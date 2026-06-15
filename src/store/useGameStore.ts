@@ -77,6 +77,16 @@ import {
   MINE_ENERGY_COST,
   MINE_UNLOCK_LEVEL,
 } from '@/engine/mining';
+import {
+  type ForestState,
+  generateForest,
+  tryMove as forestTryMove,
+  act as forestActFn,
+  stepBeasts,
+  advance as forestAdvanceFn,
+  FOREST_ENERGY_COST,
+  FOREST_UNLOCK_LEVEL,
+} from '@/engine/forest';
 import { biomeForDepth, getBiome, bossFor } from '@/engine/biomes';
 import {
   type EncounterRunState,
@@ -285,6 +295,9 @@ export interface GameState {
   mining: MineState | null;
   /** Deepest mine floor ever reached — a persistent record (mirrors deepestFloor). */
   deepestMineFloor: number;
+  forest: ForestState | null;
+  /** Deepest forest stage ever reached — a persistent record (mirrors deepestMineFloor). */
+  deepestForestStage: number;
   /** Target level the player is currently trying to reach (boss is live or pending). */
   pendingLevelUp: number | null;
   pendingClassChoice: PendingClassChoice | null;
@@ -379,6 +392,20 @@ export interface GameState {
   /** End the run and bank the haul into the economy (also the death path). */
   endMining: () => void;
 
+  // Wild Forest (real-time foraging minigame; see src/engine/forest.ts).
+  /** Start a run: gate on level/energy, charge energy, generate stage 1. */
+  beginForest: () => void;
+  /** Step/turn the forager one cell (re-lights the fog). */
+  forestMove: (dir: Dir) => void;
+  /** Act on the faced cell (slash a beast, gather a node, or cut thicket). */
+  forestAct: () => void;
+  /** Advance beasts on the loop's clock; commits the haul if the forager falls. */
+  forestTick: (nowMs: number) => void;
+  /** Push on through the far tree line into a deeper, richer stage. */
+  forestAdvance: () => void;
+  /** End the run and bank the haul into the economy (also the death path). */
+  endForest: () => void;
+
   updateSettings: (patch: Partial<GameSettings>) => void;
 
   // Developer testing tools (Settings → Developer). Jump straight to level-locked content.
@@ -467,6 +494,25 @@ function commitMining(state: GameState, run: MineState): GameState {
   // The run's gold/materials, plus a modest Strength/Endurance trickle for the labour.
   const trickle = 4 + 3 * run.deepest;
   applyReward(next, { ...run.haul, statXp: { ST: trickle, EN: trickle } });
+  checkLevelUp(next);
+  return next;
+}
+
+/** Bank a finished forest run's haul into the economy, clear the run, and reconcile level. */
+function commitForest(state: GameState, run: ForestState): GameState {
+  const next: GameState = {
+    ...state,
+    character: { ...state.character, statXp: { ...state.character.statXp } },
+    inventory: { ...state.inventory },
+    materials: { ...state.materials },
+    ownedWeapons: [...state.ownedWeapons],
+    ownedGear: [...state.ownedGear],
+    forest: null,
+    deepestForestStage: Math.max(state.deepestForestStage, run.deepest),
+  };
+  // The run's gold/materials, plus a modest Dexterity/Endurance trickle for the foraging trek.
+  const trickle = 4 + 3 * run.deepest;
+  applyReward(next, { ...run.haul, statXp: { DX: trickle, EN: trickle } });
   checkLevelUp(next);
   return next;
 }
@@ -724,6 +770,8 @@ export const useGameStore = create<GameState>()(
       dungeon: null,
       mining: null,
       deepestMineFloor: 0,
+      forest: null,
+      deepestForestStage: 0,
       pendingLevelUp: null,
       pendingClassChoice: null,
       bossLosses: {},
@@ -1525,7 +1573,7 @@ export const useGameStore = create<GameState>()(
           if (!s.mining || s.mining.status !== 'active') return s;
           const mining = stepMonsters(s.mining, nowMs, Math.random);
           if (mining === s.mining) return s;
-          return mining.status === 'ended' ? commitMining(s, mining) : { mining };
+          return { mining };
         }),
 
       mineDescend: () =>
@@ -1537,6 +1585,55 @@ export const useGameStore = create<GameState>()(
         }),
 
       endMining: () => set((s) => (s.mining ? commitMining(s, s.mining) : s)),
+
+      // --- Wild Forest (real-time foraging minigame) ---
+      beginForest: () =>
+        set((s) => {
+          const free = s.settings.unlimitedEnergy;
+          if (s.forest || s.character.level < FOREST_UNLOCK_LEVEL) return s;
+          if (!free && s.character.energy < FOREST_ENERGY_COST) return s;
+          const { c } = fighterFor(s);
+          const forest = generateForest(
+            1,
+            { meleePower: c.meleePower, maxHp: c.maxHp, maxSta: c.maxSta },
+            Math.random,
+          );
+          return {
+            character: {
+              ...s.character,
+              energy: free ? s.character.energy : s.character.energy - FOREST_ENERGY_COST,
+            },
+            forest,
+          };
+        }),
+
+      forestMove: (dir) =>
+        set((s) =>
+          s.forest && s.forest.status === 'active' ? { forest: forestTryMove(s.forest, dir) } : s,
+        ),
+
+      forestAct: () =>
+        set((s) =>
+          s.forest && s.forest.status === 'active' ? { forest: forestActFn(s.forest, Math.random) } : s,
+        ),
+
+      forestTick: (nowMs) =>
+        set((s) => {
+          if (!s.forest || s.forest.status !== 'active') return s;
+          const forest = stepBeasts(s.forest, nowMs, Math.random);
+          if (forest === s.forest) return s;
+          return forest.status === 'ended' ? commitForest(s, forest) : { forest };
+        }),
+
+      forestAdvance: () =>
+        set((s) => {
+          if (!s.forest || s.forest.status !== 'active') return s;
+          const forest = forestAdvanceFn(s.forest, Math.random);
+          if (forest === s.forest) return s;
+          return { forest, deepestForestStage: Math.max(s.deepestForestStage, forest.deepest) };
+        }),
+
+      endForest: () => set((s) => (s.forest ? commitForest(s, s.forest) : s)),
 
       resetGame: () =>
         set(() => ({
@@ -1557,6 +1654,8 @@ export const useGameStore = create<GameState>()(
           dungeon: null,
           mining: null,
           deepestMineFloor: 0,
+          forest: null,
+          deepestForestStage: 0,
           pendingLevelUp: null,
           pendingClassChoice: null,
           bossLosses: {},
@@ -1568,7 +1667,7 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 12,
+      version: 13,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -1591,6 +1690,8 @@ export const useGameStore = create<GameState>()(
       //      `created: true` to skip the creation screen (new saves default to false).
       // v12: Deep Mine minigame — new top-level `mining`/`deepestMineFloor`; `mining` is cleared
       //      below (no in-progress run survives the upgrade) and `deepestMineFloor` defaults via merge.
+      // v13: Wild Forest minigame — new top-level `forest`/`deepestForestStage`; `forest` is cleared
+      //      below (no in-progress run survives the upgrade) and `deepestForestStage` defaults via merge.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {
@@ -1618,7 +1719,7 @@ export const useGameStore = create<GameState>()(
               statXpAtLastLevel: p.character.statXpAtLastLevel ?? { ...(p.character.statXp ?? emptyStatXP()) },
             }
           : p.character;
-        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, created: true } as GameState;
+        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, created: true } as GameState;
       },
       // Deep-merge the nested `character`/`settings` objects so fields added in later versions
       // (e.g. statLevels) always fall back to their defaults instead of being dropped by the

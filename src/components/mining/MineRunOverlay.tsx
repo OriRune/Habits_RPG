@@ -271,6 +271,29 @@ export function MineRunOverlay() {
         >
           <span className="text-[18px] leading-none drop-shadow">⛏️</span>
         </div>
+
+        {/* Death overlay */}
+        {mine.status === 'ended' && (
+          <div className="pointer-events-auto absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 rounded-md bg-black/80 p-4 text-center">
+            <span className="text-4xl leading-none">💀</span>
+            <p className="font-display text-lg font-bold text-parchment-100">Fallen in the Deep</p>
+            <p className="font-display text-sm text-parchment-300">Reached floor {mine.deepest}</p>
+            <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-parchment-200">
+              <span className="flex items-center gap-1 text-gold-bright">
+                <Coins className="h-3.5 w-3.5" /> {mine.haul.gold ?? 0}
+              </span>
+              {haulMats.map(([key, n]) => (
+                <span key={key}>{getMaterial(key)?.name ?? key} ×{n}</span>
+              ))}
+              {haulMats.length === 0 && (mine.haul.gold ?? 0) === 0 && (
+                <span className="text-parchment-300/50">empty-handed</span>
+              )}
+            </div>
+            <Button variant="primary" onClick={endMining} className="mt-1 px-4 py-2 text-sm">
+              Retrieve Haul &amp; Leave
+            </Button>
+          </div>
+        )}
       </div>
 
       {/* Descend / leave */}
