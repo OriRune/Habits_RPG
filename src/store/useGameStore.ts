@@ -39,6 +39,7 @@ import { getWeapon, STARTER_WEAPON, WEAPONS } from '@/engine/weapons';
 import { STARTER_SPELLS } from '@/engine/spells';
 import { type CombatStats, emptyCombatStats, combatXpForWin } from '@/engine/combatStats';
 import { type GearDef, type GearSlot, getGear, aggregateGear, gearXpMultiplier } from '@/engine/gear';
+import { getRelic, aggregateRelics, rollBoons } from '@/engine/relics';
 import { getRecipe, canCraft } from '@/engine/crafting';
 import { getItem, ITEMS } from '@/engine/items';
 import {
@@ -148,10 +149,27 @@ export interface DungeonRun {
   status: 'active' | 'ended';
   /** True when the run ended by banking (vs. ended by defeat). */
   cleared: boolean;
+  /** Run-only relic keys (boons + curses), applied to dungeon fights like gear. */
+  relics: string[];
+  /** Three boon keys offered to the player (floor clear / shrine / elite); null when none pending. */
+  pendingBoon: string[] | null;
 }
 
 /** Share of the current floor's loot kept when you fall mid-floor (the rest is forfeit). */
 const FLOOR_LOSS_KEEP = 0.25;
+
+/** Boon tiers unlock with depth: tier 2 from depth 4, tier 3 from depth 10. */
+function boonMaxTier(depth: number): number {
+  if (depth >= 10) return 3;
+  if (depth >= 4) return 2;
+  return 1;
+}
+
+/** Offer three boon choices on a run (floor clear / shrine / elite). No-op if the pool is empty. */
+function offerBoon(run: DungeonRun): void {
+  const choices = rollBoons(3, run.relics, boonMaxTier(run.depth));
+  run.pendingBoon = choices.length ? choices : null;
+}
 
 /** Developer "creative mode" switches (Settings → Developer). All off in normal play. */
 export interface GameSettings {
@@ -248,6 +266,8 @@ export interface GameState {
   dungeonBank: () => void;
   dungeonDescend: () => void;
   collectDungeon: () => void;
+  /** Pick one of the offered boon relics into the run. */
+  chooseBoon: (relicKey: string) => void;
 
   updateSettings: (patch: Partial<GameSettings>) => void;
 
@@ -353,9 +373,16 @@ function fighterFor(state: GameState, buffs: Partial<Record<StatId, number>> = {
   for (const [stat, n] of Object.entries(gear.statBonuses)) {
     merged[stat as StatId] = (merged[stat as StatId] ?? 0) + (n ?? 0);
   }
+  // Run-only relics apply on top of gear during a dungeon (and nowhere else).
+  const relicDefs = (state.dungeon?.relics ?? []).map(getRelic);
+  const relicAgg = aggregateRelics(relicDefs);
+  for (const [stat, n] of Object.entries(relicAgg.statBonuses)) {
+    merged[stat as StatId] = (merged[stat as StatId] ?? 0) + (n ?? 0);
+  }
   const c = deriveCombatant(state.character.statLevels, state.character.level, state.combatStats, merged);
-  c.defense += gear.defense;
-  c.ward += gear.ward;
+  c.defense += gear.defense + relicAgg.defense;
+  c.ward += gear.ward + relicAgg.ward;
+  c.maxHp += relicAgg.maxHp;
   return { c, weapon: getWeapon(state.equippedWeapon) };
 }
 
@@ -922,6 +949,8 @@ export const useGameStore = create<GameState>()(
             atCheckpoint: false,
             status: 'active',
             cleared: false,
+            relics: [],
+            pendingBoon: null,
           };
           enterRoom(run, s);
           return {
@@ -1033,13 +1062,14 @@ export const useGameStore = create<GameState>()(
           const next: DungeonRun = { ...run, index: nextIndex, hp, mp, sta, battle: null, encounter: null, roomLoot: null };
 
           if (nextIndex >= run.rooms.length) {
-            // Floor cleared → checkpoint: lock in loot and restore HP/MP/Stamina fully.
+            // Floor cleared → checkpoint: lock in loot, restore HP/MP/Stamina, and offer a boon.
             next.atCheckpoint = true;
             next.bankedReward = mergeReward(next.bankedReward, next.floorReward);
             next.floorReward = {};
             next.hp = next.maxHp;
             next.mp = next.maxMp;
             next.sta = next.maxSta;
+            offerBoon(next);
           } else {
             const advState: GameState = {
               ...s,
@@ -1102,6 +1132,19 @@ export const useGameStore = create<GameState>()(
           return next;
         }),
 
+      chooseBoon: (relicKey) =>
+        set((s) => {
+          const run = s.dungeon;
+          if (!run || !run.pendingBoon || !run.pendingBoon.includes(relicKey)) return s;
+          const next: DungeonRun = { ...run, relics: [...run.relics, relicKey], pendingBoon: null };
+          // Recompute maxHp so a +maxHp relic raises the gauge now (and grant the gained HP).
+          const newMax = fighterFor({ ...s, dungeon: next }).c.maxHp;
+          const gained = Math.max(0, newMax - run.maxHp);
+          next.maxHp = newMax;
+          next.hp = Math.min(newMax, run.hp + gained);
+          return { dungeon: next };
+        }),
+
       updateSettings: (patch) =>
         set((s) => ({ settings: { ...s.settings, ...patch } })),
 
@@ -1132,7 +1175,7 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 7,
+      version: 8,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -1145,6 +1188,8 @@ export const useGameStore = create<GameState>()(
       // (developer `settings` added later — a new top-level field, also defaulted on merge.)
       // v7: stats rework — derive `statLevels` from the existing statXp ledger (old sqrt curve,
       //     so veterans keep their power) and snapshot `statXpAtLastLevel` to current statXp.
+      // v8: dungeon relics — new DungeonRun fields (relics/pendingBoon); clear any in-progress
+      //     run (dungeon: null below) so it regenerates with the new shape.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {

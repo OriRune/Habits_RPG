@@ -25,6 +25,8 @@ function makeRun(over: Partial<DungeonRun> & { rooms: DungeonRoom[] }): DungeonR
     atCheckpoint: false,
     status: 'active',
     cleared: false,
+    relics: [],
+    pendingBoon: null,
     ...over,
   };
 }
@@ -417,6 +419,29 @@ describe('dungeon expeditions', () => {
     expect(run.status).toBe('active');
     expect(run.bankedReward.gold).toBe(20); // floor loot locked in
     expect(run.hp).toBe(run.maxHp); // fully restored
+    expect(run.pendingBoon).not.toBeNull(); // a boon is offered on floor clear
+    expect(run.pendingBoon!.length).toBe(3);
+  });
+
+  it('chooseBoon adds a relic, clears the offer, and a +maxHp boon raises run maxHp', () => {
+    get().resetGame();
+    useGameStore.setState({ character: { ...get().character, level: 3, energy: 5 } });
+    get().startDungeon();
+    const before = get().dungeon!.maxHp;
+    useGameStore.setState({ dungeon: { ...get().dungeon!, pendingBoon: ['vital_charm'] } });
+    get().chooseBoon('vital_charm');
+    const run = get().dungeon!;
+    expect(run.relics).toContain('vital_charm');
+    expect(run.pendingBoon).toBeNull();
+    expect(run.maxHp).toBe(before + 15); // +15 max HP relic
+    expect(run.hp).toBe(get().dungeon!.maxHp); // gained HP granted (started at full)
+  });
+
+  it('chooseBoon ignores a relic that was not offered', () => {
+    useGameStore.setState({ dungeon: makeRun({ rooms: [{ type: 'combat' }], relics: [], pendingBoon: ['ember_sigil'] }) });
+    get().chooseBoon('titan_grip'); // not in the offer
+    expect(get().dungeon!.relics).toHaveLength(0);
+    expect(get().dungeon!.pendingBoon).toEqual(['ember_sigil']);
   });
 
   it('fleeing keeps all gathered loot; defeat forfeits most of the floor', () => {

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Header } from '@/components/layout/Header';
 import { TabBar, type Tab } from '@/components/layout/TabBar';
 import { BattleOverlay } from '@/components/combat/BattleOverlay';
+import { BoonChoice } from '@/components/dungeon/BoonChoice';
 import { ClassChoiceModal } from '@/components/class/ClassChoiceModal';
 import { WeeklyReportModal } from '@/components/weekly/WeeklyReportModal';
 import { DashboardView } from '@/views/DashboardView';
@@ -43,6 +44,7 @@ export default function App() {
       {historyOpen && <HistoryView onClose={() => setHistoryOpen(false)} />}
       {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
       {battle && <BattleOverlay />}
+      <BoonChoice />
       {classChoice && <ClassChoiceModal />}
       <WeeklyReportModal />
     </div>

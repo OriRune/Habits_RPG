@@ -18,6 +18,7 @@ import { Sprite } from '@/components/ui/Sprite';
 import { SectionTitle } from '@/components/ui/Divider';
 import { SceneArt } from '@/components/ui/SceneArt';
 import { BattleScene } from '@/components/combat/BattleScene';
+import { RelicTray } from '@/components/dungeon/RelicTray';
 
 function RunGauge({
   icon,
@@ -186,6 +187,7 @@ export function DungeonView() {
             <RunGauge icon={<Heart className="h-4 w-4 text-stat-HP" />} value={dungeon.hp} max={dungeon.maxHp} fill="#2e8a5e" />
             <RunGauge icon={<Sparkles className="h-4 w-4 text-stat-KN" />} value={dungeon.mp} max={dungeon.maxMp} fill="#3b82f6" />
             <RunGauge icon={<Wind className="h-4 w-4 text-stat-EN" />} value={dungeon.sta} max={dungeon.maxSta} fill="#c98a3a" />
+            <RelicTray relics={dungeon.relics} />
           </Panel>
 
           <div>
@@ -233,6 +235,7 @@ export function DungeonView() {
             <span>Banked: <RewardInline reward={dungeon.bankedReward} /></span>
             <span>This floor: <RewardInline reward={dungeon.floorReward} /></span>
           </div>
+          <RelicTray relics={dungeon.relics} />
         </Panel>
       )}
 

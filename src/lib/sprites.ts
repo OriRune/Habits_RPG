@@ -79,6 +79,13 @@ export function spellCrest(name: string, school: SpellSchool): CrestLook {
   return { glyph: firstLetter(name), color: getStat(SCHOOL_STAT[school]).color };
 }
 
+/** Relic crest: initial tinted by tier (bronze / steel-blue / royal purple), curses ember. */
+export function relicCrest(name: string, tier?: number, curse?: boolean): CrestLook {
+  if (curse) return { glyph: firstLetter(name), color: EMBER };
+  const color = tier === 3 ? '#7c5cbf' : tier === 2 ? '#5b7da6' : '#b08a3e';
+  return { glyph: firstLetter(name), color };
+}
+
 /** Stat emblem: the stat's short name on its signature color (habit cards, equipment). */
 export function statCrest(stat: StatId): CrestLook {
   const meta = getStat(stat);
