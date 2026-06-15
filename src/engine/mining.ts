@@ -54,7 +54,7 @@ export interface MineState {
   monsters: MineMonster[];
   /** Loot gathered so far this run (committed to the economy when the run ends). */
   haul: Reward;
-  status: 'active' | 'ended';
+  status: 'active' | 'ended' | 'banking';
   /** ms-timeline moment of the last contact hit, for brief invulnerability frames. */
   lastHitAtMs: number;
   /** Deepest floor reached this run (drives the persistent milestone). */

@@ -84,6 +84,7 @@ import {
   act as forestActFn,
   stepBeasts,
   advance as forestAdvanceFn,
+  splitHaul,
   FOREST_ENERGY_COST,
   FOREST_UNLOCK_LEVEL,
 } from '@/engine/forest';
@@ -298,6 +299,8 @@ export interface GameState {
   forest: ForestState | null;
   /** Deepest forest stage ever reached — a persistent record (mirrors deepestMineFloor). */
   deepestForestStage: number;
+  /** Set when a forest run ends in death — the split haul to show on the death screen. */
+  forestDeath: { kept: Reward; lost: Reward; stage: number } | null;
   /** Target level the player is currently trying to reach (boss is live or pending). */
   pendingLevelUp: number | null;
   pendingClassChoice: PendingClassChoice | null;
@@ -389,7 +392,9 @@ export interface GameState {
   mineTick: (nowMs: number) => void;
   /** Descend the shaft to a deeper, richer floor. */
   mineDescend: () => void;
-  /** End the run and bank the haul into the economy (also the death path). */
+  /** Pause the run and show the banking summary screen. */
+  beginBanking: () => void;
+  /** Commit the haul into the economy and close the run (death or confirmed banking). */
   endMining: () => void;
 
   // Wild Forest (real-time foraging minigame; see src/engine/forest.ts).
@@ -397,10 +402,12 @@ export interface GameState {
   beginForest: () => void;
   /** Step/turn the forager one cell (re-lights the fog). */
   forestMove: (dir: Dir) => void;
-  /** Act on the faced cell (slash a beast, gather a node, or cut thicket). */
+  /** Act on the faced cell (slash a beast or gather a node). */
   forestAct: () => void;
-  /** Advance beasts on the loop's clock; commits the haul if the forager falls. */
+  /** Advance beasts on the loop's clock; triggers the death screen if the forager falls. */
   forestTick: (nowMs: number) => void;
+  /** Dismiss the death screen and clear the fallen run. */
+  dismissForestDeath: () => void;
   /** Push on through the far tree line into a deeper, richer stage. */
   forestAdvance: () => void;
   /** End the run and bank the haul into the economy (also the death path). */
@@ -513,6 +520,33 @@ function commitForest(state: GameState, run: ForestState): GameState {
   // The run's gold/materials, plus a modest Dexterity/Endurance trickle for the foraging trek.
   const trickle = 4 + 3 * run.deepest;
   applyReward(next, { ...run.haul, statXp: { DX: trickle, EN: trickle } });
+  checkLevelUp(next);
+  return next;
+}
+
+/** Forfeit fraction of the haul kept when a forest run ends in death (the rest is lost). */
+const FOREST_DEATH_KEEP = 0.5;
+
+/**
+ * Bank only the kept half of a fallen forager's haul, keep the run frozen for the death screen,
+ * and stash the split so the overlay can show what was forfeit. The run is cleared on dismissal.
+ */
+function commitForestDeath(state: GameState, run: ForestState): GameState {
+  const { kept, lost } = splitHaul(run.haul, FOREST_DEATH_KEEP);
+  const next: GameState = {
+    ...state,
+    character: { ...state.character, statXp: { ...state.character.statXp } },
+    inventory: { ...state.inventory },
+    materials: { ...state.materials },
+    ownedWeapons: [...state.ownedWeapons],
+    ownedGear: [...state.ownedGear],
+    forest: run, // keep the run frozen (status 'ended') behind the death screen
+    deepestForestStage: Math.max(state.deepestForestStage, run.deepest),
+    forestDeath: { kept, lost, stage: run.stage },
+  };
+  // The trek still earns its Dexterity/Endurance trickle — only the haul is docked.
+  const trickle = 4 + 3 * run.deepest;
+  applyReward(next, { ...kept, statXp: { DX: trickle, EN: trickle } });
   checkLevelUp(next);
   return next;
 }
@@ -1583,6 +1617,13 @@ export const useGameStore = create<GameState>()(
           if (mining === s.mining) return s;
           return { mining, deepestMineFloor: Math.max(s.deepestMineFloor, mining.deepest) };
         }),
+
+      beginBanking: () =>
+        set((s) =>
+          s.mining && s.mining.status === 'active'
+            ? { mining: { ...s.mining, status: 'banking' as const } }
+            : s,
+        ),
 
       endMining: () => set((s) => (s.mining ? commitMining(s, s.mining) : s)),
 
