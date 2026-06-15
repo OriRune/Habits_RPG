@@ -10,13 +10,25 @@ import { type BiomeDef, isBossDepth } from './biomes';
 
 export const DUNGEON_ENERGY_COST = 3; // brief §7.2: "Dungeon entry = 3 Energy"
 
-export type RoomKind = 'combat' | 'encounter' | 'treasure' | 'boss';
+export type RoomKind =
+  | 'combat'
+  | 'encounter'
+  | 'treasure'
+  | 'boss'
+  | 'elite'
+  | 'shrine'
+  | 'merchant'
+  | 'rest';
 
 export type DungeonRoom =
   | { type: 'combat' }
   | { type: 'boss' }
   | { type: 'treasure' }
-  | { type: 'encounter'; key: string };
+  | { type: 'encounter'; key: string }
+  | { type: 'elite' }
+  | { type: 'shrine' }
+  | { type: 'merchant' }
+  | { type: 'rest' };
 
 /** Header copy for the non-narrative room types (encounters narrate themselves). */
 export const ROOM_META: Record<RoomKind, { name: string; description: string }> = {
@@ -24,7 +36,16 @@ export const ROOM_META: Record<RoomKind, { name: string; description: string }> 
   boss: { name: 'Boss Chamber', description: 'A great enemy guards the deeper dark.' },
   treasure: { name: 'Treasure Room', description: 'A glittering hoard — claim it and move on.' },
   encounter: { name: 'Encounter', description: '' },
+  elite: { name: 'Elite Foe', description: 'A dangerous champion — beat it for a guaranteed boon.' },
+  shrine: { name: 'Shrine', description: 'An old altar hums with power. Make an offering — or don’t.' },
+  merchant: { name: 'Wandering Merchant', description: 'A hooded trader deals in the deep.' },
+  rest: { name: 'Campfire', description: 'A safe hollow to recover or attune your relics.' },
 };
+
+/** Build an encounter room drawing from the biome's pool (exported for the floor-map generator). */
+export function encounterRoomFor(biome: BiomeDef, rng: RNG = Math.random): DungeonRoom {
+  return encounterRoom(biome, rng);
+}
 
 function randomMaterial(rng: RNG): string {
   return MATERIAL_KEYS[Math.floor(rng() * MATERIAL_KEYS.length)];

@@ -3,14 +3,33 @@ import { useGameStore, withCharacterDefaults, type DungeonRun } from '../useGame
 import { STAT_IDS, emptyStatXP } from '@/engine/stats';
 import { type BattleState } from '@/engine/combat';
 import { type DungeonRoom } from '@/engine/dungeon';
+import { type FloorMap } from '@/engine/dungeonMap';
 import { getEncounter, startEncounter } from '@/engine/encounters';
 import { toISODate, weekKey } from '@/engine/date';
 
-function makeRun(over: Partial<DungeonRun> & { rooms: DungeonRoom[] }): DungeonRun {
+/** A trivial single-path floor map for tests: one room per layer, linked in sequence. */
+function linearMap(rooms: DungeonRoom[]): FloorMap {
+  const nodes: FloorMap['nodes'] = {};
+  const layers: string[][] = [];
+  rooms.forEach((room, i) => {
+    const id = `n${i}_0`;
+    nodes[id] = { id, layer: i, room, to: i < rooms.length - 1 ? [`n${i + 1}_0`] : [] };
+    layers.push([id]);
+  });
+  return { nodes, layers };
+}
+
+function makeRun(over: Partial<DungeonRun> & { rooms?: DungeonRoom[] }): DungeonRun {
+  const { rooms, ...rest } = over;
+  const map = rest.map ?? linearMap(rooms ?? [{ type: 'combat' }]);
+  const firstId = map.layers[0][0];
   return {
     depth: 1,
     biomeKey: 'catacombs',
-    index: 0,
+    map,
+    nodeId: firstId, // "inside" the first room by default
+    choices: [],
+    path: [firstId],
     hp: 100,
     maxHp: 100,
     mp: 30,
@@ -27,7 +46,7 @@ function makeRun(over: Partial<DungeonRun> & { rooms: DungeonRoom[] }): DungeonR
     cleared: false,
     relics: [],
     pendingBoon: null,
-    ...over,
+    ...rest,
   };
 }
 
@@ -329,8 +348,27 @@ describe('dungeon expeditions', () => {
     expect(run).not.toBeNull();
     expect(get().character.energy).toBe(2); // 5 - 3
     expect(run.depth).toBe(1);
-    expect(run.rooms.length).toBeGreaterThan(0);
+    expect(run.choices.length).toBeGreaterThan(0); // entry rooms to choose from
+    expect(run.nodeId).toBeNull(); // start at a path choice, not inside a room
     expect(run.status).toBe('active');
+  });
+
+  it('dungeonChoosePath enters a chosen next room on the floor map', () => {
+    const run = makeRun({ rooms: [{ type: 'combat' }, { type: 'treasure' }] });
+    // Simulate having resolved the first room and being at the branching choice.
+    useGameStore.setState({ dungeon: { ...run, nodeId: null, choices: ['n1_0'], path: ['n0_0'] } });
+    get().dungeonChoosePath('n1_0');
+    const d = get().dungeon!;
+    expect(d.nodeId).toBe('n1_0');
+    expect(d.path).toContain('n1_0');
+    expect(d.roomLoot).not.toBeNull(); // treasure room loots on entry
+  });
+
+  it('dungeonChoosePath ignores a node that is not on offer', () => {
+    const run = makeRun({ rooms: [{ type: 'combat' }, { type: 'treasure' }] });
+    useGameStore.setState({ dungeon: { ...run, nodeId: null, choices: ['n1_0'], path: ['n0_0'] } });
+    get().dungeonChoosePath('bogus');
+    expect(get().dungeon!.nodeId).toBeNull();
   });
 
   it('an encounter choice advances the encounter and may accrue floor loot', () => {
@@ -364,7 +402,8 @@ describe('dungeon expeditions', () => {
     });
     get().dungeonAdvance();
     const run = get().dungeon!;
-    expect(run.index).toBe(1);
+    expect(run.nodeId).toBeNull(); // resolved the room → now choosing the next path
+    expect(run.choices).toContain('n1_0'); // the encounter room is offered next
     expect(run.hp).toBe(42);
     expect(run.sta).toBe(5);
     expect(run.battle).toBeNull();
@@ -487,8 +526,8 @@ describe('dungeon expeditions', () => {
     expect(run.depth).toBe(2);
     expect(run.atCheckpoint).toBe(false);
     expect(run.status).toBe('active');
-    expect(run.index).toBe(0);
-    expect(run.rooms.length).toBeGreaterThan(0);
+    expect(run.nodeId).toBeNull(); // new floor starts at a path choice
+    expect(run.choices.length).toBeGreaterThan(0);
   });
 
   it('collect grants banked gold + materials but no XP, and clears the run', () => {

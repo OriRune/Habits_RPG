@@ -56,13 +56,12 @@ import {
 } from '@/engine/challenges';
 import { type WeeklyReport, buildWeeklyReport, weeklyRotation } from '@/engine/weekly';
 import {
-  type DungeonRoom,
-  generateFloor,
   resolveTreasure,
   mergeReward,
   scaleReward,
   DUNGEON_ENERGY_COST,
 } from '@/engine/dungeon';
+import { type FloorMap, generateFloorMap } from '@/engine/dungeonMap';
 import { biomeForDepth, getBiome, bossFor } from '@/engine/biomes';
 import {
   type EncounterRunState,
@@ -124,9 +123,14 @@ export interface DungeonRun {
   /** Current floor number (1-based); drives biome + difficulty scaling. */
   depth: number;
   biomeKey: string;
-  /** The current floor's rooms. */
-  rooms: DungeonRoom[];
-  index: number;
+  /** The current floor's branching room map. */
+  map: FloorMap;
+  /** The room currently being resolved, or null when choosing the next path / at floor start. */
+  nodeId: string | null;
+  /** Node ids the player may enter next (the branching choice); empty while inside a room. */
+  choices: string[];
+  /** Ordered ids of rooms entered this floor (for the map UI). */
+  path: string[];
   hp: number;
   maxHp: number;
   /** Mana + Stamina, persisted across rooms; restored to full at each checkpoint. */
@@ -260,6 +264,8 @@ export interface GameState {
   unequipGear: (slot: GearSlot) => void;
 
   startDungeon: () => void;
+  /** Enter one of the offered next rooms on the floor map. */
+  dungeonChoosePath: (nodeId: string) => void;
   dungeonEncounterChoose: (choiceIndex: number) => void;
   dungeonBattleAction: (action: CombatAction) => void;
   dungeonAdvance: () => void;
@@ -386,12 +392,18 @@ function fighterFor(state: GameState, buffs: Partial<Record<StatId, number>> = {
   return { c, weapon: getWeapon(state.equippedWeapon) };
 }
 
+/** The room payload of the node currently being resolved (null at a path choice / floor start). */
+function currentRoom(run: DungeonRun) {
+  return run.nodeId ? run.map.nodes[run.nodeId]?.room ?? null : null;
+}
+
 /** Set up the run's current room — seeds combat/boss fights and branching encounters. */
 function enterRoom(run: DungeonRun, state: GameState): void {
-  const room = run.rooms[run.index];
+  const room = currentRoom(run);
   run.battle = null;
   run.encounter = null;
   run.roomLoot = null;
+  if (!room) return;
   const biome = getBiome(run.biomeKey);
   if (room.type === 'combat') {
     run.battle = createBattle(fighterFor(state), enemyFor(run.depth, state.character.level, biome.enemies), {
@@ -930,11 +942,14 @@ export const useGameStore = create<GameState>()(
           if (!freeEnergy && s.character.energy < DUNGEON_ENERGY_COST) return s;
           const { c } = fighterFor(s);
           const biome = biomeForDepth(1);
+          const map = generateFloorMap(1, biome);
           const run: DungeonRun = {
             depth: 1,
             biomeKey: biome.key,
-            rooms: generateFloor(1, biome),
-            index: 0,
+            map,
+            nodeId: null,
+            choices: map.layers[0],
+            path: [],
             hp: c.maxHp,
             maxHp: c.maxHp,
             mp: c.maxMp,
@@ -952,7 +967,6 @@ export const useGameStore = create<GameState>()(
             relics: [],
             pendingBoon: null,
           };
-          enterRoom(run, s);
           return {
             character: {
               ...s.character,
@@ -962,12 +976,21 @@ export const useGameStore = create<GameState>()(
           };
         }),
 
+      dungeonChoosePath: (nodeId) =>
+        set((s) => {
+          const run = s.dungeon;
+          if (!run || run.status !== 'active' || run.nodeId !== null || !run.choices.includes(nodeId)) return s;
+          const next: DungeonRun = { ...run, nodeId, choices: [], path: [...run.path, nodeId] };
+          enterRoom(next, s);
+          return { dungeon: next };
+        }),
+
       dungeonEncounterChoose: (choiceIndex) =>
         set((s) => {
           const run = s.dungeon;
           if (!run || run.status !== 'active' || !run.encounter || run.encounter.done) return s;
-          const room = run.rooms[run.index];
-          if (room.type !== 'encounter') return s;
+          const room = currentRoom(run);
+          if (room?.type !== 'encounter') return s;
           const def = getEncounter(room.key);
           if (!def) return s;
 
@@ -1017,7 +1040,9 @@ export const useGameStore = create<GameState>()(
         set((s) => {
           const run = s.dungeon;
           if (!run || run.status !== 'active' || run.atCheckpoint) return s;
-          const room = run.rooms[run.index];
+          const node = run.nodeId ? run.map.nodes[run.nodeId] : null;
+          const room = node?.room;
+          if (!node || !room) return s;
 
           let hp = run.hp;
           let mp = run.mp;
@@ -1058,11 +1083,22 @@ export const useGameStore = create<GameState>()(
           // Partial mana regen when pressing onward (full restore happens at checkpoints).
           mp = Math.min(run.maxMp, mp + Math.round(run.maxMp * 0.15));
 
-          const nextIndex = run.index + 1;
-          const next: DungeonRun = { ...run, index: nextIndex, hp, mp, sta, battle: null, encounter: null, roomLoot: null };
+          // Resolved this room: clear it, then either offer the next path choices or reach the
+          // floor checkpoint when this node is terminal.
+          const next: DungeonRun = {
+            ...run,
+            nodeId: null,
+            hp,
+            mp,
+            sta,
+            battle: null,
+            encounter: null,
+            roomLoot: null,
+          };
 
-          if (nextIndex >= run.rooms.length) {
+          if (node.to.length === 0) {
             // Floor cleared → checkpoint: lock in loot, restore HP/MP/Stamina, and offer a boon.
+            next.choices = [];
             next.atCheckpoint = true;
             next.bankedReward = mergeReward(next.bankedReward, next.floorReward);
             next.floorReward = {};
@@ -1071,12 +1107,8 @@ export const useGameStore = create<GameState>()(
             next.sta = next.maxSta;
             offerBoon(next);
           } else {
-            const advState: GameState = {
-              ...s,
-              ...(statXpPatch ?? {}),
-              ...(combatStats ? { combatStats } : {}),
-            };
-            enterRoom(next, advState);
+            // Present the branching choice for the next step.
+            next.choices = node.to;
           }
           return {
             dungeon: next,
@@ -1099,19 +1131,21 @@ export const useGameStore = create<GameState>()(
           if (!run || run.status !== 'active' || !run.atCheckpoint) return s;
           const depth = run.depth + 1;
           const biome = biomeForDepth(depth);
+          const map = generateFloorMap(depth, biome);
           const next: DungeonRun = {
             ...run,
             depth,
             biomeKey: biome.key,
-            rooms: generateFloor(depth, biome),
-            index: 0,
+            map,
+            nodeId: null,
+            choices: map.layers[0],
+            path: [],
             atCheckpoint: false,
             floorReward: {},
             roomLoot: null,
             battle: null,
             encounter: null,
           };
-          enterRoom(next, s);
           return { dungeon: next };
         }),
 
@@ -1175,7 +1209,7 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 8,
+      version: 9,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -1190,6 +1224,8 @@ export const useGameStore = create<GameState>()(
       //     so veterans keep their power) and snapshot `statXpAtLastLevel` to current statXp.
       // v8: dungeon relics — new DungeonRun fields (relics/pendingBoon); clear any in-progress
       //     run (dungeon: null below) so it regenerates with the new shape.
+      // v9: branching floor map — DungeonRun swapped rooms/index for map/nodeId/choices/path;
+      //     again cleared (dungeon: null) so an in-progress run regenerates.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {

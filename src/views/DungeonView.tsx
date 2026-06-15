@@ -19,6 +19,7 @@ import { SectionTitle } from '@/components/ui/Divider';
 import { SceneArt } from '@/components/ui/SceneArt';
 import { BattleScene } from '@/components/combat/BattleScene';
 import { RelicTray } from '@/components/dungeon/RelicTray';
+import { FloorMap } from '@/components/dungeon/FloorMap';
 
 function RunGauge({
   icon,
@@ -90,6 +91,7 @@ export function DungeonView() {
   const energy = useGameStore((s) => s.character.energy);
   const level = useGameStore((s) => s.character.level);
   const startDungeon = useGameStore((s) => s.startDungeon);
+  const dungeonChoosePath = useGameStore((s) => s.dungeonChoosePath);
   const dungeonEncounterChoose = useGameStore((s) => s.dungeonEncounterChoose);
   const dungeonBattleAction = useGameStore((s) => s.dungeonBattleAction);
   const dungeonAdvance = useGameStore((s) => s.dungeonAdvance);
@@ -211,8 +213,9 @@ export function DungeonView() {
     );
   }
 
-  const room = dungeon.rooms[dungeon.index];
-  const inBattle = room.type === 'combat' || room.type === 'boss';
+  const room = dungeon.nodeId ? dungeon.map.nodes[dungeon.nodeId]?.room ?? null : null;
+  const choosingPath = room === null;
+  const inBattle = room?.type === 'combat' || room?.type === 'boss';
   const inActiveCombat = inBattle && dungeon.battle?.status === 'active';
 
   return (
@@ -222,7 +225,7 @@ export function DungeonView() {
           Depth {dungeon.depth} · {biome.name}
         </SectionTitle>
         <span className="shrink-0 font-display text-xs text-parchment-300">
-          Room {dungeon.index + 1}/{dungeon.rooms.length}
+          {dungeon.path.length} room{dungeon.path.length === 1 ? '' : 's'} cleared
         </span>
       </div>
 
@@ -239,9 +242,11 @@ export function DungeonView() {
         </Panel>
       )}
 
-      {inBattle ? (
+      {choosingPath ? (
+        <FloorMap map={dungeon.map} choices={dungeon.choices} path={dungeon.path} onChoose={dungeonChoosePath} />
+      ) : inBattle ? (
         <Panel tone="wood" className="p-4">
-          {room.type === 'boss' && dungeon.battle && dungeon.battle.phases.length > 1 && (
+          {room!.type === 'boss' && dungeon.battle && dungeon.battle.phases.length > 1 && (
             <PhasePips count={dungeon.battle.phases.length} index={dungeon.battle.phaseIndex} />
           )}
           {dungeon.battle && (
@@ -249,14 +254,14 @@ export function DungeonView() {
               battle={dungeon.battle}
               onAction={dungeonBattleAction}
               onResolve={dungeonAdvance}
-              resolveWonLabel={room.type === 'boss' ? 'Onward →' : 'Continue Deeper →'}
+              resolveWonLabel={room!.type === 'boss' ? 'Onward →' : 'Continue Deeper →'}
               resolveLostLabel="You fall — gather your spoils"
               resolveFledLabel="Retreat from the dungeon"
               allowFlee
             />
           )}
         </Panel>
-      ) : room.type === 'treasure' ? (
+      ) : room!.type === 'treasure' ? (
         <Panel tone="parchment" className="space-y-3 p-5">
           <SceneArt sceneKey="room:treasure" />
           <div>
@@ -329,9 +334,9 @@ function EncounterRoom({
     (['armor', 'trinket', 'tool'] as GearSlot[]).map((sl) => (equipment[sl] ? getGear(equipment[sl]!) : undefined)),
   ).statBonuses;
 
-  const room = dungeon.rooms[dungeon.index];
+  const room = dungeon.nodeId ? dungeon.map.nodes[dungeon.nodeId]?.room : undefined;
   const enc = dungeon.encounter;
-  const def = room.type === 'encounter' ? getEncounter(room.key) : undefined;
+  const def = room?.type === 'encounter' ? getEncounter(room.key) : undefined;
   if (!def || !enc) {
     // Fallback (missing content) — let the player move on rather than soft-lock.
     return (
