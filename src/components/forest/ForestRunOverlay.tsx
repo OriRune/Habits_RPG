@@ -14,12 +14,13 @@ import {
 } from '@/engine/forest';
 import type { Reward } from '@/engine/challenges';
 import { FOREST_NODES, FOREST_BEASTS } from '@/content/forest';
+import { forestThicketTree, forestFloorTile, forestNodeSprite } from '@/lib/minigameArt';
 import { getMaterial } from '@/engine/materials';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/cn';
 import { ForestControls } from './ForestControls';
 
-const CELL = 26; // px per tile (the forest is a larger grid than the mine)
+const CELL = 39; // px per tile (the forest is a larger grid than the mine)
 
 /** Base colour + texture per tile kind; the colour gets a little per-tile jitter for variety. */
 const TILE_BASE: Record<ForestTile['kind'], { bg: [number, number, number]; image?: string }> = {
@@ -198,7 +199,7 @@ export function ForestRunOverlay() {
   const death = dead ? splitHaul(forest.haul, FOREST_DEATH_KEEP) : null;
 
   return (
-    <div className="texture-wood fixed inset-0 z-50 flex flex-col items-center gap-3 overflow-y-auto px-4 py-4">
+    <div className="texture-wood fixed inset-0 z-50 flex flex-col items-center gap-3 overflow-auto px-4 py-4">
       {/* HUD */}
       <div className="flex w-full max-w-md items-center justify-between gap-3">
         <span className="font-display text-sm font-bold text-gold-bright">
@@ -246,12 +247,26 @@ export function ForestRunOverlay() {
               );
             }
             const node = tile.kind === 'node' && tile.nodeKey ? FOREST_NODES[tile.nodeKey] : null;
+            // Real art: floor tiles paint walkable cells and node decor overlays its tile.
+            // Thicket trees are drawn in a separate canopy layer below (so they overlap/overflow).
+            const floorImg = tile.kind !== 'thicket' ? forestFloorTile(tile.kind, r, c) : undefined;
+            const nodeImg = node && tile.nodeKey ? forestNodeSprite(tile.nodeKey) : undefined;
             return (
               <div
                 key={`${r}-${c}`}
-                className="absolute flex items-center justify-center text-[13px] leading-none"
+                className="absolute flex items-center justify-center text-[20px] leading-none"
                 style={{
                   ...tileStyle(tile.kind, r, c),
+                  ...(tile.kind === 'thicket' ? { backgroundColor: '#13210f', backgroundImage: 'none' } : {}),
+                  ...(floorImg
+                    ? {
+                        backgroundColor: '#0f1a10',
+                        backgroundImage: `url(${floorImg})`,
+                        backgroundSize: 'cover',
+                        backgroundPosition: 'center',
+                        imageRendering: 'pixelated',
+                      }
+                    : {}),
                   left: c * CELL,
                   top: r * CELL,
                   width: CELL,
@@ -261,18 +276,54 @@ export function ForestRunOverlay() {
                     : 'inset 0 0 0 1px rgba(0,0,0,0.28)',
                 }}
               >
-                {node ? (
+                {nodeImg ? (
+                  <img
+                    src={nodeImg}
+                    alt={node?.name}
+                    title={node?.name}
+                    className="pointer-events-none absolute inset-0 h-full w-full object-contain image-pixel"
+                    style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.8))' }}
+                  />
+                ) : node ? (
                   <span title={node.name} style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.8))' }}>
                     {node.glyph}
                   </span>
                 ) : tile.kind === 'treeline' ? (
-                  <Trees className="h-4 w-4 text-emerald-300" style={{ filter: 'drop-shadow(0 0 4px rgba(72,202,140,0.7))' }} />
+                  <Trees className="h-6 w-6 text-emerald-300" style={{ filter: 'drop-shadow(0 0 4px rgba(72,202,140,0.7))' }} />
                 ) : tile.kind === 'entrance' ? (
-                  <span className="text-[11px] text-gold-bright">◇</span>
+                  <span className="text-[16px] text-gold-bright">◇</span>
                 ) : null}
                 {/* Explored-but-out-of-sight tiles are veiled by the dark. */}
                 {!vis && <div className="absolute inset-0 bg-black/55" />}
               </div>
+            );
+          }),
+        )}
+
+        {/* Tree canopy — trees overflow their thicket cell and overlap neighbours/trails for a
+            dense, organic wood. Drawn in row order (lower trees in front) and below the vignette
+            so distance still darkens them. Per-tree fog dimming; unseen cells stay hidden. */}
+        {forest.tiles.map((row, r) =>
+          row.map((tile, c) => {
+            if (tile.kind !== 'thicket' || !forest.seen[r]?.[c]) return null;
+            const tree = forestThicketTree(r, c);
+            if (!tree) return null;
+            const size = CELL * 1.6;
+            const offset = (size - CELL) / 2;
+            return (
+              <img
+                key={`tree-${r}-${c}`}
+                src={tree}
+                alt=""
+                className="pointer-events-none absolute z-[4] object-contain object-bottom image-pixel"
+                style={{
+                  width: size,
+                  height: size,
+                  left: c * CELL - offset,
+                  top: r * CELL + CELL - size + CELL * 0.15,
+                  opacity: isVisible(forest, r, c) ? 1 : 0.45,
+                }}
+              />
             );
           }),
         )}
@@ -344,7 +395,7 @@ export function ForestRunOverlay() {
               style={{ width: CELL, height: CELL, transform: `translate(${b.c * CELL}px, ${b.r * CELL}px)` }}
               title={def?.name}
             >
-              <span className="text-[15px] leading-none" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.85))' }}>
+              <span className="text-[22px] leading-none" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.85))' }}>
                 {def?.glyph ?? '?'}
               </span>
               {!b.asleep && b.hp < b.maxHp && (
@@ -361,7 +412,7 @@ export function ForestRunOverlay() {
           className="pointer-events-none absolute z-10 flex items-center justify-center transition-transform duration-150 ease-linear"
           style={{ width: CELL, height: CELL, transform: `translate(${forest.player.c * CELL}px, ${forest.player.r * CELL}px)` }}
         >
-          <span className="text-[16px] leading-none" style={{ filter: 'drop-shadow(0 0 5px rgba(255,240,200,0.55))' }}>
+          <span className="text-[24px] leading-none" style={{ filter: 'drop-shadow(0 0 5px rgba(255,240,200,0.55))' }}>
             {dead ? '💀' : '🚶'}
           </span>
         </div>

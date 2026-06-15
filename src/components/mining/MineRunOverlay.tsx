@@ -4,12 +4,13 @@ import { useGameStore } from '@/store/useGameStore';
 import { useMiningLoop } from '@/hooks/useMiningLoop';
 import { canDescend, facedCell, type MineTile, type MineMonster } from '@/engine/mining';
 import { MINE_ORES, MINE_MONSTERS } from '@/content/mining';
+import { mineRockSprite, mineFloorTile, mineOreSprite } from '@/lib/minigameArt';
 import { getMaterial } from '@/engine/materials';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/cn';
 import { MineControls } from './MineControls';
 
-const CELL = 32; // px per tile
+const CELL = 48; // px per tile
 
 const TILE_STYLE: Record<MineTile['kind'], React.CSSProperties> = {
   bedrock: {
@@ -30,11 +31,11 @@ type LootPop = { key: string; r: number; c: number; at: number; text: string; co
 
 function OreIcon({ oreKey, color }: { oreKey: string; color: string }) {
   const style = { color };
-  if (oreKey === 'bronze_vein') return <Pickaxe className="h-4 w-4" style={style} />;
-  if (oreKey === 'iron_vein') return <Hammer className="h-4 w-4" style={style} />;
-  if (oreKey === 'gold_vein') return <Coins className="h-4 w-4" style={style} />;
-  if (oreKey === 'energy_gem') return <Zap className="h-4 w-4" style={style} />;
-  if (oreKey === 'crystal_node' || oreKey === 'gemstone_node') return <Gem className="h-4 w-4" style={style} />;
+  if (oreKey === 'bronze_vein') return <Pickaxe className="h-6 w-6" style={style} />;
+  if (oreKey === 'iron_vein') return <Hammer className="h-6 w-6" style={style} />;
+  if (oreKey === 'gold_vein') return <Coins className="h-6 w-6" style={style} />;
+  if (oreKey === 'energy_gem') return <Zap className="h-6 w-6" style={style} />;
+  if (oreKey === 'crystal_node' || oreKey === 'gemstone_node') return <Gem className="h-6 w-6" style={style} />;
   const ore = MINE_ORES[oreKey];
   return <span style={style}>{ore?.glyph ?? '?'}</span>;
 }
@@ -134,7 +135,7 @@ export function MineRunOverlay() {
   const height = mine.rows * CELL;
 
   return (
-    <div className="texture-wood fixed inset-0 z-50 flex flex-col items-center gap-3 overflow-y-auto px-4 py-4">
+    <div className="texture-wood fixed inset-0 z-50 flex flex-col items-center gap-3 overflow-auto px-4 py-4">
       {/* HUD */}
       <div className="flex w-full max-w-md items-center justify-between gap-3">
         <span className="font-display text-sm font-bold text-gold-bright">
@@ -168,12 +169,26 @@ export function MineRunOverlay() {
         {mine.tiles.map((row, r) =>
           row.map((tile, c) => {
             const ore = tile.kind === 'ore' && tile.oreKey ? MINE_ORES[tile.oreKey] : null;
+            // Real art: cave-floor tiles paint open ground, boulders fill diggable rock, and
+            // mapped ores show their sprite. Bedrock and unmapped ores keep their CSS/glyph look.
+            const floorImg = tile.kind === 'floor' || tile.kind === 'entrance' ? mineFloorTile(r, c) : undefined;
+            const rockImg = tile.kind === 'rock' ? mineRockSprite(r, c) : undefined;
+            const oreImg = ore && tile.oreKey ? mineOreSprite(tile.oreKey) : undefined;
             return (
               <div
                 key={`${r}-${c}`}
-                className="absolute flex items-center justify-center text-[15px] leading-none"
+                className="absolute flex items-center justify-center text-[22px] leading-none"
                 style={{
                   ...TILE_STYLE[tile.kind],
+                  ...(floorImg
+                    ? {
+                        backgroundColor: '#1c140d',
+                        backgroundImage: `url(${floorImg})`,
+                        backgroundSize: 'cover',
+                        backgroundPosition: 'center',
+                        imageRendering: 'pixelated',
+                      }
+                    : {}),
                   left: c * CELL,
                   top: r * CELL,
                   width: CELL,
@@ -185,12 +200,21 @@ export function MineRunOverlay() {
                     : 'inset 0 0 0 1px rgba(0,0,0,0.25)',
                 }}
               >
-                {ore ? (
+                {rockImg ? (
+                  <img src={rockImg} alt="" className="pointer-events-none absolute inset-0 h-full w-full object-contain image-pixel" />
+                ) : oreImg ? (
+                  <img
+                    src={oreImg}
+                    alt={ore?.name}
+                    title={ore?.name}
+                    className="pointer-events-none absolute inset-0 h-full w-full object-contain image-pixel"
+                  />
+                ) : ore ? (
                   <OreIcon oreKey={tile.oreKey!} color={ore.color} />
                 ) : tile.kind === 'shaft' ? (
-                  <ChevronsDown className="h-4 w-4 text-cyan-300" />
+                  <ChevronsDown className="h-6 w-6 text-cyan-300" />
                 ) : tile.kind === 'entrance' ? (
-                  <span className="text-[12px] text-gold-bright">◇</span>
+                  <span className="text-[18px] text-gold-bright">◇</span>
                 ) : null}
                 {tile.maxDurability != null && tile.durability != null && tile.durability < tile.maxDurability && (
                   <div className="absolute bottom-1 left-1 right-1 h-[3px] overflow-hidden rounded-full bg-black/60">
@@ -257,7 +281,7 @@ export function MineRunOverlay() {
               style={{ width: CELL, height: CELL, transform: `translate(${m.c * CELL}px, ${m.r * CELL}px)` }}
               title={def?.name}
             >
-              <span className="text-[17px] leading-none drop-shadow">{def?.glyph ?? '?'}</span>
+              <span className="text-[26px] leading-none drop-shadow">{def?.glyph ?? '?'}</span>
               {m.hp < m.maxHp && (
                 <div className="absolute -top-1.5 left-0 right-0 h-[3px] overflow-hidden rounded-full bg-black/60">
                   <div className="h-full rounded-full bg-red-400" style={{ width: `${(m.hp / m.maxHp) * 100}%` }} />
@@ -270,7 +294,7 @@ export function MineRunOverlay() {
           className="pointer-events-none absolute z-10 flex items-center justify-center transition-transform duration-150 ease-linear"
           style={{ width: CELL, height: CELL, transform: `translate(${mine.player.c * CELL}px, ${mine.player.r * CELL}px)` }}
         >
-          <span className="text-[18px] leading-none drop-shadow">⛏️</span>
+          <span className="text-[27px] leading-none drop-shadow">⛏️</span>
         </div>
 
         {/* Banking overlay */}

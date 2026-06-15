@@ -4,7 +4,7 @@
 // engine (src/engine/mining.ts); this is purely the "when".
 import { useEffect, useRef } from 'react';
 import { useGameStore } from '@/store/useGameStore';
-import type { Dir } from '@/engine/mining';
+import { canDescend, type Dir } from '@/engine/mining';
 
 const KEY_DIRS: Record<string, Dir> = {
   ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
@@ -67,7 +67,9 @@ export function useMiningLoop(): MiningControls {
       if (strikeQueued.current && now - lastSwing >= SWING_INTERVAL_MS) {
         strikeQueued.current = false;
         lastSwing = now;
-        store.mineStrike();
+        // On the shaft, the action key descends instead of swinging at nothing.
+        if (canDescend(run)) store.mineDescend();
+        else store.mineStrike();
       }
       if (held.current.size && now - lastMove >= MOVE_INTERVAL_MS) {
         // Favour the most recently pressed direction when several are held.
