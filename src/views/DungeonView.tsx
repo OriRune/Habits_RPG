@@ -20,6 +20,9 @@ import { SceneArt } from '@/components/ui/SceneArt';
 import { BattleScene } from '@/components/combat/BattleScene';
 import { RelicTray } from '@/components/dungeon/RelicTray';
 import { FloorMap } from '@/components/dungeon/FloorMap';
+import { ShrineRoom } from '@/components/dungeon/ShrineRoom';
+import { MerchantRoom } from '@/components/dungeon/MerchantRoom';
+import { RestRoom } from '@/components/dungeon/RestRoom';
 
 function RunGauge({
   icon,
@@ -215,7 +218,7 @@ export function DungeonView() {
 
   const room = dungeon.nodeId ? dungeon.map.nodes[dungeon.nodeId]?.room ?? null : null;
   const choosingPath = room === null;
-  const inBattle = room?.type === 'combat' || room?.type === 'boss';
+  const inBattle = room?.type === 'combat' || room?.type === 'boss' || room?.type === 'elite';
   const inActiveCombat = inBattle && dungeon.battle?.status === 'active';
 
   return (
@@ -278,6 +281,12 @@ export function DungeonView() {
             Continue Deeper →
           </Button>
         </Panel>
+      ) : room!.type === 'shrine' ? (
+        <ShrineRoom />
+      ) : room!.type === 'merchant' ? (
+        <MerchantRoom />
+      ) : room!.type === 'rest' ? (
+        <RestRoom />
       ) : (
         <EncounterRoom
           dungeon={dungeon}

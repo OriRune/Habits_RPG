@@ -43,14 +43,19 @@ function makeRoom(kind: RoomKind, biome: BiomeDef, rng: RNG): DungeonRoom {
   return { type: kind } as DungeonRoom;
 }
 
-/** The room-type weights for a normal-floor node. New types (shrine/merchant/elite/rest) get
- *  woven in here as they unlock in later phases; for now: combat/encounter/treasure. */
-function normalKindWeights(_depth: number, _opts: MapGenOpts): [RoomKind, number][] {
-  return [
+/** The room-type weights for a normal-floor node, gated by depth / how deep you've ever been. */
+function normalKindWeights(depth: number, opts: MapGenOpts): [RoomKind, number][] {
+  const deepest = Math.max(depth, opts.deepest ?? 0);
+  const weights: [RoomKind, number][] = [
     ['combat', 5],
-    ['encounter', 4],
+    ['encounter', 3.5],
     ['treasure', 2],
+    ['shrine', 1.6],
+    ['rest', 1.4],
   ];
+  if (deepest >= 5) weights.push(['merchant', 1.3]);
+  if (deepest >= 8) weights.push(['elite', 1.6]);
+  return weights;
 }
 
 /**

@@ -50,10 +50,19 @@ describe('generateFloorMap — normal floor', () => {
     }
   });
 
-  it('only emits combat/encounter/treasure for now', () => {
+  it('does not emit merchant/elite below their depth gates', () => {
+    // depth 2, deepest 0 → merchants (>=5) and elites (>=8) must not appear.
     for (const n of Object.values(map.nodes)) {
-      expect(['combat', 'encounter', 'treasure']).toContain(n.room.type);
+      expect(['merchant', 'elite']).not.toContain(n.room.type);
+      expect(['combat', 'encounter', 'treasure', 'shrine', 'rest']).toContain(n.room.type);
     }
+  });
+
+  it('unlocks merchant/elite room types at depth', () => {
+    const deep = generateFloorMap(9, biome, seeded(3));
+    const kinds = new Set(Object.values(deep.nodes).map((n) => n.room.type));
+    // At depth 9 the gates are open; over a few nodes at least one special type should appear.
+    expect([...kinds].some((k) => ['merchant', 'elite', 'shrine', 'rest'].includes(k))).toBe(true);
   });
 
   it('guarantees at least one combat room', () => {

@@ -88,6 +88,24 @@ export function generateFloor(depth: number, biome: BiomeDef, rng: RNG = Math.ra
   return rooms;
 }
 
+/** A wandering-merchant offer (bought with the player's gold mid-run). */
+export interface MerchantOffer {
+  id: string;
+  label: string;
+  cost: number;
+  kind: 'heal' | 'potion' | 'boon';
+  potionKey?: string;
+}
+
+/** The merchant's wares for a floor — a heal, a potion, and a relic, priced by depth. */
+export function merchantOffers(depth: number): MerchantOffer[] {
+  return [
+    { id: 'heal', label: 'Tend your wounds — restore 40% HP', cost: 18 + depth * 4, kind: 'heal' },
+    { id: 'potion', label: 'A Healing Potion for the road', cost: 24 + depth * 5, kind: 'potion', potionKey: 'healing_potion' },
+    { id: 'boon', label: 'A relic from the pack', cost: 45 + depth * 9, kind: 'boon' },
+  ];
+}
+
 /** Direct loot for a treasure room (no stat check) — scales with depth. */
 export function resolveTreasure(depth: number, rng: RNG = Math.random): Reward {
   const gold = 60 + depth * 10 + Math.floor(rng() * 40);

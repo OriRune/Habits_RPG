@@ -44,17 +44,23 @@ const FALLBACK = ENEMIES.goblin;
  * A scaled dungeon enemy drawn from a biome's pool. Difficulty rises with both the
  * player's level and the run's depth, so deeper floors bite harder.
  */
-export function enemyFor(depth: number, level: number, pool: string[], rng: RNG = Math.random): BossDef {
+export function enemyFor(
+  depth: number,
+  level: number,
+  pool: string[],
+  rng: RNG = Math.random,
+  elite = false,
+): BossDef {
   const id = pool.length ? pool[Math.floor(rng() * pool.length)] : FALLBACK.id;
   const t = ENEMIES[id] ?? FALLBACK;
-  const scale = 1 + (level - 1) * 0.07 + (depth - 1) * 0.14;
+  const scale = (1 + (level - 1) * 0.07 + (depth - 1) * 0.14) * (elite ? 1.45 : 1);
   return {
-    id: `${t.id}_d${depth}`,
-    name: t.name,
+    id: `${t.id}_d${depth}${elite ? '_elite' : ''}`,
+    name: elite ? `Elite ${t.name}` : t.name,
     flavor: t.flavor,
     baseHp: Math.round(t.hp * scale),
-    attack: Math.round(t.attack * scale),
-    defense: t.defense + Math.floor(depth / 4) + Math.floor(level / 8),
+    attack: Math.round(t.attack * (elite ? scale * 0.9 : scale)),
+    defense: t.defense + Math.floor(depth / 4) + Math.floor(level / 8) + (elite ? 1 : 0),
     ward: t.ward + Math.floor(depth / 5),
     attackSchool: t.attackSchool,
     weakTo: t.weakTo,

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useGameStore, withCharacterDefaults, type DungeonRun } from '../useGameStore';
 import { STAT_IDS, emptyStatXP } from '@/engine/stats';
 import { type BattleState } from '@/engine/combat';
-import { type DungeonRoom } from '@/engine/dungeon';
+import { type DungeonRoom, merchantOffers } from '@/engine/dungeon';
 import { type FloorMap } from '@/engine/dungeonMap';
 import { getEncounter, startEncounter } from '@/engine/encounters';
 import { toISODate, weekKey } from '@/engine/date';
@@ -46,6 +46,7 @@ function makeRun(over: Partial<DungeonRun> & { rooms?: DungeonRoom[] }): Dungeon
     cleared: false,
     relics: [],
     pendingBoon: null,
+    merchant: null,
     ...rest,
   };
 }
@@ -481,6 +482,67 @@ describe('dungeon expeditions', () => {
     get().chooseBoon('titan_grip'); // not in the offer
     expect(get().dungeon!.relics).toHaveLength(0);
     expect(get().dungeon!.pendingBoon).toEqual(['ember_sigil']);
+  });
+
+  it('shrine: praying succeeds (boon) or fails (curse) by the roll', () => {
+    useGameStore.setState({ dungeon: makeRun({ rooms: [{ type: 'shrine' }, { type: 'combat' }] }) });
+    const win = vi.spyOn(Math, 'random').mockReturnValue(0); // 0 < success chance
+    get().dungeonShrine('pray');
+    expect(get().dungeon!.pendingBoon).not.toBeNull();
+    win.mockRestore();
+
+    useGameStore.setState({ dungeon: makeRun({ rooms: [{ type: 'shrine' }, { type: 'combat' }] }) });
+    const lose = vi.spyOn(Math, 'random').mockReturnValue(0.99); // misses → curse
+    get().dungeonShrine('pray');
+    expect(get().dungeon!.relics).toHaveLength(1);
+    lose.mockRestore();
+  });
+
+  it('shrine: offering blood costs HP and guarantees a boon', () => {
+    useGameStore.setState({ dungeon: makeRun({ rooms: [{ type: 'shrine' }, { type: 'combat' }], hp: 100, maxHp: 100 }) });
+    get().dungeonShrine('offer');
+    const d = get().dungeon!;
+    expect(d.hp).toBe(75); // -25% HP
+    expect(d.pendingBoon).not.toBeNull();
+    expect(d.choices).toContain('n1_0'); // advanced to the next path choice
+  });
+
+  it('merchant: buying deducts gold and grants a potion; leaving advances', () => {
+    get().resetGame();
+    useGameStore.setState({
+      character: { ...get().character, gold: 100 },
+      dungeon: makeRun({ rooms: [{ type: 'merchant' }, { type: 'combat' }], merchant: merchantOffers(1) }),
+    });
+    const potionOffer = merchantOffers(1).find((o) => o.kind === 'potion')!;
+    get().dungeonBuy('potion');
+    expect(get().character.gold).toBe(100 - potionOffer.cost);
+    expect(get().inventory['healing_potion']).toBe(1);
+    get().dungeonLeaveRoom();
+    expect(get().dungeon!.choices).toContain('n1_0');
+  });
+
+  it('elite: winning grants a guaranteed boon and bonus floor gold', () => {
+    get().resetGame();
+    useGameStore.setState({
+      dungeon: makeRun({
+        rooms: [{ type: 'elite' }, { type: 'combat' }],
+        battle: { status: 'won', playerHp: 30, playerMp: 5, playerSta: 3, bossMaxHp: 60, attackSchool: 'physical' } as BattleState,
+      }),
+    });
+    get().dungeonAdvance();
+    const d = get().dungeon!;
+    expect(d.pendingBoon).not.toBeNull();
+    expect(d.floorReward.gold ?? 0).toBeGreaterThan(0);
+  });
+
+  it('rest: healing restores HP; fortify offers a boon', () => {
+    useGameStore.setState({ dungeon: makeRun({ rooms: [{ type: 'rest' }, { type: 'combat' }], hp: 40, maxHp: 100 }) });
+    get().dungeonRest('heal');
+    expect(get().dungeon!.hp).toBe(80); // +40% of max
+
+    useGameStore.setState({ dungeon: makeRun({ rooms: [{ type: 'rest' }, { type: 'combat' }] }) });
+    get().dungeonRest('fortify');
+    expect(get().dungeon!.pendingBoon).not.toBeNull();
   });
 
   it('fleeing keeps all gathered loot; defeat forfeits most of the floor', () => {

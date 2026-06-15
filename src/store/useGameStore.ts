@@ -39,7 +39,7 @@ import { getWeapon, STARTER_WEAPON, WEAPONS } from '@/engine/weapons';
 import { STARTER_SPELLS } from '@/engine/spells';
 import { type CombatStats, emptyCombatStats, combatXpForWin } from '@/engine/combatStats';
 import { type GearDef, type GearSlot, getGear, aggregateGear, gearXpMultiplier } from '@/engine/gear';
-import { getRelic, aggregateRelics, rollBoons } from '@/engine/relics';
+import { getRelic, aggregateRelics, rollBoons, rollCurse } from '@/engine/relics';
 import { getRecipe, canCraft } from '@/engine/crafting';
 import { getItem, ITEMS } from '@/engine/items';
 import {
@@ -56,7 +56,9 @@ import {
 } from '@/engine/challenges';
 import { type WeeklyReport, buildWeeklyReport, weeklyRotation } from '@/engine/weekly';
 import {
+  type MerchantOffer,
   resolveTreasure,
+  merchantOffers,
   mergeReward,
   scaleReward,
   DUNGEON_ENERGY_COST,
@@ -68,6 +70,7 @@ import {
   getEncounter,
   startEncounter,
   chooseEncounter,
+  checkChance,
 } from '@/engine/encounters';
 import { enemyFor } from '@/engine/enemies';
 import { type Mood, computeMood } from '@/engine/mood';
@@ -157,6 +160,8 @@ export interface DungeonRun {
   relics: string[];
   /** Three boon keys offered to the player (floor clear / shrine / elite); null when none pending. */
   pendingBoon: string[] | null;
+  /** Wares offered in a merchant room (null outside one). */
+  merchant: MerchantOffer[] | null;
 }
 
 /** Share of the current floor's loot kept when you fall mid-floor (the rest is forfeit). */
@@ -173,6 +178,41 @@ function boonMaxTier(depth: number): number {
 function offerBoon(run: DungeonRun): void {
   const choices = rollBoons(3, run.relics, boonMaxTier(run.depth));
   run.pendingBoon = choices.length ? choices : null;
+}
+
+/**
+ * Resolve the current room: carry the given resources, then either present the next path
+ * choices or reach the floor checkpoint when the node is terminal. Shared by combat, encounters,
+ * and the new room types (shrine/merchant/rest). Pure: returns a fresh run.
+ */
+function resolveCurrentNode(run: DungeonRun, hp: number, mp: number, sta: number): DungeonRun {
+  const node = run.nodeId ? run.map.nodes[run.nodeId] : null;
+  // Partial mana regen when pressing onward (full restore happens at checkpoints).
+  const regenMp = Math.min(run.maxMp, mp + Math.round(run.maxMp * 0.15));
+  const next: DungeonRun = {
+    ...run,
+    nodeId: null,
+    hp,
+    mp: regenMp,
+    sta,
+    battle: null,
+    encounter: null,
+    roomLoot: null,
+    merchant: null,
+  };
+  if (!node || node.to.length === 0) {
+    next.choices = [];
+    next.atCheckpoint = true;
+    next.bankedReward = mergeReward(next.bankedReward, next.floorReward);
+    next.floorReward = {};
+    next.hp = next.maxHp;
+    next.mp = next.maxMp;
+    next.sta = next.maxSta;
+    if (!next.pendingBoon) offerBoon(next); // don't clobber a boon a shrine/elite already offered
+  } else {
+    next.choices = node.to;
+  }
+  return next;
 }
 
 /** Developer "creative mode" switches (Settings → Developer). All off in normal play. */
@@ -274,6 +314,14 @@ export interface GameState {
   collectDungeon: () => void;
   /** Pick one of the offered boon relics into the run. */
   chooseBoon: (relicKey: string) => void;
+  /** Shrine gamble: 'pray' (stat check → boon or curse), 'offer' (pay HP → guaranteed boon), 'leave'. */
+  dungeonShrine: (choice: 'pray' | 'offer' | 'leave') => void;
+  /** Buy a merchant offer with the player's gold (then leave the room). */
+  dungeonBuy: (offerId: string) => void;
+  /** Rest site: 'heal' (restore HP) or 'fortify' (a free tier-1 boon). */
+  dungeonRest: (choice: 'heal' | 'fortify') => void;
+  /** Leave a non-combat room (merchant) and continue to the next path choice. */
+  dungeonLeaveRoom: () => void;
 
   updateSettings: (patch: Partial<GameSettings>) => void;
 
@@ -397,26 +445,22 @@ function currentRoom(run: DungeonRun) {
   return run.nodeId ? run.map.nodes[run.nodeId]?.room ?? null : null;
 }
 
-/** Set up the run's current room — seeds combat/boss fights and branching encounters. */
+/** Set up the run's current room — seeds combat/boss fights, encounters, and the new room types. */
 function enterRoom(run: DungeonRun, state: GameState): void {
   const room = currentRoom(run);
   run.battle = null;
   run.encounter = null;
   run.roomLoot = null;
+  run.merchant = null;
   if (!room) return;
   const biome = getBiome(run.biomeKey);
+  const carry = { startingHp: run.hp, startingMp: run.mp, startingSta: run.sta };
   if (room.type === 'combat') {
-    run.battle = createBattle(fighterFor(state), enemyFor(run.depth, state.character.level, biome.enemies), {
-      startingHp: run.hp,
-      startingMp: run.mp,
-      startingSta: run.sta,
-    });
+    run.battle = createBattle(fighterFor(state), enemyFor(run.depth, state.character.level, biome.enemies), carry);
+  } else if (room.type === 'elite') {
+    run.battle = createBattle(fighterFor(state), enemyFor(run.depth, state.character.level, biome.enemies, Math.random, true), carry);
   } else if (room.type === 'boss') {
-    run.battle = createBattle(fighterFor(state), bossFor(biome, run.depth, state.character.level), {
-      startingHp: run.hp,
-      startingMp: run.mp,
-      startingSta: run.sta,
-    });
+    run.battle = createBattle(fighterFor(state), bossFor(biome, run.depth, state.character.level), carry);
   } else if (room.type === 'encounter') {
     const def = getEncounter(room.key);
     run.encounter = def ? startEncounter(def) : null;
@@ -424,7 +468,10 @@ function enterRoom(run: DungeonRun, state: GameState): void {
     const loot = resolveTreasure(run.depth);
     run.roomLoot = loot;
     run.floorReward = mergeReward(run.floorReward, loot);
+  } else if (room.type === 'merchant') {
+    run.merchant = merchantOffers(run.depth);
   }
+  // shrine + rest rooms are resolved entirely through their player choices (dungeonShrine/dungeonRest).
 }
 
 /** Finalize an ended run: bank the survivable share of floor loot (keepFactor 1 = all). */
@@ -966,6 +1013,7 @@ export const useGameStore = create<GameState>()(
             cleared: false,
             relics: [],
             pendingBoon: null,
+            merchant: null,
           };
           return {
             character: {
@@ -1050,7 +1098,10 @@ export const useGameStore = create<GameState>()(
           let combatStats: CombatStats | null = null;
           let statXpPatch: ReturnType<typeof grantStatXp> | null = null;
 
-          if (room.type === 'combat' || room.type === 'boss') {
+          let workingRun = run;
+          let eliteWin = false;
+
+          if (room.type === 'combat' || room.type === 'boss' || room.type === 'elite') {
             const b = run.battle;
             if (!b || b.status === 'active') return s; // can't leave mid-fight
             if (b.status === 'fled') {
@@ -1075,41 +1126,18 @@ export const useGameStore = create<GameState>()(
             const atkStat = getWeapon(s.equippedWeapon).attackStat;
             const toAtk = Math.round(winXp * 0.6);
             statXpPatch = grantStatXp(s, { [atkStat]: toAtk, HP: winXp - toAtk });
+            if (room.type === 'elite') {
+              // Elites drop bonus gold and guarantee a boon.
+              eliteWin = true;
+              workingRun = { ...run, floorReward: mergeReward(run.floorReward, { gold: 40 + run.depth * 12 }) };
+            }
           } else if (room.type === 'encounter') {
             if (!run.encounter || !run.encounter.done) return s; // encounter not finished
           }
           // treasure rooms loot on entry (enterRoom) — advancing just moves on.
 
-          // Partial mana regen when pressing onward (full restore happens at checkpoints).
-          mp = Math.min(run.maxMp, mp + Math.round(run.maxMp * 0.15));
-
-          // Resolved this room: clear it, then either offer the next path choices or reach the
-          // floor checkpoint when this node is terminal.
-          const next: DungeonRun = {
-            ...run,
-            nodeId: null,
-            hp,
-            mp,
-            sta,
-            battle: null,
-            encounter: null,
-            roomLoot: null,
-          };
-
-          if (node.to.length === 0) {
-            // Floor cleared → checkpoint: lock in loot, restore HP/MP/Stamina, and offer a boon.
-            next.choices = [];
-            next.atCheckpoint = true;
-            next.bankedReward = mergeReward(next.bankedReward, next.floorReward);
-            next.floorReward = {};
-            next.hp = next.maxHp;
-            next.mp = next.maxMp;
-            next.sta = next.maxSta;
-            offerBoon(next);
-          } else {
-            // Present the branching choice for the next step.
-            next.choices = node.to;
-          }
+          const next = resolveCurrentNode(workingRun, hp, mp, sta);
+          if (eliteWin) offerBoon(next);
           return {
             dungeon: next,
             ...(combatStats ? { combatStats } : {}),
@@ -1179,6 +1207,78 @@ export const useGameStore = create<GameState>()(
           return { dungeon: next };
         }),
 
+      dungeonShrine: (choice) =>
+        set((s) => {
+          const run = s.dungeon;
+          if (!run || run.status !== 'active' || currentRoom(run)?.type !== 'shrine') return s;
+          let next: DungeonRun = { ...run };
+          if (choice === 'pray') {
+            // A check of your best spiritual stat: success blesses you, failure curses you.
+            const power = Math.max(s.character.statLevels.WI, s.character.statLevels.CH);
+            if (Math.random() < checkChance(power, 6)) {
+              offerBoon(next);
+            } else {
+              const curse = rollCurse();
+              if (curse) {
+                next.relics = [...run.relics, curse];
+                const newMax = fighterFor({ ...s, dungeon: next }).c.maxHp;
+                next.maxHp = newMax;
+                next.hp = Math.min(next.hp, newMax);
+              }
+            }
+          } else if (choice === 'offer') {
+            const cost = Math.round(run.maxHp * 0.25);
+            if (run.hp <= cost) return s; // can't pay the toll
+            next.hp = run.hp - cost;
+            offerBoon(next);
+          }
+          // 'leave' = no effect. In every case, resolve the room and present the next path.
+          return { dungeon: resolveCurrentNode(next, next.hp, next.mp, next.sta) };
+        }),
+
+      dungeonBuy: (offerId) =>
+        set((s) => {
+          const run = s.dungeon;
+          if (!run || !run.merchant) return s;
+          const offer = run.merchant.find((o) => o.id === offerId);
+          if (!offer) return s;
+          const free = s.settings.unlimitedGold;
+          if (!free && s.character.gold < offer.cost) return s;
+          const next: DungeonRun = { ...run, merchant: run.merchant.filter((o) => o.id !== offerId) };
+          const patch: Partial<GameState> = {
+            character: { ...s.character, gold: free ? s.character.gold : s.character.gold - offer.cost },
+          };
+          if (offer.kind === 'heal') {
+            next.hp = Math.min(run.maxHp, run.hp + Math.round(run.maxHp * 0.4));
+          } else if (offer.kind === 'potion' && offer.potionKey) {
+            patch.inventory = { ...s.inventory, [offer.potionKey]: (s.inventory[offer.potionKey] ?? 0) + 1 };
+          } else if (offer.kind === 'boon') {
+            offerBoon(next);
+          }
+          return { dungeon: next, ...patch };
+        }),
+
+      dungeonRest: (choice) =>
+        set((s) => {
+          const run = s.dungeon;
+          if (!run || run.status !== 'active' || currentRoom(run)?.type !== 'rest') return s;
+          const next: DungeonRun = { ...run };
+          if (choice === 'heal') {
+            next.hp = Math.min(run.maxHp, run.hp + Math.round(run.maxHp * 0.4));
+          } else {
+            const choices = rollBoons(3, run.relics, 1); // a modest tier-1 boon
+            next.pendingBoon = choices.length ? choices : null;
+          }
+          return { dungeon: resolveCurrentNode(next, next.hp, next.mp, next.sta) };
+        }),
+
+      dungeonLeaveRoom: () =>
+        set((s) => {
+          const run = s.dungeon;
+          if (!run || run.status !== 'active' || currentRoom(run)?.type !== 'merchant') return s;
+          return { dungeon: resolveCurrentNode(run, run.hp, run.mp, run.sta) };
+        }),
+
       updateSettings: (patch) =>
         set((s) => ({ settings: { ...s.settings, ...patch } })),
 
@@ -1209,7 +1309,7 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 9,
+      version: 10,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -1226,6 +1326,8 @@ export const useGameStore = create<GameState>()(
       //     run (dungeon: null below) so it regenerates with the new shape.
       // v9: branching floor map — DungeonRun swapped rooms/index for map/nodeId/choices/path;
       //     again cleared (dungeon: null) so an in-progress run regenerates.
+      // v10: new room types (shrine/merchant/elite/rest) + DungeonRun.merchant; cleared so an
+      //      in-progress run regenerates with the richer room variety.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {
