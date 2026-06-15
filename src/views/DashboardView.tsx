@@ -1,30 +1,47 @@
-import { useState } from 'react';
-import { Plus, Swords, AlertTriangle, BarChart3 } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Plus, Swords, AlertTriangle, BarChart3, RotateCcw } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
-import {
-  selectDashboardHabits,
-  selectHabitLoadWarning,
-  isHabitDoneToday,
-  isHabitSuspended,
-} from '@/store/selectors';
+import { makeSelectDashboardHabits, selectHabitLoadWarning } from '@/store/selectors';
+import { isCompletedOn, effectiveStatus } from '@/engine/habits';
+import { toISODate, parseISODate } from '@/engine/date';
 import { HabitCard } from '@/components/habits/HabitCard';
 import { HabitForm } from '@/components/habits/HabitForm';
+import { DatePicker } from '@/components/habits/DatePicker';
 import { HeroBanner } from '@/components/character/HeroBanner';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
 
 export function DashboardView({ onOpenHistory }: { onOpenHistory: () => void }) {
-  const dashboard = useGameStore(selectDashboardHabits);
+  const today = toISODate();
+  const [viewDate, setViewDate] = useState(today);
+  const isToday = viewDate === today;
+
+  const allHabits = useGameStore((s) => s.habits);
+  const dashboard = useGameStore(useMemo(() => makeSelectDashboardHabits(viewDate), [viewDate]));
   const warning = useGameStore(selectHabitLoadWarning);
   const pendingLevelUp = useGameStore((s) => s.pendingLevelUp);
   const startBattle = useGameStore((s) => s.startBattle);
   const [showForm, setShowForm] = useState(false);
 
-  const suspended = dashboard.filter((h) => isHabitSuspended(h));
-  const active = dashboard.filter((h) => !isHabitSuspended(h));
-  const pending = active.filter((h) => !isHabitDoneToday(h));
-  const done = active.filter((h) => isHabitDoneToday(h));
+  const suspended = dashboard.filter((h) => effectiveStatus(h, viewDate) === 'suspended');
+  const active = dashboard.filter((h) => effectiveStatus(h, viewDate) !== 'suspended');
+  const pending = active.filter((h) => !isCompletedOn(h, viewDate));
+  const done = active.filter((h) => isCompletedOn(h, viewDate));
+
+  // Earliest pickable day = the first habit's creation date (fall back to today).
+  const minISO = allHabits.reduce<string>(
+    (min, h) => (h.createdISO < min ? h.createdISO : min),
+    today,
+  );
+  const hasActivity = (iso: string) => allHabits.some((h) => isCompletedOn(h, iso));
+  const title = isToday
+    ? 'Quest Log · Today'
+    : `Quest Log · ${parseISODate(viewDate).toLocaleDateString(undefined, {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+      })}`;
 
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
@@ -54,7 +71,23 @@ export function DashboardView({ onOpenHistory }: { onOpenHistory: () => void }) 
 
       <Panel tone="parchment" className="p-4">
         <div className="mb-3 flex items-center gap-2">
-          <SectionTitle className="flex-1">Quest Log · Today</SectionTitle>
+          <SectionTitle className="flex-1">{title}</SectionTitle>
+          {!isToday && (
+            <Button
+              variant="secondary"
+              onClick={() => setViewDate(today)}
+              className="flex items-center gap-1 px-2.5 py-1.5"
+            >
+              <RotateCcw className="h-4 w-4" /> Today
+            </Button>
+          )}
+          <DatePicker
+            value={viewDate}
+            onChange={setViewDate}
+            minISO={minISO}
+            maxISO={today}
+            hasActivity={hasActivity}
+          />
           <Button
             variant="secondary"
             onClick={onOpenHistory}
@@ -70,12 +103,14 @@ export function DashboardView({ onOpenHistory }: { onOpenHistory: () => void }) 
 
         {dashboard.length === 0 ? (
           <div className="rounded-md border border-dashed border-ink-light/50 p-8 text-center text-sm text-ink-muted">
-            No quests yet. Inscribe your first habit to begin shaping your hero.
+            {isToday
+              ? 'No quests yet. Inscribe your first habit to begin shaping your hero.'
+              : 'No quests were scheduled on this day.'}
           </div>
         ) : (
           <div className="space-y-2">
             {pending.map((h) => (
-              <HabitCard key={h.id} habit={h} />
+              <HabitCard key={h.id} habit={h} viewDate={viewDate} />
             ))}
             {done.length > 0 && (
               <>
@@ -83,7 +118,7 @@ export function DashboardView({ onOpenHistory }: { onOpenHistory: () => void }) 
                   Completed ({done.length})
                 </div>
                 {done.map((h) => (
-                  <HabitCard key={h.id} habit={h} />
+                  <HabitCard key={h.id} habit={h} viewDate={viewDate} />
                 ))}
               </>
             )}
@@ -93,7 +128,7 @@ export function DashboardView({ onOpenHistory }: { onOpenHistory: () => void }) 
                   Suspended ({suspended.length})
                 </div>
                 {suspended.map((h) => (
-                  <HabitCard key={h.id} habit={h} />
+                  <HabitCard key={h.id} habit={h} viewDate={viewDate} />
                 ))}
               </>
             )}

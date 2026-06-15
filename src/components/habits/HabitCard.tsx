@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { Check, Flame, MoreVertical, Pause, Play, Archive, Trash2, CalendarClock } from 'lucide-react';
+import { Check, Flame, MoreVertical, Pause, Play, Archive, Trash2, CalendarClock, Undo2 } from 'lucide-react';
 import { getStat } from '@/engine/stats';
-import { type Habit } from '@/engine/habits';
+import { type Habit, isCompletedOn, effectiveStatus, weekCompletions } from '@/engine/habits';
+import { toISODate } from '@/engine/date';
 import { useGameStore } from '@/store/useGameStore';
-import { isHabitDoneToday, isHabitSuspended, selectWeekProgress } from '@/store/selectors';
 import { statCrest } from '@/lib/sprites';
 import { Sprite } from '@/components/ui/Sprite';
 import { cn } from '@/lib/cn';
@@ -18,8 +18,9 @@ const FREQ_LABEL: Record<Habit['frequency'], string> = {
   as_needed: 'As needed',
 };
 
-export function HabitCard({ habit }: { habit: Habit }) {
+export function HabitCard({ habit, viewDate = toISODate() }: { habit: Habit; viewDate?: string }) {
   const completeHabit = useGameStore((s) => s.completeHabit);
+  const uncompleteHabit = useGameStore((s) => s.uncompleteHabit);
   const removeHabit = useGameStore((s) => s.removeHabit);
   const retireHabit = useGameStore((s) => s.retireHabit);
   const reactivateHabit = useGameStore((s) => s.reactivateHabit);
@@ -27,16 +28,23 @@ export function HabitCard({ habit }: { habit: Habit }) {
   const [suspendOpen, setSuspendOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
-  const done = isHabitDoneToday(habit);
-  const suspended = isHabitSuspended(habit);
+  const done = isCompletedOn(habit, viewDate);
+  const suspended = effectiveStatus(habit, viewDate) === 'suspended';
   const retired = habit.status === 'retired';
   const stat = getStat(habit.stat);
-  const week = selectWeekProgress(habit);
+  const week =
+    habit.frequency === 'times_per_week'
+      ? { done: weekCompletions(habit, viewDate), target: habit.timesPerWeek ?? 1 }
+      : null;
 
-  function onComplete() {
-    if (done || suspended || retired) return;
+  function onSeal() {
+    if (suspended || retired) return;
+    if (done) {
+      uncompleteHabit(habit.id, viewDate);
+      return;
+    }
     if (habit.type === 'quantity') setDialog(true);
-    else completeHabit(habit.id);
+    else completeHabit(habit.id, undefined, viewDate);
   }
 
   return (
@@ -51,19 +59,20 @@ export function HabitCard({ habit }: { habit: Habit }) {
               : 'border-ink-light/30 bg-parchment-100/70 hover:border-gold-deep/60',
         )}
       >
-        {/* Wax-seal completion button */}
+        {/* Wax-seal completion button (toggles completion on/off) */}
         <button
-          onClick={onComplete}
-          disabled={done || suspended || retired}
+          onClick={onSeal}
+          disabled={suspended || retired}
           className={cn(
-            'flex h-9 w-9 shrink-0 items-center justify-center rounded-full border-2 transition',
+            'group flex h-9 w-9 shrink-0 items-center justify-center rounded-full border-2 transition',
             done
-              ? 'border-gold-deep bg-gradient-to-b from-gold-bright to-gold-deep text-wood-900 shadow-gold-sm'
+              ? 'border-gold-deep bg-gradient-to-b from-gold-bright to-gold-deep text-wood-900 shadow-gold-sm enabled:hover:from-gold'
               : 'border-ink-light/50 enabled:hover:border-gold-deep enabled:hover:bg-gold/10 disabled:opacity-50',
           )}
-          aria-label={done ? 'Completed' : 'Complete habit'}
+          aria-label={done ? 'Mark incomplete' : 'Complete habit'}
         >
-          {done && <Check className="h-5 w-5" />}
+          {done && <Check className="h-5 w-5 group-enabled:group-hover:hidden" />}
+          {done && <Undo2 className="hidden h-4 w-4 group-enabled:group-hover:block" />}
         </button>
 
         <Sprite
@@ -126,6 +135,9 @@ export function HabitCard({ habit }: { habit: Habit }) {
             <>
               <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
               <div className="absolute right-0 top-6 z-20 w-40 overflow-hidden rounded-md border border-gold-deep/40 bg-parchment-100 shadow-gold-sm">
+                {done && (
+                  <MenuItem icon={Undo2} label="Mark incomplete" onClick={() => { uncompleteHabit(habit.id, viewDate); setMenuOpen(false); }} />
+                )}
                 {suspended || retired ? (
                   <MenuItem icon={Play} label="Reactivate" onClick={() => { reactivateHabit(habit.id); setMenuOpen(false); }} />
                 ) : (
@@ -141,7 +153,7 @@ export function HabitCard({ habit }: { habit: Habit }) {
         </div>
       </div>
 
-      {dialog && <CompleteHabitDialog habit={habit} onClose={() => setDialog(false)} />}
+      {dialog && <CompleteHabitDialog habit={habit} viewDate={viewDate} onClose={() => setDialog(false)} />}
       {suspendOpen && <SuspendDialog habitId={habit.id} onClose={() => setSuspendOpen(false)} />}
     </>
   );

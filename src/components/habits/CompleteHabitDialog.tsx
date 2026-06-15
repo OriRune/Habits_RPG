@@ -6,7 +6,15 @@ import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 
 /** Quantity-habit completion: enter how much was done, see the XP preview. */
-export function CompleteHabitDialog({ habit, onClose }: { habit: Habit; onClose: () => void }) {
+export function CompleteHabitDialog({
+  habit,
+  viewDate,
+  onClose,
+}: {
+  habit: Habit;
+  viewDate?: string;
+  onClose: () => void;
+}) {
   const completeHabit = useGameStore((s) => s.completeHabit);
   const [actual, setActual] = useState(String(habit.target ?? 0));
 
@@ -39,7 +47,7 @@ export function CompleteHabitDialog({ habit, onClose }: { habit: Habit; onClose:
         </div>
         <Button
           onClick={() => {
-            completeHabit(habit.id, amount);
+            completeHabit(habit.id, amount, viewDate);
             onClose();
           }}
           className="w-full py-2.5"
