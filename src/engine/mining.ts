@@ -323,8 +323,12 @@ export function strike(state: MineState, rng: RNG): MineState {
   } else {
     tiles[r][c] = { ...tile, durability };
   }
-  if (durability <= 0 && tile.kind === 'rock' && rng() < 0.1) {
-    haul = mergeReward(haul, oreYield(weightedOre(state.floor, rng).key, rng));
+  if (durability <= 0 && tile.kind === 'rock') {
+    const bonusPool = eligibleOres(state.floor).filter((o) => o.weight > 0);
+    if (bonusPool.length > 0 && rng() < 0.2) {
+      const bonusDef = bonusPool[Math.floor(rng() * bonusPool.length)];
+      haul = mergeReward(haul, oreYield(bonusDef.key, rng));
+    }
   }
   const staDef = oreBroke && tile.oreKey ? MINE_ORES[tile.oreKey] : undefined;
   const staRestore = staDef?.grants.kind === 'stamina' ? staDef.grants.amount[0] : oreBroke ? 1 : 0;
