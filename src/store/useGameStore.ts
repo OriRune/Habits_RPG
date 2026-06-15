@@ -285,7 +285,9 @@ export interface GameState {
   addHabit: (input: NewHabitInput) => void;
   updateHabit: (id: string, patch: Partial<NewHabitInput>) => void;
   removeHabit: (id: string) => void;
-  completeHabit: (id: string, actual?: number) => void;
+  completeHabit: (id: string, actual?: number, dateISO?: string) => void;
+  /** Remove a completion (today or a past day) and refund its XP. */
+  uncompleteHabit: (id: string, dateISO?: string) => void;
   retireHabit: (id: string) => void;
   reactivateHabit: (id: string) => void;
   suspendHabit: (id: string, untilISO: string) => void;
@@ -746,15 +748,17 @@ export const useGameStore = create<GameState>()(
           return changed ? { habits } : s;
         }),
 
-      completeHabit: (id, actual) =>
+      completeHabit: (id, actual, dateISO) =>
         set((s) => {
           const today = toISODate();
+          const day = dateISO ?? today;
+          const isToday = day === today;
           const habit = s.habits.find((h) => h.id === id);
           if (!habit) return s;
-          if (habit.log[today] !== undefined) return s; // already done today
-          if (effectiveStatus(habit, today) !== 'active') return s; // retired/suspended
+          if (habit.log[day] !== undefined) return s; // already done that day
+          if (effectiveStatus(habit, day) !== 'active') return s; // retired/suspended that day
 
-          const result = resolveCompletion(habit, today, { actual });
+          const result = resolveCompletion(habit, day, { actual });
           // Equipped gear can boost XP for matching habits (tag/stat perks).
           const xp = Math.round(result.xp * gearXpMultiplier(gearFor(s), habit));
 
@@ -768,18 +772,18 @@ export const useGameStore = create<GameState>()(
               if (h.id !== id) return h;
               const updated: Habit = {
                 ...h,
-                log: { ...h.log, [today]: { amount: actual, xp } },
-                lastCompletedISO: today,
+                log: { ...h.log, [day]: { amount: actual, xp } },
+                // Only advance lastCompletedISO when this is the latest completion.
+                lastCompletedISO: !h.lastCompletedISO || day > h.lastCompletedISO ? day : h.lastCompletedISO,
               };
-              updated.streak = currentStreak(updated, today);
+              updated.streak = currentStreak(updated, today); // always relative to real today
               return updated;
             }),
           };
 
           next.character.statXp[habit.stat] += xp;
-          next.character.energy += 1;
-          next.completionLog[today] = (next.completionLog[today] ?? 0) + 1;
-          next.lastActiveISO = today;
+          // Keep the per-day completion count accurate for the edited day (drives heatmap/mood history).
+          next.completionLog[day] = (next.completionLog[day] ?? 0) + 1;
 
           // Recompute every active challenge's progress from the updated logs.
           next.challenges = s.challenges.map((c) => {
@@ -790,9 +794,57 @@ export const useGameStore = create<GameState>()(
             return { ...c, progress, status };
           });
 
-          recomputeMood(next, today, result.recovery);
-          applyWeeklyRollover(next, today); // completing on a new week surfaces the recap
-          checkLevelUp(next);
+          // Today-only side effects: not moved by editing a past day.
+          if (isToday) {
+            next.character.energy += 1;
+            next.lastActiveISO = today;
+            recomputeMood(next, today, result.recovery);
+            applyWeeklyRollover(next, today); // completing on a new week surfaces the recap
+          }
+          checkLevelUp(next); // total-XP based, valid for retro completions too
+          return next;
+        }),
+
+      uncompleteHabit: (id, dateISO) =>
+        set((s) => {
+          const today = toISODate();
+          const day = dateISO ?? today;
+          const habit = s.habits.find((h) => h.id === id);
+          if (!habit) return s;
+          const entry = habit.log[day];
+          if (entry === undefined) return s; // nothing to undo
+
+          const next: GameState = {
+            ...s,
+            character: { ...s.character, statXp: { ...s.character.statXp } },
+            completionLog: { ...s.completionLog },
+            habits: s.habits.map((h) => {
+              if (h.id !== id) return h;
+              const log = { ...h.log };
+              delete log[day];
+              const updated: Habit = { ...h, log };
+              // Most recent remaining completion on/before today, else undefined.
+              const keys = Object.keys(log).filter((k) => k <= today).sort();
+              updated.lastCompletedISO = keys.length ? keys[keys.length - 1] : undefined;
+              updated.streak = currentStreak(updated, today);
+              return updated;
+            }),
+          };
+
+          // Refund the exact XP stored for that day (already includes gear multiplier).
+          next.character.statXp[habit.stat] = Math.max(0, next.character.statXp[habit.stat] - entry.xp);
+          const count = (next.completionLog[day] ?? 0) - 1;
+          if (count > 0) next.completionLog[day] = count;
+          else delete next.completionLog[day];
+
+          // Recompute active challenges from the reduced logs.
+          next.challenges = s.challenges.map((c) => {
+            if (c.status !== 'active') return c;
+            if (isExpired(c, today)) return { ...c, status: 'expired' as const };
+            const progress = challengeProgress(c.def, c.startISO, next.habits, today);
+            return { ...c, progress };
+          });
+
           return next;
         }),
 

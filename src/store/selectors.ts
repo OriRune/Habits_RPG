@@ -26,13 +26,21 @@ export function selectLevelProgress(s: GameState) {
  * habits (shown marked). Retired habits are excluded.
  */
 export function selectDashboardHabits(s: GameState): Habit[] {
-  const today = toISODate();
-  return s.habits.filter((h) => {
-    const st = effectiveStatus(h, today);
-    if (st === 'retired') return false;
-    if (st === 'suspended') return true; // shown, marked, not loggable
-    return isLoggableOn(h, today);
-  });
+  return makeSelectDashboardHabits(toISODate())(s);
+}
+
+/**
+ * Date-parameterized version of {@link selectDashboardHabits}: the habits to show on the tracker
+ * for a given ISO day (used when browsing/editing past days). Reflects that day's lifecycle state.
+ */
+export function makeSelectDashboardHabits(iso: string) {
+  return (s: GameState): Habit[] =>
+    s.habits.filter((h) => {
+      const st = effectiveStatus(h, iso);
+      if (st === 'retired') return false;
+      if (st === 'suspended') return true; // shown, marked, not loggable
+      return isLoggableOn(h, iso);
+    });
 }
 
 export function isHabitDoneToday(h: Habit): boolean {
