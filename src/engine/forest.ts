@@ -1,51 +1,145 @@
-// The Wild Forest — a real-time foraging minigame. Pure rules; randomness is injected.
+// The Wild Forest — a large, scrolling, real-time foraging + combat minigame.
+// Pure rules; randomness is injected so the engine is fully unit-testable.
 //
-// Where the Deep Mine is "carve through near-solid rock", the forest is a *maze*: walkable
-// trails winding through impassable thicket. Two things set it apart mechanically:
-//   • Fog of war — only tiles within a sight radius are lit; explored tiles are remembered
-//     (the `seen` grid), and beasts are invisible until they're within sight.
-//   • Ambush predators — beasts lie dormant until the player enters their aggroRadius, then
-//     wake and give chase. Resource nodes are gathered instantly (one action, no durability),
-//     which feels distinct from the multi-hit, stamina-draining combat & thicket-slashing.
+// The forest is a large recursive-backtracker maze (≈33×33 on stage 1, scaling
+// up with depth) viewed through an 11×11 scrolling camera window.  Impassable
+// thicket takes the place of bedrock — it can't be cut through.  Node gathering
+// is instant (one action); beasts use BFS pathfinding and lie dormant until the
+// player enters their aggro radius (the ambush).  Fog of war is retained.
 //
-// Like the mine, every rule is a pure function returning a new ForestState — the store owns
-// the state and a thin loop (src/hooks/useForestLoop.ts) just decides *when* to call these.
-import type { Reward } from './challenges';
-import { mergeReward } from './dungeon';
-import { FOREST_NODES, FOREST_BEASTS, type ForestNodeDef } from '@/content/forest';
+// Combat mirrors the mine (same damage math from src/engine/combat.ts, equipped
+// weapon, known spells, BFS-pathfinding beasts with defense/weakTo/resistTo).
+//
+// Every rule is a pure function returning a new ForestState — the store owns
+// the state, and a thin loop (src/hooks/useForestLoop.ts) decides *when* to
+// call these.  No React, no store imports — fully unit-testable.
 
-export type RNG = () => number;
-export type Dir = 'up' | 'down' | 'left' | 'right';
-export type ForestTileKind = 'trail' | 'thicket' | 'clearing' | 'entrance' | 'treeline' | 'node';
+import type { Reward } from './challenges';
+import type { StatId } from './stats';
+import { mergeReward } from './dungeon';
+import { attackRoll, spellDamageRoll, spellHealAmount } from './combat';
+import { getSpell, SCHOOL_STAT } from './spells';
+import type { WeaponDef } from './weapons';
+import { FOREST_NODES, FOREST_BEASTS, type ForestNodeDef } from '@/content/forest';
+import {
+  type Dir,
+  type RNG,
+  type CrawlRune,
+  type CrawlStatusEffect,
+  type CrawlRingOfFire,
+  DIRS,
+  randInt,
+  floodField,
+  flowStep,
+  adjacent,
+  manhattan,
+  applyStatus,
+  pruneStatuses,
+  activeStatus,
+  DOT_TICK_MS,
+  FREEZE_DURATION_MS,
+  RING_HIT_CD_MS,
+  RING_DURATION_MS,
+  STA_REGEN_MS,
+  MP_REGEN_MS,
+} from './crawl';
+
+export type { Dir, RNG } from './crawl';
+
+// ---------------------------------------------------------------------------
+// Map constants
+// ---------------------------------------------------------------------------
+
+export const FOREST_BASE_ROWS = 33;
+export const FOREST_BASE_COLS = 33;
+export const FOREST_MAX_ROWS = 57;
+export const FOREST_MAX_COLS = 57;
+/** The map grows by this many cells per stage band. */
+const FOREST_SCALE_PER_BAND = 4;
+/** Stages per growth band. */
+const FOREST_SCALE_BAND = 4;
+
+/** Backward-compat aliases (tests / old references). */
+export const FOREST_ROWS = FOREST_BASE_ROWS;
+export const FOREST_COLS = FOREST_BASE_COLS;
+
+/** Run entry gates (parallel to the mine). */
+export const FOREST_ENERGY_COST = 2;
+export const FOREST_UNLOCK_LEVEL = 2;
+/** Fraction of the haul a fallen forager keeps; the rest is forfeit on death. */
+export const FOREST_DEATH_KEEP = 0.5;
+
+/** Invulnerability window after taking a contact hit (ms). */
+export const FOREST_IFRAME_MS = 800;
+/** How far you can see in the dark forest (Chebyshev radius). */
+export const SIGHT_RADIUS = 3;
+const CLEARING_SIGHT_RADIUS = 4;
+
+/** Stamina cost per weapon swing against a beast. */
+const SLASH_STA_COST = 2;
+/** Stamina cost per axe swing against a choppable tree. */
+const CHOP_STA_COST = 1;
+/** Spell effect cooldown between casts (ms). */
+const SPELL_CD_MS = 500;
+
+// ---------------------------------------------------------------------------
+// Tile types
+// ---------------------------------------------------------------------------
+
+export type ForestTileKind = 'trail' | 'thicket' | 'tree' | 'clearing' | 'entrance' | 'treeline' | 'node';
 
 export interface ForestTile {
   kind: ForestTileKind;
-  /** Blade swings left before thicket is cut open (thicket only). */
+  /** Blade swings left before thicket is cut open (thicket only — legacy; thicket is now permanent). */
   durability?: number;
-  /** Original durability at spawn — used to render the cut-progress bar. */
   maxDurability?: number;
   /** Which gatherable this tile holds (node only — keys FOREST_NODES). */
   nodeKey?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Beast type (real-time entity)
+// ---------------------------------------------------------------------------
+
 export interface ForestBeast {
   id: string;
-  key: string; // FOREST_BEASTS key
+  key: string;
   r: number;
   c: number;
   hp: number;
   maxHp: number;
-  /** ms-timeline moment this beast may next step (driven by the loop's clock). */
+  /** ms-timeline moment this beast may next step. */
   readyAtMs: number;
-  /** Dormant beasts don't move or strike until the player comes within aggroRadius. */
+  /** Dormant beasts don't move or strike until the player enters their aggroRadius. */
   asleep: boolean;
+  /** Frozen until this ms timestamp (ice spell / rune). */
+  frozenUntilMs?: number;
+  /** Ongoing poison/burn DoT damage per tick. */
+  poisonDmg?: number;
+  poisonNextTickMs?: number;
+  poisonExpiresMs?: number;
 }
 
-/** The character's combat profile snapshotted at the start of a run. */
+// ---------------------------------------------------------------------------
+// Snapshot & run state
+// ---------------------------------------------------------------------------
+
+/** Character combat profile snapshotted at the start of a run. */
 export interface ForestSnapshot {
   meleePower: number;
+  rangedPower: number;
+  damageSpell: number;
+  supportSpell: number;
+  illusionPower: number;
+  defense: number;
+  ward: number;
   maxHp: number;
   maxSta: number;
+  maxMp: number;
+  weapon: WeaponDef;
+  knownSpells: string[];
+  /** Equipped tool's chopping power (1 = one swing per durability, 2 = one-shots tier-2 trees, etc.). */
+  chopPower: number;
 }
 
 export interface ForestState {
@@ -56,49 +150,48 @@ export interface ForestState {
   /** Fog memory — `seen[r][c]` once the tile has ever entered the sight radius. */
   seen: boolean[][];
   player: { r: number; c: number; facing: Dir };
+  // HP / stamina / mana
   hp: number;
   maxHp: number;
   sta: number;
   maxSta: number;
+  mp: number;
+  maxMp: number;
+  // Regen timestamps
+  staNextRegenMs: number;
+  mpNextRegenMs: number;
+  // Combat stats (snapshotted)
   meleePower: number;
+  rangedPower: number;
+  damageSpell: number;
+  supportSpell: number;
+  illusionPower: number;
+  defense: number;
+  ward: number;
+  weapon: WeaponDef;
+  knownSpells: string[];
+  chopPower: number;
+  // Entities
   beasts: ForestBeast[];
-  /** Loot gathered so far this run (committed to the economy when the run ends). */
+  // Loot
   haul: Reward;
-  /** 'active' while playing, 'banking' on a voluntary leave summary, 'ended' on death. */
+  // Status
   status: 'active' | 'ended' | 'banking';
-  /** ms-timeline moment of the last contact hit, for brief invulnerability frames. */
   lastHitAtMs: number;
-  /** Deepest stage reached this run (drives the persistent milestone). */
   deepest: number;
-  /** Beasts felled on this stage — drives the per-stage leather bonus. */
   killsThisStage: number;
+  // Spell effects
+  runes: CrawlRune[];
+  ringOfFire: CrawlRingOfFire | null;
+  ringNextHitMs: Record<string, number>;
+  playerStatuses: CrawlStatusEffect[];
+  lastSpellMs: number;
+  nextRuneId: number;
 }
 
-export const FOREST_ROWS = 17;
-export const FOREST_COLS = 13;
-/** Run entry gates (parallel to the mine). */
-export const FOREST_ENERGY_COST = 2;
-export const FOREST_UNLOCK_LEVEL = 2;
-/** Fraction of the haul a fallen forager keeps; the rest is forfeit on death. */
-export const FOREST_DEATH_KEEP = 0.5;
-const SLASH_STA_COST = 1;
-/** Invulnerability window after taking a contact hit (ms). */
-export const FOREST_IFRAME_MS = 800;
-/** How far you can see in the dark forest (Chebyshev radius); clearings see one further. */
-export const SIGHT_RADIUS = 3;
-const CLEARING_SIGHT_RADIUS = 4;
-
-const DIRS: Record<Dir, [number, number]> = {
-  up: [-1, 0],
-  down: [1, 0],
-  left: [0, -1],
-  right: [0, 1],
-};
-
-const sign = (n: number) => (n > 0 ? 1 : n < 0 ? -1 : 0);
-function randInt(min: number, max: number, rng: RNG): number {
-  return min + Math.floor(rng() * (max - min + 1));
-}
+// ---------------------------------------------------------------------------
+// Grid helpers
+// ---------------------------------------------------------------------------
 
 export function tileAt(state: ForestState, r: number, c: number): ForestTile | undefined {
   return state.tiles[r]?.[c];
@@ -115,7 +208,6 @@ export function beastAt(state: ForestState, r: number, c: number): ForestBeast |
   return state.beasts.find((b) => b.r === r && b.c === c);
 }
 
-/** The tile the player is currently facing (the target of an action). */
 export function facedCell(state: ForestState): { r: number; c: number } {
   const [dr, dc] = DIRS[state.player.facing];
   return { r: state.player.r + dr, c: state.player.c + dc };
@@ -133,7 +225,7 @@ export function sightRadiusFor(state: ForestState): number {
     : SIGHT_RADIUS;
 }
 
-/** Circular sight test (≈ a disc, not a square) so the lit area reads like a torch glow. */
+/** Circular sight test (≈ a disc so the lit area reads like a torch glow). */
 function withinSight(dr: number, dc: number, rad: number): boolean {
   return dr * dr + dc * dc <= (rad + 0.5) * (rad + 0.5);
 }
@@ -143,7 +235,36 @@ export function isVisible(state: ForestState, r: number, c: number): boolean {
   return withinSight(r - state.player.r, c - state.player.c, sightRadiusFor(state));
 }
 
-/** Nodes eligible on a given stage (stageMin <= stage). */
+/** Re-light the fog: mark every tile within the current sight radius as seen. */
+export function reveal(state: ForestState): ForestState {
+  const rad = sightRadiusFor(state);
+  const seen = state.seen.map((row) => row.slice());
+  for (let dr = -rad; dr <= rad; dr++) {
+    for (let dc = -rad; dc <= rad; dc++) {
+      if (!withinSight(dr, dc, rad)) continue;
+      const rr = state.player.r + dr;
+      const cc = state.player.c + dc;
+      if (seen[rr]?.[cc] !== undefined) seen[rr][cc] = true;
+    }
+  }
+  return { ...state, seen };
+}
+
+/** Nearest beast to the player (for damage-school spells). */
+function nearestBeast(state: ForestState): ForestBeast | null {
+  let best: ForestBeast | null = null;
+  let bestDist = Infinity;
+  for (const b of state.beasts) {
+    const d = manhattan(b, state.player);
+    if (d < bestDist) { bestDist = d; best = b; }
+  }
+  return best;
+}
+
+// ---------------------------------------------------------------------------
+// Node helpers
+// ---------------------------------------------------------------------------
+
 function eligibleNodes(stage: number): ForestNodeDef[] {
   return Object.values(FOREST_NODES).filter((n) => n.stageMin <= stage);
 }
@@ -171,39 +292,49 @@ export function nodeYield(nodeKey: string, rng: RNG): Reward {
   return { materials: { [def.grants.material]: amt } };
 }
 
-/** Re-light the fog: mark every tile within the current sight radius as seen. */
-export function reveal(state: ForestState): ForestState {
-  const rad = sightRadiusFor(state);
-  const seen = state.seen.map((row) => row.slice());
-  for (let dr = -rad; dr <= rad; dr++) {
-    for (let dc = -rad; dc <= rad; dc++) {
-      if (!withinSight(dr, dc, rad)) continue;
-      const rr = state.player.r + dr;
-      const cc = state.player.c + dc;
-      if (seen[rr]?.[cc] !== undefined) seen[rr][cc] = true;
-    }
-  }
-  return { ...state, seen };
+// ---------------------------------------------------------------------------
+// Kill-loot helper
+// ---------------------------------------------------------------------------
+
+function killBeast(state: ForestState, beast: ForestBeast, rng: RNG): ForestState {
+  const def = FOREST_BEASTS[beast.key];
+  const qty = Math.max(1, Math.round(beast.maxHp / 10) + state.killsThisStage);
+  const gold = def ? randInt(def.bounty[0], def.bounty[1], rng) : 0;
+  const drop: Reward = mergeReward(
+    { materials: { leather: qty } },
+    gold > 0 ? { gold } : {},
+  );
+  return {
+    ...state,
+    beasts: state.beasts.filter((b) => b.id !== beast.id),
+    haul: mergeReward(state.haul, drop),
+    killsThisStage: state.killsThisStage + 1,
+  };
 }
 
-// --- generation --------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Generation — large recursive-backtracker maze
+// ---------------------------------------------------------------------------
 
-/** Build a fresh forest stage (full HP/stamina, empty haul) as a recursive-backtracker maze. */
+/**
+ * Build a fresh forest stage as a large recursive-backtracker maze.
+ * Size scales with depth: ~33×33 at stage 1, growing every few stages.
+ */
 export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG): ForestState {
-  const rows = FOREST_ROWS;
-  const cols = FOREST_COLS;
-  // Everything starts as impassable thicket; we carve trails out of it. Thicket is a permanent
-  // maze wall — it can't be cut through, so the carve below must leave every cell reachable.
-  const tiles: ForestTile[][] = [];
-  for (let r = 0; r < rows; r++) {
-    const row: ForestTile[] = [];
-    for (let c = 0; c < cols; c++) {
-      row.push({ kind: 'thicket' });
-    }
-    tiles.push(row);
-  }
+  const band = Math.floor((stage - 1) / FOREST_SCALE_BAND);
+  // Ensure dimensions are odd so the lattice carve works cleanly.
+  const rawRows = Math.min(FOREST_MAX_ROWS, FOREST_BASE_ROWS + band * FOREST_SCALE_PER_BAND);
+  const rawCols = Math.min(FOREST_MAX_COLS, FOREST_BASE_COLS + band * FOREST_SCALE_PER_BAND);
+  const rows = rawRows % 2 === 0 ? rawRows + 1 : rawRows;
+  const cols = rawCols % 2 === 0 ? rawCols + 1 : rawCols;
 
-  // Odd cells are "rooms"; even cells between them are walls knocked out by the carve.
+  // Start with all impassable thicket.
+  const tiles: ForestTile[][] = Array.from({ length: rows }, () =>
+    Array.from({ length: cols }, () => ({ kind: 'thicket' as ForestTileKind })),
+  );
+
+  // Recursive-backtracker maze carve — odd cells are "rooms", even cells between
+  // them are passages knocked open by the carve.
   const oddCols: number[] = [];
   for (let c = 1; c < cols - 1; c += 2) oddCols.push(c);
   const startC = oddCols[Math.floor(rng() * oddCols.length)];
@@ -214,8 +345,8 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
   const carve = (r: number, c: number) => {
     visited.add(`${r},${c}`);
     tiles[r][c] = { kind: 'trail' };
-    const steps: Array<[number, number]> = [[-2, 0], [2, 0], [0, -2], [0, 2]];
-    // Fisher–Yates shuffle so the maze is different every run.
+    const steps: [number, number][] = [[-2, 0], [2, 0], [0, -2], [0, 2]];
+    // Fisher–Yates shuffle for a unique maze each run.
     for (let i = steps.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
       [steps[i], steps[j]] = [steps[j], steps[i]];
@@ -224,27 +355,19 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
       const nr = r + dr;
       const nc = c + dc;
       if (inLattice(nr, nc) && !visited.has(`${nr},${nc}`)) {
-        tiles[r + dr / 2][c + dc / 2] = { kind: 'trail' }; // knock the wall between
+        tiles[r + dr / 2][c + dc / 2] = { kind: 'trail' };
         carve(nr, nc);
       }
     }
   };
   carve(1, startC);
 
-  // Entrance gap in the top edge (player spawns here) and a tree-line exit in the bottom edge.
+  // Entrance gap at top and tree-line exit at bottom.
   tiles[0][startC] = { kind: 'entrance' };
   const exitC = oddCols[Math.floor(rng() * oddCols.length)];
   tiles[rows - 1][exitC] = { kind: 'treeline' };
 
-  // Helpers over the carved maze.
-  const roomCells: Array<[number, number]> = [];
-  for (let r = 1; r < rows - 1; r += 2) {
-    for (let c = 1; c < cols - 1; c += 2) {
-      if (tiles[r][c].kind === 'trail') roomCells.push([r, c]);
-    }
-  }
-  const degree = (r: number, c: number) =>
-    [[-1, 0], [1, 0], [0, -1], [0, 1]].filter(([dr, dc]) => isWalkable(tiles[r + dr]?.[c + dc])).length;
+  // --- Scatter nodes, clearing rooms, choppable trees, and beasts ---
   const shuffle = <T,>(arr: T[]): T[] => {
     for (let i = arr.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
@@ -252,52 +375,172 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
     }
     return arr;
   };
+  const roomCells: [number, number][] = [];
+  for (let r = 1; r < rows - 1; r += 2) {
+    for (let c = 1; c < cols - 1; c += 2) {
+      if (tiles[r][c].kind === 'trail') roomCells.push([r, c]);
+    }
+  }
+  const cellDegree = (r: number, c: number) =>
+    [[r-1,c],[r+1,c],[r,c-1],[r,c+1]].filter(([nr, nc]) => isWalkable(tiles[nr]?.[nc])).length;
 
-  // Dead-end spurs (degree 1) are where resource nodes live — placing a node there never
-  // blocks the through-path. Keep the entrance/exit spurs clear.
+  // Dead-ends (degree 1) are ideal node placement.
   const deadEnds = shuffle(
     roomCells.filter(
       ([r, c]) =>
-        degree(r, c) === 1 && !(r === 1 && c === startC) && !(r === rows - 2 && c === exitC),
+        cellDegree(r, c) === 1 &&
+        !(r === 1 && c === startC) &&
+        !(r === rows - 2 && c === exitC),
     ),
   );
   let di = 0;
-  // One spring (stamina refill) when there's room for it.
-  if (di < deadEnds.length) {
+
+  // Place springs — kept deliberately sparse. The forest spends far less stamina
+  // than the mine, so a handful of refill springs is plenty; the freed dead-ends
+  // go to ordinary resource nodes below.
+  const trailCount = tiles.flat().filter((t) => t.kind === 'trail').length;
+  const springCount = Math.max(1, Math.min(3, Math.floor(trailCount / 90)));
+  for (let i = 0; i < springCount && di < deadEnds.length; i++) {
     const [r, c] = deadEnds[di++];
-    tiles[r][c] = { kind: 'node', nodeKey: 'spring' };
+    const nodeKey = stage >= 4 && i === 0 ? 'ancient_spring' : 'spring';
+    tiles[r][c] = { kind: 'node', nodeKey };
   }
-  // Weighted gatherables on the remaining dead-ends.
-  const nodeCount = Math.min(deadEnds.length - di, 4 + stage);
-  for (let i = 0; i < nodeCount; i++) {
+
+  // Weighted gatherables on the remaining dead-ends — the forest's main loot.
+  const nodeCount = Math.min(deadEnds.length - di, 12 + 2 * stage);
+  for (let i = 0; i < nodeCount && di < deadEnds.length; i++) {
     const [r, c] = deadEnds[di++];
     tiles[r][c] = { kind: 'node', nodeKey: weightedNode(stage, rng).key };
   }
 
-  // A couple of open clearings (wider sight, safe breathing room) on through-corridors.
-  const corridors = shuffle(roomCells.filter(([r, c]) => degree(r, c) >= 2 && !(r === 1 && c === startC)));
-  for (let i = 0; i < Math.min(2, corridors.length); i++) {
-    const [r, c] = corridors[i];
-    tiles[r][c] = { kind: 'clearing' };
+  // --- Clearing loot-rooms: 3×3 open pockets carved through thicket ---
+  // Each room is centred on a through-corridor lattice cell and contains a cluster
+  // of nodes, dormant beasts, and corner trees.  The centre is already a trail cell
+  // so the room is always connected to the maze.
+  const eligibleBeasts = Object.values(FOREST_BEASTS).filter((b) => b.stageMin <= stage);
+  const beasts: ForestBeast[] = [];
+  let beastId = 0;
+
+  const corridors = shuffle(
+    roomCells.filter(([r, c]) => cellDegree(r, c) >= 2 && !(r === 1 && c === startC)),
+  );
+  const treeDur = stage <= 2 ? 1 : stage <= 6 ? 2 : 3;
+  const roomCount = Math.min(2 + Math.floor(stage / 2), corridors.length);
+  // Track cells occupied by rooms so beasts placed later can avoid them.
+  const roomCellSet = new Set<string>();
+
+  for (let ri = 0; ri < roomCount; ri++) {
+    const [cr, cc] = corridors[ri];
+    // Carve the 3×3 block — only convert thicket; don't overwrite trail/node.
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        const nr = cr + dr;
+        const nc = cc + dc;
+        if (nr <= 0 || nr >= rows - 1 || nc <= 0 || nc >= cols - 1) continue;
+        roomCellSet.add(`${nr},${nc}`);
+        if (tiles[nr][nc].kind === 'thicket') {
+          tiles[nr][nc] = { kind: 'clearing' };
+        }
+      }
+    }
+    // Place the centre tile as clearing (corridor cells may have been trail).
+    tiles[cr][cc] = { kind: 'clearing' };
+
+    // Nodes on a random selection of non-corner clearing cells (excluding centre).
+    const roomEdge: [number, number][] = [
+      [cr-1, cc], [cr+1, cc], [cr, cc-1], [cr, cc+1],
+    ];
+    shuffle(roomEdge);
+    const roomNodeCount = 2 + Math.floor(rng() * 3); // 2-4 nodes
+    let nodesPlaced = 0;
+    for (const [nr, nc] of roomEdge) {
+      if (nodesPlaced >= roomNodeCount) break;
+      if (nr <= 0 || nr >= rows - 1 || nc <= 0 || nc >= cols - 1) continue;
+      if (tiles[nr][nc].kind === 'clearing') {
+        tiles[nr][nc] = { kind: 'node', nodeKey: weightedNode(stage, rng).key };
+        nodesPlaced++;
+      }
+    }
+
+    // Beasts on remaining open clearing cells (1-3).
+    if (eligibleBeasts.length > 0) {
+      const openRoom: [number, number][] = [];
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          const nr = cr + dr;
+          const nc = cc + dc;
+          if (tiles[nr]?.[nc]?.kind === 'clearing') openRoom.push([nr, nc]);
+        }
+      }
+      shuffle(openRoom);
+      const roomBeastCount = 1 + Math.floor(rng() * 3); // 1-3 beasts
+      for (let bi = 0; bi < roomBeastCount && bi < openRoom.length; bi++) {
+        const [br, bc] = openRoom[bi];
+        const def = eligibleBeasts[Math.floor(rng() * eligibleBeasts.length)];
+        beasts.push({
+          id: `rb${stage}-${beastId++}`, key: def.key,
+          r: br, c: bc, hp: def.hp, maxHp: def.hp,
+          readyAtMs: 0, asleep: true,
+        });
+      }
+    }
+
+    // Corner trees — only corners, so chopping them opens a dead-end pocket into the room.
+    const corners: [number, number][] = [
+      [cr-1, cc-1], [cr-1, cc+1], [cr+1, cc-1], [cr+1, cc+1],
+    ];
+    shuffle(corners);
+    const roomTreeCount = 1 + Math.floor(rng() * 2); // 1-2 corner trees
+    let treesPlaced = 0;
+    for (const [tr, tc] of corners) {
+      if (treesPlaced >= roomTreeCount) break;
+      if (tr <= 0 || tr >= rows - 1 || tc <= 0 || tc >= cols - 1) continue;
+      // Only place if still clearing (corner opened by the 3×3 carve).
+      if (tiles[tr][tc].kind === 'clearing') {
+        tiles[tr][tc] = { kind: 'tree', durability: treeDur, maxDurability: treeDur };
+        treesPlaced++;
+      }
+    }
   }
 
-  // Dormant beasts on trail cells away from the entrance.
-  const trailCells: Array<[number, number]> = [];
+  // --- Choppable trees on degree-1 wall cells (routing-safe) ---
+  // A thicket cell with exactly one walkable neighbour can be chopped open to a
+  // dead-end pocket without ever creating a new corridor.
+  const wallCells: [number, number][] = [];
   for (let r = 1; r < rows - 1; r++) {
     for (let c = 1; c < cols - 1; c++) {
-      if (tiles[r][c].kind === 'trail' && Math.abs(r - 1) + Math.abs(c - startC) > 3) {
+      if (tiles[r][c].kind !== 'thicket') continue;
+      const walkableNeighbours = [[r-1,c],[r+1,c],[r,c-1],[r,c+1]]
+        .filter(([nr, nc]) => isWalkable(tiles[nr]?.[nc])).length;
+      if (walkableNeighbours === 1) wallCells.push([r, c]);
+    }
+  }
+  shuffle(wallCells);
+  const treeCount = Math.min(wallCells.length, 14 + 3 * stage);
+  for (let i = 0; i < treeCount; i++) {
+    const [r, c] = wallCells[i];
+    tiles[r][c] = { kind: 'tree', durability: treeDur, maxDurability: treeDur };
+  }
+
+  // --- Place wandering beasts on trail cells away from the entrance ---
+  const trailCells: [number, number][] = [];
+  for (let r = 1; r < rows - 1; r++) {
+    for (let c = 1; c < cols - 1; c++) {
+      if (tiles[r][c].kind === 'trail' && Math.abs(r - 1) + Math.abs(c - startC) > 4) {
         trailCells.push([r, c]);
       }
     }
   }
   shuffle(trailCells);
-  const eligibleBeasts = Object.values(FOREST_BEASTS).filter((b) => b.stageMin <= stage);
-  const beastCount = eligibleBeasts.length === 0 ? 0 : Math.min(6, 2 + Math.floor(stage / 2));
-  const beasts: ForestBeast[] = [];
-  for (let i = 0; i < beastCount && i < trailCells.length; i++) {
+  const wanderCount = eligibleBeasts.length === 0 ? 0 : Math.min(16, 5 + stage);
+  for (let i = 0; i < wanderCount && i < trailCells.length; i++) {
     const [r, c] = trailCells[i];
     const def = eligibleBeasts[Math.floor(rng() * eligibleBeasts.length)];
-    beasts.push({ id: `b${stage}-${i}`, key: def.key, r, c, hp: def.hp, maxHp: def.hp, readyAtMs: 0, asleep: true });
+    beasts.push({
+      id: `b${stage}-${beastId++}`, key: def.key,
+      r, c, hp: def.hp, maxHp: def.hp,
+      readyAtMs: 0, asleep: true,
+    });
   }
 
   const seen: boolean[][] = Array.from({ length: rows }, () => new Array(cols).fill(false));
@@ -313,25 +556,69 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
     maxHp: snapshot.maxHp,
     sta: snapshot.maxSta,
     maxSta: snapshot.maxSta,
+    mp: snapshot.maxMp,
+    maxMp: snapshot.maxMp,
+    staNextRegenMs: STA_REGEN_MS,
+    mpNextRegenMs: MP_REGEN_MS,
     meleePower: snapshot.meleePower,
+    rangedPower: snapshot.rangedPower,
+    damageSpell: snapshot.damageSpell,
+    supportSpell: snapshot.supportSpell,
+    illusionPower: snapshot.illusionPower,
+    defense: snapshot.defense,
+    ward: snapshot.ward,
+    weapon: snapshot.weapon,
+    knownSpells: snapshot.knownSpells,
+    chopPower: snapshot.chopPower,
     beasts,
     haul: {},
     status: 'active',
     lastHitAtMs: -FOREST_IFRAME_MS,
     deepest: stage,
     killsThisStage: 0,
+    runes: [],
+    ringOfFire: null,
+    ringNextHitMs: {},
+    playerStatuses: [],
+    lastSpellMs: -SPELL_CD_MS,
+    nextRuneId: 1,
   });
 }
 
-/** Push on through the tree line into a deeper, richer stage — carries HP + haul, refills stamina. */
+/** Push on through the tree line into a deeper, richer stage — carries HP + haul, refills sta/mp partially. */
 export function advance(state: ForestState, rng: RNG): ForestState {
   if (!canAdvance(state) || state.status !== 'active') return state;
-  const snap: ForestSnapshot = { meleePower: state.meleePower, maxHp: state.maxHp, maxSta: state.maxSta };
+  const snap: ForestSnapshot = {
+    meleePower: state.meleePower,
+    rangedPower: state.rangedPower,
+    damageSpell: state.damageSpell,
+    supportSpell: state.supportSpell,
+    illusionPower: state.illusionPower,
+    defense: state.defense,
+    ward: state.ward,
+    maxHp: state.maxHp,
+    maxSta: state.maxSta,
+    maxMp: state.maxMp,
+    weapon: state.weapon,
+    knownSpells: state.knownSpells,
+    chopPower: state.chopPower,
+  };
   const next = generateForest(state.stage + 1, snap, rng);
-  return { ...next, hp: state.hp, sta: state.maxSta, haul: state.haul, deepest: Math.max(state.deepest, state.stage + 1) };
+  const staRefill = Math.round(state.maxSta * 0.25);
+  const mpRefill = Math.round(state.maxMp * 0.25);
+  return {
+    ...next,
+    hp: state.hp,
+    sta: Math.min(state.maxSta, state.sta + staRefill),
+    mp: Math.min(state.maxMp, state.mp + mpRefill),
+    haul: state.haul,
+    deepest: Math.max(state.deepest, state.stage + 1),
+  };
 }
 
-// --- player actions ----------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Player movement
+// ---------------------------------------------------------------------------
 
 /** Turn to face `dir`, step into that cell if walkable and unoccupied, and re-light the fog. */
 export function tryMove(state: ForestState, dir: Dir): ForestState {
@@ -344,51 +631,79 @@ export function tryMove(state: ForestState, dir: Dir): ForestState {
   return reveal({ ...state, player: { r, c, facing: dir } });
 }
 
+// ---------------------------------------------------------------------------
+// Context-sensitive act: beast → weapon attack, node → gather
+// ---------------------------------------------------------------------------
+
 /**
- * Act on the faced cell. Context-sensitive (one button):
- *   • beast → slash it (costs stamina; drops leather + gold on death)
- *   • node  → gather it instantly (free; stamina node refills instead)
- * Thicket is a permanent maze wall and can't be cut.
+ * Act on the faced cell — context-sensitive (one button):
+ *   • beast → weapon attack (costs stamina)
+ *   • node  → gather instantly (free; stamina nodes refill)
  */
 export function act(state: ForestState, rng: RNG): ForestState {
   if (state.status !== 'active') return state;
   const { r, c } = facedCell(state);
 
-  // A beast in the way → slash it.
+  // --- Weapon attack vs a beast ---
   const beast = beastAt(state, r, c);
   if (beast) {
-    if (state.sta <= 0) return state;
-    const hp = beast.hp - state.meleePower;
-    if (hp <= 0) {
-      const def = FOREST_BEASTS[beast.key];
-      const qty = Math.max(1, Math.round(beast.maxHp / 10) + state.killsThisStage);
-      const gold = def ? randInt(def.bounty[0], def.bounty[1], rng) : 0;
-      const drop: Reward = mergeReward({ materials: { leather: qty } }, gold > 0 ? { gold } : {});
-      return {
-        ...state,
-        sta: Math.min(state.maxSta, state.sta - SLASH_STA_COST + 2),
-        beasts: state.beasts.filter((b) => b.id !== beast.id),
-        haul: mergeReward(state.haul, drop),
-        killsThisStage: state.killsThisStage + 1,
-      };
+    if (state.sta < 1) return state;
+    const def = FOREST_BEASTS[beast.key];
+    const isRanged = state.weapon.attackStat === 'DX';
+    const power = isRanged ? state.rangedPower : state.meleePower;
+    const full = state.sta >= (state.weapon.staminaCost ?? SLASH_STA_COST);
+    const { dealt: dmg } = attackRoll(
+      power,
+      state.weapon.bonus ?? 0,
+      state.weapon.attackStat,
+      (def?.weakTo ?? []) as StatId[],
+      (def?.resistTo ?? []) as StatId[],
+      full,
+      def?.defense ?? 0,
+      rng,
+    );
+    const staCost = state.weapon.staminaCost ?? SLASH_STA_COST;
+    const newHp = beast.hp - dmg;
+    if (newHp <= 0) {
+      return killBeast({ ...state, sta: Math.max(0, state.sta - staCost) }, beast, rng);
     }
     return {
       ...state,
-      sta: state.sta - SLASH_STA_COST,
-      beasts: state.beasts.map((b) => (b.id === beast.id ? { ...b, hp } : b)),
+      sta: Math.max(0, state.sta - staCost),
+      beasts: state.beasts.map((b) => (b.id === beast.id ? { ...b, hp: newHp } : b)),
     };
   }
 
   const tile = tileAt(state, r, c);
   if (!tile) return state;
 
-  // Gather a node — instant, free, single action.
+  // --- Chop a tree (costs stamina, yields wood) ---
+  if (tile.kind === 'tree') {
+    if (state.sta <= 0) return state;
+    const chopPower = state.chopPower > 0 ? state.chopPower : 1;
+    const maxDur = tile.maxDurability ?? 1;
+    const dur = (tile.durability ?? 1) - chopPower;
+    const tiles = state.tiles.map((row) => row.slice());
+    let haul = state.haul;
+    const newSta = Math.max(0, state.sta - CHOP_STA_COST);
+    if (dur <= 0) {
+      // Tree felled — opens a dead-end pocket (routing-safe by construction).
+      tiles[r][c] = { kind: 'trail' };
+      const woodAmt = randInt(maxDur, Math.min(3, maxDur + 1), rng);
+      haul = mergeReward(haul, { materials: { wood: woodAmt } });
+    } else {
+      tiles[r][c] = { ...tile, durability: dur };
+    }
+    return { ...state, sta: newSta, tiles, haul };
+  }
+
+  // --- Gather a node instantly ---
   if (tile.kind === 'node' && tile.nodeKey) {
     const tiles = state.tiles.map((row) => row.slice());
     tiles[r][c] = { kind: 'trail' };
-    const def = FOREST_NODES[tile.nodeKey];
-    if (def?.grants.kind === 'stamina') {
-      const restore = randInt(def.grants.amount[0], def.grants.amount[1], rng);
+    const nodeDef = FOREST_NODES[tile.nodeKey];
+    if (nodeDef?.grants.kind === 'stamina') {
+      const restore = randInt(nodeDef.grants.amount[0], nodeDef.grants.amount[1], rng);
       return { ...state, tiles, sta: Math.min(state.maxSta, state.sta + restore) };
     }
     return { ...state, tiles, haul: mergeReward(state.haul, nodeYield(tile.nodeKey, rng)) };
@@ -397,80 +712,351 @@ export function act(state: ForestState, rng: RNG): ForestState {
   return state;
 }
 
-// --- beasts ------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Spell casting (mirrors mining.ts castSpell)
+// ---------------------------------------------------------------------------
 
-const adjacent = (a: { r: number; c: number }, b: { r: number; c: number }) =>
-  Math.abs(a.r - b.r) + Math.abs(a.c - b.c) === 1;
+export function castSpell(state: ForestState, spellKey: string, nowMs: number, rng: RNG): ForestState {
+  if (state.status !== 'active') return state;
+  if (nowMs - state.lastSpellMs < SPELL_CD_MS) return state;
+
+  const spell = getSpell(spellKey);
+  if (!spell) return state;
+  if (state.mp < spell.mpCost) return state;
+
+  let s = { ...state, mp: state.mp - spell.mpCost, lastSpellMs: nowMs };
+
+  const schoolStat = SCHOOL_STAT[spell.school];
+
+  // ---------- Rune placement ----------
+  if (spell.mechanic === 'rune-fire' || spell.mechanic === 'rune-ice' || spell.mechanic === 'rune-poison') {
+    const kind = spell.mechanic.slice(5) as 'fire' | 'ice' | 'poison';
+    const { r, c } = facedCell(s);
+    const tile = tileAt(s, r, c);
+    if (tile && isWalkable(tile)) {
+      const { dealt } = spellDamageRoll(spell.power, s.damageSpell, schoolStat, [], [], 0, rng);
+      const rune: CrawlRune = { id: s.nextRuneId, r, c, kind, power: dealt, expiresAtMs: nowMs + 30000 };
+      s = { ...s, runes: [...s.runes, rune], nextRuneId: s.nextRuneId + 1 };
+    }
+    return s;
+  }
+
+  // ---------- Ring of fire ----------
+  if (spell.mechanic === 'ring-of-fire') {
+    const dmg = Math.max(2, Math.round(spell.power + s.damageSpell * 0.5));
+    return { ...s, ringOfFire: { expiresAtMs: nowMs + RING_DURATION_MS, dmg }, ringNextHitMs: {} };
+  }
+
+  // ---------- Teleport ----------
+  if (spell.mechanic === 'teleport') {
+    const { r: pr, c: pc } = s.player;
+    const candidates: Array<{ r: number; c: number }> = [];
+    for (let row = 0; row < s.rows; row++) {
+      for (let col = 0; col < s.cols; col++) {
+        const d = manhattan({ r: row, c: col }, { r: pr, c: pc });
+        if (d >= 3 && d <= 6 && isWalkable(tileAt(s, row, col)) && !beastAt(s, row, col)) {
+          candidates.push({ r: row, c: col });
+        }
+      }
+    }
+    if (candidates.length > 0) {
+      const dest = candidates[Math.floor(rng() * candidates.length)];
+      s = { ...s, player: { ...s.player, r: dest.r, c: dest.c } };
+    }
+    return reveal(s);
+  }
+
+  // ---------- Damage spell: hit nearest beast ----------
+  if (spell.school === 'damage') {
+    const target = nearestBeast(s);
+    if (target) {
+      const def = FOREST_BEASTS[target.key];
+      const { dealt } = spellDamageRoll(
+        spell.power, s.damageSpell, schoolStat,
+        (def?.weakTo ?? []) as StatId[],
+        (def?.resistTo ?? []) as StatId[],
+        def?.defense ?? 0, rng,
+      );
+      const newHp = target.hp - dealt;
+      if (newHp <= 0) {
+        s = killBeast(s, target, rng);
+      } else {
+        let updatedBeasts = s.beasts.map((b) => (b.id === target.id ? { ...b, hp: newHp } : b));
+        if (spell.status) {
+          const { key, magnitude, turns } = spell.status;
+          const durationMs = turns * DOT_TICK_MS;
+          if (key === 'burn' || key === 'poison') {
+            updatedBeasts = updatedBeasts.map((b) =>
+              b.id === target.id
+                ? { ...b, poisonDmg: Math.max(b.poisonDmg ?? 0, magnitude), poisonNextTickMs: nowMs + DOT_TICK_MS, poisonExpiresMs: nowMs + durationMs }
+                : b
+            );
+          } else if (key === 'freeze') {
+            updatedBeasts = updatedBeasts.map((b) =>
+              b.id === target.id ? { ...b, frozenUntilMs: nowMs + FREEZE_DURATION_MS } : b
+            );
+          }
+        }
+        s = { ...s, beasts: updatedBeasts };
+      }
+    }
+    return s;
+  }
+
+  // ---------- Support spell: heal / bless ----------
+  if (spell.school === 'support') {
+    if (spell.power > 0) {
+      const heal = spellHealAmount(spell.power, s.supportSpell);
+      s = { ...s, hp: Math.min(s.maxHp, s.hp + heal) };
+    }
+    if (spell.status) {
+      const { key, magnitude, turns } = spell.status;
+      s = {
+        ...s,
+        playerStatuses: applyStatus(
+          s.playerStatuses,
+          { key: key as CrawlStatusEffect['key'], magnitude, durationMs: turns * DOT_TICK_MS },
+          nowMs,
+        ),
+      };
+    }
+    return s;
+  }
+
+  // ---------- Illusion spell: debuff nearest beast ----------
+  if (spell.school === 'illusion' && spell.status) {
+    const target = nearestBeast(s);
+    if (target) {
+      const { key, magnitude, turns } = spell.status;
+      const durationMs = (turns + Math.floor(s.illusionPower / 8)) * DOT_TICK_MS;
+      if (key === 'freeze') {
+        s = {
+          ...s,
+          beasts: s.beasts.map((b) =>
+            b.id === target.id ? { ...b, frozenUntilMs: nowMs + Math.max(FREEZE_DURATION_MS, durationMs) } : b
+          ),
+        };
+      } else if (key === 'poison') {
+        s = {
+          ...s,
+          beasts: s.beasts.map((b) =>
+            b.id === target.id
+              ? { ...b, poisonDmg: Math.max(b.poisonDmg ?? 0, magnitude), poisonNextTickMs: nowMs + DOT_TICK_MS, poisonExpiresMs: nowMs + durationMs }
+              : b
+          ),
+        };
+      }
+    }
+    return s;
+  }
+
+  return s;
+}
+
+// ---------------------------------------------------------------------------
+// Rune triggers
+// ---------------------------------------------------------------------------
+
+function triggerRunes(state: ForestState, nowMs: number, rng: RNG): ForestState {
+  if (state.runes.length === 0) return state;
+  const triggered = new Set<number>();
+  let s = state;
+
+  const fireRune = (rune: CrawlRune, beastId: string | null) => {
+    triggered.add(rune.id);
+    if (beastId === null) {
+      if (nowMs - s.lastHitAtMs >= FOREST_IFRAME_MS) {
+        const dealt = Math.max(1, Math.round(rune.power * 0.5) - s.ward);
+        s = { ...s, hp: Math.max(0, s.hp - dealt), lastHitAtMs: nowMs };
+        if (s.hp <= 0) s = { ...s, status: 'ended' };
+      }
+    } else {
+      const beast = s.beasts.find((b) => b.id === beastId);
+      if (!beast) return;
+      const newHp = beast.hp - rune.power;
+      if (newHp <= 0) {
+        s = killBeast(s, beast, rng);
+      } else {
+        let updated = s.beasts.map((b) => (b.id === beastId ? { ...b, hp: newHp } : b));
+        if (rune.kind === 'fire') {
+          updated = updated.map((b) =>
+            b.id === beastId
+              ? { ...b, poisonDmg: Math.max(b.poisonDmg ?? 0, Math.round(rune.power * 0.3)), poisonNextTickMs: nowMs + DOT_TICK_MS, poisonExpiresMs: nowMs + DOT_TICK_MS * 3 }
+              : b
+          );
+        } else if (rune.kind === 'ice') {
+          updated = updated.map((b) =>
+            b.id === beastId ? { ...b, frozenUntilMs: nowMs + FREEZE_DURATION_MS } : b
+          );
+        } else if (rune.kind === 'poison') {
+          updated = updated.map((b) =>
+            b.id === beastId
+              ? { ...b, poisonDmg: Math.max(b.poisonDmg ?? 0, Math.round(rune.power * 0.25)), poisonNextTickMs: nowMs + DOT_TICK_MS, poisonExpiresMs: nowMs + DOT_TICK_MS * 4 }
+              : b
+          );
+        }
+        s = { ...s, beasts: updated };
+      }
+    }
+  };
+
+  // Check if player stepped on a rune
+  for (const rune of s.runes) {
+    if (!triggered.has(rune.id) && rune.r === s.player.r && rune.c === s.player.c) {
+      fireRune(rune, null);
+    }
+  }
+  // Check if any beast stepped on a rune
+  for (const rune of s.runes) {
+    for (const beast of s.beasts) {
+      if (!triggered.has(rune.id) && beast.r === rune.r && beast.c === rune.c) {
+        fireRune(rune, beast.id);
+      }
+    }
+  }
+  if (triggered.size > 0) {
+    s = { ...s, runes: s.runes.filter((r) => !triggered.has(r.id)) };
+  }
+  return s;
+}
+
+// ---------------------------------------------------------------------------
+// Beast ticking: wake, BFS move, ring-of-fire, contact damage, DoT ticks, regen
+// ---------------------------------------------------------------------------
 
 /**
- * Wake any dormant beast within its aggroRadius (the ambush), step every awake, off-cooldown
- * beast one cell toward the player, then apply contact damage from an adjacent one (once per
- * i-frame window). `nowMs` is the loop's clock. Ends the run when HP hits 0.
+ * Advance the beast clock by one tick.  Also advances passive sta/mp regen,
+ * DoT ticks on beasts, ring-of-fire, rune triggers, and contact damage.
  */
-export function stepBeasts(state: ForestState, nowMs: number, _rng: RNG): ForestState {
+export function stepBeasts(state: ForestState, nowMs: number, rng: RNG): ForestState {
   if (state.status !== 'active') return state;
-  let changed = false;
+  let s = state;
 
-  // Wake pass — an ambush triggers the instant the player strays too close.
-  let beasts = state.beasts.map((b) => {
-    if (!b.asleep) return b;
-    const def = FOREST_BEASTS[b.key];
-    const dist = Math.abs(b.r - state.player.r) + Math.abs(b.c - state.player.c);
-    if (def && dist <= def.aggroRadius) {
-      changed = true;
-      return { ...b, asleep: false, readyAtMs: nowMs };
+  // ---------- Passive regen ----------
+  if (nowMs >= s.staNextRegenMs && s.sta < s.maxSta) {
+    s = { ...s, sta: Math.min(s.maxSta, s.sta + 1), staNextRegenMs: nowMs + STA_REGEN_MS };
+  }
+  if (nowMs >= s.mpNextRegenMs && s.mp < s.maxMp) {
+    s = { ...s, mp: Math.min(s.maxMp, s.mp + 1), mpNextRegenMs: nowMs + MP_REGEN_MS };
+  }
+
+  // ---------- Player status pruning ----------
+  s = { ...s, playerStatuses: pruneStatuses(s.playerStatuses, nowMs) };
+
+  // ---------- Ring of fire ----------
+  if (s.ringOfFire && nowMs < s.ringOfFire.expiresAtMs) {
+    const ring = s.ringOfFire;
+    let updatedBeasts = s.beasts;
+    const nextHitMs = { ...s.ringNextHitMs };
+    for (const beast of s.beasts) {
+      if (!adjacent(beast, s.player)) continue;
+      const lastHit = nextHitMs[beast.id] ?? 0;
+      if (nowMs < lastHit) continue;
+      nextHitMs[beast.id] = nowMs + RING_HIT_CD_MS;
+      const def = FOREST_BEASTS[beast.key];
+      const dealt = Math.max(1, ring.dmg - (def?.defense ?? 0));
+      const newHp = beast.hp - dealt;
+      if (newHp <= 0) {
+        s = killBeast({ ...s, beasts: updatedBeasts, ringNextHitMs: nextHitMs }, beast, rng);
+        updatedBeasts = s.beasts;
+      } else {
+        updatedBeasts = updatedBeasts.map((b) => (b.id === beast.id ? { ...b, hp: newHp } : b));
+      }
     }
-    return b;
-  });
+    s = { ...s, beasts: updatedBeasts, ringNextHitMs: nextHitMs };
+  } else if (s.ringOfFire && nowMs >= s.ringOfFire.expiresAtMs) {
+    s = { ...s, ringOfFire: null };
+  }
 
-  // Movement pass — only awake beasts give chase.
-  const occupied = new Set(beasts.map((b) => `${b.r},${b.c}`));
-  beasts = beasts.map((b) => {
+  // ---------- DoT ticks ----------
+  let updatedBeasts = s.beasts;
+  for (const beast of updatedBeasts) {
+    if (!beast.poisonDmg || !beast.poisonNextTickMs) continue;
+    if (nowMs < beast.poisonNextTickMs) continue;
+    if (beast.poisonExpiresMs && nowMs >= beast.poisonExpiresMs) continue;
+    const def = FOREST_BEASTS[beast.key];
+    const dealt = Math.max(1, beast.poisonDmg - (def?.defense ?? 0));
+    const newHp = beast.hp - dealt;
+    if (newHp <= 0) {
+      s = killBeast({ ...s, beasts: updatedBeasts }, beast, rng);
+      updatedBeasts = s.beasts;
+    } else {
+      updatedBeasts = updatedBeasts.map((b) =>
+        b.id === beast.id ? { ...b, hp: newHp, poisonNextTickMs: nowMs + DOT_TICK_MS } : b
+      );
+    }
+  }
+  s = { ...s, beasts: updatedBeasts };
+
+  // ---------- Wake pass (ambush trigger) ----------
+  s = {
+    ...s,
+    beasts: s.beasts.map((b) => {
+      if (!b.asleep) return b;
+      const def = FOREST_BEASTS[b.key];
+      const dist = manhattan(b, s.player);
+      if (def && dist <= def.aggroRadius) {
+        return { ...b, asleep: false, readyAtMs: nowMs };
+      }
+      return b;
+    }),
+  };
+
+  // ---------- BFS movement pass ----------
+  const field = floodField(
+    s.player, s.rows, s.cols,
+    (r, c) => isWalkable(tileAt(s, r, c) as ForestTile | undefined),
+  );
+  const beasts = s.beasts;
+  const newOccupied = new Set<string>(beasts.map((b) => `${b.r},${b.c}`));
+
+  const movedBeasts = beasts.map((b) => {
     const def = FOREST_BEASTS[b.key];
     if (b.asleep || !def || nowMs < b.readyAtMs) return b;
-    const dr = sign(state.player.r - b.r);
-    const dc = sign(state.player.c - b.c);
-    const tries =
-      Math.abs(state.player.r - b.r) >= Math.abs(state.player.c - b.c)
-        ? [[dr, 0], [0, dc]]
-        : [[0, dc], [dr, 0]];
-    for (const [sr, sc] of tries) {
-      if (sr === 0 && sc === 0) continue;
-      const nr = b.r + sr;
-      const nc = b.c + sc;
-      const onPlayer = nr === state.player.r && nc === state.player.c;
-      if (onPlayer || occupied.has(`${nr},${nc}`) || !isWalkable(tileAt(state, nr, nc))) continue;
-      occupied.delete(`${b.r},${b.c}`);
-      occupied.add(`${nr},${nc}`);
-      changed = true;
-      return { ...b, r: nr, c: nc, readyAtMs: nowMs + def.moveCadenceMs };
+    if (b.frozenUntilMs && nowMs < b.frozenUntilMs) return b;
+    // Already adjacent — let the contact phase handle it
+    if (adjacent(b, s.player)) return b;
+    // Build per-beast blocked set: other beasts + player cell
+    const blocked = new Set<string>([`${s.player.r},${s.player.c}`]);
+    for (const other of beasts) {
+      if (other.id !== b.id) blocked.add(`${other.r},${other.c}`);
     }
-    return b; // blocked: stay put (contact i-frames pace its hits)
+    const next = flowStep({ r: b.r, c: b.c }, field, blocked);
+    if (!next) return b;
+    // Skip if step would land on player (contact damage handled below)
+    if (next.r === s.player.r && next.c === s.player.c) return b;
+    newOccupied.delete(`${b.r},${b.c}`);
+    newOccupied.add(`${next.r},${next.c}`);
+    return { ...b, r: next.r, c: next.c, readyAtMs: nowMs + def.moveCadenceMs };
   });
+  s = { ...s, beasts: movedBeasts };
 
-  // Contact damage from an adjacent, awake beast (one hit per i-frame window).
-  let hp = state.hp;
-  let lastHitAtMs = state.lastHitAtMs;
-  if (nowMs - state.lastHitAtMs >= FOREST_IFRAME_MS) {
-    const toucher = beasts.find((b) => !b.asleep && adjacent(b, state.player));
+  // ---------- Rune triggers ----------
+  s = triggerRunes(s, nowMs, rng);
+
+  // ---------- Contact damage ----------
+  if (nowMs - s.lastHitAtMs >= FOREST_IFRAME_MS) {
+    const toucher = s.beasts.find((b) => !b.asleep && adjacent(b, s.player));
     if (toucher) {
       const def = FOREST_BEASTS[toucher.key];
-      hp = Math.max(0, hp - (def?.touchDamage ?? 0));
-      lastHitAtMs = nowMs;
-      changed = true;
+      const rawDmg = def?.touchDamage ?? 0;
+      // Defense (from support-spell bless) mitigates contact damage.
+      const blessedDefense = activeStatus(s.playerStatuses, 'bless', nowMs) ? s.defense : 0;
+      const dealt = Math.max(1, rawDmg - blessedDefense - s.ward);
+      const hp = Math.max(0, s.hp - dealt);
+      s = { ...s, hp, lastHitAtMs: nowMs, status: hp <= 0 ? 'ended' : 'active' };
     }
   }
 
-  if (!changed) return state; // idle tick — let the store skip the re-render
-  return { ...state, beasts, hp, lastHitAtMs, status: hp <= 0 ? 'ended' : 'active' };
+  return s;
 }
 
-// --- death forfeit -----------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Death forfeit
+// ---------------------------------------------------------------------------
 
 /**
  * Split a haul into the portion the player keeps and the portion forfeited on death.
- * `keepFraction` is rounded down, so a fallen forager always loses at least the remainder
- * (e.g. keep 0.5 of 15 gold → keep 7, lose 8). Zero entries are omitted from each side.
  */
 export function splitHaul(haul: Reward, keepFraction: number): { kept: Reward; lost: Reward } {
   const kept: Reward = {};

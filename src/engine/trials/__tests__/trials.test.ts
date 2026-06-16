@@ -1,12 +1,25 @@
 import { describe, it, expect } from 'vitest';
 import { trialReward, scoreToStars, TRIALS, TRIALS_UNLOCK_LEVEL, emptyTrialsClearedOn, emptyBestTrialScore } from '../trials';
-import { lockpickingScore, generatePins, hitAccuracy, LOCK_PINS } from '../lockpicking';
+import {
+  lockpickingScore,
+  generateLocks,
+  allowedTurn,
+  canOpen,
+  breakTime,
+  lockTolerance,
+  NUM_LOCKS,
+  PICK_BUDGET,
+  BASE_TOLERANCE_DEG,
+  BASE_OPEN_TOLERANCE_DEG,
+} from '../lockpicking';
 import {
   chaseScore,
   generateFeatures,
   speedAt,
   updateLead,
   resolveContact,
+  jumpAirTime,
+  maxClearableGap,
   CHASE_TARGET_DISTANCE,
   BASE_SPEED,
   MAX_SPEED,
@@ -16,6 +29,8 @@ import {
   STOMP_LEAD_GAIN,
   GRACE_DISTANCE,
   FEATURE_COUNT,
+  MAX_JUMPS,
+  SLIDE_MS,
 } from '../rooftopChase';
 import { armoryScore, armoryAccuracy, ARMORY_LOCKS, SWEET_ZONE_START } from '../armoryBreak';
 import { marchStep, marchScore, generateTerrain, MARCH_TILES } from '../longMarch';
@@ -114,40 +129,102 @@ describe('emptyBestTrialScore', () => {
 // ── Lockpicking ────────────────────────────────────────────────────────────────
 
 describe('lockpicking', () => {
-  it('generatePins returns LOCK_PINS pins with valid zones', () => {
-    const pins = generatePins(seededRng());
-    expect(pins).toHaveLength(LOCK_PINS);
-    for (const p of pins) {
-      expect(p.zoneStart).toBeGreaterThanOrEqual(0);
-      expect(p.zoneStart + p.zoneWidth).toBeLessThanOrEqual(1.001);
+  it('generateLocks returns NUM_LOCKS configs with sweet spots inside [0,180]', () => {
+    const locks = generateLocks(seededRng(), 1);
+    expect(locks).toHaveLength(NUM_LOCKS);
+    for (const l of locks) {
+      expect(l.sweetSpotDeg).toBeGreaterThanOrEqual(0);
+      expect(l.sweetSpotDeg).toBeLessThanOrEqual(180);
+      expect(l.toleranceDeg).toBeGreaterThan(0);
+      expect(l.openToleranceDeg).toBeGreaterThan(0);
+      expect(l.openToleranceDeg).toBeLessThanOrEqual(l.toleranceDeg);
     }
   });
 
-  it('hitAccuracy is 1 at zone center', () => {
-    const acc = hitAccuracy(0.5, 0.4, 0.2); // center = 0.5, zone [0.4, 0.6]
-    expect(acc).toBeCloseTo(1, 5);
+  it('locks have narrowing tolerance across difficulty progression', () => {
+    const locks = generateLocks(seededRng(), 1);
+    expect(locks[0].toleranceDeg).toBeGreaterThan(locks[1].toleranceDeg);
+    expect(locks[1].toleranceDeg).toBeGreaterThan(locks[2].toleranceDeg);
   });
 
-  it('hitAccuracy is 0 outside the zone', () => {
-    expect(hitAccuracy(0.1, 0.4, 0.2)).toBe(0);
-    expect(hitAccuracy(0.9, 0.4, 0.2)).toBe(0);
+  it('lockTolerance widens with level', () => {
+    const low = lockTolerance(0, 1);
+    const high = lockTolerance(0, 10);
+    expect(high.toleranceDeg).toBeGreaterThan(low.toleranceDeg);
+    expect(high.openToleranceDeg).toBeGreaterThan(low.openToleranceDeg);
   });
 
-  it('lockpickingScore divides by total pins, not hits', () => {
-    // 2 perfect hits, 1 miss
-    expect(lockpickingScore([1, 1, 0])).toBeCloseTo(2 / LOCK_PINS, 5);
+  it('lockTolerance base matches BASE_TOLERANCE_DEG at level 1', () => {
+    const t = lockTolerance(0, 1);
+    expect(t.toleranceDeg).toBeCloseTo(BASE_TOLERANCE_DEG[0], 5);
+    expect(t.openToleranceDeg).toBeCloseTo(BASE_OPEN_TOLERANCE_DEG[0], 5);
   });
 
-  it('all perfect hits = 1.0', () => {
-    expect(lockpickingScore([1, 1, 1])).toBe(1);
+  it('allowedTurn is 1 exactly at the sweet spot', () => {
+    const lock = { sweetSpotDeg: 90, toleranceDeg: 20, openToleranceDeg: 6 };
+    expect(allowedTurn(90, lock)).toBe(1);
   });
 
-  it('all misses = 0', () => {
-    expect(lockpickingScore([0, 0, 0])).toBe(0);
+  it('allowedTurn is 1 within openToleranceDeg', () => {
+    const lock = { sweetSpotDeg: 90, toleranceDeg: 20, openToleranceDeg: 6 };
+    expect(allowedTurn(94, lock)).toBe(1); // within 6°
+    expect(allowedTurn(86, lock)).toBe(1);
   });
 
-  it('empty accuracies = 0', () => {
-    expect(lockpickingScore([])).toBe(0);
+  it('allowedTurn is 0 at or beyond toleranceDeg', () => {
+    const lock = { sweetSpotDeg: 90, toleranceDeg: 20, openToleranceDeg: 6 };
+    expect(allowedTurn(110, lock)).toBe(0); // exactly at edge
+    expect(allowedTurn(130, lock)).toBe(0); // well beyond
+  });
+
+  it('allowedTurn decreases linearly between openTol and tol', () => {
+    const lock = { sweetSpotDeg: 90, toleranceDeg: 20, openToleranceDeg: 6 };
+    const mid = allowedTurn(97, lock); // 7° from sweet spot, midway in [6,20]
+    expect(mid).toBeGreaterThan(0);
+    expect(mid).toBeLessThan(1);
+  });
+
+  it('canOpen is true within openToleranceDeg', () => {
+    const lock = { sweetSpotDeg: 90, toleranceDeg: 20, openToleranceDeg: 6 };
+    expect(canOpen(90, lock)).toBe(true);
+    expect(canOpen(95, lock)).toBe(true);
+    expect(canOpen(85, lock)).toBe(true);
+  });
+
+  it('canOpen is false outside openToleranceDeg', () => {
+    const lock = { sweetSpotDeg: 90, toleranceDeg: 20, openToleranceDeg: 6 };
+    expect(canOpen(97, lock)).toBe(false);
+    expect(canOpen(50, lock)).toBe(false);
+  });
+
+  it('breakTime is longer closer to sweet spot', () => {
+    const lock = { sweetSpotDeg: 90, toleranceDeg: 20, openToleranceDeg: 6 };
+    const close = breakTime(97, lock);  // just outside open zone
+    const far = breakTime(115, lock);   // well outside tolerance
+    expect(close).toBeGreaterThan(far);
+  });
+
+  it('lockpickingScore: all locks + full picks = 1.0', () => {
+    expect(lockpickingScore(NUM_LOCKS, PICK_BUDGET)).toBe(1);
+  });
+
+  it('lockpickingScore: all locks + 1 pick left ≈ 0.5', () => {
+    expect(lockpickingScore(NUM_LOCKS, 1)).toBeCloseTo(0.5, 5);
+  });
+
+  it('lockpickingScore: all locks + some picks ∈ (0.5, 1)', () => {
+    const s = lockpickingScore(NUM_LOCKS, Math.floor(PICK_BUDGET / 2));
+    expect(s).toBeGreaterThan(0.5);
+    expect(s).toBeLessThan(1);
+  });
+
+  it('lockpickingScore: 0 locks, 0 picks = 0 (< 0.4, 1★)', () => {
+    expect(lockpickingScore(0, 0)).toBe(0);
+  });
+
+  it('lockpickingScore: partial failure < 0.4', () => {
+    expect(lockpickingScore(1, 0)).toBeLessThan(0.4);
+    expect(lockpickingScore(2, 0)).toBeLessThan(0.4);
   });
 });
 
@@ -161,7 +238,7 @@ describe('rooftopChase', () => {
   });
 
   it('all features have valid kinds', () => {
-    const valid = new Set(['hazard', 'gap', 'mook']);
+    const valid = new Set(['hazard', 'gap', 'mook', 'lowbar']);
     for (const f of generateFeatures(seededRng())) {
       expect(valid.has(f.kind)).toBe(true);
     }
@@ -231,36 +308,72 @@ describe('rooftopChase', () => {
     expect(updateLead(LEAD_MAX, 1, 'stomp')).toBe(LEAD_MAX);
   });
 
-  // resolveContact
+  // resolveContact (4-arg: heroY, heroVy, sliding, feature)
   it('resolveContact: grounded on hazard = stumble', () => {
     const f = { id: 0, kind: 'hazard' as const, x: 10, width: 3 };
-    expect(resolveContact(0, 0, f)).toBe('stumble');
+    expect(resolveContact(0, 0, false, f)).toBe('stumble');
   });
 
   it('resolveContact: airborne over hazard = clear', () => {
     const f = { id: 0, kind: 'hazard' as const, x: 10, width: 3 };
-    expect(resolveContact(5, -1, f)).toBe('clear');
+    expect(resolveContact(5, -1, false, f)).toBe('clear');
   });
 
   it('resolveContact: grounded inside gap = stumble', () => {
     const f = { id: 1, kind: 'gap' as const, x: 10, width: 10 };
-    expect(resolveContact(0, 0, f)).toBe('stumble');
+    expect(resolveContact(0, 0, false, f)).toBe('stumble');
   });
 
   it('resolveContact: airborne over gap = clear', () => {
     const f = { id: 1, kind: 'gap' as const, x: 10, width: 10 };
-    expect(resolveContact(4, -0.5, f)).toBe('clear');
+    expect(resolveContact(4, -0.5, false, f)).toBe('clear');
   });
 
   it('resolveContact: descending onto mook head = stomp', () => {
     const f = { id: 2, kind: 'mook' as const, x: 10, width: 2.5 };
     // heroY = 4 (airborne), heroVy = -2 (falling) — within stomp window
-    expect(resolveContact(4, -2, f)).toBe('stomp');
+    expect(resolveContact(4, -2, false, f)).toBe('stomp');
   });
 
   it('resolveContact: grounded into mook side = stumble', () => {
     const f = { id: 2, kind: 'mook' as const, x: 10, width: 2.5 };
-    expect(resolveContact(0, 0, f)).toBe('stumble');
+    expect(resolveContact(0, 0, false, f)).toBe('stumble');
+  });
+
+  it('resolveContact: lowbar not sliding = stumble (grounded)', () => {
+    const f = { id: 3, kind: 'lowbar' as const, x: 10, width: 4 };
+    expect(resolveContact(0, 0, false, f)).toBe('stumble');
+  });
+
+  it('resolveContact: lowbar not sliding = stumble (airborne)', () => {
+    const f = { id: 3, kind: 'lowbar' as const, x: 10, width: 4 };
+    expect(resolveContact(3, 1, false, f)).toBe('stumble');
+  });
+
+  it('resolveContact: lowbar sliding = clear', () => {
+    const f = { id: 3, kind: 'lowbar' as const, x: 10, width: 4 };
+    expect(resolveContact(0, 0, true, f)).toBe('clear');
+  });
+
+  // jumpAirTime / maxClearableGap / gap-clamp sanity
+  it('jumpAirTime returns a value > 1 s with current physics', () => {
+    expect(jumpAirTime()).toBeGreaterThan(1.0);
+  });
+
+  it('all generated gap widths are <= maxClearableGap at their x', () => {
+    const fs = generateFeatures(seededRng());
+    for (const f of fs.filter((x) => x.kind === 'gap')) {
+      // Allow a tiny float tolerance
+      expect(f.width).toBeLessThanOrEqual(maxClearableGap(f.x) + 0.01);
+    }
+  });
+
+  it('MAX_JUMPS is 2 (double-jump enabled)', () => {
+    expect(MAX_JUMPS).toBe(2);
+  });
+
+  it('SLIDE_MS is a positive duration', () => {
+    expect(SLIDE_MS).toBeGreaterThan(0);
   });
 
   // chaseScore

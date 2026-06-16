@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Heart, Zap, Coins, ChevronsDown, LogOut, Trees, Skull } from 'lucide-react';
+import { Heart, Zap, Coins, ChevronsDown, LogOut, Trees, Skull, Sparkles } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { useForestLoop } from '@/hooks/useForestLoop';
 import {
@@ -12,6 +12,9 @@ import {
   type ForestTile,
   type ForestBeast,
 } from '@/engine/forest';
+import { cameraWindow, VIEW } from '@/engine/crawl';
+import { useSmoothCamera, type SmoothCameraLayout } from '@/hooks/useSmoothCamera';
+import { getSpell } from '@/engine/spells';
 import type { Reward } from '@/engine/challenges';
 import { FOREST_NODES, FOREST_BEASTS } from '@/content/forest';
 import { forestThicketTree, forestFloorTile, forestNodeSprite } from '@/lib/minigameArt';
@@ -19,54 +22,92 @@ import { getMaterial } from '@/engine/materials';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/cn';
 import { ForestControls } from './ForestControls';
+import { CrawlerAvatar } from '@/components/minigame/CrawlerAvatar';
 
-const CELL = 39; // px per tile (the forest is a larger grid than the mine)
+const CELL = 52; // px per tile
+const BOARD_PX = VIEW * CELL; // 572px
+/** Extra border cells rendered around the viewport to fill gaps during smooth scroll. */
+const MARGIN = 1;
+const RENDER_VIEW = VIEW + 2 * MARGIN; // 13 rendered rows/cols
 
-/** Base colour + texture per tile kind; the colour gets a little per-tile jitter for variety. */
-const TILE_BASE: Record<ForestTile['kind'], { bg: [number, number, number]; image?: string }> = {
-  thicket: {
-    bg: [22, 56, 32],
-    image:
-      'radial-gradient(circle at 32% 30%, rgba(54,104,62,0.55) 0%, transparent 42%),' +
-      'radial-gradient(circle at 72% 68%, rgba(18,48,28,0.7) 0%, transparent 48%),' +
-      'repeating-linear-gradient(125deg, rgba(0,0,0,0.16) 0px, rgba(0,0,0,0.16) 1px, transparent 1px, transparent 5px)',
-  },
-  trail: {
-    bg: [60, 48, 31],
-    image:
-      'radial-gradient(circle at 50% 42%, rgba(102,82,52,0.4) 0%, transparent 62%),' +
-      'radial-gradient(circle at 22% 78%, rgba(40,30,18,0.5) 0%, transparent 40%)',
-  },
-  clearing: {
-    bg: [80, 108, 52],
-    image:
-      'radial-gradient(circle at 50% 30%, rgba(176,206,116,0.45) 0%, transparent 66%),' +
-      'radial-gradient(circle at 76% 74%, rgba(50,78,34,0.5) 0%, transparent 44%)',
-  },
-  entrance: {
-    bg: [107, 83, 32],
-    image: 'radial-gradient(circle at 50% 50%, rgba(232,200,96,0.4) 0%, transparent 72%)',
-  },
-  treeline: {
-    bg: [26, 58, 38],
-    image: 'radial-gradient(circle at 50% 46%, rgba(72,202,140,0.45) 0%, transparent 72%)',
-  },
-  node: { bg: [52, 48, 29] },
+/** Base colour per tile kind. */
+const TILE_BG: Record<ForestTile['kind'], [number, number, number]> = {
+  tree:     [18,  34,  14],
+  thicket:  [22,  56,  32],
+  trail:    [58,  46,  30],
+  clearing: [78, 106,  50],
+  entrance: [107, 83,  32],
+  treeline: [26,  58,  38],
+  node:     [52,  48,  29],
 };
 
-/** Deterministic 0..1 hash so a tile's tint is stable across re-renders. */
+/** Deterministic 0..1 hash for a cell — stable across renders. */
 function tileJitter(r: number, c: number): number {
   let h = (Math.imul(r, 73856093) ^ Math.imul(c, 19349663)) >>> 0;
   h ^= h >>> 13;
   return (h % 1000) / 1000;
 }
 
-function tileStyle(kind: ForestTile['kind'], r: number, c: number): React.CSSProperties {
-  const base = TILE_BASE[kind];
-  const jittered = kind === 'thicket' || kind === 'trail' || kind === 'clearing';
-  const m = jittered ? 0.82 + 0.32 * tileJitter(r, c) : 1;
-  const [R, G, B] = base.bg.map((v) => Math.round(Math.min(255, v * m)));
-  return { backgroundColor: `rgb(${R},${G},${B})`, backgroundImage: base.image };
+/** Per-cell floor background — richer than a flat colour. */
+function floorStyle(kind: ForestTile['kind'], r: number, c: number): React.CSSProperties {
+  const [R0, G0, B0] = TILE_BG[kind];
+  const m = 0.84 + 0.3 * tileJitter(r, c);
+  const [R, G, B] = [R0, G0, B0].map((v) => Math.round(Math.min(255, v * m)));
+  const bg = `rgb(${R},${G},${B})`;
+
+  if (kind === 'trail') {
+    const j1 = tileJitter(r * 3 + 1, c * 3 + 2);
+    const j2 = tileJitter(r + 13, c + 7);
+    const ang = Math.floor(tileJitter(r, c + 1) * 140) + 20;
+    // ~15% of cells get a root/crack streak; ~15% a fallen-leaf radial
+    const extra =
+      j1 < 0.15
+        ? `linear-gradient(${ang}deg, transparent 40%, rgba(28,16,6,0.32) 44%, rgba(28,16,6,0.32) 56%, transparent 60%),`
+        : j1 < 0.30
+        ? `radial-gradient(circle at ${Math.floor(j2 * 70) + 15}% ${Math.floor(tileJitter(r + 2, c) * 70) + 15}%, rgba(52,70,28,0.45) 0%, transparent 26%),`
+        : '';
+    return {
+      backgroundColor: bg,
+      backgroundImage:
+        extra +
+        'radial-gradient(circle at 50% 42%, rgba(90,70,44,0.32) 0%, transparent 62%),' +
+        'radial-gradient(circle at 22% 78%, rgba(36,24,12,0.38) 0%, transparent 40%)',
+    };
+  }
+  if (kind === 'clearing') {
+    const j1 = tileJitter(r * 3 + 7, c * 3 + 5);
+    const j2 = tileJitter(r + 5, c + 9);
+    const extra =
+      j1 < 0.20
+        ? `radial-gradient(ellipse at ${Math.floor(j2 * 60) + 20}% 82%, rgba(110,170,58,0.5) 0%, transparent 24%),`
+        : j1 < 0.35
+        ? `radial-gradient(circle at ${Math.floor(j2 * 80) + 10}% ${Math.floor(tileJitter(r, c + 4) * 80) + 10}%, rgba(80,130,44,0.35) 0%, transparent 18%),`
+        : '';
+    return {
+      backgroundColor: bg,
+      backgroundImage:
+        extra +
+        'radial-gradient(circle at 50% 30%, rgba(164,200,110,0.40) 0%, transparent 66%),' +
+        'radial-gradient(circle at 76% 74%, rgba(48,76,32,0.42) 0%, transparent 44%)',
+    };
+  }
+  if (kind === 'entrance') {
+    return {
+      backgroundColor: bg,
+      backgroundImage: 'radial-gradient(circle at 50% 50%, rgba(232,200,96,0.38) 0%, transparent 72%)',
+    };
+  }
+  if (kind === 'treeline') {
+    return {
+      backgroundColor: bg,
+      backgroundImage: 'radial-gradient(circle at 50% 46%, rgba(72,202,140,0.42) 0%, transparent 72%)',
+    };
+  }
+  if (kind === 'node') {
+    return { backgroundColor: bg };
+  }
+  // tree / thicket — dark base, sprite rendered separately
+  return { backgroundColor: '#111d0d' };
 }
 
 type LootPop = { key: string; r: number; c: number; at: number; text: string; color: string };
@@ -86,7 +127,6 @@ function Gauge({ icon, value, max, fill }: { icon: React.ReactNode; value: numbe
   );
 }
 
-/** Flatten a reward into labelled, coloured chips for the summary screens. */
 function rewardChips(reward: Reward): Array<{ label: string; color: string }> {
   const out: Array<{ label: string; color: string }> = [];
   if (reward.gold) out.push({ label: `${reward.gold} gold`, color: '#e8c860' });
@@ -119,6 +159,21 @@ export function ForestRunOverlay() {
   const forestAdvance = useGameStore((s) => s.forestAdvance);
   const beginForestBanking = useGameStore((s) => s.beginForestBanking);
 
+  // Smooth-camera refs
+  const worldRef = useRef<HTMLDivElement>(null);
+  const playerRef = useRef<HTMLDivElement | null>(null);
+  const moverRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
+  const layoutRef = useRef<SmoothCameraLayout>({
+    baseR0: 0, baseC0: 0, playerR: 0, playerC: 0, rows: 33, cols: 33,
+    movers: [], snapKey: 0,
+  });
+  useSmoothCamera(worldRef, playerRef, moverRefs, layoutRef, { CELL, VIEW });
+
+  // Moving flag — true for ~250 ms after any player step
+  const [moving, setMoving] = useState(false);
+  const prevPosRef = useRef<{ r: number; c: number } | null>(null);
+  const movingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const [pops, setPops] = useState<Array<{ key: string; r: number; c: number; at: number }>>([]);
   const [lootPops, setLootPops] = useState<LootPop[]>([]);
   const prevRef = useRef<{
@@ -129,22 +184,36 @@ export function ForestRunOverlay() {
   } | null>(null);
 
   useEffect(() => {
-    if (!forest) { prevRef.current = null; return; }
+    if (!forest) { prevRef.current = null; prevPosRef.current = null; return; }
+
+    // Moving detection
+    const pos = forest.player;
+    const prev2 = prevPosRef.current;
+    if (prev2 && (prev2.r !== pos.r || prev2.c !== pos.c)) {
+      setMoving(true);
+      if (movingTimerRef.current) clearTimeout(movingTimerRef.current);
+      movingTimerRef.current = setTimeout(() => setMoving(false), 250);
+    }
+    prevPosRef.current = { r: pos.r, c: pos.c };
+
     const prev = prevRef.current;
     prevRef.current = { tiles: forest.tiles, beasts: forest.beasts, haul: forest.haul, sta: forest.sta };
     if (!prev) return;
     const now = Date.now();
     const newPops: Array<{ key: string; r: number; c: number; at: number }> = [];
     let eventPos: { r: number; c: number } | null = null;
+
+    // Node-gathered and tree-chopped pops
     forest.tiles.forEach((row, r) =>
       row.forEach((tile, c) => {
         const was = prev.tiles[r]?.[c];
-        if (tile.kind === 'trail' && was?.kind === 'node') {
+        if (tile.kind === 'trail' && (was?.kind === 'node' || was?.kind === 'tree')) {
           newPops.push({ key: `t-${r}-${c}-${now}`, r, c, at: now });
           eventPos = { r, c };
         }
       }),
     );
+    // Beast-killed pops
     const liveIds = new Set(forest.beasts.map((b) => b.id));
     prev.beasts.forEach((b) => {
       if (!liveIds.has(b.id)) {
@@ -157,24 +226,24 @@ export function ForestRunOverlay() {
       setTimeout(() => setPops((ps) => ps.filter((p) => Date.now() - p.at < 550)), 600);
     }
     if (eventPos) {
-      const pos = eventPos as { r: number; c: number };
+      const pos2 = eventPos as { r: number; c: number };
       const newLootPops: LootPop[] = [];
       const goldDelta = (forest.haul.gold ?? 0) - (prev.haul.gold ?? 0);
       if (goldDelta > 0) {
-        newLootPops.push({ key: `lg-${now}`, ...pos, at: now, text: `+${goldDelta} gold`, color: '#e8c860' });
+        newLootPops.push({ key: `lg-${now}`, ...pos2, at: now, text: `+${goldDelta} gold`, color: '#e8c860' });
       } else {
         for (const [matKey, val] of Object.entries(forest.haul.materials ?? {})) {
           const delta = val - ((prev.haul.materials ?? {})[matKey] ?? 0);
           if (delta > 0) {
             const mat = getMaterial(matKey);
-            newLootPops.push({ key: `lm-${now}`, ...pos, at: now, text: `+${delta} ${mat?.name ?? matKey}`, color: mat?.color ?? '#f3e7c9' });
+            newLootPops.push({ key: `lm-${now}`, ...pos2, at: now, text: `+${delta} ${mat?.name ?? matKey}`, color: mat?.color ?? '#f3e7c9' });
             break;
           }
         }
       }
       const netSta = forest.sta - prev.sta;
       if (netSta > 0) {
-        newLootPops.push({ key: `ls-${now}`, ...pos, at: now, text: `+${netSta} sta`, color: '#22d3ee' });
+        newLootPops.push({ key: `ls-${now}`, ...pos2, at: now, text: `+${netSta} sta`, color: '#22d3ee' });
       }
       if (newLootPops.length > 0) {
         setLootPops((ps) => [...ps.filter((p) => now - p.at < 900), ...newLootPops]);
@@ -189,30 +258,58 @@ export function ForestRunOverlay() {
   const onTreeline = canAdvance(forest);
   const faced = facedCell(forest);
   const haulMats = Object.entries(forest.haul.materials ?? {}).filter(([, n]) => n > 0);
-  const width = forest.cols * CELL;
-  const height = forest.rows * CELL;
-  // Circular torch glow centred on the forager — softens the fog edge into a disc.
+
+  // Camera: integer top-left of the centred 11×11 window.
+  const { r0, c0 } = cameraWindow(forest.player, forest.rows, forest.cols);
+  const baseR0 = Math.max(0, r0 - MARGIN);
+  const baseC0 = Math.max(0, c0 - MARGIN);
+
+  const vr = (worldR: number) => worldR - baseR0;
+  const vc = (worldC: number) => worldC - baseC0;
+  const inView = (worldR: number, worldC: number) => {
+    const vri = vr(worldR);
+    const vci = vc(worldC);
+    return vri >= 0 && vri < RENDER_VIEW && vci >= 0 && vci < RENDER_VIEW;
+  };
+
+  layoutRef.current = {
+    baseR0,
+    baseC0,
+    playerR: forest.player.r,
+    playerC: forest.player.c,
+    rows: forest.rows,
+    cols: forest.cols,
+    snapKey: forest.stage,
+    movers: forest.beasts
+      .filter((b) => isVisible(forest, b.r, b.c) && inView(b.r, b.c))
+      .map((b) => ({ id: b.id, r: b.r, c: b.c })),
+  };
+
+  // Torch-glow radius and position in world-container space
   const litR = (sightRadiusFor(forest) + 0.5) * CELL;
-  const lightX = forest.player.c * CELL + CELL / 2;
-  const lightY = forest.player.r * CELL + CELL / 2;
-  // On death, half the haul is forfeit; show what's carried out vs lost.
+  const lightX = (forest.player.c - baseC0) * CELL + CELL / 2;
+  const lightY = (forest.player.r - baseR0) * CELL + CELL / 2;
+
   const death = dead ? splitHaul(forest.haul, FOREST_DEATH_KEEP) : null;
 
   return (
     <div className="texture-wood fixed inset-0 z-50 flex flex-col items-center gap-3 overflow-auto px-4 py-4">
       {/* HUD */}
-      <div className="flex w-full max-w-md items-center justify-between gap-3">
+      <div className="flex w-full max-w-[600px] items-center justify-between gap-3">
         <span className="font-display text-sm font-bold text-gold-bright">
           The Wild Forest · Depth {forest.stage}
         </span>
         <div className="flex flex-col items-end gap-1">
           <Gauge icon={<Heart className="h-3.5 w-3.5 text-stat-HP" />} value={forest.hp} max={forest.maxHp} fill="#2e8a5e" />
           <Gauge icon={<Zap className="h-3.5 w-3.5 text-stat-AG" />} value={forest.sta} max={forest.maxSta} fill="#b8860b" />
+          {forest.maxMp > 0 && (
+            <Gauge icon={<Sparkles className="h-3.5 w-3.5 text-violet-400" />} value={forest.mp} max={forest.maxMp} fill="#7c3aed" />
+          )}
         </div>
       </div>
 
       {/* Haul */}
-      <div className="flex w-full max-w-md flex-wrap items-center gap-x-3 gap-y-1 text-xs text-parchment-200">
+      <div className="flex w-full max-w-[600px] flex-wrap items-center gap-x-3 gap-y-1 text-xs text-parchment-200">
         <span className="font-display uppercase tracking-wider text-parchment-300/70">Haul</span>
         <span className="flex items-center gap-1 text-gold-bright">
           <Coins className="h-3.5 w-3.5" /> {forest.haul.gold ?? 0}
@@ -227,174 +324,269 @@ export function ForestRunOverlay() {
         )}
       </div>
 
-      {/* Forest */}
+      {/* Forest board */}
       <div
-        className="relative shrink-0 overflow-hidden rounded-md border-2 border-gold-deep/60 shadow-gold-sm"
-        style={{ width, height, boxShadow: 'inset 0 0 36px rgba(0,0,0,0.7), 0 0 0 1px rgba(0,0,0,0.4)' }}
+        className="relative shrink-0 overflow-hidden rounded-md border-2 border-gold-deep/60"
+        style={{
+          width: BOARD_PX,
+          height: BOARD_PX,
+          boxShadow: 'inset 0 0 48px rgba(0,0,0,0.85), 0 0 0 1px rgba(0,0,0,0.5)',
+        }}
       >
-        {/* Tile layer with fog: lit (in sight) → full, explored → dimmed, unseen → dark. */}
-        {forest.tiles.map((row, r) =>
-          row.map((tile, c) => {
-            const seen = forest.seen[r]?.[c];
-            const vis = isVisible(forest, r, c);
-            if (!seen) {
+        {/* World container — translated continuously by useSmoothCamera */}
+        <div ref={worldRef} className="absolute" style={{ willChange: 'transform' }}>
+
+        {/* Tile layer — includes tree sprites inline so they render reliably */}
+        {Array.from({ length: RENDER_VIEW }, (_, vi) =>
+          Array.from({ length: RENDER_VIEW }, (_, vj) => {
+            const r = baseR0 + vi;
+            const c = baseC0 + vj;
+            const tile = forest.tiles[r]?.[c];
+            if (!tile) {
               return (
                 <div
-                  key={`${r}-${c}`}
+                  key={`oob-${vi}-${vj}`}
                   className="absolute"
-                  style={{ left: c * CELL, top: r * CELL, width: CELL, height: CELL, backgroundColor: '#080d08' }}
+                  style={{ left: vj * CELL, top: vi * CELL, width: CELL, height: CELL, backgroundColor: '#050a05' }}
                 />
               );
             }
+            const seen = forest.seen[r]?.[c];
+            if (!seen) {
+              return (
+                <div
+                  key={`fog-${vi}-${vj}`}
+                  className="absolute"
+                  style={{ left: vj * CELL, top: vi * CELL, width: CELL, height: CELL, backgroundColor: '#050a05' }}
+                />
+              );
+            }
+            const vis = isVisible(forest, r, c);
             const node = tile.kind === 'node' && tile.nodeKey ? FOREST_NODES[tile.nodeKey] : null;
-            // Real art: floor tiles paint walkable cells and node decor overlays its tile.
-            // Thicket trees are drawn in a separate canopy layer below (so they overlap/overflow).
-            const floorImg = tile.kind !== 'thicket' ? forestFloorTile(tile.kind, r, c) : undefined;
+            const isTree = tile.kind === 'tree';
+            const isThicket = tile.kind === 'thicket';
+            const floorImg = !isThicket && !isTree ? forestFloorTile(tile.kind, r, c) : undefined;
             const nodeImg = node && tile.nodeKey ? forestNodeSprite(tile.nodeKey) : undefined;
+
+            // Thicket tree sprite — oversized and bottom-anchored, overflows cell for depth
+            let thicketSprite: React.ReactNode = null;
+            if (isThicket) {
+              const treeImg = forestThicketTree(r, c);
+              if (treeImg) {
+                const j1 = tileJitter(r, c);
+                const j2 = tileJitter(r + 7, c + 3);
+                const j3 = tileJitter(r * 2 + 1, c + 11);
+                const scale = 1.45 + j1 * 0.55; // 1.45–2.0× so canopies massively overlap
+                const size = CELL * scale;
+                const dx = (j2 - 0.5) * CELL * 0.3; // lateral nudge ±15% of cell
+                const flip = j3 > 0.50;
+                // Bottom-anchor: bottom of sprite aligns ~10% below cell bottom (roots in ground)
+                const bottom = -CELL * 0.08;
+                const left = (CELL - size) / 2 + dx;
+                thicketSprite = (
+                  <img
+                    src={treeImg}
+                    alt=""
+                    className="pointer-events-none image-pixel"
+                    style={{
+                      position: 'absolute',
+                      zIndex: 4,
+                      width: size,
+                      height: size,
+                      bottom,
+                      left,
+                      objectFit: 'contain',
+                      objectPosition: 'bottom',
+                      opacity: vis ? 1 : 0.55,
+                      transform: flip ? 'scaleX(-1)' : undefined,
+                    }}
+                  />
+                );
+              }
+            }
+
             return (
               <div
-                key={`${r}-${c}`}
+                key={`${vi}-${vj}`}
                 className="absolute flex items-center justify-center text-[20px] leading-none"
                 style={{
-                  ...tileStyle(tile.kind, r, c),
-                  ...(tile.kind === 'thicket' ? { backgroundColor: '#13210f', backgroundImage: 'none' } : {}),
-                  ...(floorImg
-                    ? {
-                        backgroundColor: '#0f1a10',
-                        backgroundImage: `url(${floorImg})`,
-                        backgroundSize: 'cover',
-                        backgroundPosition: 'center',
-                        imageRendering: 'pixelated',
-                      }
-                    : {}),
-                  left: c * CELL,
-                  top: r * CELL,
+                  ...(isThicket || isTree
+                    ? { backgroundColor: '#111d0d' }
+                    : {
+                        ...floorStyle(tile.kind, r, c),
+                        ...(floorImg
+                          ? {
+                              backgroundColor: '#0f1a10',
+                              backgroundImage: `url(${floorImg})`,
+                              backgroundSize: 'cover',
+                              backgroundPosition: 'center',
+                              imageRendering: 'pixelated',
+                            }
+                          : {}),
+                      }),
+                  left: vj * CELL,
+                  top: vi * CELL,
                   width: CELL,
                   height: CELL,
+                  overflow: 'visible',
                   boxShadow: node
                     ? `inset 0 0 0 1px rgba(0,0,0,0.3), inset 0 0 8px ${node.color}77`
+                    : isTree
+                    ? 'inset 0 0 0 2px rgba(110,170,70,0.5)'
                     : 'inset 0 0 0 1px rgba(0,0,0,0.28)',
                 }}
               >
-                {nodeImg ? (
-                  <img
-                    src={nodeImg}
-                    alt={node?.name}
-                    title={node?.name}
-                    className="pointer-events-none absolute inset-0 h-full w-full object-contain image-pixel"
-                    style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.8))' }}
-                  />
-                ) : node ? (
-                  <span title={node.name} style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.8))' }}>
-                    {node.glyph}
+                {/* Thicket: tree sprite (oversized, overflows cell) */}
+                {thicketSprite}
+
+                {/* Choppable tree: emoji so it's visually distinct from wall sprites */}
+                {isTree && (
+                  <span
+                    className="relative z-[3]"
+                    style={{ fontSize: CELL * 0.7, lineHeight: 1, filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.9))' }}
+                  >
+                    🌲
                   </span>
-                ) : tile.kind === 'treeline' ? (
-                  <Trees className="h-6 w-6 text-emerald-300" style={{ filter: 'drop-shadow(0 0 4px rgba(72,202,140,0.7))' }} />
-                ) : tile.kind === 'entrance' ? (
-                  <span className="text-[16px] text-gold-bright">◇</span>
-                ) : null}
-                {/* Explored-but-out-of-sight tiles are veiled by the dark. */}
-                {!vis && <div className="absolute inset-0 bg-black/55" />}
+                )}
+
+                {/* Node art or glyph */}
+                {!isTree && (
+                  nodeImg ? (
+                    <img
+                      src={nodeImg}
+                      alt={node?.name}
+                      title={node?.name}
+                      className="pointer-events-none absolute inset-0 h-full w-full object-contain image-pixel"
+                      style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.8))' }}
+                    />
+                  ) : node ? (
+                    <span title={node.name} style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.8))' }}>
+                      {node.glyph}
+                    </span>
+                  ) : tile.kind === 'treeline' ? (
+                    <Trees className="h-6 w-6 text-emerald-300" style={{ filter: 'drop-shadow(0 0 4px rgba(72,202,140,0.7))' }} />
+                  ) : tile.kind === 'entrance' ? (
+                    <span className="text-[16px] text-gold-bright">◇</span>
+                  ) : null
+                )}
+
+                {/* Durability bar for choppable trees */}
+                {isTree && tile.maxDurability != null && tile.durability != null && tile.durability < tile.maxDurability && (
+                  <div className="absolute bottom-1 left-1 right-1 z-[5] h-[3px] overflow-hidden rounded-full bg-black/60">
+                    <div className="h-full rounded-full bg-amber-500" style={{ width: `${(tile.durability / tile.maxDurability) * 100}%` }} />
+                  </div>
+                )}
+
+                {/* Fog-of-war dim on seen-but-not-visible cells */}
+                {!vis && <div className="absolute inset-0 z-[6] bg-black/58" />}
               </div>
             );
-          }),
+          })
         )}
 
-        {/* Tree canopy — trees overflow their thicket cell and overlap neighbours/trails for a
-            dense, organic wood. Drawn in row order (lower trees in front) and below the vignette
-            so distance still darkens them. Per-tree fog dimming; unseen cells stay hidden. */}
-        {forest.tiles.map((row, r) =>
-          row.map((tile, c) => {
-            if (tile.kind !== 'thicket' || !forest.seen[r]?.[c]) return null;
-            const tree = forestThicketTree(r, c);
-            if (!tree) return null;
-            const size = CELL * 1.6;
-            const offset = (size - CELL) / 2;
-            return (
-              <img
-                key={`tree-${r}-${c}`}
-                src={tree}
-                alt=""
-                className="pointer-events-none absolute z-[4] object-contain object-bottom image-pixel"
-                style={{
-                  width: size,
-                  height: size,
-                  left: c * CELL - offset,
-                  top: r * CELL + CELL - size + CELL * 0.15,
-                  opacity: isVisible(forest, r, c) ? 1 : 0.45,
-                }}
-              />
-            );
-          }),
-        )}
-
-        {/* Circular torch-glow vignette — darkens everything beyond the lit disc. */}
+        {/* Torch-glow vignette — the further from the torch, the darker */}
         <div
-          className="pointer-events-none absolute inset-0 z-[6]"
+          className="pointer-events-none absolute inset-0 z-[7]"
           style={{
-            background: `radial-gradient(circle ${litR}px at ${lightX}px ${lightY}px, transparent 58%, rgba(6,12,7,0.4) 82%, rgba(4,8,5,0.82) 100%)`,
+            background: `radial-gradient(circle ${litR}px at ${lightX}px ${lightY}px, transparent 52%, rgba(5,11,6,0.45) 76%, rgba(3,7,4,0.88) 100%)`,
           }}
         />
 
-        {/* Facing indicator — highlights the tile the player is targeting. */}
-        <div
-          className="pointer-events-none absolute z-[7]"
-          style={{
-            width: CELL,
-            height: CELL,
-            transform: `translate(${faced.c * CELL}px, ${faced.r * CELL}px)`,
-            boxShadow: 'inset 0 0 0 2px rgba(251,191,36,0.7)',
-            transition: 'transform 150ms linear',
-          }}
-        />
-
-        {/* Clear / harvest pops */}
-        {pops.map((p) => (
+        {/* Facing indicator */}
+        {inView(faced.r, faced.c) && (
           <div
-            key={p.key}
-            className="pointer-events-none absolute z-20 rounded-full"
+            className="pointer-events-none absolute z-[8]"
             style={{
-              width: CELL * 0.7,
-              height: CELL * 0.7,
-              left: p.c * CELL + CELL * 0.15,
-              top: p.r * CELL + CELL * 0.15,
-              backgroundColor: 'rgba(140,231,160,0.8)',
-              animation: 'mine-pop 0.5s ease-out forwards',
+              width: CELL,
+              height: CELL,
+              transform: `translate(${vc(faced.c) * CELL}px, ${vr(faced.r) * CELL}px)`,
+              boxShadow: 'inset 0 0 0 2px rgba(251,191,36,0.7)',
+              transition: 'transform 150ms linear',
             }}
           />
-        ))}
+        )}
+
+        {/* Rune overlays */}
+        {forest.runes.map((rune) => {
+          if (!inView(rune.r, rune.c)) return null;
+          const color = rune.kind === 'fire' ? '#ff6b35' : rune.kind === 'ice' ? '#7dd3fc' : '#86efac';
+          return (
+            <div
+              key={rune.id}
+              className="pointer-events-none absolute z-[9] flex items-center justify-center"
+              style={{
+                width: CELL,
+                height: CELL,
+                transform: `translate(${vc(rune.c) * CELL}px, ${vr(rune.r) * CELL}px)`,
+              }}
+            >
+              <span style={{ fontSize: CELL * 0.4, color, filter: `drop-shadow(0 0 4px ${color})`, lineHeight: 1 }}>✦</span>
+            </div>
+          );
+        })}
+
+        {/* Clear / harvest pops */}
+        {pops.map((p) => {
+          if (!inView(p.r, p.c)) return null;
+          return (
+            <div
+              key={p.key}
+              className="pointer-events-none absolute z-20 rounded-full"
+              style={{
+                width: CELL * 0.7,
+                height: CELL * 0.7,
+                left: vc(p.c) * CELL + CELL * 0.15,
+                top: vr(p.r) * CELL + CELL * 0.15,
+                backgroundColor: 'rgba(140,231,160,0.8)',
+                animation: 'mine-pop 0.5s ease-out forwards',
+              }}
+            />
+          );
+        })}
 
         {/* Loot popups */}
-        {lootPops.map((p) => (
-          <div
-            key={p.key}
-            className="pointer-events-none absolute z-30 whitespace-nowrap font-display text-[11px] font-bold"
-            style={{
-              left: p.c * CELL + CELL / 2,
-              top: p.r * CELL,
-              color: p.color,
-              textShadow: '0 1px 3px rgba(0,0,0,0.9)',
-              animation: 'loot-float 0.9s ease-out forwards',
-            }}
-          >
-            {p.text}
-          </div>
-        ))}
+        {lootPops.map((p) => {
+          if (!inView(p.r, p.c)) return null;
+          return (
+            <div
+              key={p.key}
+              className="pointer-events-none absolute z-30 whitespace-nowrap font-display text-[11px] font-bold"
+              style={{
+                left: vc(p.c) * CELL + CELL / 2,
+                top: vr(p.r) * CELL,
+                color: p.color,
+                textShadow: '0 1px 3px rgba(0,0,0,0.9)',
+                animation: 'loot-float 0.9s ease-out forwards',
+              }}
+            >
+              {p.text}
+            </div>
+          );
+        })}
 
-        {/* Beasts — only the ones inside the current sight radius (ambush hides the rest). */}
+        {/* Beasts — rAF drives position; no CSS transition needed */}
         {forest.beasts.map((b) => {
           if (!isVisible(forest, b.r, b.c)) return null;
+          if (!inView(b.r, b.c)) return null;
           const def = FOREST_BEASTS[b.key];
+          const frozen = (b.frozenUntilMs ?? 0) > Date.now();
           return (
             <div
               key={b.id}
+              ref={(el) => {
+                if (el) moverRefs.current.set(b.id, el);
+                else moverRefs.current.delete(b.id);
+              }}
               className={cn(
-                'pointer-events-none absolute z-[8] flex items-center justify-center transition-transform duration-150 ease-linear',
+                'pointer-events-none absolute z-[10] flex items-center justify-center',
                 b.asleep && 'opacity-70',
               )}
-              style={{ width: CELL, height: CELL, transform: `translate(${b.c * CELL}px, ${b.r * CELL}px)` }}
+              style={{ width: CELL, height: CELL, transform: `translate(${vc(b.c) * CELL}px, ${vr(b.r) * CELL}px)` }}
               title={def?.name}
             >
+              {frozen && (
+                <div className="absolute inset-0 rounded-sm bg-blue-400/30 ring-1 ring-blue-300/60" />
+              )}
               <span className="text-[22px] leading-none" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.85))' }}>
                 {def?.glyph ?? '?'}
               </span>
@@ -407,15 +599,98 @@ export function ForestRunOverlay() {
           );
         })}
 
-        {/* Player */}
+        {/* Player — rAF drives position */}
         <div
-          className="pointer-events-none absolute z-10 flex items-center justify-center transition-transform duration-150 ease-linear"
-          style={{ width: CELL, height: CELL, transform: `translate(${forest.player.c * CELL}px, ${forest.player.r * CELL}px)` }}
+          ref={playerRef}
+          className="pointer-events-none absolute z-[11]"
+          style={{ width: CELL, height: CELL, transform: `translate(${vc(forest.player.c) * CELL}px, ${vr(forest.player.r) * CELL}px)` }}
         >
-          <span className="text-[24px] leading-none" style={{ filter: 'drop-shadow(0 0 5px rgba(255,240,200,0.55))' }}>
-            {dead ? '💀' : '🚶'}
-          </span>
+          <CrawlerAvatar
+            variant="forager"
+            facing={forest.player.facing}
+            moving={moving}
+            dead={dead}
+            cell={CELL}
+          />
         </div>
+
+        </div>{/* end world container */}
+
+        {/* Forest ambient atmosphere — viewport-fixed, doesn't scroll */}
+        {!dead && forest.status === 'active' && (
+          <div className="forest-ambient pointer-events-none absolute inset-0 z-[15] overflow-hidden">
+            {/* Dense ground mist along the bottom */}
+            <div
+              className="absolute bottom-0 left-0 right-0"
+              style={{ height: '28%', background: 'linear-gradient(to top, rgba(6,18,8,0.62) 0%, rgba(8,20,10,0.30) 40%, transparent 100%)' }}
+            />
+            {/* Left-edge shadow — trees lean in from the sides */}
+            <div
+              className="absolute inset-y-0 left-0"
+              style={{ width: '12%', background: 'linear-gradient(to right, rgba(4,10,5,0.55) 0%, transparent 100%)' }}
+            />
+            <div
+              className="absolute inset-y-0 right-0"
+              style={{ width: '12%', background: 'linear-gradient(to left, rgba(4,10,5,0.55) 0%, transparent 100%)' }}
+            />
+            {/* God-ray light shafts */}
+            <div
+              className="absolute"
+              style={{
+                left: '12%', top: '-20%', width: 38, height: '85%',
+                background: 'linear-gradient(to bottom, transparent 0%, rgba(160,240,140,0.11) 35%, rgba(140,220,120,0.06) 70%, transparent 100%)',
+                transform: 'rotate(8deg)',
+                animation: 'forest-shaft-pulse 9s ease-in-out infinite',
+                filter: 'blur(3px)',
+              }}
+            />
+            <div
+              className="absolute"
+              style={{
+                left: '58%', top: '-12%', width: 26, height: '72%',
+                background: 'linear-gradient(to bottom, transparent 0%, rgba(180,255,160,0.09) 40%, transparent 100%)',
+                transform: 'rotate(14deg)',
+                animation: 'forest-shaft-pulse 12s ease-in-out infinite 3.2s',
+                filter: 'blur(2px)',
+              }}
+            />
+            <div
+              className="absolute"
+              style={{
+                left: '34%', top: '-5%', width: 18, height: '55%',
+                background: 'linear-gradient(to bottom, transparent 0%, rgba(200,255,180,0.07) 50%, transparent 100%)',
+                transform: 'rotate(5deg)',
+                animation: 'forest-shaft-pulse 15s ease-in-out infinite 6s',
+                filter: 'blur(2px)',
+              }}
+            />
+            {/* Pollen / firefly motes — larger and brighter than before */}
+            {[
+              { left: '16%', top: '58%', size: 4, dur: '10s', delay: '0s',   glow: 'rgba(190,255,145,0.85)' },
+              { left: '43%', top: '34%', size: 5, dur: '13s', delay: '2.8s', glow: 'rgba(210,255,160,0.80)' },
+              { left: '68%', top: '72%', size: 4, dur: '8s',  delay: '5.6s', glow: 'rgba(180,245,140,0.85)' },
+              { left: '80%', top: '25%', size: 4, dur: '11s', delay: '1.2s', glow: 'rgba(200,255,155,0.75)' },
+              { left: '53%', top: '80%', size: 5, dur: '9s',  delay: '4.0s', glow: 'rgba(215,255,165,0.80)' },
+              { left: '28%', top: '46%', size: 3, dur: '14s', delay: '7.5s', glow: 'rgba(185,250,140,0.70)' },
+              { left: '74%', top: '52%', size: 3, dur: '12s', delay: '9.0s', glow: 'rgba(200,255,155,0.75)' },
+            ].map((m, i) => (
+              <div
+                key={i}
+                className="absolute rounded-full"
+                style={{
+                  left: m.left,
+                  top: m.top,
+                  width: m.size,
+                  height: m.size,
+                  backgroundColor: m.glow,
+                  filter: 'blur(0.8px)',
+                  boxShadow: `0 0 ${m.size * 2}px ${m.glow}`,
+                  animation: `forest-mote-float ${m.dur} ease-in-out infinite ${m.delay}`,
+                }}
+              />
+            ))}
+          </div>
+        )}
 
         {/* Banking summary (voluntary leave) */}
         {forest.status === 'banking' && (
@@ -434,7 +709,7 @@ export function ForestRunOverlay() {
           </div>
         )}
 
-        {/* Death summary (forfeit half the haul) */}
+        {/* Death summary */}
         {dead && (
           <div className="pointer-events-auto absolute inset-0 z-40 flex flex-col items-center justify-center gap-2 rounded-md bg-black/85 p-4 text-center">
             <Skull className="h-9 w-9 text-ember-bright" />
@@ -461,8 +736,36 @@ export function ForestRunOverlay() {
         )}
       </div>
 
+      {/* Spell ability bar */}
+      {forest.knownSpells.length > 0 && (
+        <div className="flex w-full max-w-[600px] items-center gap-2">
+          <span className="font-display text-[10px] uppercase tracking-wider text-parchment-300/60">Spells</span>
+          {forest.knownSpells.slice(0, 4).map((key, i) => {
+            const sp = getSpell(key);
+            if (!sp) return null;
+            const canCast = forest.mp >= sp.mpCost;
+            return (
+              <button
+                key={key}
+                onClick={() => controls.castSpell(key)}
+                disabled={!canCast || forest.status !== 'active'}
+                className={cn(
+                  'flex flex-col items-center rounded border px-2 py-1 font-display text-[10px] transition-opacity',
+                  canCast ? 'border-violet-500/60 bg-violet-900/30 text-violet-200 hover:bg-violet-800/40' : 'border-wood-700 bg-wood-900/50 text-parchment-300/40 opacity-60',
+                )}
+                title={`${sp.name} (${sp.mpCost} MP) — key [${i + 1}]`}
+              >
+                <span className="text-[9px] text-parchment-300/50">[{i + 1}]</span>
+                <span className="truncate max-w-[60px]">{sp.name}</span>
+                <span className="text-[9px] text-violet-400">{sp.mpCost}mp</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Push deeper / leave */}
-      <div className="flex w-full max-w-md items-center justify-center gap-2">
+      <div className="flex w-full max-w-[600px] items-center justify-center gap-2">
         <Button
           variant={onTreeline ? 'primary' : 'secondary'}
           onClick={forestAdvance}
@@ -477,12 +780,12 @@ export function ForestRunOverlay() {
       </div>
 
       {/* Touch controls */}
-      <div className="w-full max-w-md">
+      <div className="w-full max-w-[600px]">
         <ForestControls controls={controls} />
       </div>
 
       <p className="text-center text-[10px] text-parchment-300/50">
-        Move: arrow keys / WASD · Slash &amp; gather: space · or use the pad above. Reach the far{' '}
+        Move: arrows/WASD · Act (slash/gather/chop): space · Spells: [1-4] · Reach the{' '}
         <Trees className="inline h-3 w-3 text-emerald-300" /> tree line to push deeper.
       </p>
     </div>

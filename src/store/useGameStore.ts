@@ -74,14 +74,17 @@ import {
   strike,
   stepMonsters,
   descend,
+  castSpell as minecastSpellFn,
   MINE_ENERGY_COST,
   MINE_UNLOCK_LEVEL,
 } from '@/engine/mining';
+import { dungeonStamina } from '@/engine/crawl';
 import {
   type ForestState,
   generateForest,
   tryMove as forestTryMove,
   act as forestActFn,
+  castSpell as forestCastSpellFn,
   stepBeasts,
   advance as forestAdvanceFn,
   splitHaul,
@@ -432,6 +435,8 @@ export interface GameState {
   mineTick: (nowMs: number) => void;
   /** Descend the shaft to a deeper, richer floor. */
   mineDescend: () => void;
+  /** Cast a known spell by key (costs MP). */
+  mineCast: (spellKey: string) => void;
   /** Pause the run and show the banking summary screen. */
   beginBanking: () => void;
   /** Commit the haul into the economy and close the run (death or confirmed banking). */
@@ -450,6 +455,8 @@ export interface GameState {
   beginForestBanking: () => void;
   /** Push on through the far tree line into a deeper, richer stage. */
   forestAdvance: () => void;
+  /** Cast a known spell in the forest run. */
+  forestCast: (spellKey: string) => void;
   /** Commit the haul and close the run — full on confirmed banking, halved on death. */
   endForest: () => void;
 
@@ -1690,10 +1697,53 @@ export const useGameStore = create<GameState>()(
           const free = s.settings.unlimitedEnergy;
           if (s.mining || s.character.level < MINE_UNLOCK_LEVEL) return s;
           if (!free && s.character.energy < MINE_ENERGY_COST) return s;
-          const { c } = fighterFor(s);
+
+          // Grant the stone_pickaxe if the player has no mining tool yet
+          let ownedGear = s.ownedGear;
+          let equipment = s.equipment;
+          const hasMiningTool = ownedGear.some((k) => {
+            const g = getGear(k);
+            return g?.mining != null;
+          });
+          if (!hasMiningTool) {
+            ownedGear = [...ownedGear, 'stone_pickaxe'];
+            if (!equipment.tool) {
+              equipment = { ...equipment, tool: 'stone_pickaxe' };
+            }
+          }
+
+          // Build the snapshot with the (possibly updated) equipment
+          const stateWithGear: typeof s = { ...s, ownedGear, equipment };
+          const fighter = fighterFor(stateWithGear);
+          const { c } = fighter;
+
+          // Dungeon stamina is much larger than battle stamina (50 + EN from gear)
+          const gear = gearBonuses(stateWithGear);
+          const enBonus = gear.statBonuses.EN ?? 0;
+          const maxSta = dungeonStamina(s.character.statLevels.EN + enBonus);
+
+          // Pickaxe power from equipped tool gear
+          const toolKey = equipment.tool;
+          const toolGear = toolKey ? getGear(toolKey) : undefined;
+          const pickaxePower = toolGear?.mining?.power ?? 0;
+
           const mining = generateMine(
             1,
-            { meleePower: c.meleePower, maxHp: c.maxHp, maxSta: c.maxSta },
+            {
+              meleePower: c.meleePower,
+              rangedPower: c.rangedPower,
+              damageSpell: c.damageSpell,
+              supportSpell: c.supportSpell,
+              illusionPower: c.illusionPower,
+              defense: c.defense,
+              ward: c.ward,
+              maxHp: c.maxHp,
+              maxSta,
+              maxMp: c.maxMp,
+              weapon: fighter.weapon,
+              knownSpells: s.knownSpells,
+              pickaxePower,
+            },
             Math.random,
           );
           return {
@@ -1701,6 +1751,8 @@ export const useGameStore = create<GameState>()(
               ...s.character,
               energy: free ? s.character.energy : s.character.energy - MINE_ENERGY_COST,
             },
+            ownedGear,
+            equipment,
             mining,
           };
         }),
@@ -1731,6 +1783,14 @@ export const useGameStore = create<GameState>()(
           return { mining, deepestMineFloor: Math.max(s.deepestMineFloor, mining.deepest) };
         }),
 
+      mineCast: (spellKey: string) =>
+        set((s) => {
+          if (!s.mining || s.mining.status !== 'active') return s;
+          const mining = minecastSpellFn(s.mining, spellKey, Date.now(), Math.random);
+          if (mining === s.mining) return s;
+          return { mining };
+        }),
+
       beginBanking: () =>
         set((s) =>
           s.mining && s.mining.status === 'active'
@@ -1746,10 +1806,50 @@ export const useGameStore = create<GameState>()(
           const free = s.settings.unlimitedEnergy;
           if (s.forest || s.character.level < FOREST_UNLOCK_LEVEL) return s;
           if (!free && s.character.energy < FOREST_ENERGY_COST) return s;
-          const { c } = fighterFor(s);
+
+          // Grant the stone_pickaxe (toolkit) if the player has no tool yet
+          let ownedGear = s.ownedGear;
+          let equipment = s.equipment;
+          const hasAnyTool = ownedGear.some((k) => {
+            const g = getGear(k);
+            return g?.chopping != null || g?.mining != null;
+          });
+          if (!hasAnyTool) {
+            ownedGear = [...ownedGear, 'stone_pickaxe'];
+            if (!equipment.tool) {
+              equipment = { ...equipment, tool: 'stone_pickaxe' };
+            }
+          }
+
+          const stateWithGear: typeof s = { ...s, ownedGear, equipment };
+          const fighter = fighterFor(stateWithGear);
+          const { c } = fighter;
+          const gear = gearBonuses(stateWithGear);
+          const enBonus = gear.statBonuses.EN ?? 0;
+          const maxSta = dungeonStamina(s.character.statLevels.EN + enBonus);
+
+          // Chopping power from equipped tool gear
+          const toolKey = equipment.tool;
+          const toolGear = toolKey ? getGear(toolKey) : undefined;
+          const chopPower = toolGear?.chopping?.power ?? 0;
+
           const forest = generateForest(
             1,
-            { meleePower: c.meleePower, maxHp: c.maxHp, maxSta: c.maxSta },
+            {
+              meleePower: c.meleePower,
+              rangedPower: c.rangedPower,
+              damageSpell: c.damageSpell,
+              supportSpell: c.supportSpell,
+              illusionPower: c.illusionPower,
+              defense: c.defense,
+              ward: c.ward,
+              maxHp: c.maxHp,
+              maxSta,
+              maxMp: c.maxMp,
+              weapon: fighter.weapon,
+              knownSpells: s.knownSpells,
+              chopPower,
+            },
             Math.random,
           );
           return {
@@ -1757,6 +1857,8 @@ export const useGameStore = create<GameState>()(
               ...s.character,
               energy: free ? s.character.energy : s.character.energy - FOREST_ENERGY_COST,
             },
+            ownedGear,
+            equipment,
             forest,
           };
         }),
@@ -1794,6 +1896,14 @@ export const useGameStore = create<GameState>()(
           const forest = forestAdvanceFn(s.forest, Math.random);
           if (forest === s.forest) return s;
           return { forest, deepestForestStage: Math.max(s.deepestForestStage, forest.deepest) };
+        }),
+
+      forestCast: (spellKey: string) =>
+        set((s) => {
+          if (!s.forest || s.forest.status !== 'active') return s;
+          const forest = forestCastSpellFn(s.forest, spellKey, Date.now(), Math.random);
+          if (forest === s.forest) return s;
+          return { forest };
         }),
 
       // Death forfeits half the haul; a confirmed bank keeps it all.

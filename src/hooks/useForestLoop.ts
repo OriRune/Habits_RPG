@@ -1,5 +1,5 @@
 // The forest's real-time clock. It holds no game state — it just decides *when* to fire the
-// store's discrete forest actions (move / act / beast tick) based on a requestAnimationFrame
+// store's discrete forest actions (move / act / spell / beast tick) based on a requestAnimationFrame
 // clock and which keys/buttons are held. All rules live in the pure engine (src/engine/forest.ts).
 import { useEffect, useRef } from 'react';
 import { useGameStore } from '@/store/useGameStore';
@@ -22,8 +22,10 @@ export interface ForestControlsApi {
   press: (dir: Dir) => void;
   /** Release a held direction. */
   release: (dir: Dir) => void;
-  /** Queue a single act (slash / gather / cut). */
+  /** Queue a single act (slash / gather). */
   act: () => void;
+  /** Cast a spell by key (from ability bar buttons). */
+  castSpell: (key: string) => void;
 }
 
 /** Drives an active Wild Forest run. Mount once inside the run overlay. */
@@ -31,6 +33,7 @@ export function useForestLoop(): ForestControlsApi {
   const held = useRef<Set<Dir>>(new Set());
   const lastDir = useRef<Dir | null>(null);
   const actQueued = useRef(false);
+  const spellQueue = useRef<string | null>(null);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -43,6 +46,18 @@ export function useForestLoop(): ForestControlsApi {
       }
       if (e.key === ' ' || e.key === 'Enter') {
         actQueued.current = true;
+        e.preventDefault();
+        return;
+      }
+      // Number keys 1-4 cast spell slots
+      if (e.key >= '1' && e.key <= '4') {
+        const store = useGameStore.getState();
+        const run = store.forest;
+        if (run) {
+          const idx = parseInt(e.key, 10) - 1;
+          const spell = run.knownSpells[idx];
+          if (spell) spellQueue.current = spell;
+        }
         e.preventDefault();
       }
     };
@@ -63,10 +78,16 @@ export function useForestLoop(): ForestControlsApi {
       const run = store.forest;
       if (!run || run.status !== 'active' || document.hidden) return;
 
+      // Spell cast (instant, gated by engine's SPELL_CD_MS)
+      if (spellQueue.current) {
+        store.forestCast(spellQueue.current);
+        spellQueue.current = null;
+      }
+
       if (actQueued.current && now - lastAct >= ACT_INTERVAL_MS) {
         actQueued.current = false;
         lastAct = now;
-        // On the tree line, the action key pushes deeper instead of slashing thin air.
+        // On the tree line, the action key pushes deeper instead of acting.
         if (canAdvance(run)) store.forestAdvance();
         else store.forestAct();
       }
@@ -102,6 +123,9 @@ export function useForestLoop(): ForestControlsApi {
     release: (dir) => held.current.delete(dir),
     act: () => {
       actQueued.current = true;
+    },
+    castSpell: (key) => {
+      spellQueue.current = key;
     },
   };
 }

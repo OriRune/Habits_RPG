@@ -1,5 +1,5 @@
 // The only real-time code in the app. It holds no game state — it just decides *when*
-// to fire the store's discrete mining actions (move / strike / monster tick) based on a
+// to fire the store's discrete mining actions (move / strike / cast / monster tick) based on a
 // requestAnimationFrame clock and which keys/buttons are held. All rules live in the pure
 // engine (src/engine/mining.ts); this is purely the "when".
 import { useEffect, useRef } from 'react';
@@ -25,6 +25,8 @@ export interface MiningControls {
   release: (dir: Dir) => void;
   /** Queue a single pick swing. */
   swing: () => void;
+  /** Cast a spell by key (from ability bar buttons). */
+  castSpell: (key: string) => void;
 }
 
 /** Drives an active Deep Mine run. Mount once inside the run overlay. */
@@ -32,6 +34,7 @@ export function useMiningLoop(): MiningControls {
   const held = useRef<Set<Dir>>(new Set());
   const lastDir = useRef<Dir | null>(null);
   const strikeQueued = useRef(false);
+  const spellQueue = useRef<string | null>(null);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -44,6 +47,18 @@ export function useMiningLoop(): MiningControls {
       }
       if (e.key === ' ' || e.key === 'Enter') {
         strikeQueued.current = true;
+        e.preventDefault();
+        return;
+      }
+      // Number keys 1-4 cast spell slots
+      if (e.key >= '1' && e.key <= '4') {
+        const store = useGameStore.getState();
+        const run = store.mining;
+        if (run) {
+          const idx = parseInt(e.key, 10) - 1;
+          const spell = run.knownSpells[idx];
+          if (spell) spellQueue.current = spell;
+        }
         e.preventDefault();
       }
     };
@@ -63,6 +78,12 @@ export function useMiningLoop(): MiningControls {
       const store = useGameStore.getState();
       const run = store.mining;
       if (!run || run.status !== 'active' || document.hidden) return;
+
+      // Spell cast (instant, gated by spell's own SPELL_CD_MS in the engine)
+      if (spellQueue.current) {
+        store.mineCast(spellQueue.current);
+        spellQueue.current = null;
+      }
 
       if (strikeQueued.current && now - lastSwing >= SWING_INTERVAL_MS) {
         strikeQueued.current = false;
@@ -103,6 +124,9 @@ export function useMiningLoop(): MiningControls {
     release: (dir) => held.current.delete(dir),
     swing: () => {
       strikeQueued.current = true;
+    },
+    castSpell: (key) => {
+      spellQueue.current = key;
     },
   };
 }

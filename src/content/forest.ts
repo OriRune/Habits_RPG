@@ -51,6 +51,12 @@ export interface ForestBeastDef {
   moveCadenceMs: number;
   aggroRadius: number;
   bounty: [number, number];
+  /** Physical/magical mitigation. */
+  defense?: number;
+  /** Stats this beast is vulnerable to (higher damage). */
+  weakTo?: string[];
+  /** Stats this beast resists (lower damage). */
+  resistTo?: string[];
 }
 
 export const FOREST_NODES: Record<string, ForestNodeDef> = {
@@ -72,22 +78,44 @@ export const FOREST_NODES: Record<string, ForestNodeDef> = {
   },
   spring: {
     key: 'spring', name: 'Cool Spring', glyph: '💧', color: '#22d3ee',
-    stageMin: 1, weight: 0, grants: { kind: 'stamina', amount: [11, 11] },
+    stageMin: 1, weight: 1, grants: { kind: 'stamina', amount: [12, 16] },
+  },
+  ancient_spring: {
+    key: 'ancient_spring', name: 'Ancient Spring', glyph: '🌊', color: '#06b6d4',
+    stageMin: 4, weight: 0, grants: { kind: 'stamina', amount: [20, 25] },
   },
 };
 
 export const FOREST_BEASTS: Record<string, ForestBeastDef> = {
   wild_boar: {
     key: 'wild_boar', name: 'Wild Boar', glyph: '🐗', color: '#8a6a4a',
-    stageMin: 1, hp: 8, touchDamage: 4, moveCadenceMs: 620, aggroRadius: 3, bounty: [1, 4],
+    stageMin: 1, hp: 10, touchDamage: 4, moveCadenceMs: 620, aggroRadius: 3, bounty: [1, 4],
+    weakTo: ['ST'],
   },
   gray_wolf: {
     key: 'gray_wolf', name: 'Gray Wolf', glyph: '🐺', color: '#7a8590',
-    stageMin: 2, hp: 12, touchDamage: 6, moveCadenceMs: 440, aggroRadius: 4, bounty: [3, 8],
+    stageMin: 2, hp: 14, touchDamage: 6, moveCadenceMs: 400, aggroRadius: 4, bounty: [3, 8],
+    weakTo: ['DX'],
+  },
+  forest_spider: {
+    key: 'forest_spider', name: 'Forest Spider', glyph: '🕷', color: '#4a3a6a',
+    stageMin: 3, hp: 12, touchDamage: 5, moveCadenceMs: 350, aggroRadius: 3, bounty: [2, 6],
+    weakTo: ['DX', 'WI'],
   },
   forest_bear: {
     key: 'forest_bear', name: 'Forest Bear', glyph: '🐻', color: '#6a4a2a',
-    stageMin: 5, hp: 24, touchDamage: 12, moveCadenceMs: 520, aggroRadius: 3, bounty: [9, 16],
+    stageMin: 5, hp: 30, touchDamage: 14, moveCadenceMs: 520, aggroRadius: 3, bounty: [9, 18],
+    defense: 2, weakTo: ['ST'],
+  },
+  dire_wolf: {
+    key: 'dire_wolf', name: 'Dire Wolf', glyph: '🐺', color: '#4a5060',
+    stageMin: 7, hp: 22, touchDamage: 10, moveCadenceMs: 320, aggroRadius: 5, bounty: [10, 20],
+    weakTo: ['WI'], resistTo: ['DX'],
+  },
+  ancient_guardian: {
+    key: 'ancient_guardian', name: 'Ancient Guardian', glyph: '🌳', color: '#2a6a3a',
+    stageMin: 10, hp: 55, touchDamage: 18, moveCadenceMs: 600, aggroRadius: 2, bounty: [20, 35],
+    defense: 5, resistTo: ['DX'], weakTo: ['ST'],
   },
 };
 

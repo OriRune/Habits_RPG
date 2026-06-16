@@ -7,6 +7,8 @@ import { type BattleState } from '@/engine/combat';
 import { type DungeonRoom, merchantOffers } from '@/engine/dungeon';
 import { type FloorMap } from '@/engine/dungeonMap';
 import { type MineState, type MineTile } from '@/engine/mining';
+import { getWeapon, STARTER_WEAPON } from '@/engine/weapons';
+import { STA_REGEN_MS, MP_REGEN_MS } from '@/engine/crawl';
 import { type ForestState, type ForestTile } from '@/engine/forest';
 import { getEncounter, startEncounter } from '@/engine/encounters';
 import { toISODate, weekKey } from '@/engine/date';
@@ -741,8 +743,20 @@ describe('deep mine', () => {
     return {
       floor: 1, rows, cols, tiles,
       player: { r: 2, c: 2, facing: 'right' },
-      hp: 50, maxHp: 50, sta: 10, maxSta: 10, meleePower: 5,
+      hp: 50, maxHp: 50,
+      sta: 55, maxSta: 55,
+      mp: 8, maxMp: 8,
+      staNextRegenMs: STA_REGEN_MS,
+      mpNextRegenMs: MP_REGEN_MS,
+      meleePower: 5, rangedPower: 3,
+      damageSpell: 2, supportSpell: 2, illusionPower: 1,
+      defense: 0, ward: 0,
+      weapon: getWeapon(STARTER_WEAPON),
+      knownSpells: [],
+      pickaxePower: 1,
       monsters: [], haul: {}, status: 'active', lastHitAtMs: -1000, deepest: 1, killsThisFloor: 0,
+      runes: [], ringOfFire: null, ringNextHitMs: {}, playerStatuses: [],
+      lastSpellMs: -1000, nextRuneId: 1,
       ...over,
     };
   }
@@ -827,8 +841,20 @@ describe('wild forest', () => {
       stage: 1, rows, cols, tiles,
       seen: Array.from({ length: rows }, () => new Array(cols).fill(true)),
       player: { r: 2, c: 2, facing: 'right' },
-      hp: 50, maxHp: 50, sta: 10, maxSta: 10, meleePower: 5,
+      hp: 50, maxHp: 50,
+      sta: 55, maxSta: 55,
+      mp: 8, maxMp: 8,
+      staNextRegenMs: STA_REGEN_MS,
+      mpNextRegenMs: MP_REGEN_MS,
+      meleePower: 5, rangedPower: 3,
+      damageSpell: 2, supportSpell: 2, illusionPower: 1,
+      defense: 0, ward: 0,
+      weapon: getWeapon(STARTER_WEAPON),
+      knownSpells: [],
+      chopPower: 1,
       beasts: [], haul: {}, status: 'active', lastHitAtMs: -1000, deepest: 1, killsThisStage: 0,
+      runes: [], ringOfFire: null, ringNextHitMs: {}, playerStatuses: [],
+      lastSpellMs: -1000, nextRuneId: 1,
       ...over,
     };
   }

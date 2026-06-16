@@ -1,46 +1,98 @@
 import { useState, useEffect, useRef } from 'react';
-import { Heart, Zap, Coins, ChevronsDown, LogOut, Pickaxe, Hammer, Gem } from 'lucide-react';
+import { Heart, Zap, Coins, ChevronsDown, LogOut, Gem, Sparkles } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { useMiningLoop } from '@/hooks/useMiningLoop';
 import { canDescend, facedCell, type MineTile, type MineMonster } from '@/engine/mining';
+import { cameraWindow, VIEW } from '@/engine/crawl';
+import { useSmoothCamera, type SmoothCameraLayout } from '@/hooks/useSmoothCamera';
 import { MINE_ORES, MINE_MONSTERS } from '@/content/mining';
+import { getSpell } from '@/engine/spells';
 import { mineRockSprite, mineFloorTile, mineOreSprite } from '@/lib/minigameArt';
 import { getMaterial } from '@/engine/materials';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/cn';
 import { MineControls } from './MineControls';
+import { CrawlerAvatar } from '@/components/minigame/CrawlerAvatar';
 
-const CELL = 48; // px per tile
+const CELL = 52;
+const BOARD_PX = VIEW * CELL;
+const MARGIN = 1;
+const RENDER_VIEW = VIEW + 2 * MARGIN;
 
-const TILE_STYLE: Record<MineTile['kind'], React.CSSProperties> = {
-  bedrock: {
-    backgroundColor: '#1a1410',
-    backgroundImage: 'repeating-linear-gradient(45deg, rgba(255,255,255,0.04) 0px, rgba(255,255,255,0.04) 1px, transparent 1px, transparent 6px)',
-  },
-  rock: {
-    backgroundColor: '#4a3a29',
-    backgroundImage: 'repeating-linear-gradient(135deg, rgba(0,0,0,0.18) 0px, rgba(0,0,0,0.18) 1px, transparent 1px, transparent 6px)',
-  },
-  floor: { backgroundColor: '#2a1e12' },
-  entrance: { backgroundColor: '#6b5320' },
-  shaft: { backgroundColor: '#1c2a30' },
-  ore: { backgroundColor: '#3a2c1c' },
-};
+/** Deterministic 0..1 hash for a cell — stable across renders. */
+function cellHash(r: number, c: number): number {
+  let h = (Math.imul(r, 73856093) ^ Math.imul(c, 19349663)) >>> 0;
+  h ^= h >>> 13;
+  return (h % 1000) / 1000;
+}
+
+/** Per-cell floor background with decal variety. */
+function floorStyle(r: number, c: number): React.CSSProperties {
+  const j1 = cellHash(r * 3 + 1, c * 3 + 2);
+  const j2 = cellHash(r + 11, c + 5);
+  const j3 = cellHash(r + 3, c + 8);
+  const tint = 0.88 + 0.22 * cellHash(r, c);
+  const base = Math.round(42 * tint);
+  const baseG = Math.round(30 * tint);
+  const baseB = Math.round(18 * tint);
+
+  let extra = '';
+  if (j1 < 0.12) {
+    // Crack streak
+    const ang = Math.floor(j2 * 120) + 30;
+    extra = `linear-gradient(${ang}deg, transparent 44%, rgba(0,0,0,0.28) 46%, rgba(0,0,0,0.28) 54%, transparent 56%),`;
+  } else if (j1 < 0.24) {
+    // Pebble cluster
+    const px = Math.floor(j2 * 70) + 15;
+    const py = Math.floor(j3 * 70) + 15;
+    extra = `radial-gradient(circle at ${px}% ${py}%, rgba(80,60,40,0.55) 0%, transparent 18%),`;
+  } else if (j1 < 0.34) {
+    // Mineral speck
+    const px = Math.floor(j3 * 60) + 20;
+    const py = Math.floor(j2 * 60) + 20;
+    extra = `radial-gradient(circle at ${px}% ${py}%, rgba(140,120,90,0.40) 0%, transparent 12%),`;
+  }
+
+  return {
+    backgroundColor: `rgb(${base},${baseG},${baseB})`,
+    backgroundImage:
+      extra +
+      'radial-gradient(circle at 50% 50%, rgba(60,44,26,0.28) 0%, transparent 68%)',
+  };
+}
+
+/** Rock tile style — richer variation so walls look craggy. */
+function rockStyle(r: number, c: number): React.CSSProperties {
+  const j = cellHash(r, c);
+  const m = 0.78 + 0.36 * j;
+  const jc = cellHash(r + 5, c + 3);
+  const R = Math.round(Math.min(255, 74 * m));
+  const G = Math.round(Math.min(255, 58 * m));
+  const B = Math.round(Math.min(255, 41 * m));
+  const cragX = Math.floor(jc * 80) + 10;
+  const cragY = Math.floor(cellHash(r + 2, c + 7) * 80) + 10;
+  return {
+    backgroundColor: `rgb(${R},${G},${B})`,
+    backgroundImage:
+      `radial-gradient(circle at ${cragX}% ${cragY}%, rgba(255,255,255,0.07) 0%, transparent 38%),` +
+      'repeating-linear-gradient(135deg, rgba(0,0,0,0.20) 0px, rgba(0,0,0,0.20) 1px, transparent 1px, transparent 5px),' +
+      'repeating-linear-gradient(45deg, rgba(0,0,0,0.10) 0px, rgba(0,0,0,0.10) 1px, transparent 1px, transparent 8px)',
+  };
+}
 
 type LootPop = { key: string; r: number; c: number; at: number; text: string; color: string };
 
 function OreIcon({ oreKey, color }: { oreKey: string; color: string }) {
-  const style = { color };
-  if (oreKey === 'bronze_vein') return <Pickaxe className="h-6 w-6" style={style} />;
-  if (oreKey === 'iron_vein') return <Hammer className="h-6 w-6" style={style} />;
-  if (oreKey === 'gold_vein') return <Coins className="h-6 w-6" style={style} />;
-  if (oreKey === 'energy_gem') return <Zap className="h-6 w-6" style={style} />;
-  if (oreKey === 'crystal_node' || oreKey === 'gemstone_node') return <Gem className="h-6 w-6" style={style} />;
+  if (oreKey === 'gold_vein') return <Coins className="h-6 w-6" style={{ color }} />;
+  if (oreKey === 'energy_gem') return <Zap className="h-6 w-6" style={{ color }} />;
+  if (oreKey === 'crystal_node' || oreKey === 'gemstone_node') return <Gem className="h-6 w-6" style={{ color }} />;
   const ore = MINE_ORES[oreKey];
-  return <span style={style}>{ore?.glyph ?? '?'}</span>;
+  return <span style={{ color }}>{ore?.glyph ?? '?'}</span>;
 }
 
-function Gauge({ icon, value, max, fill }: { icon: React.ReactNode; value: number; max: number; fill: string }) {
+function Gauge({
+  icon, value, max, fill,
+}: { icon: React.ReactNode; value: number; max: number; fill: string }) {
   const pct = max > 0 ? Math.max(0, Math.min(100, Math.round((value / max) * 100))) : 0;
   return (
     <div className="flex items-center gap-1.5">
@@ -62,6 +114,21 @@ export function MineRunOverlay() {
   const beginBanking = useGameStore((s) => s.beginBanking);
   const mineDescend = useGameStore((s) => s.mineDescend);
 
+  // Smooth-camera refs
+  const worldRef = useRef<HTMLDivElement>(null);
+  const playerRef = useRef<HTMLDivElement | null>(null);
+  const moverRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
+  const layoutRef = useRef<SmoothCameraLayout>({
+    baseR0: 0, baseC0: 0, playerR: 0, playerC: 0, rows: 33, cols: 33,
+    movers: [], snapKey: 0,
+  });
+  useSmoothCamera(worldRef, playerRef, moverRefs, layoutRef, { CELL, VIEW });
+
+  // Moving flag — true for ~250 ms after any player step
+  const [moving, setMoving] = useState(false);
+  const prevPosRef = useRef<{ r: number; c: number } | null>(null);
+  const movingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const [pops, setPops] = useState<Array<{ key: string; r: number; c: number; at: number }>>([]);
   const [lootPops, setLootPops] = useState<LootPop[]>([]);
   const prevRef = useRef<{
@@ -69,12 +136,24 @@ export function MineRunOverlay() {
     monsters: MineMonster[];
     haul: { gold?: number; materials?: Record<string, number> };
     sta: number;
+    hp: number;
   } | null>(null);
 
   useEffect(() => {
-    if (!mine) { prevRef.current = null; return; }
+    if (!mine) { prevRef.current = null; prevPosRef.current = null; return; }
+
+    // Moving detection
+    const pos = mine.player;
+    const prev2 = prevPosRef.current;
+    if (prev2 && (prev2.r !== pos.r || prev2.c !== pos.c)) {
+      setMoving(true);
+      if (movingTimerRef.current) clearTimeout(movingTimerRef.current);
+      movingTimerRef.current = setTimeout(() => setMoving(false), 250);
+    }
+    prevPosRef.current = { r: pos.r, c: pos.c };
+
     const prev = prevRef.current;
-    prevRef.current = { tiles: mine.tiles, monsters: mine.monsters, haul: mine.haul, sta: mine.sta };
+    prevRef.current = { tiles: mine.tiles, monsters: mine.monsters, haul: mine.haul, sta: mine.sta, hp: mine.hp };
     if (!prev) return;
     const now = Date.now();
     const newPops: Array<{ key: string; r: number; c: number; at: number }> = [];
@@ -100,24 +179,28 @@ export function MineRunOverlay() {
       setTimeout(() => setPops((ps) => ps.filter((p) => Date.now() - p.at < 550)), 600);
     }
     if (eventPos) {
-      const pos = eventPos as { r: number; c: number };
+      const pos2 = eventPos as { r: number; c: number };
       const newLootPops: LootPop[] = [];
       const goldDelta = (mine.haul.gold ?? 0) - (prev.haul.gold ?? 0);
       if (goldDelta > 0) {
-        newLootPops.push({ key: `lg-${now}`, ...pos, at: now, text: `+${goldDelta} gold`, color: '#e8c860' });
+        newLootPops.push({ key: `lg-${now}`, ...pos2, at: now, text: `+${goldDelta} gold`, color: '#e8c860' });
       } else {
         for (const [matKey, val] of Object.entries(mine.haul.materials ?? {})) {
           const delta = val - ((prev.haul.materials ?? {})[matKey] ?? 0);
           if (delta > 0) {
             const mat = getMaterial(matKey);
-            newLootPops.push({ key: `lm-${now}`, ...pos, at: now, text: `+${delta} ${mat?.name ?? matKey}`, color: mat?.color ?? '#f3e7c9' });
+            newLootPops.push({
+              key: `lm-${now}`, ...pos2, at: now,
+              text: `+${delta} ${mat?.name ?? matKey}`,
+              color: mat?.color ?? '#f3e7c9',
+            });
             break;
           }
         }
       }
       const netSta = mine.sta - prev.sta;
       if (netSta > 0) {
-        newLootPops.push({ key: `ls-${now}`, ...pos, at: now, text: `+${netSta} sta`, color: '#22d3ee' });
+        newLootPops.push({ key: `ls-${now}`, ...pos2, at: now, text: `+${netSta} sta`, color: '#22d3ee' });
       }
       if (newLootPops.length > 0) {
         setLootPops((ps) => [...ps.filter((p) => now - p.at < 1400), ...newLootPops]);
@@ -128,27 +211,56 @@ export function MineRunOverlay() {
 
   if (!mine) return null;
 
+  const dead = mine.status === 'ended';
   const onShaft = canDescend(mine);
   const faced = facedCell(mine);
   const haulMats = Object.entries(mine.haul.materials ?? {}).filter(([, n]) => n > 0);
-  const width = mine.cols * CELL;
-  const height = mine.rows * CELL;
+
+  const { r0, c0 } = cameraWindow(mine.player, mine.rows, mine.cols);
+  const baseR0 = Math.max(0, r0 - MARGIN);
+  const baseC0 = Math.max(0, c0 - MARGIN);
+
+  const inView = (mr: number, mc: number) => {
+    const vi = mr - baseR0;
+    const vj = mc - baseC0;
+    return vi >= 0 && vi < RENDER_VIEW && vj >= 0 && vj < RENDER_VIEW;
+  };
+
+  layoutRef.current = {
+    baseR0,
+    baseC0,
+    playerR: mine.player.r,
+    playerC: mine.player.c,
+    rows: mine.rows,
+    cols: mine.cols,
+    snapKey: mine.floor,
+    movers: mine.monsters
+      .filter((m) => inView(m.r, m.c))
+      .map((m) => ({ id: m.id, r: m.r, c: m.c })),
+  };
+
+  // Torch glow in world-container space
+  const lightX = (mine.player.c - baseC0) * CELL + CELL / 2;
+  const lightY = (mine.player.r - baseR0) * CELL + CELL / 2;
 
   return (
     <div className="texture-wood fixed inset-0 z-50 flex flex-col items-center gap-3 overflow-auto px-4 py-4">
       {/* HUD */}
-      <div className="flex w-full max-w-md items-center justify-between gap-3">
+      <div className="flex w-full max-w-lg items-center justify-between gap-3">
         <span className="font-display text-sm font-bold text-gold-bright">
           The Deep Mine · Floor {mine.floor}
         </span>
         <div className="flex flex-col items-end gap-1">
           <Gauge icon={<Heart className="h-3.5 w-3.5 text-stat-HP" />} value={mine.hp} max={mine.maxHp} fill="#2e8a5e" />
           <Gauge icon={<Zap className="h-3.5 w-3.5 text-stat-AG" />} value={mine.sta} max={mine.maxSta} fill="#b8860b" />
+          {mine.maxMp > 0 && (
+            <Gauge icon={<Sparkles className="h-3.5 w-3.5 text-blue-400" />} value={mine.mp} max={mine.maxMp} fill="#4f7ed4" />
+          )}
         </div>
       </div>
 
       {/* Haul */}
-      <div className="flex w-full max-w-md flex-wrap items-center gap-x-3 gap-y-1 text-xs text-parchment-200">
+      <div className="flex w-full max-w-lg flex-wrap items-center gap-x-3 gap-y-1 text-xs text-parchment-200">
         <span className="font-display uppercase tracking-wider text-parchment-300/70">Haul</span>
         <span className="flex items-center gap-1 text-gold-bright">
           <Coins className="h-3.5 w-3.5" /> {mine.haul.gold ?? 0}
@@ -163,58 +275,88 @@ export function MineRunOverlay() {
         )}
       </div>
 
-      {/* Cavern */}
-      <div className="relative shrink-0 rounded-md border-2 border-gold-deep/60 shadow-gold-sm" style={{ width, height }}>
+      {/* Cavern viewport */}
+      <div
+        className="relative shrink-0 overflow-hidden rounded-md border-2 border-gold-deep/60"
+        style={{
+          width: BOARD_PX,
+          height: BOARD_PX,
+          boxShadow: 'inset 0 0 56px rgba(0,0,0,0.92), 0 0 0 1px rgba(0,0,0,0.5)',
+        }}
+      >
+        {/* World container */}
+        <div ref={worldRef} className="absolute" style={{ willChange: 'transform' }}>
+
         {/* Tile layer */}
-        {mine.tiles.map((row, r) =>
-          row.map((tile, c) => {
+        {Array.from({ length: RENDER_VIEW }, (_, vi) => {
+          const r = baseR0 + vi;
+          return Array.from({ length: RENDER_VIEW }, (_, vj) => {
+            const c = baseC0 + vj;
+            const tile = mine.tiles[r]?.[c];
+            if (!tile) return null;
             const ore = tile.kind === 'ore' && tile.oreKey ? MINE_ORES[tile.oreKey] : null;
-            // Real art: cave-floor tiles paint open ground, boulders fill diggable rock, and
-            // mapped ores show their sprite. Bedrock and unmapped ores keep their CSS/glyph look.
-            const floorImg = tile.kind === 'floor' || tile.kind === 'entrance' ? mineFloorTile(r, c) : undefined;
+            const isFloor = tile.kind === 'floor' || tile.kind === 'entrance';
+            const floorImg = isFloor ? mineFloorTile(r, c) : undefined;
             const rockImg = tile.kind === 'rock' ? mineRockSprite(r, c) : undefined;
             const oreImg = ore && tile.oreKey ? mineOreSprite(tile.oreKey) : undefined;
+            const px = vj * CELL;
+            const py = vi * CELL;
+
+            const tileStyleProp: React.CSSProperties =
+              tile.kind === 'bedrock'
+                ? {
+                    backgroundColor: '#0c0803',
+                    backgroundImage:
+                      'repeating-linear-gradient(45deg, rgba(255,255,255,0.025) 0px, rgba(255,255,255,0.025) 1px, transparent 1px, transparent 8px)',
+                  }
+                : tile.kind === 'rock'
+                ? rockStyle(r, c)
+                : tile.kind === 'shaft'
+                ? { backgroundColor: '#1c2a30', backgroundImage: 'radial-gradient(circle at 50% 50%, rgba(40,180,220,0.12) 0%, transparent 65%)' }
+                : isFloor
+                ? floorImg
+                  ? {
+                      backgroundColor: '#1a1008',
+                      backgroundImage: `url(${floorImg})`,
+                      backgroundSize: 'cover',
+                      backgroundPosition: 'center',
+                      imageRendering: 'pixelated',
+                    }
+                  : floorStyle(r, c)
+                : tile.kind === 'ore'
+                ? { backgroundColor: '#3a2c1c', backgroundImage: ore ? `radial-gradient(circle at 55% 42%, ${ore.color}22 0%, transparent 60%)` : undefined }
+                : { backgroundColor: '#2a1e12' };
+
             return (
               <div
                 key={`${r}-${c}`}
-                className="absolute flex items-center justify-center text-[22px] leading-none"
+                className="absolute flex items-center justify-center text-[24px] leading-none"
                 style={{
-                  ...TILE_STYLE[tile.kind],
-                  ...(floorImg
-                    ? {
-                        backgroundColor: '#1c140d',
-                        backgroundImage: `url(${floorImg})`,
-                        backgroundSize: 'cover',
-                        backgroundPosition: 'center',
-                        imageRendering: 'pixelated',
-                      }
-                    : {}),
-                  left: c * CELL,
-                  top: r * CELL,
+                  ...tileStyleProp,
+                  left: px,
+                  top: py,
                   width: CELL,
                   height: CELL,
-                  boxShadow: tile.kind === 'bedrock'
-                    ? 'none'
-                    : ore
-                    ? `inset 0 0 0 1px rgba(0,0,0,0.25), inset 0 0 8px ${ore.color}55`
-                    : 'inset 0 0 0 1px rgba(0,0,0,0.25)',
+                  boxShadow:
+                    tile.kind === 'bedrock'
+                      ? 'none'
+                      : ore
+                      ? `inset 0 0 0 1px rgba(0,0,0,0.3), inset 0 0 10px ${ore.color}66`
+                      : tile.kind === 'rock'
+                      ? 'inset 0 0 0 1px rgba(0,0,0,0.35), inset -1px -1px 0 rgba(255,255,255,0.04)'
+                      : 'inset 0 0 0 1px rgba(0,0,0,0.22)',
                 }}
               >
                 {rockImg ? (
                   <img src={rockImg} alt="" className="pointer-events-none absolute inset-0 h-full w-full object-contain image-pixel" />
                 ) : oreImg ? (
-                  <img
-                    src={oreImg}
-                    alt={ore?.name}
-                    title={ore?.name}
-                    className="pointer-events-none absolute inset-0 h-full w-full object-contain image-pixel"
-                  />
+                  <img src={oreImg} alt={ore?.name} title={ore?.name} className="pointer-events-none absolute inset-0 h-full w-full object-contain image-pixel" />
                 ) : ore ? (
                   <OreIcon oreKey={tile.oreKey!} color={ore.color} />
                 ) : tile.kind === 'shaft' ? (
-                  <ChevronsDown className="h-6 w-6 text-cyan-300" />
+                  <ChevronsDown className="h-7 w-7 text-cyan-300" />
                 ) : tile.kind === 'entrance' ? (
-                  <span className="text-[18px] text-gold-bright">◇</span>
+                  <span className="text-[20px] text-gold-bright">◇</span>
                 ) : null}
                 {tile.maxDurability != null && tile.durability != null && tile.durability < tile.maxDurability && (
                   <div className="absolute bottom-1 left-1 right-1 h-[3px] overflow-hidden rounded-full bg-black/60">
@@ -223,79 +365,215 @@ export function MineRunOverlay() {
                 )}
               </div>
             );
-          }),
-        )}
+          });
+        })}
 
-        {/* Facing indicator — highlights the tile the player is targeting. */}
+        {/* Torch-glow vignette — deeper and more dramatic than before */}
         <div
-          className="pointer-events-none absolute z-[5]"
+          className="pointer-events-none absolute inset-0 z-[5]"
           style={{
-            width: CELL,
-            height: CELL,
-            transform: `translate(${faced.c * CELL}px, ${faced.r * CELL}px)`,
-            boxShadow: 'inset 0 0 0 2px rgba(251,191,36,0.7)',
-            transition: 'transform 150ms linear',
+            background: `radial-gradient(circle ${4.2 * CELL}px at ${lightX}px ${lightY}px, transparent 40%, rgba(8,4,1,0.38) 62%, rgba(5,2,0,0.72) 82%, rgba(2,1,0,0.90) 100%)`,
+            animation: 'mine-torch-flicker 3.2s ease-in-out infinite',
           }}
         />
 
+        {/* Stalactite shadow along the top edge */}
+        <div
+          className="pointer-events-none absolute left-0 right-0 top-0 z-[5]"
+          style={{
+            height: '15%',
+            background: 'linear-gradient(to bottom, rgba(3,2,1,0.65) 0%, transparent 100%)',
+          }}
+        />
+
+        {/* Facing indicator */}
+        {(() => {
+          const fvj = faced.c - baseC0;
+          const fvi = faced.r - baseR0;
+          if (fvi < 0 || fvi >= RENDER_VIEW || fvj < 0 || fvj >= RENDER_VIEW) return null;
+          return (
+            <div
+              className="pointer-events-none absolute z-[6]"
+              style={{
+                width: CELL,
+                height: CELL,
+                transform: `translate(${fvj * CELL}px, ${fvi * CELL}px)`,
+                boxShadow: 'inset 0 0 0 2px rgba(251,191,36,0.7)',
+                transition: 'transform 150ms linear',
+              }}
+            />
+          );
+        })()}
+
+        {/* Active runes */}
+        {mine.runes.map((rune) => {
+          const vj = rune.c - baseC0;
+          const vi = rune.r - baseR0;
+          if (vi < 0 || vi >= RENDER_VIEW || vj < 0 || vj >= RENDER_VIEW) return null;
+          const runeColors = { fire: '#ff6b35', ice: '#7dd3fc', poison: '#86efac' };
+          return (
+            <div
+              key={`rune-${rune.id}`}
+              className="pointer-events-none absolute z-[7] flex items-center justify-center text-[18px] leading-none"
+              style={{
+                width: CELL,
+                height: CELL,
+                left: vj * CELL,
+                top: vi * CELL,
+                color: runeColors[rune.kind],
+                textShadow: `0 0 8px ${runeColors[rune.kind]}`,
+              }}
+            >
+              ✦
+            </div>
+          );
+        })}
+
         {/* Destruction pops */}
-        {pops.map((p) => (
-          <div
-            key={p.key}
-            className="pointer-events-none absolute z-20 rounded-full"
-            style={{
-              width: CELL * 0.7,
-              height: CELL * 0.7,
-              left: p.c * CELL + CELL * 0.15,
-              top: p.r * CELL + CELL * 0.15,
-              backgroundColor: 'rgba(251,191,36,0.75)',
-              animation: 'mine-pop 0.5s ease-out forwards',
-            }}
-          />
-        ))}
+        {pops.map((p) => {
+          const vj = p.c - baseC0;
+          const vi = p.r - baseR0;
+          if (vi < 0 || vi >= RENDER_VIEW || vj < 0 || vj >= RENDER_VIEW) return null;
+          return (
+            <div
+              key={p.key}
+              className="pointer-events-none absolute z-20 rounded-full"
+              style={{
+                width: CELL * 0.7,
+                height: CELL * 0.7,
+                left: vj * CELL + CELL * 0.15,
+                top: vi * CELL + CELL * 0.15,
+                backgroundColor: 'rgba(251,191,36,0.75)',
+                animation: 'mine-pop 0.5s ease-out forwards',
+              }}
+            />
+          );
+        })}
 
         {/* Loot popups */}
-        {lootPops.map((p) => (
-          <div
-            key={p.key}
-            className="pointer-events-none absolute z-30 whitespace-nowrap font-display text-[13px] font-bold"
-            style={{
-              left: p.c * CELL + CELL / 2,
-              top: p.r * CELL + CELL / 2,
-              color: p.color,
-              textShadow: '0 0 6px rgba(0,0,0,1), 0 1px 3px rgba(0,0,0,0.9)',
-              animation: 'loot-float 1.4s ease-out forwards',
-            }}
-          >
-            {p.text}
-          </div>
-        ))}
+        {lootPops.map((p) => {
+          const vj = p.c - baseC0;
+          const vi = p.r - baseR0;
+          if (vi < 0 || vi >= RENDER_VIEW || vj < 0 || vj >= RENDER_VIEW) return null;
+          return (
+            <div
+              key={p.key}
+              className="pointer-events-none absolute z-30 whitespace-nowrap font-display text-[13px] font-bold"
+              style={{
+                left: vj * CELL + CELL / 2,
+                top: vi * CELL + CELL / 2,
+                color: p.color,
+                textShadow: '0 0 6px rgba(0,0,0,1), 0 1px 3px rgba(0,0,0,0.9)',
+                animation: 'loot-float 1.4s ease-out forwards',
+              }}
+            >
+              {p.text}
+            </div>
+          );
+        })}
 
-        {/* Entity layer — CSS-transitioned transforms give the tile-step a smooth glide. */}
+        {/* Monsters — rAF drives position */}
         {mine.monsters.map((m) => {
+          const vj = m.c - baseC0;
+          const vi = m.r - baseR0;
+          if (vi < 0 || vi >= RENDER_VIEW || vj < 0 || vj >= RENDER_VIEW) return null;
           const def = MINE_MONSTERS[m.key];
           return (
             <div
               key={m.id}
-              className="pointer-events-none absolute flex items-center justify-center transition-transform duration-150 ease-linear"
-              style={{ width: CELL, height: CELL, transform: `translate(${m.c * CELL}px, ${m.r * CELL}px)` }}
+              ref={(el) => {
+                if (el) moverRefs.current.set(m.id, el);
+                else moverRefs.current.delete(m.id);
+              }}
+              className="pointer-events-none absolute z-[8] flex items-center justify-center"
+              style={{ width: CELL, height: CELL, transform: `translate(${vj * CELL}px, ${vi * CELL}px)` }}
               title={def?.name}
             >
-              <span className="text-[26px] leading-none drop-shadow">{def?.glyph ?? '?'}</span>
+              <span className="text-[28px] leading-none drop-shadow">{def?.glyph ?? '?'}</span>
               {m.hp < m.maxHp && (
                 <div className="absolute -top-1.5 left-0 right-0 h-[3px] overflow-hidden rounded-full bg-black/60">
                   <div className="h-full rounded-full bg-red-400" style={{ width: `${(m.hp / m.maxHp) * 100}%` }} />
                 </div>
               )}
+              {(m.frozenUntilMs ?? 0) > Date.now() && (
+                <div className="absolute inset-0 rounded bg-blue-400/25 ring-1 ring-blue-300" />
+              )}
             </div>
           );
         })}
+
+        {/* Player — rAF drives position */}
         <div
-          className="pointer-events-none absolute z-10 flex items-center justify-center transition-transform duration-150 ease-linear"
-          style={{ width: CELL, height: CELL, transform: `translate(${mine.player.c * CELL}px, ${mine.player.r * CELL}px)` }}
+          ref={playerRef}
+          className="pointer-events-none absolute z-[9]"
+          style={{
+            width: CELL,
+            height: CELL,
+            transform: `translate(${(mine.player.c - baseC0) * CELL}px, ${(mine.player.r - baseR0) * CELL}px)`,
+          }}
         >
-          <span className="text-[27px] leading-none drop-shadow">⛏️</span>
+          <CrawlerAvatar
+            variant="miner"
+            facing={mine.player.facing}
+            moving={moving}
+            dead={dead}
+            cell={CELL}
+          />
         </div>
+
+        </div>{/* end world container */}
+
+        {/* Ambient mine atmosphere — viewport-fixed */}
+        {mine.status === 'active' && (
+          <div className="mine-ambient pointer-events-none absolute inset-0 z-[15] overflow-hidden">
+            {/* Falling dust motes */}
+            {[
+              { left: '20%', top: '2%',  size: 2, dur: '7s',  delay: '0s'   },
+              { left: '46%', top: '8%',  size: 2, dur: '10s', delay: '2.2s' },
+              { left: '72%', top: '3%',  size: 3, dur: '8s',  delay: '4.8s' },
+              { left: '34%', top: '14%', size: 2, dur: '9s',  delay: '0.8s' },
+              { left: '84%', top: '1%',  size: 2, dur: '6s',  delay: '3.0s' },
+              { left: '58%', top: '7%',  size: 2, dur: '11s', delay: '6.5s' },
+              { left: '12%', top: '11%', size: 2, dur: '8.5s',delay: '1.5s' },
+            ].map((d, i) => (
+              <div
+                key={i}
+                className="absolute rounded-full"
+                style={{
+                  left: d.left,
+                  top: d.top,
+                  width: d.size,
+                  height: d.size,
+                  backgroundColor: 'rgba(215,190,148,0.62)',
+                  filter: 'blur(0.4px)',
+                  animation: `mine-dust-fall ${d.dur} linear infinite ${d.delay}`,
+                }}
+              />
+            ))}
+            {/* Crystal sparkles — brighter and larger */}
+            {[
+              { left: '10%', top: '32%', size: 7,  dur: '4.5s', delay: '0s'   },
+              { left: '77%', top: '55%', size: 8,  dur: '6.5s', delay: '1.6s' },
+              { left: '51%', top: '18%', size: 6,  dur: '5.5s', delay: '3.0s' },
+              { left: '88%', top: '22%', size: 5,  dur: '7s',   delay: '4.8s' },
+              { left: '30%', top: '68%', size: 7,  dur: '5s',   delay: '2.5s' },
+            ].map((s, i) => (
+              <div
+                key={`sp-${i}`}
+                className="absolute rounded-full"
+                style={{
+                  left: s.left,
+                  top: s.top,
+                  width: s.size,
+                  height: s.size,
+                  background: 'radial-gradient(circle, rgba(160,220,255,0.95) 0%, rgba(110,175,240,0.50) 50%, transparent 100%)',
+                  boxShadow: '0 0 8px rgba(140,210,255,0.6)',
+                  animation: `mine-sparkle ${s.dur} ease-in-out infinite ${s.delay}`,
+                }}
+              />
+            ))}
+          </div>
+        )}
 
         {/* Banking overlay */}
         {mine.status === 'banking' && (
@@ -346,8 +624,37 @@ export function MineRunOverlay() {
         )}
       </div>
 
+      {/* Spell ability bar */}
+      {mine.knownSpells.length > 0 && mine.status === 'active' && (
+        <div className="flex w-full max-w-lg items-center gap-2">
+          <span className="font-display text-[10px] uppercase tracking-wider text-parchment-300/60">Spells</span>
+          {mine.knownSpells.slice(0, 4).map((key, i) => {
+            const spell = getSpell(key);
+            if (!spell) return null;
+            const canCast = mine.mp >= spell.mpCost;
+            return (
+              <button
+                key={key}
+                onClick={() => controls.castSpell(key)}
+                title={`${spell.name} — ${spell.description}`}
+                disabled={!canCast}
+                className={cn(
+                  'flex flex-col items-center gap-0.5 rounded border px-2 py-1 text-[11px] font-display transition-colors',
+                  canCast
+                    ? 'border-blue-400/50 bg-blue-900/40 text-blue-300 hover:bg-blue-800/50'
+                    : 'border-parchment-300/20 bg-wood-900/40 text-parchment-300/40',
+                )}
+              >
+                <span className="text-[13px]">{spell.name}</span>
+                <span className="text-[10px] text-blue-300/70">[{i + 1}] {spell.mpCost}mp</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Descend / leave */}
-      <div className="flex w-full max-w-md items-center justify-center gap-2">
+      <div className="flex w-full max-w-lg items-center justify-center gap-2">
         <Button
           variant={onShaft ? 'primary' : 'secondary'}
           onClick={mineDescend}
@@ -362,12 +669,12 @@ export function MineRunOverlay() {
       </div>
 
       {/* Touch controls */}
-      <div className="w-full max-w-md">
+      <div className="w-full max-w-lg">
         <MineControls controls={controls} />
       </div>
 
       <p className="text-center text-[10px] text-parchment-300/50">
-        Move: arrow keys / WASD · Mine: space · or use the pad above. Stand on the{' '}
+        Move: arrow keys / WASD · Mine/Attack: space · Spells: 1–4 or tap above · Stand on{' '}
         <ChevronsDown className="inline h-3 w-3 text-cyan-300" /> shaft to descend.
       </p>
     </div>

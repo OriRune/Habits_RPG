@@ -48,6 +48,12 @@ export interface MineMonsterDef {
   touchDamage: number;
   moveCadenceMs: number;
   bounty: [number, number];
+  /** Physical defense (reduces weapon damage). Default 0. */
+  defense?: number;
+  /** Stats this monster takes bonus damage from (×1.25). */
+  weakTo?: string[];
+  /** Stats this monster resists (×0.6). */
+  resistTo?: string[];
 }
 
 export const MINE_ORES: Record<string, MineOreDef> = {
@@ -84,15 +90,28 @@ export const MINE_ORES: Record<string, MineOreDef> = {
 export const MINE_MONSTERS: Record<string, MineMonsterDef> = {
   cave_slug: {
     key: 'cave_slug', name: 'Cave Slug', glyph: '🐛', color: '#5e8a2e',
-    floorMin: 1, hp: 6, touchDamage: 4, moveCadenceMs: 950, bounty: [1, 4],
+    floorMin: 1, hp: 8, touchDamage: 4, moveCadenceMs: 950, bounty: [1, 4],
+    weakTo: ['ST'],
   },
   rock_biter: {
     key: 'rock_biter', name: 'Rock Biter', glyph: '👹', color: '#9c3a25',
-    floorMin: 3, hp: 12, touchDamage: 7, moveCadenceMs: 700, bounty: [4, 9],
+    floorMin: 3, hp: 18, touchDamage: 7, moveCadenceMs: 700, bounty: [4, 9],
+    defense: 2, weakTo: ['DX'],
   },
   deep_lurker: {
     key: 'deep_lurker', name: 'Deep Lurker', glyph: '🦇', color: '#6a4fb0',
-    floorMin: 7, hp: 20, touchDamage: 11, moveCadenceMs: 520, bounty: [10, 18],
+    floorMin: 6, hp: 28, touchDamage: 10, moveCadenceMs: 520, bounty: [10, 18],
+    defense: 1, resistTo: ['ST'], weakTo: ['WI'],
+  },
+  stone_golem: {
+    key: 'stone_golem', name: 'Stone Golem', glyph: '🪨', color: '#8a7a6a',
+    floorMin: 10, hp: 50, touchDamage: 15, moveCadenceMs: 850, bounty: [20, 35],
+    defense: 6, resistTo: ['DX'], weakTo: ['ST'],
+  },
+  cave_spider: {
+    key: 'cave_spider', name: 'Cave Spider', glyph: '🕷️', color: '#6a3a6a',
+    floorMin: 4, hp: 14, touchDamage: 8, moveCadenceMs: 400, bounty: [5, 12],
+    weakTo: ['DX', 'WI'],
   },
 };
 

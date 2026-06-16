@@ -1,44 +1,110 @@
-// Lockpicking trial engine (pure, no React).
-// A sliding cursor bounces across a bar; the player taps to "set" each pin
-// while the cursor is inside the pin's target zone.
+// Lockpicking trial engine — Skyrim-style (pure, no React).
+// Player rotates a pick across a 180° semicircle to find a hidden sweet spot,
+// then applies torque. The cylinder turns proportionally to how close the pick
+// is to the sweet spot. Sustained torque against a jam snaps the pick.
 
-export const LOCK_PINS = 3;
-/** Zone width as a fraction of bar width — shrinks each pin. */
-export const BASE_ZONE_WIDTH = 0.22;
-export const ZONE_SHRINK = 0.028; // subtract per pin index
+export const NUM_LOCKS = 3;
+export const PICK_BUDGET = 6;
 
-/** Cursor speed (units/sec) per pin — escalates from slow to fast. */
-export const CURSOR_SPEEDS = [0.42, 0.65, 0.90] as const;
-/** Random ±fraction applied to speed on each wall bounce — prevents pure muscle-memory. */
-export const CURSOR_JITTER = 0.08;
+export const PICK_MIN_DEG = 0;
+export const PICK_MAX_DEG = 180;
+export const CYLINDER_OPEN_DEG = 90;
 
-/** How far the cursor is off-center (0 = perfect, 0.5 = at zone edge). */
-export function hitAccuracy(cursor: number, zoneStart: number, zoneWidth: number): number {
-  const center = zoneStart + zoneWidth / 2;
-  const half = zoneWidth / 2;
-  return Math.max(0, 1 - Math.abs(cursor - center) / half);
+/** Base tolerance (°) per lock — the half-width of the "turn zone". Narrows each lock. */
+export const BASE_TOLERANCE_DEG = [22, 16, 11] as const;
+/** Must be within this many degrees of the sweet spot for the cylinder to reach 90° (open). */
+export const BASE_OPEN_TOLERANCE_DEG = [7, 5, 3.5] as const;
+
+/** Added to tolerance (°) per character level — higher level = more forgiving. */
+export const LEVEL_TOLERANCE_BONUS = 0.6;
+/** Open-tolerance gets a smaller share of the level bonus. */
+export const LEVEL_OPEN_TOLERANCE_BONUS = 0.2;
+
+/** Speed at which the cylinder rotates (°/sec). */
+export const CYLINDER_TURN_SPEED = 180;
+/** Speed at which the cylinder springs back to 0 when torque is released (°/sec). */
+export const CYLINDER_RETURN_SPEED = 240;
+
+/** Pick rotation speed when driven by keyboard (°/sec). */
+export const PICK_KEY_SPEED = 90;
+
+/**
+ * How long (seconds) sustained torque-against-jam breaks the pick.
+ * At max distance from sweet spot → BREAK_TIME_MIN; at edge of tolerance → BREAK_TIME_MAX.
+ */
+export const BREAK_TIME_MIN = 0.55;
+export const BREAK_TIME_MAX = 3.5;
+
+/** Max shake offset (px) applied on a jam frame. */
+export const SHAKE_AMPLITUDE = 6;
+
+export interface LockConfig {
+  sweetSpotDeg: number;
+  toleranceDeg: number;
+  openToleranceDeg: number;
 }
 
-export interface LockPin {
-  /** Left edge of the target zone (0..1). */
-  zoneStart: number;
-  /** Width of the target zone (0..1). */
-  zoneWidth: number;
+/** Compute per-lock tolerance values, widened by character level. */
+export function lockTolerance(lockIndex: number, level: number): { toleranceDeg: number; openToleranceDeg: number } {
+  const bonus = Math.max(0, level - 1) * LEVEL_TOLERANCE_BONUS;
+  const openBonus = Math.max(0, level - 1) * LEVEL_OPEN_TOLERANCE_BONUS;
+  return {
+    toleranceDeg: BASE_TOLERANCE_DEG[lockIndex] + bonus,
+    openToleranceDeg: BASE_OPEN_TOLERANCE_DEG[lockIndex] + openBonus,
+  };
 }
 
-/** Deterministic pin layout for a given seeded rng. */
-export function generatePins(rng: () => number): LockPin[] {
-  return Array.from({ length: LOCK_PINS }, (_, i) => {
-    const zoneWidth = Math.max(0.08, BASE_ZONE_WIDTH - i * ZONE_SHRINK);
-    // Keep zone fully inside [0, 1 - zoneWidth] so it always fits.
-    const zoneStart = rng() * (1 - zoneWidth);
-    return { zoneStart, zoneWidth };
+/** Generate NUM_LOCKS configs. Sweet spots randomised, always reachable. */
+export function generateLocks(rng: () => number, level: number): LockConfig[] {
+  return Array.from({ length: NUM_LOCKS }, (_, i) => {
+    const { toleranceDeg, openToleranceDeg } = lockTolerance(i, level);
+    const margin = 20; // keep sweet spot away from hard edges
+    const sweetSpotDeg = margin + rng() * (PICK_MAX_DEG - 2 * margin);
+    return { sweetSpotDeg, toleranceDeg, openToleranceDeg };
   });
 }
 
-/** Score for the lockpicking trial: mean accuracy across hit pins; misses score 0. */
-export function lockpickingScore(accuracies: number[]): number {
-  if (accuracies.length === 0) return 0;
-  const sum = accuracies.reduce((a, b) => a + b, 0);
-  return sum / LOCK_PINS; // divide by total possible pins, not just hit ones
+/**
+ * Fraction (0..1) of the full cylinder turn the player can achieve.
+ * 1.0 when within openToleranceDeg; linear falloff to 0 at toleranceDeg.
+ */
+export function allowedTurn(pickDeg: number, lock: LockConfig): number {
+  const d = Math.abs(pickDeg - lock.sweetSpotDeg);
+  if (d <= lock.openToleranceDeg) return 1;
+  if (d >= lock.toleranceDeg) return 0;
+  return 1 - (d - lock.openToleranceDeg) / (lock.toleranceDeg - lock.openToleranceDeg);
+}
+
+/** True when the pick is close enough to the sweet spot to fully open the lock. */
+export function canOpen(pickDeg: number, lock: LockConfig): boolean {
+  return Math.abs(pickDeg - lock.sweetSpotDeg) <= lock.openToleranceDeg;
+}
+
+/**
+ * Seconds of sustained torque-against-jam before the pick snaps.
+ * Closer to the sweet spot → more time (cylinder almost turns, so less stress).
+ */
+export function breakTime(pickDeg: number, lock: LockConfig): number {
+  const turn = allowedTurn(pickDeg, lock);
+  // turn = 0 at outer edge → fastest break; turn approaches 1 near sweet spot → slowest
+  return BREAK_TIME_MIN + turn * (BREAK_TIME_MAX - BREAK_TIME_MIN);
+}
+
+/**
+ * Final score (0..1).
+ * All locks opened → [0.5, 1.0] based on picks remaining.
+ * Failed (out of picks mid-run) → up to 0.3 based on locks completed.
+ */
+export function lockpickingScore(
+  locksOpened: number,
+  picksRemaining: number,
+  budget: number = PICK_BUDGET,
+): number {
+  if (locksOpened >= NUM_LOCKS) {
+    // Success branch: efficiency bonus on top of the 0.5 base
+    const pickFraction = budget > 1 ? Math.max(0, picksRemaining - 1) / (budget - 1) : 1;
+    return 0.5 + 0.5 * pickFraction;
+  }
+  // Failed branch: partial credit proportional to locks opened
+  return 0.3 * (locksOpened / NUM_LOCKS);
 }

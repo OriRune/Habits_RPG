@@ -18,6 +18,18 @@ export interface GearDef {
   ward?: number;
   /** Habit-XP perk: +pct% XP on habits matching the tag and/or stat. */
   xpBonus?: { tag?: string; stat?: StatId; pct: number };
+  /**
+   * Mining tool stats (tool slot only).  `power` = durability chipped per pick swing,
+   * so a tier-2 pick (power 2) one-shots a 2-durability rock.  When absent the equipped
+   * item has no special mining effect (other tool-slot items like boots still work).
+   */
+  mining?: { power: number };
+  /**
+   * Chopping tool stats (tool slot only).  `power` = durability removed per chop swing
+   * against a choppable tree in the forest, identical in effect to mining power.
+   * Tiered tools carry both `mining` and `chopping` at the same power level.
+   */
+  chopping?: { power: number };
   description: string;
   /** Shop price in gold; undefined = craft/loot only. */
   price?: number;

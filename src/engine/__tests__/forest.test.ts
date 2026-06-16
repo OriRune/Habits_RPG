@@ -18,8 +18,26 @@ import {
   FOREST_ROWS,
   FOREST_COLS,
 } from '../forest';
+import { getWeapon, STARTER_WEAPON } from '@/engine/weapons';
+import { STA_REGEN_MS, MP_REGEN_MS } from '@/engine/crawl';
 
-const SNAP: ForestSnapshot = { meleePower: 5, maxHp: 50, maxSta: 10 };
+const WEAPON = getWeapon(STARTER_WEAPON);
+
+const SNAP: ForestSnapshot = {
+  meleePower: 5,
+  rangedPower: 3,
+  damageSpell: 2,
+  supportSpell: 2,
+  illusionPower: 1,
+  defense: 0,
+  ward: 0,
+  maxHp: 50,
+  maxSta: 55,
+  maxMp: 8,
+  weapon: WEAPON,
+  knownSpells: [],
+  chopPower: 1,
+};
 
 /** Deterministic RNG (mulberry32) for repeatable generation. */
 function rngFrom(seed: number): RNG {
@@ -41,7 +59,7 @@ function makeForest(over: Partial<ForestState> = {}): ForestState {
     const row: ForestTile[] = [];
     for (let c = 0; c < cols; c++) {
       const border = r === 0 || c === 0 || r === rows - 1 || c === cols - 1;
-      row.push(border ? { kind: 'thicket', durability: 1, maxDurability: 1 } : { kind: 'trail' });
+      row.push(border ? { kind: 'thicket' } : { kind: 'trail' });
     }
     tiles.push(row);
   }
@@ -55,24 +73,43 @@ function makeForest(over: Partial<ForestState> = {}): ForestState {
     player: { r: 3, c: 3, facing: 'right' },
     hp: 50,
     maxHp: 50,
-    sta: 10,
-    maxSta: 10,
+    sta: 55,
+    maxSta: 55,
+    mp: 8,
+    maxMp: 8,
+    staNextRegenMs: STA_REGEN_MS,
+    mpNextRegenMs: MP_REGEN_MS,
     meleePower: 5,
+    rangedPower: 3,
+    damageSpell: 2,
+    supportSpell: 2,
+    illusionPower: 1,
+    defense: 0,
+    ward: 0,
+    weapon: WEAPON,
+    knownSpells: [],
+    chopPower: 1,
     beasts: [],
     haul: {},
     status: 'active',
     lastHitAtMs: -1000,
     deepest: 1,
     killsThisStage: 0,
+    runes: [],
+    ringOfFire: null,
+    ringNextHitMs: {},
+    playerStatuses: [],
+    lastSpellMs: -1000,
+    nextRuneId: 1,
     ...over,
   };
 }
 
 /** BFS over walkable tiles — is there a path from the player to any tree-line exit? */
 function reachesTreeline(s: ForestState): boolean {
-  const seen = new Set<string>();
+  const visited = new Set<string>();
   const queue = [[s.player.r, s.player.c]];
-  seen.add(`${s.player.r},${s.player.c}`);
+  visited.add(`${s.player.r},${s.player.c}`);
   while (queue.length) {
     const [r, c] = queue.shift()!;
     if (s.tiles[r]?.[c]?.kind === 'treeline') return true;
@@ -80,9 +117,9 @@ function reachesTreeline(s: ForestState): boolean {
       const nr = r + dr;
       const nc = c + dc;
       const key = `${nr},${nc}`;
-      if (seen.has(key)) continue;
+      if (visited.has(key)) continue;
       if (isWalkable(s.tiles[nr]?.[nc])) {
-        seen.add(key);
+        visited.add(key);
         queue.push([nr, nc]);
       }
     }
@@ -93,7 +130,7 @@ function reachesTreeline(s: ForestState): boolean {
 describe('generateForest', () => {
   const forest = generateForest(1, SNAP, rngFrom(42));
 
-  it('is the configured size with a thicket frame broken only by the entrance and tree line', () => {
+  it('is at least FOREST_ROWS × FOREST_COLS with a thicket frame broken only by entrance and tree line', () => {
     expect(forest.rows).toBe(FOREST_ROWS);
     expect(forest.cols).toBe(FOREST_COLS);
     let entrances = 0;
@@ -128,8 +165,16 @@ describe('generateForest', () => {
     const shallow = generateForest(1, SNAP, rngFrom(7));
     const nodeKeys = shallow.tiles.flat().map((t) => t.nodeKey).filter(Boolean);
     expect(nodeKeys).not.toContain('crystal_find'); // stageMin 4
-    expect(shallow.beasts.every((b) => b.key === 'wild_boar')).toBe(true); // wolf/bear gated deeper
+    // Only wild_boar (stageMin 1) is eligible; wolf/spider/bear are gated deeper.
+    for (const b of shallow.beasts) {
+      expect(b.key).toBe('wild_boar');
+    }
     expect(shallow.beasts.every((b) => b.asleep)).toBe(true); // all start dormant
+  });
+
+  it('has at least one spring on the map', () => {
+    const springs = forest.tiles.flat().filter((t) => t.kind === 'node' && t.nodeKey === 'spring');
+    expect(springs.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -147,8 +192,6 @@ describe('fog of war', () => {
     expect(isVisible(s, 3, 6)).toBe(true); // straight, distance 3
     expect(isVisible(s, 6, 3)).toBe(true); // straight, distance 3
     expect(isVisible(s, 6, 6)).toBe(false); // diagonal corner — outside the circle
-    const seen = Array.from({ length: 7 }, () => new Array(7).fill(false));
-    expect(reveal(makeForest({ seen })).seen[6][6]).toBe(false);
   });
 
   it('tryMove re-lights the fog as the player advances', () => {
@@ -169,14 +212,14 @@ describe('tryMove', () => {
 
   it('turns but does not move when blocked by thicket', () => {
     const tiles = makeForest().tiles;
-    tiles[3][4] = { kind: 'thicket', durability: 2, maxDurability: 2 };
+    tiles[3][4] = { kind: 'thicket' };
     const s = tryMove(makeForest({ tiles }), 'right');
     expect(s.player).toMatchObject({ r: 3, c: 3, facing: 'right' });
   });
 
   it('does not walk into a beast', () => {
     const s = tryMove(
-      makeForest({ beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 4, hp: 8, maxHp: 8, readyAtMs: 0, asleep: false }] }),
+      makeForest({ beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 4, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false }] }),
       'right',
     );
     expect(s.player).toMatchObject({ r: 3, c: 3, facing: 'right' });
@@ -189,7 +232,7 @@ describe('act', () => {
     tiles[3][4] = { kind: 'node', nodeKey: 'flower_bush' };
     const s = act(makeForest({ tiles, sta: 0 }), rngFrom(3));
     expect(s.tiles[3][4].kind).toBe('trail');
-    expect((s.haul.materials?.herbs ?? 0)).toBeGreaterThanOrEqual(1);
+    expect(s.haul.materials?.herbs ?? 0).toBeGreaterThanOrEqual(1);
     expect(s.sta).toBe(0); // gathering is free
   });
 
@@ -202,48 +245,61 @@ describe('act', () => {
     expect(s.haul.materials ?? {}).toEqual({});
   });
 
-  it('cannot cut through thicket — the maze walls are permanent', () => {
+  it('cannot slash through thicket — the maze walls are permanent', () => {
     const tiles = makeForest().tiles;
     tiles[3][4] = { kind: 'thicket' };
     const s = makeForest({ tiles });
     const after = act(s, rngFrom(1));
-    expect(after).toBe(s); // nothing happens, no stamina spent
     expect(after.tiles[3][4].kind).toBe('thicket');
   });
 
-  it('slashes a faced beast and drops leather on the kill', () => {
+  it('slashes a faced beast using weapon stats and drops leather on the kill', () => {
     const s = makeForest({
-      meleePower: 10,
-      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 4, hp: 8, maxHp: 8, readyAtMs: 0, asleep: false }],
+      meleePower: 20, // overkill to guarantee a kill regardless of RNG
+      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 4, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false }],
     });
     const after = act(s, rngFrom(5));
     expect(after.beasts).toHaveLength(0);
-    expect((after.haul.materials?.leather ?? 0)).toBeGreaterThanOrEqual(1);
+    expect(after.haul.materials?.leather ?? 0).toBeGreaterThanOrEqual(1);
+  });
+
+  it('cannot slash with no stamina', () => {
+    const s = makeForest({
+      sta: 0,
+      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 4, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false }],
+    });
+    expect(act(s, rngFrom(1))).toBe(s);
   });
 });
 
 describe('stepBeasts', () => {
   it('wakes a dormant beast once the player strays within its aggro radius', () => {
-    const s = makeForest({ beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 5, hp: 8, maxHp: 8, readyAtMs: 0, asleep: true }] });
+    const s = makeForest({
+      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 5, hp: 10, maxHp: 10, readyAtMs: 0, asleep: true }],
+    });
     const after = stepBeasts(s, 1000, rngFrom(1)); // distance 2 <= aggroRadius 3
     expect(after.beasts[0].asleep).toBe(false);
   });
 
-  it('leaves a distant beast dormant and motionless', () => {
-    const s = makeForest({ beasts: [{ id: 'a', key: 'wild_boar', r: 1, c: 1, hp: 8, maxHp: 8, readyAtMs: 0, asleep: true }] });
+  it('leaves a distant beast dormant and in place', () => {
+    const s = makeForest({
+      beasts: [{ id: 'a', key: 'wild_boar', r: 1, c: 1, hp: 10, maxHp: 10, readyAtMs: 0, asleep: true }],
+    });
     const after = stepBeasts(s, 1000, rngFrom(1)); // distance 4 > aggroRadius 3
-    expect(after).toBe(s); // nothing changed — the run skips the re-render
+    expect(after.beasts[0].asleep).toBe(true);
+    expect(after.beasts[0].r).toBe(1);
+    expect(after.beasts[0].c).toBe(1);
   });
 
   it('applies contact damage once per i-frame window', () => {
     const s = makeForest({
       hp: 50,
       lastHitAtMs: -1000,
-      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 4, hp: 8, maxHp: 8, readyAtMs: 999999, asleep: false }],
+      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 4, hp: 10, maxHp: 10, readyAtMs: 999999, asleep: false }],
     });
-    const hit = stepBeasts(s, 1000, rngFrom(1)); // wild_boar touchDamage = 4
+    const hit = stepBeasts(s, 1000, rngFrom(1)); // wild_boar touchDamage = 4, defense = 0
     expect(hit.hp).toBe(46);
-    const again = stepBeasts(hit, 1100, rngFrom(1)); // within the 800ms window
+    const again = stepBeasts(hit, 1100, rngFrom(1)); // within the 800ms i-frame window
     expect(again.hp).toBe(46);
   });
 
@@ -251,25 +307,36 @@ describe('stepBeasts', () => {
     const s = makeForest({
       hp: 3,
       lastHitAtMs: -1000,
-      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 4, hp: 8, maxHp: 8, readyAtMs: 999999, asleep: false }],
+      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 4, hp: 10, maxHp: 10, readyAtMs: 999999, asleep: false }],
     });
     const after = stepBeasts(s, 1000, rngFrom(1));
     expect(after.hp).toBe(0);
     expect(after.status).toBe('ended');
   });
+
+  it('moves an awake beast toward the player via BFS', () => {
+    const s = makeForest({
+      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 5, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false }],
+    });
+    const before = Math.abs(3 - 3) + Math.abs(5 - 3);
+    const after = stepBeasts(s, 1000, rngFrom(1));
+    const b = after.beasts[0];
+    const afterDist = Math.abs(b.r - 3) + Math.abs(b.c - 3);
+    expect(afterDist).toBeLessThan(before);
+  });
 });
 
 describe('advance', () => {
-  it('pushes to the next stage, carrying HP and haul and refilling stamina', () => {
+  it('pushes to the next stage, carrying HP and haul and refilling sta/mp partially', () => {
     const tiles = makeForest().tiles;
     tiles[3][3] = { kind: 'treeline' };
-    const s = makeForest({ tiles, stage: 1, hp: 20, sta: 2, haul: { gold: 15 }, deepest: 1 });
+    const s = makeForest({ tiles, stage: 1, hp: 20, sta: 5, haul: { gold: 15 }, deepest: 1 });
     expect(canAdvance(s)).toBe(true);
     const next = advance(s, rngFrom(9));
     expect(next.stage).toBe(2);
     expect(next.deepest).toBe(2);
     expect(next.hp).toBe(20);
-    expect(next.sta).toBe(next.maxSta);
+    expect(next.sta).toBeGreaterThan(5); // partial refill
     expect(next.haul.gold).toBe(15);
   });
 

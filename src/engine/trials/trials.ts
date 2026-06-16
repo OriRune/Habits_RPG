@@ -33,7 +33,7 @@ export const TRIALS: TrialDef[] = [
     id: 'lockpicking',
     stat: 'DX',
     name: 'Lockpicking',
-    blurb: 'Set each pin inside the target zone before it sweeps past.',
+    blurb: 'Rotate the pick to find the sweet spot, then turn the lock — before you snap all your picks.',
     glyph: '🔑',
   },
   {

@@ -23,8 +23,8 @@ interface TrialModalProps {
 type Stage = 'intro' | 'playing' | 'result';
 
 const TRIAL_DESCRIPTIONS: Record<TrialId, string> = {
-  lockpicking: 'A sliding needle bounces across the bar. Tap to "set" each pin while the needle is inside the golden target zone. Accuracy matters — the more centred the tap, the higher your score.',
-  rooftop_chase: 'Your hero sprints across rooftops automatically. Tap Jump (or Space / ↑) to leap over chimney stacks and crates, bound across gaps between buildings, and — if you time it right — land on a guard\'s head for a satisfying stomp and a boost. A pursuer trails behind; each stumble lets it gain. Run as far as you can before it catches you.',
+  lockpicking: 'A pick sits inside the keyhole. Rotate it left and right to search for the sweet spot, then hold "Turn Lock" to apply torque. The cylinder will turn as far as the pick allows — if you\'re in the right spot it opens, otherwise it jams and the pick bends. Hold against a jam too long and the pick snaps. Three locks of rising difficulty; you have six picks — use them wisely.',
+  rooftop_chase: 'Your hero sprints across the rooftops of a medieval town. Tap Jump (or Space / ↑) to leap over chimney stacks and armoured guards, bound across gaps between buildings, and land on a guard\'s head for a satisfying stomp. Midair, a second jump lets you correct your arc. When a banner is strung across the path, tap Slide (↓ / S) to duck under it — jumping into one will send you tumbling. A beast trails behind; each stumble lets it close in. Run as far as you can.',
   armory_break: 'Hold the Charge button to power up the needle, then release it when it enters the golden zone at the top. You have three locks to crack — nail the timing on each.',
   long_march: 'Choose your pace for each terrain tile: Rest to recover stamina, Walk for steady progress, or Push for distance at great cost. Running out of stamina ends the march early.',
   spirit_grove: 'Read the omen carefully, then choose the blessing the spirits are truly offering. Each round a different omen appears — your wisdom is what separates the correct blessing from the false ones.',
