@@ -1,276 +1,291 @@
 # Sprites Needed Report
 
-This report documents all sprite art assets needed for the HabitsRPG application. Currently, the game uses generated placeholder art (SVG crests), but the system is ready to swap in real sprites via the `SPRITE_REGISTRY` (in `src/lib/sprites.ts`) and `SCENE_REGISTRY` (in `src/lib/scenes.ts`).
+This report documents every sprite/scene slot in HabitsRPG, whether real art exists
+today, and the resolution to draw it at. It is verified against the actual code, not
+just intentions: `src/lib/sprites.ts`, `src/lib/scenes.ts`, `src/lib/minigameArt.ts`,
+the minigame overlays, and the `src/assets/` folders.
 
-## System Overview
+## The three art systems
 
-Sprites are swapped in by registering URLs in the registry. To add art:
+1. **Entity sprites** — `src/lib/sprites.ts` + `Sprite` component. Any PNG dropped in
+   `src/assets/sprites/<folder>/<name>.png` is auto-registered as key `<prefix>:<name>`
+   (folder → prefix map: `weapons→weapon`, `gear→gear`, `potions→item`,
+   `materials→material`, `relics→relic`). No code edits needed. Until art exists, a
+   generated heraldic **Crest** (glyph + tint) stands in. Real art renders with
+   `image-pixel` (nearest-neighbor) so pixel art stays crisp.
+2. **Scene banners** — `src/lib/scenes.ts` + `SceneArt` component. `SCENE_REGISTRY` is
+   **currently empty** — every scene is still a placeholder banner.
+3. **Minigame art** — `src/lib/minigameArt.ts` (Forest & Mine). Auto-registers PNGs from
+   `src/assets/minigame/{tiles,cave_forest}` by basename; helpers map a tile kind / node
+   key / ore key to an image, else fall back to the overlay's glyph.
 
-1. Add the image to `src/assets/sprites/`
-2. Import it in `src/lib/sprites.ts` 
-3. Register it in `SPRITE_REGISTRY` with the key (e.g., `'weapon:worn_sword': importedImage`)
-
-Scenes follow the same pattern with `SCENE_REGISTRY` in `src/lib/scenes.ts`.
-
----
-
-## Sprite Categories
-
-### **1. Weapons** (3 total)
-Used in character equipment UI, paper doll, inventory, and crafting screens.
-
-| Key | Name | Purpose | Resolution | Aspect Ratio |
-|-----|------|---------|-----------|--------------|
-| `weapon:worn_sword` | Worn Sword | Melee starter weapon, scales with Strength | 128×128 | 1:1 (square) |
-| `weapon:iron_mace` | Iron Mace | Heavy melee weapon, shop item | 128×128 | 1:1 (square) |
-| `weapon:short_bow` | Short Bow | Ranged starter weapon, scales with Dexterity | 128×128 | 1:1 (square) |
-
-### **2. Gear** (9 total)
-Armor, trinkets, and tools displayed in inventory and paper doll slots.
-
-| Key | Name | Slot | Purpose | Resolution | Aspect Ratio |
-|-----|------|------|---------|-----------|--------------|
-| `gear:leather_vest` | Leather Vest | armor | Basic physical defense | 128×128 | 1:1 (square) |
-| `gear:bronze_plate` | Bronze Plate | armor | Mid-tier armor with Ward | 128×128 | 1:1 (square) |
-| `gear:adventurers_bedroll` | Adventurer's Bedroll | armor | HP bonus utility armor | 128×128 | 1:1 (square) |
-| `gear:iron_kettle_bell` | Iron Kettle Bell | trinket | Strength training item | 128×128 | 1:1 (square) |
-| `gear:sage_ring` | Sage Ring | trinket | Wisdom and Ward bonus | 128×128 | 1:1 (square) |
-| `gear:scholars_lantern` | Scholar's Lantern | trinket | Knowledge bonus, Study XP | 128×128 | 1:1 (square) |
-| `gear:bards_cloak` | Bard's Cloak | trinket | Charisma and charm bonus | 128×128 | 1:1 (square) |
-| `gear:runners_boots` | Runner's Boots | tool | Agility bonus, Fitness XP | 128×128 | 1:1 (square) |
-| `gear:lockpick_gloves` | Lockpick Gloves | tool | Dexterity for traps/treasure | 128×128 | 1:1 (square) |
-
-### **3. Items** (11 total)
-Consumable items: potions, elixirs, and spellbooks shown in inventory and shop.
-
-| Key | Name | Kind | Purpose | Resolution | Aspect Ratio |
-|-----|------|------|---------|-----------|--------------|
-| `item:healing_potion` | Healing Potion | potion | Restore 40 HP in battle, shop | 128×128 | 1:1 (square) |
-| `item:focus_potion` | Focus Potion | potion | +5 Knowledge buff, battle, shop | 128×128 | 1:1 (square) |
-| `item:courage_draught` | Courage Draught | potion | +5 Charisma buff, battle, shop | 128×128 | 1:1 (square) |
-| `item:swiftness_tonic` | Swiftness Tonic | potion | +5 Agility buff, battle, shop | 128×128 | 1:1 (square) |
-| `item:streak_freeze` | Streak Freeze | utility | Protect missed habit streak, shop | 128×128 | 1:1 (square) |
-| `item:recovery_elixir` | Recovery Elixir | utility | Restore momentum after missed day, shop | 128×128 | 1:1 (square) |
-| `item:spellbook_firebolt` | Tome: Firebolt | spellbook | Learn Firebolt spell, shop | 128×128 | 1:1 (square) |
-| `item:spellbook_bless` | Tome: Bless | spellbook | Learn Bless spell, shop | 128×128 | 1:1 (square) |
-| `item:spellbook_dazzle` | Tome: Dazzle | spellbook | Learn Dazzle spell, shop | 128×128 | 1:1 (square) |
-| `item:spellbook_hex` | Tome: Hex | spellbook | Learn Hex spell, shop | 128×128 | 1:1 (square) |
-
-### **4. Spells** (6 total)
-Combat magic abilities displayed in battle UI and grimoire.
-
-| Key | Name | School | Purpose | Resolution | Aspect Ratio |
-|-----|------|--------|---------|-----------|--------------|
-| `spell:sparks` | Sparks | damage | Starter damage spell (Wisdom-based) | 128×128 | 1:1 (square) |
-| `spell:mend` | Mend | support | Starter healing spell (Knowledge-based) | 128×128 | 1:1 (square) |
-| `spell:firebolt` | Firebolt | damage | Advanced damage with burn (Wisdom-based) | 128×128 | 1:1 (square) |
-| `spell:bless` | Bless | support | Defense buff / ward (Knowledge-based) | 128×128 | 1:1 (square) |
-| `spell:dazzle` | Dazzle | illusion | Blinds foe debuff (Charisma-based) | 128×128 | 1:1 (square) |
-| `spell:hex` | Hex | illusion | Weakens foe (Charisma-based) | 128×128 | 1:1 (square) |
-
-### **5. Relics** (14 total)
-Dungeon boons and curses acquired during runs, displayed in boon-choice modals and relic tray.
-
-| Key | Name | Tier | Type | Purpose | Resolution | Aspect Ratio |
-|-----|------|------|------|---------|-----------|--------------|
-| `relic:ember_sigil` | Ember Sigil | 1 | boon | +3 Strength for run | 128×128 | 1:1 (square) |
-| `relic:keen_lens` | Keen Lens | 1 | boon | +3 Dexterity for run | 128×128 | 1:1 (square) |
-| `relic:swift_anklet` | Swift Anklet | 1 | boon | +3 Agility for run | 128×128 | 1:1 (square) |
-| `relic:oak_token` | Oak Token | 1 | boon | +3 Endurance for run | 128×128 | 1:1 (square) |
-| `relic:sage_bead` | Sage Bead | 1 | boon | +3 Wisdom for run | 128×128 | 1:1 (square) |
-| `relic:silver_tongue` | Silver Tongue | 1 | boon | +3 Charisma for run | 128×128 | 1:1 (square) |
-| `relic:owl_charm` | Owl Charm | 1 | boon | +3 Knowledge for run | 128×128 | 1:1 (square) |
-| `relic:vital_charm` | Vital Charm | 1 | boon | +15 max HP for run | 128×128 | 1:1 (square) |
-| `relic:stone_heart` | Stone Heart | 2 | boon | +20 HP, +2 Defense | 128×128 | 1:1 (square) |
-| `relic:warding_rune` | Warding Rune | 2 | boon | +3 Ward, +2 Wisdom | 128×128 | 1:1 (square) |
-| `relic:bulwark_crest` | Bulwark Crest | 2 | boon | +3 Defense, +2 Endurance | 128×128 | 1:1 (square) |
-| `relic:twin_fang` | Twin Fang | 2 | boon | +4 Strength, +2 Dexterity | 128×128 | 1:1 (square) |
-| `relic:arcane_prism` | Arcane Prism | 2 | boon | +4 Knowledge, +2 Wisdom | 128×128 | 1:1 (square) |
-| `relic:titan_grip` | Titan Grip | 3 | boon | +6 Strength, +25 HP | 128×128 | 1:1 (square) |
-| `relic:archsage_codex` | Archsage's Codex | 3 | boon | +6 Knowledge, +3 Ward | 128×128 | 1:1 (square) |
-| `relic:phoenix_feather` | Phoenix Feather | 3 | boon | +30 HP, +3 Defense, +3 Ward | 128×128 | 1:1 (square) |
-| `relic:cracked_idol` | Cracked Idol | 1 | curse | −3 Endurance (curse) | 128×128 | 1:1 (square) |
-| `relic:leaden_weight` | Leaden Weight | 1 | curse | −3 Agility (curse) | 128×128 | 1:1 (square) |
-| `relic:brittle_bones` | Brittle Bones | 1 | curse | −15 max HP (curse) | 128×128 | 1:1 (square) |
-
-### **6. Classes** (64 total)
-Character class avatars displayed during class selection and in hero banner. One sprite per class from the 8×8 class chart.
-
-| Primary Stat | Secondary Stats (8 classes each) |
-|---|---|
-| Dexterity (DX) | Duelist, Illusionist, Pirate, Trapper, Magician, Rogue, Artist, Craftsman |
-| Agility (AG) | Thief, Acrobat, Ninja, Skirmisher, Windwalker, Daredevil, Saboteur, Escape Artist |
-| Strength (ST) | Knight, Warrior, Strongman, Barbarian, Paladin, Samurai, Martial Artist, Juggernaut |
-| Endurance (EN) | Ranger, Trailblazer, Vanguard, Sentinel, Wilder, Spy, Scout, Mountain Man |
-| Wisdom (WI) | Healer, Mystic, Monk, Druid, Sage, Shaman, Seer, Battle Monk |
-| Charisma (CH) | Bard, Performer, General, Field Marshal, Philosopher, Lord, Pyromancer, Ardent |
-| Knowledge (KN) | Sorcerer, Warlock, Battle Mage, Field Mage, Wizard, Mage, Scholar, Alchemist |
-| Hit Points (HP) | Guardian, Wardancer, Soldier, Fortress, Crusader, Warlord, Cleric, Tank |
-
-**Sprite Keys Format:** `class:{classname_in_lowercase}` (e.g., `class:duelist`, `class:wizard`)  
-**Resolution:** 128×128 | **Aspect Ratio:** 1:1 (square)
-
-### **7. Avatar Variants** (2 total)
-Player character avatar before class selection and fallback variants.
-
-| Key | Name | Purpose | Resolution | Aspect Ratio |
-|-----|------|---------|-----------|--------------|
-| `avatar:adventurer` | Adventurer Avatar | Unclassed character appearance | 128×128 | 1:1 (square) |
-
-**Note:** Additional avatar variants can be added for each class as `avatar:{classname_in_lowercase}` if differentiated avatars are desired beyond class crests.
-
-### **8. Enemies** (9 total)
-Dungeon combat foes displayed during combat encounters. These scale dynamically with depth and player level.
-
-| Key | Name | Biome | Purpose | Resolution | Aspect Ratio |
-|-----|------|-------|---------|-----------|--------------|
-| `enemy:skeleton` | Skeleton Warrior | Catacombs | Undead melee foe | 192×192 | 1:1 (square) |
-| `enemy:wisp` | Wailing Wisp | Catacombs | Magic-based spirit | 192×192 | 1:1 (square) |
-| `enemy:ghoul` | Crypt Ghoul | Catacombs | Undead melee threat | 192×192 | 1:1 (square) |
-| `enemy:goblin` | Cave Goblin | Overgrown Ruins | Beast/humanoid | 192×192 | 1:1 (square) |
-| `enemy:giant_spider` | Giant Spider | Overgrown Ruins | Beast creature | 192×192 | 1:1 (square) |
-| `enemy:dire_wolf` | Dire Wolf | Overgrown Ruins | Large predator | 192×192 | 1:1 (square) |
-| `enemy:thornling` | Thornling | Overgrown Ruins | Plant creature | 192×192 | 1:1 (square) |
-| `enemy:stone_sentry` | Stone Sentry | Frozen Caverns | Elemental guardian | 192×192 | 1:1 (square) |
-| `enemy:frost_revenant` | Frost Revenant | Frozen Caverns | Magical elemental | 192×192 | 1:1 (square) |
-| `enemy:ice_elemental` | Ice Elemental | Frozen Caverns | Pure elemental magic | 192×192 | 1:1 (square) |
-
-### **9. Materials** (7 total)
-Crafting materials gathered from dungeons and challenges, displayed in inventory and crafting UI.
-
-| Key | Name | Purpose | Resolution | Aspect Ratio |
-|-----|------|---------|-----------|--------------|
-| `material:leather` | Leather | Armor crafting | 96×96 | 1:1 (square) |
-| `material:iron_bar` | Iron Bar | Metal crafting | 96×96 | 1:1 (square) |
-| `material:cloth_roll` | Roll of Cloth | Textile crafting | 96×96 | 1:1 (square) |
-| `material:bronze_bar` | Bronze Bar | Metal crafting | 96×96 | 1:1 (square) |
-| `material:herbs` | Herbs | Potion crafting | 96×96 | 1:1 (square) |
-| `material:crystals` | Crystals | Magical crafting | 96×96 | 1:1 (square) |
-| `material:gemstone` | Gemstone | High-tier crafting | 96×96 | 1:1 (square) |
+**`Sprite` display boxes:** xs 24px · sm 32px · md 56px · lg 80px · xl 112px.
+**`SceneArt` heights:** sm 80px · md 112px · lg 160px (always full width).
+**Minigame cell size:** Forest 40px/tile · Mine 48px/tile.
 
 ---
 
-## Scene Assets
+## Pixel-art resolution guidance
 
-Scenes are wide banner illustrations displayed in dungeon events. Currently generating placeholders; real art swaps in via `SCENE_REGISTRY`.
+Draw pixel art on a **small native canvas**, then export at an **integer multiple**
+(nearest-neighbor) so it scales crisply. The **Export** column is the file you commit;
+the **Native px** column is the grid the artist actually draws on.
 
-### **Scene Categories** (21 total)
+| Use | Export (file) | Native pixel grid | Scale | Aspect |
+|---|---|---|---|---|
+| Icons (weapon/gear/item/relic/spell/class/avatar) | 128×128 | 32×32 (chunky) or 64×64 (detailed) | 4× / 2× | 1:1 |
+| Materials | 96×96 | 32×32 | 3× | 1:1 |
+| Enemies / bosses (battle center) | 192×192 | 48×48 | 4× | 1:1 |
+| Minigame floor tiles | 48×48 (mine) / 40×40 (forest) | 16×16 | ~3× | 1:1 |
+| Minigame decor (trees / boulders / ore) | 48–64 tall | 32×32 | ~2× | 1:1 |
+| Minigame characters & creatures | 48×48 | 32×32 (ideally 4-direction) | ~1.5× | 1:1 |
+| Scene banners | 320×120 | 160×60 | 2× | 8:3 |
 
-#### Room Events (8 scenes)
-| Key | Caption | Purpose | Resolution | Aspect Ratio |
-|-----|---------|---------|-----------|--------------|
-| `room:combat` | A foe blocks the way | Standard combat encounter | 320×120 | 8:3 (wide) |
-| `room:trap` | Blades and tripwires | Hazard/trap challenge room | 320×120 | 8:3 (wide) |
-| `room:puzzle` | An ancient riddle | Intellectual challenge | 320×120 | 8:3 (wide) |
-| `room:negotiation` | A wary guardian | Social/diplomacy check | 320×120 | 8:3 (wide) |
-| `room:survival` | Harsh conditions | Environmental challenge | 320×120 | 8:3 (wide) |
-| `room:treasure` | A glittering hoard | Loot/reward room | 320×120 | 8:3 (wide) |
-| `room:rest` | A quiet alcove | Recovery/healing room | 320×120 | 8:3 (wide) |
-| `room:boss` | A boss bars the way | Boss encounter | 320×120 | 8:3 (wide) |
-| `room:encounter` | A choice to make | Story/branching event | 320×120 | 8:3 (wide) |
-
-#### Dungeon Progression (2 scenes)
-| Key | Caption | Purpose | Resolution | Aspect Ratio |
-|-----|---------|---------|-----------|--------------|
-| `dungeon:entrance` | The dungeon mouth | Entry point illustration | 320×120 | 8:3 (wide) |
-| `dungeon:checkpoint` | A safe respite | Mid-run checkpoint/milestone | 320×120 | 8:3 (wide) |
-
-#### Biome/Region Themes (3 scenes)
-| Key | Caption | Purpose | Resolution | Aspect Ratio |
-|-----|---------|---------|-----------|--------------|
-| `biome:catacombs` | The Catacombs | Undead/dungeon biome | 320×120 | 8:3 (wide) |
-| `biome:ruins` | Overgrown Ruins | Beast/nature biome | 320×120 | 8:3 (wide) |
-| `biome:frozen` | Frozen Caverns | Elemental/ice biome | 320×120 | 8:3 (wide) |
-
-#### Outcome/Resolution (3 scenes)
-| Key | Caption | Purpose | Resolution | Aspect Ratio |
-|-----|---------|---------|-----------|--------------|
-| `outcome:success` | Success! | Successful challenge completion | 320×120 | 8:3 (wide) |
-| `outcome:partial` | A near miss | Partially successful attempt | 320×120 | 8:3 (wide) |
-| `outcome:fail` | It goes badly | Failed challenge | 320×120 | 8:3 (wide) |
-
-#### Combat Resolution (2 scenes)
-| Key | Caption | Purpose | Resolution | Aspect Ratio |
-|-----|---------|---------|-----------|--------------|
-| `combat:victory` | Victory! | Battle won | 320×120 | 8:3 (wide) |
-| `combat:defeat` | Defeated | Battle lost / character death | 320×120 | 8:3 (wide) |
-
-#### Dungeon Completion (2 scenes)
-| Key | Caption | Purpose | Resolution | Aspect Ratio |
-|-----|---------|---------|-----------|--------------|
-| `dungeon:cleared` | Dungeon cleared | Full run completed successfully | 320×120 | 8:3 (wide) |
-| `dungeon:retreat` | You retreat | Voluntary exit from dungeon | 320×120 | 8:3 (wide) |
-
-#### Weekly Summary (1 scene)
-| Key | Caption | Purpose | Resolution | Aspect Ratio |
-|-----|---------|---------|-----------|--------------|
-| `weekly:report` | The week in review | Weekly progress summary | 320×120 | 8:3 (wide) |
+Square (1:1) sprites are framed with the `.clip-shield` shield shape; scenes are wide
+banners.
 
 ---
 
-## Summary Statistics
+## Status legend
 
-| Category | Count | Dimensions | Notes |
+- ✅ **Done** — real art is present and wired up.
+- ⚠️ **Partial** — some keys have art, some don't.
+- ❌ **Placeholder** — no real art yet; renders as Crest / glyph / framed banner.
+
+---
+
+## 1. Entity sprites
+
+### Weapons — ✅ Done (3/3)
+Key `weapon:<k>` · Export 128×128 · Native 32×32
+
+| Key | Name | Art |
+|---|---|---|
+| `weapon:worn_sword` | Worn Sword | ✅ |
+| `weapon:iron_mace` | Iron Mace | ✅ |
+| `weapon:short_bow` | Short Bow | ✅ |
+
+### Gear — ✅ Done (9/9)
+Key `gear:<k>` · Export 128×128 · Native 32×32
+
+| Key | Name | Slot | Art |
 |---|---|---|---|
-| **Weapons** | 3 | 128×128 | Scales with Strength/Dexterity |
-| **Gear** | 9 | 128×128 | 3 armor, 4 trinkets, 2 tools |
-| **Items** | 11 | 128×128 | Potions, utilities, spellbooks |
-| **Spells** | 6 | 128×128 | Combat magic abilities |
-| **Relics** | 19 | 128×128 | 16 boons + 3 curses (Tiers 1-3) |
-| **Classes** | 64 | 128×128 | 8×8 stat-based class grid |
-| **Avatars** | 1+ | 128×128 | Base + optional class variants |
-| **Enemies** | 10 | 192×192 | Scaled by depth/level |
-| **Materials** | 7 | 96×96 | Crafting resource icons |
-| **Scenes** | 21 | 320×120 | Wide banner format |
-| **TOTAL** | **151+** | Various | Ready for real art |
+| `gear:leather_vest` | Leather Vest | armor | ✅ |
+| `gear:bronze_plate` | Bronze Plate | armor | ✅ |
+| `gear:adventurers_bedroll` | Adventurer's Bedroll | armor | ✅ |
+| `gear:iron_kettle_bell` | Iron Kettle Bell | trinket | ✅ |
+| `gear:sage_ring` | Sage Ring | trinket | ✅ |
+| `gear:scholars_lantern` | Scholar's Lantern | trinket | ✅ |
+| `gear:bards_cloak` | Bard's Cloak | trinket | ✅ |
+| `gear:runners_boots` | Runner's Boots | tool | ✅ |
+| `gear:lockpick_gloves` | Lockpick Gloves | tool | ✅ |
+
+### Items — ✅ Done (10/10 via 7 PNGs)
+Key `item:<k>` · Export 128×128 · Native 32×32. One `potions/spellbook.png` covers all four tomes.
+
+| Key | Name | Kind | Art |
+|---|---|---|---|
+| `item:healing_potion` | Healing Potion | potion | ✅ |
+| `item:focus_potion` | Focus Potion | potion | ✅ |
+| `item:courage_draught` | Courage Draught | potion | ✅ |
+| `item:swiftness_tonic` | Swiftness Tonic | potion | ✅ |
+| `item:streak_freeze` | Streak Freeze | utility | ✅ |
+| `item:recovery_elixir` | Recovery Elixir | utility | ✅ |
+| `item:spellbook_firebolt` | Tome: Firebolt | spellbook | ✅ (shared) |
+| `item:spellbook_bless` | Tome: Bless | spellbook | ✅ (shared) |
+| `item:spellbook_dazzle` | Tome: Dazzle | spellbook | ✅ (shared) |
+| `item:spellbook_hex` | Tome: Hex | spellbook | ✅ (shared) |
+
+### Relics — ✅ Done (19/19)
+Key `relic:<k>` · Export 128×128 · Native 32×32. 16 boons + 3 curses, Tiers 1–3.
+
+`ember_sigil`, `keen_lens`, `swift_anklet`, `oak_token`, `sage_bead`, `silver_tongue`,
+`owl_charm`, `vital_charm`, `stone_heart`, `warding_rune`, `bulwark_crest`, `twin_fang`,
+`arcane_prism`, `titan_grip`, `archsage_codex`, `phoenix_feather` (boons);
+`cracked_idol`, `leaden_weight`, `brittle_bones` (curses) — all ✅.
+
+### Materials — ⚠️ Partial (6/7)
+Key `material:<k>` · Export 96×96 · Native 32×32
+
+| Key | Name | Art |
+|---|---|---|
+| `material:leather` | Leather | ✅ |
+| `material:iron_bar` | Iron Bar | ✅ |
+| `material:cloth_roll` | Roll of Cloth | ✅ |
+| `material:bronze_bar` | Bronze Bar | ✅ |
+| `material:crystals` | Crystals | ✅ |
+| `material:gemstone` | Gemstone | ✅ |
+| `material:herbs` | Herbs | ❌ **missing** |
+
+> **Dead assets:** `materials/copper_bar.png` and `materials/gold_bar.png` exist but have
+> **no matching material key** (`MATERIALS` defines no copper/gold material), so they are
+> never rendered. The real gap is `herbs`.
+
+### Spells — ❌ Placeholder (0/6)
+Key `spell:<k>` · Export 128×128 · Native 32–64×32–64
+
+| Key | Name | School |
+|---|---|---|
+| `spell:sparks` | Sparks | damage |
+| `spell:mend` | Mend | support |
+| `spell:firebolt` | Firebolt | damage |
+| `spell:bless` | Bless | support |
+| `spell:dazzle` | Dazzle | illusion |
+| `spell:hex` | Hex | illusion |
+
+### Classes — ❌ Placeholder (0/64)
+Key `class:<classname_lowercase>` · Export 128×128 · Native 32–64. One sprite per class in the 8×8 stat chart.
+
+| Primary | Classes |
+|---|---|
+| Dexterity | Duelist, Illusionist, Pirate, Trapper, Magician, Rogue, Artist, Craftsman |
+| Agility | Thief, Acrobat, Ninja, Skirmisher, Windwalker, Daredevil, Saboteur, Escape Artist |
+| Strength | Knight, Warrior, Strongman, Barbarian, Paladin, Samurai, Martial Artist, Juggernaut |
+| Endurance | Ranger, Trailblazer, Vanguard, Sentinel, Wilder, Spy, Scout, Mountain Man |
+| Wisdom | Healer, Mystic, Monk, Druid, Sage, Shaman, Seer, Battle Monk |
+| Charisma | Bard, Performer, General, Field Marshal, Philosopher, Lord, Pyromancer, Ardent |
+| Knowledge | Sorcerer, Warlock, Battle Mage, Field Mage, Wizard, Mage, Scholar, Alchemist |
+| Hit Points | Guardian, Wardancer, Soldier, Fortress, Crusader, Warlord, Cleric, Tank |
+
+### Avatars — ❌ Placeholder (0/1+)
+Key `avatar:<classname>` (or `avatar:adventurer` pre-class) · Export 128×128 · Native 64×64.
+`HeroBanner` and `BattleScene` request `avatar:${classId ?? 'adventurer'}`. At minimum
+`avatar:adventurer` is needed; optional per-class avatars beyond the class crest.
+
+### Enemies — ❌ Placeholder (0/10)
+**Export 192×192 · Native 48×48.**
+
+| Id | Name | Biome |
+|---|---|---|
+| `skeleton` | Skeleton Warrior | Catacombs |
+| `wisp` | Wailing Wisp | Catacombs |
+| `ghoul` | Crypt Ghoul | Catacombs |
+| `goblin` | Cave Goblin | Overgrown Ruins |
+| `giant_spider` | Giant Spider | Overgrown Ruins |
+| `dire_wolf` | Dire Wolf | Overgrown Ruins |
+| `thornling` | Thornling | Overgrown Ruins |
+| `stone_sentry` | Stone Sentry | Frozen Caverns |
+| `frost_revenant` | Frost Revenant | Frozen Caverns |
+| `ice_elemental` | Ice Elemental | Frozen Caverns |
+
+> ⚠️ **Key mismatch — read before adding enemy art.** `BattleScene.tsx` renders enemies via
+> `boss:${battle.bossId}`, and `bossId` is **dynamic** (e.g. `skeleton_d2`,
+> `skeleton_d2_elite`). Nothing renders an `enemy:` key. Dropping in `enemy:skeleton.png`
+> will do nothing. To wire enemy art, either register under the `boss:` prefix per base id
+> or strip the `_d{n}`/`_elite` suffix before the registry lookup.
+
+### Brand / misc — ❌ Placeholder
+| Key | Purpose | Export | Native |
+|---|---|---|---|
+| `brand:logo` | App wordmark in Header | 128×128 | 32×32 |
+
+**Intentional non-art slots** (keep as Crest, real art optional): `stat:<id>` stat emblems
+(7) and `challenge:<kind>` kind tags (6) — these are short text/letter badges by design.
 
 ---
 
-## Integration Notes
+## 2. Scene banners — ❌ all Placeholder (0/21)
 
-1. **Square Sprites (1:1):** Used with `.clip-shield` CSS class for shield-shaped frame effect
-2. **Wide Scenes (8:3):** Displayed as full-width banner art in dungeon encounters
-3. **Placeholder System:** All sprites currently render as SVG crests with:
-   - Colored background (glyph color from crest)
-   - Single letter or icon (configurable)
-   - Optional label in lower banner
-   - "IMAGE" watermark on scenes
+`SCENE_REGISTRY` is empty. Every key below renders a generated banner.
+**Export 320×120 · Native 160×60 · 8:3 wide.**
 
-4. **Swap Mechanism:**
-   - Edit `src/lib/sprites.ts` → `SPRITE_REGISTRY` for entity sprites
-   - Edit `src/lib/scenes.ts` → `SCENE_REGISTRY` for scene art
-   - No component changes needed; swap is automatic
-
-5. **Size Guidance:**
-   - **Smaller items (sm/xs):** 96-128px (relics in tray, backpack items)
-   - **Standard (md):** 128-192px (inventory, boon choice, primary UI)
-   - **Large (lg/xl):** 192-256px+ (full-screen hero banner, battle center)
+| Group | Keys |
+|---|---|
+| Rooms (9) | `room:combat`, `room:trap`, `room:puzzle`, `room:negotiation`, `room:survival`, `room:treasure`, `room:rest`, `room:boss`, `room:encounter` |
+| Dungeon (4) | `dungeon:entrance`, `dungeon:checkpoint`, `dungeon:cleared`, `dungeon:retreat` |
+| Biomes (3) | `biome:catacombs`, `biome:ruins`, `biome:frozen` |
+| Outcomes (3) | `outcome:success`, `outcome:partial`, `outcome:fail` |
+| Combat (2) | `combat:victory`, `combat:defeat` |
+| Weekly (1) | `weekly:report` |
 
 ---
 
-## File Structure Reference
+## 3. Minigame art (Forest & Mine) — ⚠️ Partial
+
+### Done ✅
+| Slot | Assets present |
+|---|---|
+| Floor tiles | grass ×2, dirt ×2, cave floor ×2 |
+| Forest thicket walls | 16 tree variants (oak/pine/maple/foreboding/dead) |
+| Mine rock walls | 3 boulder variants |
+| Forest nodes | `flower_bush`, `flax_plant`, `berry_forage`, `crystal_find` |
+| Mine ores | `iron_vein`, `crystal_node`, `gemstone_node`, `bronze_vein` (uses copper art) |
+
+### Missing ❌ (currently render as Unicode glyphs)
+Native 32×32 each (player ideally 4-direction); export ~48×48.
+
+| Slot | Items lacking art |
+|---|---|
+| Forest player | walking 🚶 / dead 💀 |
+| Forest beasts | `wild_boar`, `gray_wolf`, `forest_bear` |
+| Forest node | `spring` (no art mapping) |
+| Mine player | walking / dead glyph |
+| Mine monsters | `cave_slug`, `rock_biter`, `deep_lurker` |
+| Mine ores | `rubble`, `gold_vein`, `energy_gem` |
+| Mine ore (upgrade) | `bronze_vein` wants a dedicated `bronze_ore` (uses copper today) |
+
+> **Orphan tiles:** the 7 `dirt_path_*` tiles in `assets/minigame/tiles/` are **not used** —
+> `forestFloorTile` only pulls grass/dirt. Wire up path rendering or treat as unused.
+
+---
+
+## Summary
+
+| Category | Done / Total | Export | Native px |
+|---|---|---|---|
+| Weapons | 3 / 3 ✅ | 128² | 32² |
+| Gear | 9 / 9 ✅ | 128² | 32² |
+| Items | 10 / 10 ✅ | 128² | 32² |
+| Relics | 19 / 19 ✅ | 128² | 32² |
+| Materials | 6 / 7 ⚠️ | 96² | 32² |
+| Spells | 0 / 6 ❌ | 128² | 32–64² |
+| Classes | 0 / 64 ❌ | 128² | 32–64² |
+| Avatars | 0 / 1+ ❌ | 128² | 64² |
+| Enemies | 0 / 10 ❌ | 192² | 48² |
+| Brand logo | 0 / 1 ❌ | 128² | 32² |
+| Scenes | 0 / 21 ❌ | 320×120 | 160×60 |
+| Minigame tiles/walls/decor | mostly ✅ | per cell | 16–32² |
+| Minigame players/creatures/ores | 0 / ~14 ❌ | ~48² | 32² |
+
+**Biggest remaining needs by volume:** 64 class crests, 21 scene banners, 10 enemies,
+6 spells, ~14 minigame characters/creatures/ores, plus the single `herbs` material and
+`brand:logo`.
+
+---
+
+## Integration notes
+
+1. **Square sprites (1:1)** use the `.clip-shield` frame; **scenes (8:3)** are full-width banners.
+2. **Swap mechanism:** entity art auto-registers from `src/assets/sprites/<folder>/` by
+   basename — no code edit. Scenes need URLs added to `SCENE_REGISTRY` in
+   `src/lib/scenes.ts`. Minigame art auto-registers from `src/assets/minigame/` by basename.
+3. **Before adding enemy art**, resolve the `boss:`-vs-`enemy:` key mismatch noted above.
+4. **Size guidance:** items render up to `xl` (112px box), so 128×128 source covers all UI.
+   Enemies appear at battle center (`lg` 80px and up) — 192×192 keeps them sharp.
+
+---
+
+## File structure reference
 
 ```
 src/
-├── assets/sprites/          (new: place PNGs/SVGs here)
+├── assets/
+│   ├── sprites/            (entity art: weapons/ gear/ potions/ materials/ relics/)
+│   └── minigame/           (tiles/ and cave_forest/ — Forest & Mine art)
 ├── lib/
-│   ├── sprites.ts           (SPRITE_REGISTRY swap point)
-│   └── scenes.ts            (SCENE_REGISTRY swap point)
-├── components/
-│   ├── ui/
-│   │   ├── Sprite.tsx       (sprite renderer — no changes needed)
-│   │   └── SceneArt.tsx     (scene renderer — no changes needed)
-│   └── [components using Sprite/SceneArt throughout]
-└── content/
-    ├── weapons.ts
-    ├── gear.ts
-    ├── items.ts
-    ├── spells.ts
-    ├── relics.ts
-    └── materials.ts
+│   ├── sprites.ts          (SPRITE_REGISTRY auto-swap seam)
+│   ├── scenes.ts           (SCENE_REGISTRY swap point — empty)
+│   └── minigameArt.ts      (minigame tile/decor/ore mapping)
+├── components/ui/
+│   ├── Sprite.tsx          (entity renderer — no changes needed)
+│   ├── SceneArt.tsx        (scene renderer — no changes needed)
+│   └── Crest.tsx           (placeholder shield)
+└── content/                (weapons, gear, items, spells, relics, materials, mining, forest …)
 ```
 
 ---
 
-**Generated:** 2026-06-15  
-**Status:** All sprite keys documented. Awaiting real art assets.
+**Updated:** 2026-06-16
+**Status:** Verified against code. Weapons/gear/items/relics done; minigame tiles/walls/decor
+mostly done. Outstanding: spells, classes, avatars, enemies, all scenes, minigame
+characters/creatures/ores, `herbs` material, `brand:logo`.

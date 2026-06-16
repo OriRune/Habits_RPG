@@ -89,6 +89,25 @@ import {
   FOREST_UNLOCK_LEVEL,
   FOREST_DEATH_KEEP,
 } from '@/engine/forest';
+import {
+  type ArenaState,
+  createArena,
+  arenaMove as arenaMoveFn,
+  arenaAct as arenaActFn,
+  arenaMelee as arenaMeleeFn,
+  arenaRanged as arenaRangedFn,
+  arenaCast as arenaCastFn,
+  arenaUseItem as arenaUseItemFn,
+  arenaTick as arenaTickFn,
+  arenaReward,
+  damageProgress,
+  rollArenaSetup,
+  arenaSpeedFactor,
+  type ArenaSpeed,
+  ARENA_ENERGY_COST,
+  ARENA_UNLOCK_LEVEL,
+} from '@/engine/arena';
+import type { Dir as GridDir, Cell as GridCell } from '@/engine/grid';
 import { biomeForDepth, getBiome, bossFor } from '@/engine/biomes';
 import {
   type EncounterRunState,
@@ -99,6 +118,14 @@ import {
 } from '@/engine/encounters';
 import { enemyFor } from '@/engine/enemies';
 import { type Mood, computeMood } from '@/engine/mood';
+import {
+  type TrialId,
+  getTrial,
+  trialReward,
+  emptyTrialsClearedOn,
+  emptyBestTrialScore,
+} from '@/engine/trials/trials';
+export { TRIALS_UNLOCK_LEVEL } from '@/engine/trials/trials';
 
 export interface Character {
   /** Hero name chosen at character creation. */
@@ -253,6 +280,10 @@ export interface GameSettings {
   paletteId: string;
   /** The user's last-built/imported custom palette, applied when paletteId === 'custom'. */
   customPalette: PaletteColors | null;
+  /** Arena difficulty pace. 'auto' eases low levels and quickens high ones; otherwise fixed. */
+  arenaSpeed: ArenaSpeed;
+  /** Skip the once-per-day gate on Skill Trials so they can be replayed immediately. */
+  repeatMinigames: boolean;
 }
 
 function freshSettings(): GameSettings {
@@ -262,6 +293,8 @@ function freshSettings(): GameSettings {
     invincible: false,
     paletteId: 'default',
     customPalette: null,
+    arenaSpeed: 'auto',
+    repeatMinigames: false,
   };
 }
 
@@ -300,6 +333,14 @@ export interface GameState {
   forest: ForestState | null;
   /** Deepest forest stage ever reached — a persistent record (mirrors deepestMineFloor). */
   deepestForestStage: number;
+  /** Active Arena run (real-time hex boss fight), or null when not fighting. */
+  arena: ArenaState | null;
+  /** Highest boss tier ever defeated in the Arena — a persistent record. */
+  deepestArenaTier: number;
+  /** ISO date of the last daily clear per Skill Trial, for daily gating ('' = never). */
+  trialsClearedOn: Record<TrialId, string>;
+  /** Personal best score (0..1) per Skill Trial, for hub star display. */
+  bestTrialScore: Record<TrialId, number>;
   /** Target level the player is currently trying to reach (boss is live or pending). */
   pendingLevelUp: number | null;
   pendingClassChoice: PendingClassChoice | null;
@@ -412,7 +453,35 @@ export interface GameState {
   /** Commit the haul and close the run — full on confirmed banking, halved on death. */
   endForest: () => void;
 
+  // The Arena (real-time hex boss fight; see src/engine/arena.ts).
+  /** Start a fight: gate on level/energy, charge energy, snapshot the fighter vs a level-scaled boss. */
+  beginArena: () => void;
+  /** Step the challenger one cell (also sets facing for aiming). */
+  arenaMove: (dir: GridDir) => void;
+  /** Context attack on the loop's clock: melee if the boss is adjacent, else a ranged bolt. Optional dir pre-sets facing. */
+  arenaAct: (nowMs: number, dir?: GridDir) => void;
+  /** Explicit melee swing (only lands adjacent). Optional dir pre-sets facing. */
+  arenaMelee: (nowMs: number, dir?: GridDir) => void;
+  /** Explicit ranged bolt down the facing line. Optional dir pre-sets facing. */
+  arenaRanged: (nowMs: number, dir?: GridDir) => void;
+  /** Cast a known spell (MP-gated). Optional dir pre-sets facing; target used for rune placement. */
+  arenaCast: (spellKey: string, nowMs: number, opts?: { dir?: GridDir; target?: GridCell }) => void;
+  /** Use a battle item (instant heal/buff). */
+  arenaUseItem: (itemKey: string, nowMs: number) => void;
+  /** Advance the boss/telegraph/projectile/status clock; flips to 'won' or 'ended' on resolution. */
+  arenaTick: (nowMs: number) => void;
+  /** Retreat — end the fight early and show the banking summary (keeps the earned share). */
+  beginArenaBanking: () => void;
+  /** Commit the reward and close the fight — full on a win, partial on retreat/death. */
+  endArena: () => void;
+
   updateSettings: (patch: Partial<GameSettings>) => void;
+
+  /**
+   * Complete a Skill Trial for today. If already cleared today: no-op.
+   * Otherwise stamps the date, updates the best score, and grants the trial's reward.
+   */
+  completeTrial: (trialId: TrialId, score01: number) => void;
 
   // Developer testing tools (Settings → Developer). Jump straight to level-locked content.
   /** Direct level jump: seed statXp to match `target` so all level gates open at once. */
@@ -542,6 +611,27 @@ function commitForestDeath(state: GameState, run: ForestState): GameState {
   // The trek still earns its Dexterity/Endurance trickle — only the haul is docked.
   const trickle = 4 + 3 * run.deepest;
   applyReward(next, { ...kept, statXp: { DX: trickle, EN: trickle } });
+  checkLevelUp(next);
+  return next;
+}
+
+/**
+ * Bank a finished Arena fight's reward into the economy and close it. A win pays the full boss
+ * reward (gold + items) and records the tier; a retreat/death pays the earned share (computed by
+ * arenaReward). Either way the bout earns a small Strength/Dexterity/Endurance trickle scaled by
+ * how much of the boss was worn down.
+ */
+function commitArena(state: GameState, run: ArenaState): GameState {
+  const won = run.status === 'won';
+  const next: GameState = {
+    ...state,
+    character: { ...state.character, statXp: { ...state.character.statXp } },
+    inventory: { ...state.inventory },
+    arena: null,
+    deepestArenaTier: won ? Math.max(state.deepestArenaTier, run.tier) : state.deepestArenaTier,
+  };
+  const trickle = Math.round((4 + run.tier) * (0.4 + 0.6 * damageProgress(run)));
+  applyReward(next, { ...arenaReward(run), statXp: { ST: trickle, DX: trickle, EN: trickle } });
   checkLevelUp(next);
   return next;
 }
@@ -801,6 +891,10 @@ export const useGameStore = create<GameState>()(
       deepestMineFloor: 0,
       forest: null,
       deepestForestStage: 0,
+      arena: null,
+      deepestArenaTier: 0,
+      trialsClearedOn: emptyTrialsClearedOn(),
+      bestTrialScore: emptyBestTrialScore(),
       pendingLevelUp: null,
       pendingClassChoice: null,
       bossLosses: {},
@@ -1525,6 +1619,30 @@ export const useGameStore = create<GameState>()(
           return { dungeon: resolveCurrentNode(run, run.hp, run.mp, run.sta) };
         }),
 
+      completeTrial: (trialId, score01) =>
+        set((s) => {
+          const today = toISODate();
+          if (!s.settings.repeatMinigames && s.trialsClearedOn[trialId] === today) return s;
+          const def = getTrial(trialId);
+          const reward = trialReward(def.stat, score01, s.character.level);
+          const next: GameState = {
+            ...s,
+            character: { ...s.character, statXp: { ...s.character.statXp } },
+            inventory: { ...s.inventory },
+            materials: { ...s.materials },
+            ownedWeapons: [...s.ownedWeapons],
+            ownedGear: [...s.ownedGear],
+            trialsClearedOn: { ...s.trialsClearedOn, [trialId]: today },
+            bestTrialScore: {
+              ...s.bestTrialScore,
+              [trialId]: Math.max(s.bestTrialScore[trialId] ?? 0, Math.max(0, Math.min(1, score01))),
+            },
+          };
+          applyReward(next, reward);
+          checkLevelUp(next);
+          return next;
+        }),
+
       updateSettings: (patch) =>
         set((s) => ({ settings: { ...s.settings, ...patch } })),
 
@@ -1688,6 +1806,91 @@ export const useGameStore = create<GameState>()(
               : commitForest(s, s.forest),
         ),
 
+      // --- The Arena (real-time hex boss fight) ---
+      beginArena: () =>
+        set((s) => {
+          const free = s.settings.unlimitedEnergy;
+          if (s.arena || s.character.level < ARENA_UNLOCK_LEVEL) return s;
+          if (!free && s.character.energy < ARENA_ENERGY_COST) return s;
+          const tier = Math.max(ARENA_UNLOCK_LEVEL, Math.min(MAX_LEVEL, s.character.level));
+          const setup = rollArenaSetup(tier, Math.random);
+          const arena = createArena(fighterFor(s), bossForLevel(tier), {
+            knownSpells: s.knownSpells,
+            inventory: s.inventory,
+            tier,
+            startMs: performance.now(),
+            rng: Math.random,
+            radius: setup.radius,
+            density: setup.density,
+            startMinions: setup.startMinions,
+            speed: arenaSpeedFactor(s.settings.arenaSpeed, s.character.level),
+            invincible: s.settings.invincible,
+          });
+          return {
+            character: {
+              ...s.character,
+              energy: free ? s.character.energy : s.character.energy - ARENA_ENERGY_COST,
+            },
+            arena,
+          };
+        }),
+
+      arenaMove: (dir) =>
+        set((s) =>
+          s.arena && s.arena.status === 'active' ? { arena: arenaMoveFn(s.arena, dir) } : s,
+        ),
+
+      arenaAct: (nowMs, dir) =>
+        set((s) => {
+          if (!s.arena || s.arena.status !== 'active') return s;
+          const arena = arenaActFn(s.arena, nowMs, Math.random, dir);
+          return arena === s.arena ? s : { arena };
+        }),
+
+      arenaMelee: (nowMs, dir) =>
+        set((s) => {
+          if (!s.arena || s.arena.status !== 'active') return s;
+          const arena = arenaMeleeFn(s.arena, nowMs, Math.random, dir);
+          return arena === s.arena ? s : { arena };
+        }),
+
+      arenaRanged: (nowMs, dir) =>
+        set((s) => {
+          if (!s.arena || s.arena.status !== 'active') return s;
+          const arena = arenaRangedFn(s.arena, nowMs, Math.random, dir);
+          return arena === s.arena ? s : { arena };
+        }),
+
+      arenaCast: (spellKey, nowMs, opts) =>
+        set((s) => {
+          if (!s.arena || s.arena.status !== 'active') return s;
+          const arena = arenaCastFn(s.arena, spellKey, nowMs, Math.random, opts);
+          return arena === s.arena ? s : { arena };
+        }),
+
+      arenaUseItem: (itemKey, nowMs) =>
+        set((s) => {
+          if (!s.arena || s.arena.status !== 'active') return s;
+          const arena = arenaUseItemFn(s.arena, itemKey, nowMs);
+          return arena === s.arena ? s : { arena };
+        }),
+
+      arenaTick: (nowMs) =>
+        set((s) => {
+          if (!s.arena || s.arena.status !== 'active') return s;
+          const arena = arenaTickFn(s.arena, nowMs, Math.random);
+          return arena === s.arena ? s : { arena };
+        }),
+
+      beginArenaBanking: () =>
+        set((s) =>
+          s.arena && s.arena.status === 'active'
+            ? { arena: { ...s.arena, status: 'banking' as const } }
+            : s,
+        ),
+
+      endArena: () => set((s) => (s.arena ? commitArena(s, s.arena) : s)),
+
       resetGame: () =>
         set(() => ({
           habits: [],
@@ -1709,6 +1912,10 @@ export const useGameStore = create<GameState>()(
           deepestMineFloor: 0,
           forest: null,
           deepestForestStage: 0,
+          arena: null,
+          deepestArenaTier: 0,
+          trialsClearedOn: emptyTrialsClearedOn(),
+          bestTrialScore: emptyBestTrialScore(),
           pendingLevelUp: null,
           pendingClassChoice: null,
           bossLosses: {},
@@ -1720,7 +1927,7 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 13,
+      version: 15,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -1745,6 +1952,10 @@ export const useGameStore = create<GameState>()(
       //      below (no in-progress run survives the upgrade) and `deepestMineFloor` defaults via merge.
       // v13: Wild Forest minigame — new top-level `forest`/`deepestForestStage`; `forest` is cleared
       //      below (no in-progress run survives the upgrade) and `deepestForestStage` defaults via merge.
+      // v14: Arena minigame — new top-level `arena`/`deepestArenaTier`; `arena` is cleared below
+      //      (no in-progress fight survives the upgrade) and `deepestArenaTier` defaults via merge.
+      // v15: Skill Trials — new top-level `trialsClearedOn`/`bestTrialScore`; both default to
+      //      their empty records via merge (no daily clears survive the upgrade — fair reset).
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {
@@ -1772,7 +1983,7 @@ export const useGameStore = create<GameState>()(
               statXpAtLastLevel: p.character.statXpAtLastLevel ?? { ...(p.character.statXp ?? emptyStatXP()) },
             }
           : p.character;
-        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, created: true } as GameState;
+        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, arena: null, created: true, trialsClearedOn: p.trialsClearedOn ?? emptyTrialsClearedOn(), bestTrialScore: p.bestTrialScore ?? emptyBestTrialScore() } as GameState;
       },
       // Deep-merge the nested `character`/`settings` objects so fields added in later versions
       // (e.g. statLevels) always fall back to their defaults instead of being dropped by the
@@ -1784,6 +1995,8 @@ export const useGameStore = create<GameState>()(
           ...p,
           character: withCharacterDefaults(p.character),
           settings: { ...current.settings, ...(p.settings ?? {}) },
+          trialsClearedOn: { ...emptyTrialsClearedOn(), ...(p.trialsClearedOn ?? {}) },
+          bestTrialScore: { ...emptyBestTrialScore(), ...(p.bestTrialScore ?? {}) },
         };
       },
     },

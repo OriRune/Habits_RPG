@@ -23,6 +23,10 @@ function statusLine(s: NonNullable<SpellDef['status']>): string {
       return `Weaken — foe's attack reduced ${Math.round(s.magnitude * 100)}% for ${s.turns} turns`;
     case 'bless':
       return `Bless — incoming damage reduced by ${s.magnitude} for ${s.turns} turns`;
+    case 'freeze':
+      return `Freeze — immobilises the target for ${s.turns} turns`;
+    case 'poison':
+      return `Poison — ${s.magnitude} damage per tick for ${s.turns} turns`;
   }
 }
 

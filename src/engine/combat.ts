@@ -99,6 +99,8 @@ export interface BattleState {
   playerSta: number;
   playerStatuses: StatusEffect[];
   enemyStatuses: StatusEffect[];
+  /** Rune traps placed on the battlefield — fire after their delay expires. */
+  pendingRunes: Array<{ kind: 'fire' | 'ice' | 'poison'; turnsLeft: number; power: number }>;
   defending: boolean;
   buffs: Partial<Record<StatId, number>>;
   log: string[];
@@ -174,6 +176,7 @@ export function createBattle(fighter: Fighter, boss: BossDef, opts: CreateBattle
     playerSta: opts.startingSta != null ? Math.min(opts.startingSta, c.maxSta) : c.maxSta,
     playerStatuses: [],
     enemyStatuses: [],
+    pendingRunes: [],
     defending: false,
     buffs: {},
     log,
@@ -199,8 +202,60 @@ function resolveBossDown(s: BattleState): void {
   }
 }
 
-function variance(base: number, rng: RNG): number {
+/** ±15% spread on a base magnitude. Exported so the real-time Arena rolls damage identically. */
+export function variance(base: number, rng: RNG): number {
   return base * (0.85 + rng() * 0.3);
+}
+
+/**
+ * Roll a weapon Attack's damage against a target. Shared by turn-based combat and the Arena so
+ * melee/ranged numbers stay identical. `power` is the attack stat (meleePower/rangedPower, buffs
+ * already folded in), `bonus` the weapon bonus, `full` whether stamina covered the swing.
+ */
+export function attackRoll(
+  power: number,
+  bonus: number,
+  attackStat: StatId,
+  weakTo: StatId[],
+  resistTo: StatId[],
+  full: boolean,
+  defense: number,
+  rng: RNG,
+): { dealt: number; weak: boolean; resist: boolean } {
+  const base = power + bonus;
+  const weak = weakTo.includes(attackStat);
+  const resist = resistTo.includes(attackStat);
+  let dmg = variance(base, rng);
+  if (weak) dmg *= 1.25;
+  if (resist) dmg *= 0.6;
+  if (!full) dmg *= 0.5; // exhausted — weak swing
+  const dealt = Math.max(1, Math.round(dmg) - defense);
+  return { dealt, weak, resist };
+}
+
+/** Roll a damage spell against a target (Wisdom-scaled). Shared with the Arena. */
+export function spellDamageRoll(
+  power: number,
+  damageSpell: number,
+  schoolStat: StatId,
+  weakTo: StatId[],
+  resistTo: StatId[],
+  ward: number,
+  rng: RNG,
+): { dealt: number; weak: boolean; resist: boolean } {
+  const base = power + damageSpell * 1.2;
+  const weak = weakTo.includes(schoolStat) || weakTo.includes('WI');
+  const resist = resistTo.includes(schoolStat) || resistTo.includes('WI');
+  let dmg = variance(base, rng);
+  if (weak) dmg *= 1.25;
+  if (resist) dmg *= 0.6;
+  const dealt = Math.max(1, Math.round(dmg) - ward);
+  return { dealt, weak, resist };
+}
+
+/** Heal amount for a support spell (Knowledge-scaled). Shared with the Arena. */
+export function spellHealAmount(power: number, supportSpell: number): number {
+  return Math.round(power + supportSpell * 1.5);
 }
 
 function hasStatus(list: StatusEffect[], key: StatusKey): StatusEffect | undefined {
@@ -224,6 +279,7 @@ export function playerAction(
     log: [...state.log],
     buffs: { ...state.buffs },
     consumedItems: [...state.consumedItems],
+    pendingRunes: state.pendingRunes.map((r) => ({ ...r })),
     playerStatuses: state.playerStatuses.map((x) => ({ ...x })),
     enemyStatuses: state.enemyStatuses.map((x) => ({ ...x })),
   };
@@ -233,14 +289,10 @@ export function playerAction(
     case 'attack': {
       const full = s.playerSta >= weapon.staminaCost;
       s.playerSta = Math.max(0, s.playerSta - weapon.staminaCost);
-      const base = (weapon.attackStat === 'DX' ? c.rangedPower : c.meleePower) + weapon.bonus;
-      const weak = state.weakTo.includes(weapon.attackStat);
-      const resist = state.resistTo.includes(weapon.attackStat);
-      let dmg = variance(base, rng);
-      if (weak) dmg *= 1.25;
-      if (resist) dmg *= 0.6;
-      if (!full) dmg *= 0.5; // exhausted — weak swing
-      const dealt = Math.max(1, Math.round(dmg) - s.bossDefense);
+      const power = weapon.attackStat === 'DX' ? c.rangedPower : c.meleePower;
+      const { dealt, weak, resist } = attackRoll(
+        power, weapon.bonus, weapon.attackStat, state.weakTo, state.resistTo, full, s.bossDefense, rng,
+      );
       s.bossHp -= dealt;
       const tag = weak ? ' — weak to it!' : resist ? ' — resisted' : '';
       s.log.push(`You attack with ${weapon.name} for ${dealt}${tag}${full ? '' : ' (exhausted)'}.`);
@@ -257,21 +309,33 @@ export function playerAction(
       }
       s.playerMp -= spell.mpCost;
       const schoolStat = SCHOOL_STAT[spell.school];
-      if (spell.school === 'damage') {
-        const base = spell.power + c.damageSpell * 1.2;
-        const weak = state.weakTo.includes(schoolStat) || state.weakTo.includes('WI');
-        const resist = state.resistTo.includes(schoolStat) || state.resistTo.includes('WI');
-        let dmg = variance(base, rng);
-        if (weak) dmg *= 1.25;
-        if (resist) dmg *= 0.6;
-        const dealt = Math.max(1, Math.round(dmg) - s.enemyWard);
+
+      // --- Special mechanic spells ---
+      if (spell.mechanic === 'rune-fire' || spell.mechanic === 'rune-ice' || spell.mechanic === 'rune-poison') {
+        const kind = spell.mechanic.slice(5) as 'fire' | 'ice' | 'poison';
+        const { dealt } = spellDamageRoll(spell.power, c.damageSpell, schoolStat, state.weakTo, state.resistTo, s.enemyWard, rng);
+        const delay = 1 + Math.floor(rng() * 3);
+        s.pendingRunes.push({ kind, turnsLeft: delay, power: dealt });
+        s.log.push(`${spell.name} is inscribed on the ground. It triggers in ${delay} turn${delay > 1 ? 's' : ''}!`);
+      } else if (spell.mechanic === 'ring-of-fire') {
+        const magnitude = Math.max(2, Math.round(c.damageSpell * 0.4 + spell.power * 0.3));
+        applyStatus(s.enemyStatuses, { key: 'burn', turns: 3, magnitude });
+        s.log.push(`${spell.name} engulfs the foe in a ring of flame.`);
+      } else if (spell.mechanic === 'teleport') {
+        const ward = Math.max(2, Math.round(c.supportSpell * 0.5));
+        applyStatus(s.playerStatuses, { key: 'bless', turns: 2, magnitude: ward });
+        s.log.push(`${spell.name} — you blink evasively, gaining a defensive ward.`);
+      } else if (spell.school === 'damage') {
+        const { dealt, weak, resist } = spellDamageRoll(
+          spell.power, c.damageSpell, schoolStat, state.weakTo, state.resistTo, s.enemyWard, rng,
+        );
         s.bossHp -= dealt;
         const tag = weak ? ' — super effective!' : resist ? ' — resisted' : '';
         s.log.push(`${spell.name} sears the foe for ${dealt}${tag}.`);
         if (spell.status) applyStatus(s.enemyStatuses, spell.status);
       } else if (spell.school === 'support') {
         if (spell.power > 0) {
-          const heal = Math.round(spell.power + c.supportSpell * 1.5);
+          const heal = spellHealAmount(spell.power, c.supportSpell);
           const gained = Math.min(heal, s.playerMaxHp - s.playerHp);
           s.playerHp += gained;
           s.log.push(`${spell.name} restores ${gained} HP.`);
@@ -336,7 +400,7 @@ export function playerAction(
 
   enemyTurn(s, c, rng);
   if (s.status !== 'active') return s;
-  tickStatuses(s);
+  tickStatuses(s, rng);
   return s;
 }
 
@@ -351,6 +415,11 @@ function applyStatus(list: StatusEffect[], status: StatusEffect): void {
 }
 
 function enemyTurn(s: BattleState, c: Combatant, rng: RNG): void {
+  const freeze = hasStatus(s.enemyStatuses, 'freeze');
+  if (freeze) {
+    s.log.push(`${s.bossName} is frozen solid and cannot act!`);
+    return;
+  }
   const blind = hasStatus(s.enemyStatuses, 'blind');
   if (blind && rng() < 0.4) {
     s.log.push(`${s.bossName} swings blindly and misses!`);
@@ -379,8 +448,8 @@ function enemyTurn(s: BattleState, c: Combatant, rng: RNG): void {
   }
 }
 
-/** End-of-round: apply damage-over-time, then decrement/expire all statuses. */
-function tickStatuses(s: BattleState): void {
+/** End-of-round: apply damage-over-time, fire pending runes, then decrement/expire all statuses. */
+function tickStatuses(s: BattleState, rng: RNG): void {
   const enemyBurn = hasStatus(s.enemyStatuses, 'burn');
   if (enemyBurn) {
     const d = Math.round(enemyBurn.magnitude);
@@ -388,16 +457,64 @@ function tickStatuses(s: BattleState): void {
     s.log.push(`The foe burns for ${d}.`);
     if (s.bossHp <= 0) resolveBossDown(s);
   }
+  if (s.status === 'active') {
+    const enemyPoison = hasStatus(s.enemyStatuses, 'poison');
+    if (enemyPoison) {
+      const d = Math.round(enemyPoison.magnitude);
+      s.bossHp -= d;
+      s.log.push(`The foe suffers ${d} poison damage.`);
+      if (s.bossHp <= 0) resolveBossDown(s);
+    }
+  }
   const playerBurn = hasStatus(s.playerStatuses, 'burn');
   if (playerBurn && s.status === 'active') {
     const d = Math.round(playerBurn.magnitude);
     s.playerHp -= d;
     s.log.push(`You burn for ${d}.`);
-    if (s.playerHp <= 0) {
-      s.playerHp = 0;
-      s.status = 'lost';
+    if (s.playerHp <= 0) { s.playerHp = 0; s.status = 'lost'; }
+  }
+  if (s.status === 'active') {
+    const playerPoison = hasStatus(s.playerStatuses, 'poison');
+    if (playerPoison) {
+      const d = Math.round(playerPoison.magnitude);
+      s.playerHp -= d;
+      s.log.push(`You take ${d} poison damage.`);
+      if (s.playerHp <= 0) { s.playerHp = 0; s.status = 'lost'; }
     }
   }
+
+  // Pending runes tick down; at 0 they trigger on the foe (with a small backfire chance).
+  const stillPending: typeof s.pendingRunes = [];
+  for (const rune of s.pendingRunes) {
+    const left = rune.turnsLeft - 1;
+    if (left > 0) { stillPending.push({ ...rune, turnsLeft: left }); continue; }
+    if (rng() < 0.15) {
+      // Backfire — hits the player instead.
+      const selfDmg = Math.max(1, Math.round(rune.power * 0.35));
+      s.playerHp -= selfDmg;
+      s.log.push(`The ${rune.kind} rune backfires, dealing ${selfDmg} damage to you!`);
+      if (s.playerHp <= 0) { s.playerHp = 0; s.status = 'lost'; }
+    } else {
+      switch (rune.kind) {
+        case 'fire':
+          s.bossHp -= rune.power;
+          s.log.push(`The fire rune detonates on ${s.bossName} for ${rune.power}!`);
+          applyStatus(s.enemyStatuses, { key: 'burn', turns: 2, magnitude: Math.max(1, Math.round(rune.power * 0.3)) });
+          if (s.bossHp <= 0) resolveBossDown(s);
+          break;
+        case 'ice':
+          s.log.push(`The ice rune freezes ${s.bossName}!`);
+          applyStatus(s.enemyStatuses, { key: 'freeze', turns: 2, magnitude: 1 }); // decremented once this tick; effective for 1 turn
+          break;
+        case 'poison':
+          s.log.push(`The poison rune poisons ${s.bossName}!`);
+          applyStatus(s.enemyStatuses, { key: 'poison', turns: 3, magnitude: Math.max(1, Math.round(rune.power * 0.3)) });
+          break;
+      }
+    }
+  }
+  s.pendingRunes = stillPending;
+
   s.enemyStatuses = s.enemyStatuses.map((x) => ({ ...x, turns: x.turns - 1 })).filter((x) => x.turns > 0);
   s.playerStatuses = s.playerStatuses.map((x) => ({ ...x, turns: x.turns - 1 })).filter((x) => x.turns > 0);
 }

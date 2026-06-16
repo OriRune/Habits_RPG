@@ -141,6 +141,26 @@ body {
   100% { opacity: 0; transform: translateX(-50%) translateY(-30px) scale(0.95); }
 }
 
+/* Arena boss telegraph — a danger zone brightens as the blow winds up (duration set per-cast). */
+@keyframes arena-telegraph {
+  0%   { opacity: 0.16; }
+  70%  { opacity: 0.48; }
+  100% { opacity: 0.82; }
+}
+
+/* Arena: a red edge-vignette pulse when the player is struck. */
+@keyframes arena-hit {
+  0%   { box-shadow: inset 0 0 0 9999px rgba(239,68,68,0); }
+  25%  { box-shadow: inset 0 0 80px 12px rgba(239,68,68,0.55); }
+  100% { box-shadow: inset 0 0 80px 12px rgba(239,68,68,0); }
+}
+
+/* Arena: an expanding ring on the caster when a spell goes off. */
+@keyframes arena-cast {
+  0%   { opacity: 0.85; transform: translate(-50%, -50%) scale(0.5); }
+  100% { opacity: 0;    transform: translate(-50%, -50%) scale(1.6); }
+}
+
 /* Themed scrollbar */
 ::-webkit-scrollbar {
   width: 10px;
