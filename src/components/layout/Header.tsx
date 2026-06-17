@@ -1,18 +1,19 @@
-import { Coins, Zap, Settings } from 'lucide-react';
+import { Coins, Zap, Settings, Sun, Moon } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { Sprite } from '@/components/ui/Sprite';
 import { brandLook } from '@/lib/sprites';
 
-/** Slim carved-wood title bar with the wordmark, currency chips, and a settings gear. */
+/** Slim carved-wood title bar with the wordmark, currency chips, dark mode toggle, and settings gear. */
 export function Header({ onOpenSettings }: { onOpenSettings?: () => void }) {
   const gold = useGameStore((s) => s.character.gold);
   const energy = useGameStore((s) => s.character.energy);
   const settings = useGameStore((s) => s.settings);
+  const updateSettings = useGameStore((s) => s.updateSettings);
   const devActive = settings.unlimitedGold || settings.unlimitedEnergy || settings.invincible;
 
   return (
     <header className="texture-wood sticky top-0 z-10 border-b-2 border-gold-deep shadow-wood">
-      <div className="mx-auto flex max-w-2xl items-center justify-between px-4 py-2.5">
+      <div className="mx-auto flex max-w-full items-center justify-between px-4 py-2.5 lg:max-w-none">
         <div className="flex items-center gap-2">
           <Sprite spriteKey="brand:logo" look={brandLook()} size="sm" label="logo" />
           <span className="font-display text-lg font-bold tracking-wide text-gold-bright">Habits RPG</span>
@@ -31,9 +32,22 @@ export function Header({ onOpenSettings }: { onOpenSettings?: () => void }) {
               Dev
             </span>
           )}
+          {/* Dark / light mode toggle */}
+          <button
+            onClick={() => updateSettings({ darkMode: !settings.darkMode })}
+            className="text-on-wood-mid transition-colors hover:text-gold-bright"
+            aria-label={settings.darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+            aria-pressed={settings.darkMode}
+          >
+            {settings.darkMode ? (
+              <Sun className="h-5 w-5" />
+            ) : (
+              <Moon className="h-5 w-5" />
+            )}
+          </button>
           <button
             onClick={onOpenSettings}
-            className="text-parchment-300/70 transition-colors hover:text-gold-bright"
+            className="text-on-wood-mid transition-colors hover:text-gold-bright"
             aria-label="Settings"
           >
             <Settings className="h-5 w-5" />

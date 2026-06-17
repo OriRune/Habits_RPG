@@ -8,6 +8,8 @@ interface PanelProps {
   className?: string;
   /** Show gold corner ornaments. */
   ornate?: boolean;
+  /** Adds hover lift + glow — use for clickable panels. Disabled under reduced-motion. */
+  interactive?: boolean;
 }
 
 function Corners() {
@@ -22,12 +24,13 @@ function Corners() {
 }
 
 /** The workhorse container: a textured surface inside a gold double-frame. */
-export function Panel({ children, tone = 'parchment', className, ornate = true }: PanelProps) {
+export function Panel({ children, tone = 'parchment', className, ornate = true, interactive = false }: PanelProps) {
   return (
     <div
       className={cn(
         'relative rounded-md shadow-gold',
         tone === 'parchment' ? 'texture-parchment' : 'texture-wood',
+        interactive && 'transition-transform hover:-translate-y-0.5 hover:shadow-glow motion-reduce:hover:translate-y-0',
       )}
     >
       {ornate && <Corners />}

@@ -1,6 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
 import { Header } from '@/components/layout/Header';
-import { TabBar, type Tab } from '@/components/layout/TabBar';
+import { BottomBar, Sidebar, type Tab } from '@/components/layout/TabBar';
 import { BoonChoice } from '@/components/dungeon/BoonChoice';
 import { ClassChoiceModal } from '@/components/class/ClassChoiceModal';
 import { WeeklyReportModal } from '@/components/weekly/WeeklyReportModal';
@@ -9,12 +9,9 @@ import { LoginView } from '@/views/LoginView';
 import { DashboardView } from '@/views/DashboardView';
 import { CharacterView } from '@/views/CharacterView';
 import { ChallengesView } from '@/views/ChallengesView';
-import { DungeonView } from '@/views/DungeonView';
-import { MiningView } from '@/views/MiningView';
-import { ForestView } from '@/views/ForestView';
-import { ArenaView } from '@/views/ArenaView';
-import { TacticsView } from '@/views/TacticsView';
 import { TrialsView } from '@/views/TrialsView';
+import { ExploreView } from '@/views/ExploreView';
+import { BattleView } from '@/views/BattleView';
 import { PartyView } from '@/views/PartyView';
 import { InventoryView } from '@/views/InventoryView';
 import { HistoryView } from '@/views/HistoryView';
@@ -61,6 +58,7 @@ export default function App() {
   const checkWeeklyRollover = useGameStore((s) => s.checkWeeklyRollover);
   const paletteId = useGameStore((s) => s.settings.paletteId);
   const customPalette = useGameStore((s) => s.settings.customPalette);
+  const darkMode = useGameStore((s) => s.settings.darkMode);
   const authStatus = useAuthStore((s) => s.status);
 
   // Wire the Supabase session ↔ cloud-save lifecycle (no-op without a backend).
@@ -71,11 +69,11 @@ export default function App() {
   usePartyQuestReporter();
   useCoopSession();
 
-  // Single apply path: re-skin the app whenever the selected palette changes
-  // (and once on mount, after the store has hydrated from localStorage).
+  // Single apply path: re-skin the app whenever the selected palette or dark
+  // mode changes (and once on mount, after the store has hydrated from localStorage).
   useEffect(() => {
-    applyPalette(resolvePalette({ paletteId, customPalette }));
-  }, [paletteId, customPalette]);
+    applyPalette(resolvePalette({ paletteId, customPalette }), darkMode ? 'dark' : 'light');
+  }, [paletteId, customPalette, darkMode]);
 
   // Resume elapsed suspensions and surface the weekly report if a new week has begun.
   // Only for an established save — a brand-new hero hasn't finished creation yet.
@@ -91,7 +89,7 @@ export default function App() {
     if (authStatus === 'loading' || (authStatus === 'signedIn' && !cloudReady)) {
       return (
         <div className="texture-wood flex min-h-full items-center justify-center">
-          <p className="font-display text-sm text-parchment-300">Loading…</p>
+          <p className="font-display text-sm text-on-wood-mid">Loading…</p>
         </div>
       );
     }
@@ -103,29 +101,34 @@ export default function App() {
   return (
     <div className="flex min-h-full flex-col">
       <Header onOpenSettings={() => setSettingsOpen(true)} />
-      <main className="flex-1">
-        {tab === 'habits' && <DashboardView onOpenHistory={() => setHistoryOpen(true)} />}
-        {tab === 'character' && <CharacterView />}
-        {tab === 'challenges' && <ChallengesView />}
-        {tab === 'dungeon' && <DungeonView />}
-        {tab === 'mine' && <MiningView />}
-        {tab === 'forest' && <ForestView />}
-        {tab === 'arena' && <ArenaView />}
-        {tab === 'tactics' && <TacticsView />}
-        {tab === 'skills' && <TrialsView />}
-        {tab === 'party' && <PartyView />}
-        {tab === 'inventory' && <InventoryView />}
-      </main>
-      <TabBar active={tab} onChange={setTab} />
+
+      {/* Row: sidebar (desktop) + content (both) */}
+      <div className="flex flex-1">
+        <Sidebar active={tab} onChange={setTab} />
+
+        <main className="flex-1">
+          {tab === 'habits'     && <DashboardView onOpenHistory={() => setHistoryOpen(true)} />}
+          {tab === 'challenges' && <ChallengesView />}
+          {tab === 'character'  && <CharacterView />}
+          {tab === 'skills'     && <TrialsView />}
+          {tab === 'explore'    && <ExploreView />}
+          {tab === 'battle'     && <BattleView />}
+          {tab === 'inventory'  && <InventoryView />}
+          {tab === 'party'      && <PartyView />}
+        </main>
+      </div>
+
+      {/* Bottom bar — mobile/narrow only (hidden on lg+) */}
+      <BottomBar active={tab} onChange={setTab} />
 
       {historyOpen && <HistoryView onClose={() => setHistoryOpen(false)} />}
       {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
       <Suspense fallback={null}>
-        {mining && <MineRunOverlay />}
-        {forest && <ForestRunOverlay />}
-        {arena && <ArenaOverlay />}
+        {mining  && <MineRunOverlay />}
+        {forest  && <ForestRunOverlay />}
+        {arena   && <ArenaOverlay />}
         {tactics && <TacticsOverlay />}
-        {battle && <BattleOverlay />}
+        {battle  && <BattleOverlay />}
       </Suspense>
       <BoonChoice />
       {classChoice && <ClassChoiceModal />}

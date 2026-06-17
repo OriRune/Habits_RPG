@@ -32,6 +32,52 @@ export interface Palette {
   colors: PaletteColors;
 }
 
+/** Whether to render a light (day) or dark (night) theme.
+ *  Same palette hues — only lightness targets invert. */
+export type ThemeMode = 'light' | 'dark';
+
+interface ModeTargets {
+  /** Clamp parchment (surface) base lightness — light mode pushes up, dark mode forces down. */
+  parchBaseL: (l: number) => number;
+  /** Lightness deltas applied to parchment DEFAULT/100/200/300/400. */
+  parchSteps: [number, number, number, number, number];
+  /** Absolute lightness for ink/text DEFAULT, muted, light. */
+  inkBaseL: number;
+  inkMutedL: number;
+  inkLightL: number;
+  /** Clamp wood (dark bars/backdrop) base lightness. */
+  woodBaseL: (l: number) => number;
+  /** Lightness deltas for wood DEFAULT/900/800/700/600/500. */
+  woodSteps: [number, number, number, number, number, number];
+  /** Absolute lightness for body background. */
+  bodyL: number;
+}
+
+/**
+ * Per-mode lightness targets. Light-mode values reproduce the index.css
+ * baseline exactly (no rounding drift). Dark mode inverts panel/text lightness
+ * while preserving each role's hue, so any palette looks coherent either way.
+ */
+const MODE_TARGETS: Record<ThemeMode, ModeTargets> = {
+  light: {
+    parchBaseL: (l) => Math.max(l, 0.8),
+    parchSteps: [0, 0.05, 0, -0.08, -0.16],
+    inkBaseL: 0.16, inkMutedL: 0.32, inkLightL: 0.44,
+    woodBaseL: (l) => Math.min(l, 0.22),
+    woodSteps: [0, -0.06, -0.03, 0, 0.08, 0.16],
+    bodyL: 0.06,
+  },
+  dark: {
+    // Panels become dark raised surfaces; text becomes light. Hue is preserved.
+    parchBaseL: () => 0.18,   // ignore source lightness; force panels dark
+    parchSteps: [0, 0.03, 0, -0.04, -0.07],
+    inkBaseL: 0.90, inkMutedL: 0.72, inkLightL: 0.58,
+    woodBaseL: (l) => Math.min(l, 0.12),
+    woodSteps: [0, -0.04, -0.02, 0, 0.05, 0.10],
+    bodyL: 0.04,
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Color math (no dependencies). Works in HSL for perceptual lighten/darken.
 // ---------------------------------------------------------------------------
@@ -152,57 +198,70 @@ function luminance(rgb: Rgb): number {
 /**
  * Map a palette's five base colors to every themeable `--c-*` var (channel form).
  *
- * Surfaces are clamped (parchment kept light, wood/ink kept dark) so arbitrary
- * custom palettes can't collapse text-on-parchment contrast. Jewel and stat
- * colors are deliberately omitted — they fall back to the :root baseline / stay
- * fixed, preserving their identity meaning.
+ * In light mode (default) the exact index.css baseline values are reproduced.
+ * In dark mode panel/text lightness targets invert while hues are preserved,
+ * so any palette produces a coherent dark theme with zero per-component changes.
+ *
+ * Jewel and stat colors are deliberately omitted — they stay fixed, preserving
+ * their identity meaning.
  */
-export function deriveThemeVars(colors: PaletteColors): Record<string, string> {
+export function deriveThemeVars(colors: PaletteColors, mode: ThemeMode = 'light'): Record<string, string> {
+  const t = MODE_TARGETS[mode];
   const dark = rgbToHsl(hexToRgb(colors.dark) ?? { r: 36, g: 23, b: 16 });
   const light = rgbToHsl(hexToRgb(colors.light) ?? { r: 243, g: 231, b: 201 });
   const gold = rgbToHsl(hexToRgb(colors.gold) ?? { r: 201, g: 162, b: 39 });
   const ember = rgbToHsl(hexToRgb(colors.ember) ?? { r: 156, g: 58, b: 37 });
 
-  // Keep surfaces in a usable range regardless of the source palette.
-  const woodBase: Hsl = { ...dark, l: Math.min(dark.l, 0.22) };
-  const parchBase: Hsl = { ...light, l: Math.max(light.l, 0.8) };
+  // Wood base = darkest bars and backdrop — clamped darker in dark mode.
+  const woodBase: Hsl = { ...dark, l: t.woodBaseL(dark.l) };
+  // Parch base = panel surfaces — uses the `light` role's hue clamped by mode.
+  // Light mode: forced very light. Dark mode: forced dark so panels read as
+  // raised surfaces against the even-darker body, while palette hue shows.
+  const parchBase: Hsl = { ...light, l: t.parchBaseL(light.l) };
+  // Ink base = text — seeded from `dark`'s hue; lightness pinned per mode below.
+  const inkBase: Hsl = { ...woodBase };
 
-  const vars: Record<string, string> = {
-    // Parchment — light surfaces (200 == DEFAULT).
-    '--c-parchment': channel(shiftL(parchBase, 0)),
-    '--c-parchment-100': channel(shiftL(parchBase, 0.05)),
-    '--c-parchment-200': channel(shiftL(parchBase, 0)),
-    '--c-parchment-300': channel(shiftL(parchBase, -0.08)),
-    '--c-parchment-400': channel(shiftL(parchBase, -0.16)),
+  const [p0, p1, p2, p3, p4] = t.parchSteps;
+  const [w0, w9, w8, w7, w6, w5] = t.woodSteps;
 
-    // Ink — text on parchment. Derived from the dark role but pinned dark for
-    // contrast, with a softened saturation so it reads as warm brown, not black.
-    '--c-ink': channel(atL({ ...woodBase, s: Math.min(woodBase.s, 0.5) }, 0.16)),
-    '--c-ink-muted': channel(atL({ ...woodBase, s: Math.min(woodBase.s, 0.45) }, 0.32)),
-    '--c-ink-light': channel(atL({ ...woodBase, s: Math.min(woodBase.s, 0.4) }, 0.44)),
+  return {
+    // Parchment — panel surfaces.
+    '--c-parchment':     channel(shiftL(parchBase, p0)),
+    '--c-parchment-100': channel(shiftL(parchBase, p1)),
+    '--c-parchment-200': channel(shiftL(parchBase, p2)),
+    '--c-parchment-300': channel(shiftL(parchBase, p3)),
+    '--c-parchment-400': channel(shiftL(parchBase, p4)),
 
-    // Wood — dark background / dark panels (700 == DEFAULT).
-    '--c-wood': channel(shiftL(woodBase, 0)),
-    '--c-wood-900': channel(shiftL(woodBase, -0.06)),
-    '--c-wood-800': channel(shiftL(woodBase, -0.03)),
-    '--c-wood-700': channel(shiftL(woodBase, 0)),
-    '--c-wood-600': channel(shiftL(woodBase, 0.08)),
-    '--c-wood-500': channel(shiftL(woodBase, 0.16)),
+    // Ink — text on panels. Saturation capped so it reads as warm brown/cream,
+    // not pure black/white. Lightness pinned per mode.
+    '--c-ink':       channel(atL({ ...inkBase, s: Math.min(inkBase.s, 0.50) }, t.inkBaseL)),
+    '--c-ink-muted': channel(atL({ ...inkBase, s: Math.min(inkBase.s, 0.45) }, t.inkMutedL)),
+    '--c-ink-light': channel(atL({ ...inkBase, s: Math.min(inkBase.s, 0.40) }, t.inkLightL)),
 
-    // Gold — trim & accents.
-    '--c-gold': channel(shiftL(gold, 0)),
+    // Wood — dark bars and backdrop (700 == DEFAULT).
+    '--c-wood':     channel(shiftL(woodBase, w0)),
+    '--c-wood-900': channel(shiftL(woodBase, w9)),
+    '--c-wood-800': channel(shiftL(woodBase, w8)),
+    '--c-wood-700': channel(shiftL(woodBase, w7)),
+    '--c-wood-600': channel(shiftL(woodBase, w6)),
+    '--c-wood-500': channel(shiftL(woodBase, w5)),
+
+    // Gold & Ember — identity colors, unchanged across modes.
+    '--c-gold':        channel(shiftL(gold, 0)),
     '--c-gold-bright': channel(shiftL(gold, 0.15)),
-    '--c-gold-deep': channel(shiftL(gold, -0.18)),
-    '--c-gold-dim': channel(shiftL(gold, -0.28)),
-
-    // Ember — primary actions / alerts.
-    '--c-ember': channel(shiftL(ember, 0)),
+    '--c-gold-deep':   channel(shiftL(gold, -0.18)),
+    '--c-gold-dim':    channel(shiftL(gold, -0.28)),
+    '--c-ember':        channel(shiftL(ember, 0)),
     '--c-ember-bright': channel(shiftL(ember, 0.14)),
 
-    // Body backdrop — a touch darker than the darkest wood.
-    '--c-body-bg': channel(atL(woodBase, 0.06)),
+    // Body backdrop — darkest surface.
+    '--c-body-bg': channel(atL(woodBase, t.bodyL)),
+
+    // "On-wood" text — always light (l≈0.80) in both modes so icons/labels on
+    // dark wood surfaces (header, nav bar, wood panels) remain readable even when
+    // the parchment-* surface tokens invert to dark in dark mode.
+    '--c-on-wood': channel(atL(light, 0.80)),
   };
-  return vars;
 }
 
 // ---------------------------------------------------------------------------
@@ -351,18 +410,21 @@ export function resolvePalette(settings: PaletteSettings): Palette {
 }
 
 /**
- * Write a palette's derived vars onto :root. For the default palette we clear
- * the inline overrides instead, letting the exact stylesheet baseline show.
+ * Write a palette's derived vars onto :root.
+ *
+ * For the default palette in light mode we clear the inline overrides so the
+ * exact index.css stylesheet baseline shows through (zero rounding drift).
+ * For default+dark, or any custom/premade palette, we derive and apply real vars.
  */
-export function applyPalette(palette: Palette): void {
+export function applyPalette(palette: Palette, mode: ThemeMode = 'light'): void {
   const root = document.documentElement;
-  if (palette.id === 'default') {
-    for (const key of Object.keys(deriveThemeVars(palette.colors))) {
+  if (palette.id === 'default' && mode === 'light') {
+    for (const key of Object.keys(deriveThemeVars(palette.colors, 'light'))) {
       root.style.removeProperty(key);
     }
     return;
   }
-  const vars = deriveThemeVars(palette.colors);
+  const vars = deriveThemeVars(palette.colors, mode);
   for (const [key, value] of Object.entries(vars)) {
     root.style.setProperty(key, value);
   }

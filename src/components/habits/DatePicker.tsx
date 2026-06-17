@@ -51,7 +51,7 @@ export function DatePicker({ value, onChange, minISO, maxISO, hasActivity }: Dat
           setMonth(startOfMonth(value));
           setOpen((o) => !o);
         }}
-        className="flex h-9 items-center justify-center rounded-md border border-gold-deep/70 px-2.5 text-parchment-200 texture-wood transition-colors hover:border-gold"
+        className="flex h-9 items-center justify-center rounded-md border border-gold-deep/70 px-2.5 text-on-wood texture-wood transition-colors hover:border-gold"
         aria-label="Pick a day"
       >
         <CalendarDays className="h-4 w-4" />
