@@ -773,11 +773,11 @@ describe('deep mine', () => {
     expect(get().character.energy).toBe(8); // MINE_ENERGY_COST = 2
   });
 
-  it('beginMining is blocked below the unlock level', () => {
-    // Fresh character is level 1 (< MINE_UNLOCK_LEVEL).
+  it('beginMining has no level gate — a fresh level-1 character can enter', () => {
+    // Level limit removed: only energy (and the unlimitedEnergy bypass) gates entry now.
     useGameStore.setState({ character: { ...get().character, energy: 10 } });
     get().beginMining();
-    expect(get().mining).toBeNull();
+    expect(get().mining).not.toBeNull();
   });
 
   it('mineStrike breaks the faced ore vein and accrues the haul', () => {
@@ -821,8 +821,8 @@ describe('deep mine', () => {
     expect(get().deepestMineFloor).toBe(2);
   });
 
-  it('persists at version 16', () => {
-    expect(useGameStore.persist.getOptions().version).toBe(16);
+  it('persists at version 17', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(17);
   });
 });
 
@@ -871,10 +871,10 @@ describe('wild forest', () => {
     expect(get().character.energy).toBe(8); // FOREST_ENERGY_COST = 2
   });
 
-  it('beginForest is blocked below the unlock level', () => {
+  it('beginForest has no level gate — a fresh level-1 character can enter', () => {
     useGameStore.setState({ character: { ...get().character, energy: 10 } });
     get().beginForest();
-    expect(get().forest).toBeNull();
+    expect(get().forest).not.toBeNull();
   });
 
   it('forestAct gathers a faced node into the haul', () => {

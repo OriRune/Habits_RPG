@@ -1,27 +1,50 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { Header } from '@/components/layout/Header';
 import { TabBar, type Tab } from '@/components/layout/TabBar';
-import { BattleOverlay } from '@/components/combat/BattleOverlay';
 import { BoonChoice } from '@/components/dungeon/BoonChoice';
 import { ClassChoiceModal } from '@/components/class/ClassChoiceModal';
 import { WeeklyReportModal } from '@/components/weekly/WeeklyReportModal';
 import { CreationView } from '@/views/CreationView';
+import { LoginView } from '@/views/LoginView';
 import { DashboardView } from '@/views/DashboardView';
 import { CharacterView } from '@/views/CharacterView';
 import { ChallengesView } from '@/views/ChallengesView';
 import { DungeonView } from '@/views/DungeonView';
 import { MiningView } from '@/views/MiningView';
-import { MineRunOverlay } from '@/components/mining/MineRunOverlay';
 import { ForestView } from '@/views/ForestView';
-import { ForestRunOverlay } from '@/components/forest/ForestRunOverlay';
 import { ArenaView } from '@/views/ArenaView';
-import { ArenaOverlay } from '@/components/arena/ArenaOverlay';
+import { TacticsView } from '@/views/TacticsView';
 import { TrialsView } from '@/views/TrialsView';
+import { PartyView } from '@/views/PartyView';
 import { InventoryView } from '@/views/InventoryView';
 import { HistoryView } from '@/views/HistoryView';
 import { SettingsView } from '@/views/SettingsView';
 import { useGameStore } from '@/store/useGameStore';
 import { applyPalette, resolvePalette } from '@/engine/palettes';
+import { isBackendConfigured } from '@/net/env';
+import { useAuthStore } from '@/net/auth';
+import { useCloudSync } from '@/hooks/useCloudSync';
+import { useParty, usePartyQuestReporter } from '@/hooks/useParty';
+import { useCoopSession } from '@/hooks/useCoopSession';
+
+// Minigame/combat overlays are heavy (each pulls in its engine: mining/forest/
+// arena/combat). Code-split them so the initial bundle stays lean — each chunk
+// loads only when its overlay first opens. Named exports → map to default.
+const MineRunOverlay = lazy(() =>
+  import('@/components/mining/MineRunOverlay').then((m) => ({ default: m.MineRunOverlay })),
+);
+const ForestRunOverlay = lazy(() =>
+  import('@/components/forest/ForestRunOverlay').then((m) => ({ default: m.ForestRunOverlay })),
+);
+const ArenaOverlay = lazy(() =>
+  import('@/components/arena/ArenaOverlay').then((m) => ({ default: m.ArenaOverlay })),
+);
+const TacticsOverlay = lazy(() =>
+  import('@/components/tactics/TacticsOverlay').then((m) => ({ default: m.TacticsOverlay })),
+);
+const BattleOverlay = lazy(() =>
+  import('@/components/combat/BattleOverlay').then((m) => ({ default: m.BattleOverlay })),
+);
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('habits');
@@ -32,11 +55,21 @@ export default function App() {
   const mining = useGameStore((s) => s.mining);
   const forest = useGameStore((s) => s.forest);
   const arena = useGameStore((s) => s.arena);
+  const tactics = useGameStore((s) => s.tactics);
   const classChoice = useGameStore((s) => s.pendingClassChoice);
   const normalizeHabits = useGameStore((s) => s.normalizeHabits);
   const checkWeeklyRollover = useGameStore((s) => s.checkWeeklyRollover);
   const paletteId = useGameStore((s) => s.settings.paletteId);
   const customPalette = useGameStore((s) => s.settings.customPalette);
+  const authStatus = useAuthStore((s) => s.status);
+
+  // Wire the Supabase session ↔ cloud-save lifecycle (no-op without a backend).
+  const { cloudReady } = useCloudSync();
+  // Party realtime (presence/chat/quests) + quest-progress reporting (no-op when
+  // not in a party / no backend).
+  useParty();
+  usePartyQuestReporter();
+  useCoopSession();
 
   // Single apply path: re-skin the app whenever the selected palette changes
   // (and once on mount, after the store has hydrated from localStorage).
@@ -52,6 +85,19 @@ export default function App() {
     checkWeeklyRollover();
   }, [created, normalizeHabits, checkWeeklyRollover]);
 
+  // Auth gate (only when a backend is configured; otherwise pure single-player).
+  // Order: wait for the session check → sign in → create character → main app.
+  if (isBackendConfigured()) {
+    if (authStatus === 'loading' || (authStatus === 'signedIn' && !cloudReady)) {
+      return (
+        <div className="texture-wood flex min-h-full items-center justify-center">
+          <p className="font-display text-sm text-parchment-300">Loading…</p>
+        </div>
+      );
+    }
+    if (authStatus === 'signedOut') return <LoginView />;
+  }
+
   if (!created) return <CreationView />;
 
   return (
@@ -65,17 +111,22 @@ export default function App() {
         {tab === 'mine' && <MiningView />}
         {tab === 'forest' && <ForestView />}
         {tab === 'arena' && <ArenaView />}
+        {tab === 'tactics' && <TacticsView />}
         {tab === 'skills' && <TrialsView />}
+        {tab === 'party' && <PartyView />}
         {tab === 'inventory' && <InventoryView />}
       </main>
       <TabBar active={tab} onChange={setTab} />
 
       {historyOpen && <HistoryView onClose={() => setHistoryOpen(false)} />}
       {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
-      {mining && <MineRunOverlay />}
-      {forest && <ForestRunOverlay />}
-      {arena && <ArenaOverlay />}
-      {battle && <BattleOverlay />}
+      <Suspense fallback={null}>
+        {mining && <MineRunOverlay />}
+        {forest && <ForestRunOverlay />}
+        {arena && <ArenaOverlay />}
+        {tactics && <TacticsOverlay />}
+        {battle && <BattleOverlay />}
+      </Suspense>
       <BoonChoice />
       {classChoice && <ClassChoiceModal />}
       <WeeklyReportModal />

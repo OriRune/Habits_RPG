@@ -2,9 +2,17 @@ node_modules
 dist
 dist-ssr
 *.local
+# Local env files (Supabase keys etc.) — never commit; see .env.example
+.env
+.env.*
+!.env.example
+*-debug-*.log
 .DS_Store
 .vscode/*
 !.vscode/extensions.json
+# Personal Claude Code permissions — keep local, not shared in the repo.
+.claude/settings.json
+.claude/settings.local.json
 
 # Raw sprite drop folder + scratch reference images (used copies live under src/assets/)
 Pixelsnapped_sprites/

@@ -5,7 +5,9 @@ import {
   hexBoard,
   hexDistance,
   hexEquals,
+  hexKey,
   hexLine,
+  hexLineBetween,
   hexNeighbors,
   hexRange,
   hexStep,
@@ -82,5 +84,27 @@ describe('hex geometry', () => {
   it('hexEquals distinguishes hexes', () => {
     expect(hexEquals(O, { q: 0, r: 0 })).toBe(true);
     expect(hexEquals(O, { q: 1, r: 0 })).toBe(false);
+  });
+
+  it('hexKey is a stable, unique string per hex', () => {
+    expect(hexKey({ q: 1, r: -2 })).toBe('1,-2');
+    expect(hexKey(O)).not.toBe(hexKey({ q: 0, r: 1 }));
+  });
+
+  it('hexLineBetween connects two points with adjacent steps', () => {
+    const a: Hex = { q: -2, r: 1 };
+    const b: Hex = { q: 2, r: -1 };
+    const line = hexLineBetween(a, b);
+    expect(line).toHaveLength(hexDistance(a, b) + 1);
+    expect(line[0]).toEqual(a);
+    expect(line[line.length - 1]).toEqual(b);
+    // Every consecutive pair is exactly one hex apart.
+    for (let i = 1; i < line.length; i++) {
+      expect(hexDistance(line[i - 1], line[i])).toBe(1);
+    }
+  });
+
+  it('hexLineBetween of a point to itself is just that point', () => {
+    expect(hexLineBetween(O, O)).toEqual([O]);
   });
 });

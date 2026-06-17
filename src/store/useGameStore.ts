@@ -68,29 +68,36 @@ import {
 import { type FloorMap, generateFloorMap } from '@/engine/dungeonMap';
 import {
   type MineState,
+  type MineTile,
   type Dir,
   generateMine,
+  mineSnapshot,
   tryMove,
   strike,
   stepMonsters,
+  coopClientStep,
+  damageMonsterById,
   descend,
   castSpell as minecastSpellFn,
   MINE_ENERGY_COST,
-  MINE_UNLOCK_LEVEL,
 } from '@/engine/mining';
-import { dungeonStamina } from '@/engine/crawl';
+import { dungeonStamina, type RNG } from '@/engine/crawl';
+import { mulberry32, floorSeed } from '@/engine/rng';
 import {
   type ForestState,
+  type ForestTile,
   generateForest,
+  forestSnapshot,
   tryMove as forestTryMove,
   act as forestActFn,
   castSpell as forestCastSpellFn,
   stepBeasts,
   advance as forestAdvanceFn,
   activateShrine as forestActivateShrine,
+  damageBeastById,
+  coopClientStep as forestCoopClientStep,
   splitHaul,
   FOREST_ENERGY_COST,
-  FOREST_UNLOCK_LEVEL,
   FOREST_DEATH_KEEP,
 } from '@/engine/forest';
 import {
@@ -111,6 +118,22 @@ import {
   ARENA_ENERGY_COST,
   ARENA_UNLOCK_LEVEL,
 } from '@/engine/arena';
+import {
+  type HexBattleState,
+  type SelectedAction as TacticsAction,
+  type TacticsSize,
+  TACTICS_SIZE_RADIUS,
+  generateSkirmish,
+  selectAction as tacticsSelectFn,
+  movePlayer as tacticsMoveFn,
+  playerAttack as tacticsAttackFn,
+  playerCastSpell as tacticsCastFn,
+  endPlayerTurn as tacticsEndTurnFn,
+  tacticsReward,
+  TACTICS_ENERGY_COST,
+  TACTICS_UNLOCK_LEVEL,
+} from '@/engine/hexBattle';
+import type { Hex } from '@/engine/hex';
 import type { Dir as GridDir, Cell as GridCell } from '@/engine/grid';
 import { biomeForDepth, getBiome, bossFor } from '@/engine/biomes';
 import {
@@ -286,6 +309,8 @@ export interface GameSettings {
   customPalette: PaletteColors | null;
   /** Arena difficulty pace. 'auto' eases low levels and quickens high ones; otherwise fixed. */
   arenaSpeed: ArenaSpeed;
+  /** Board size for a Hex Tactics skirmish (small 37 / medium 61 / large 127 tiles). */
+  tacticsSize: TacticsSize;
   /** Skip the once-per-day gate on Skill Trials so they can be replayed immediately. */
   repeatMinigames: boolean;
 }
@@ -298,6 +323,7 @@ function freshSettings(): GameSettings {
     paletteId: 'default',
     customPalette: null,
     arenaSpeed: 'auto',
+    tacticsSize: 'small',
     repeatMinigames: false,
   };
 }
@@ -341,6 +367,10 @@ export interface GameState {
   arena: ArenaState | null;
   /** Highest boss tier ever defeated in the Arena — a persistent record. */
   deepestArenaTier: number;
+  /** Active Hex Tactics skirmish (turn-based hex combat), or null when not fighting. */
+  tactics: HexBattleState | null;
+  /** Highest tier ever won in Hex Tactics — a persistent record. */
+  deepestTacticsTier: number;
   /** ISO date of the last daily clear per Skill Trial, for daily gating ('' = never). */
   trialsClearedOn: Record<TrialId, string>;
   /** Personal best score (0..1) per Skill Trial, for hub star display. */
@@ -427,13 +457,29 @@ export interface GameState {
 
   // Deep Mine (real-time mining minigame; see src/engine/mining.ts).
   /** Start a run: gate on level/energy, charge energy, generate floor 1. */
-  beginMining: () => void;
+  /** `seed` (co-op) makes the map deterministic and shared; omitted = solo (Math.random). */
+  beginMining: (seed?: number) => void;
   /** Step/turn the miner one cell. */
   mineMove: (dir: Dir) => void;
   /** Swing the pick at the faced cell (dig rock/ore or hit a monster). */
   mineStrike: () => void;
   /** Advance monsters on the loop's clock; commits the haul if the miner falls. */
-  mineTick: (nowMs: number) => void;
+  /** `coPlayers` (co-op) lets monsters target the nearest of all players. */
+  mineTick: (nowMs: number, coPlayers?: ReadonlyArray<{ r: number; c: number }>) => void;
+  /** Co-op guest per-tick: advance only own body (regen + contact damage). */
+  coopClientTick: (nowMs: number) => void;
+  /**
+   * Co-op guest: apply the host's authoritative world slice — follow the host's
+   * floor (regenerate on descent) and replace monster positions/HP.
+   */
+  coopApplyWorld: (slice: {
+    floor: number;
+    monsters: ReadonlyArray<{ id: string; r: number; c: number; hp: number; readyAtMs: number }>;
+  }) => void;
+  /** Co-op: apply a peer's tile change (shared resource nodes). */
+  coopApplyTile: (floor: number, r: number, c: number, tile: MineTile) => void;
+  /** Co-op host: resolve a remote player's melee attack on a monster (once). */
+  coopApplyRemoteAttack: (monsterId: string, dmg: number) => void;
   /** Descend the shaft to a deeper, richer floor. */
   mineDescend: () => void;
   /** Cast a known spell by key (costs MP). */
@@ -444,14 +490,15 @@ export interface GameState {
   endMining: () => void;
 
   // Wild Forest (real-time foraging minigame; see src/engine/forest.ts).
-  /** Start a run: gate on level/energy, charge energy, generate stage 1. */
-  beginForest: () => void;
+  /** Start a run: gate on energy, charge energy, generate stage 1. `seed` shares the map in co-op. */
+  beginForest: (seed?: number) => void;
   /** Step/turn the forager one cell (re-lights the fog). */
   forestMove: (dir: Dir) => void;
   /** Act on the faced cell (slash a beast or gather a node). */
   forestAct: () => void;
   /** Advance beasts on the loop's clock; flips the run to 'ended' if the forager falls. */
-  forestTick: (nowMs: number) => void;
+  /** `coPlayers` (co-op) lets beasts target the nearest of all players. */
+  forestTick: (nowMs: number, coPlayers?: ReadonlyArray<{ r: number; c: number }>) => void;
   /** Pause the run and show the banking summary screen (voluntary leave). */
   beginForestBanking: () => void;
   /** Push on through the far tree line into a deeper, richer stage. */
@@ -460,6 +507,24 @@ export interface GameState {
   forestCast: (spellKey: string) => void;
   /** Activate the shrine the forager is standing on. */
   forestShrine: (nowMs: number) => void;
+  /** Co-op guest: apply the host's authoritative forest world — follow stage + beasts. */
+  coopApplyForestWorld: (slice: {
+    floor: number;
+    monsters: ReadonlyArray<{
+      id: string;
+      r: number;
+      c: number;
+      hp: number;
+      readyAtMs: number;
+      asleep?: boolean;
+    }>;
+  }) => void;
+  /** Co-op: apply a peer's forest tile change (shared resource nodes). */
+  coopApplyForestTile: (stage: number, r: number, c: number, tile: ForestTile) => void;
+  /** Co-op host: resolve a remote player's melee attack on a beast (once). */
+  coopApplyForestAttack: (beastId: string, dmg: number) => void;
+  /** Co-op guest per-tick: advance only own body (regen + contact damage). */
+  coopForestClientTick: (nowMs: number) => void;
   /** Commit the haul and close the run — full on confirmed banking, halved on death. */
   endForest: () => void;
 
@@ -484,6 +549,22 @@ export interface GameState {
   beginArenaBanking: () => void;
   /** Commit the reward and close the fight — full on a win, partial on retreat/death. */
   endArena: () => void;
+
+  // Hex Tactics (turn-based hex skirmish; see src/engine/hexBattle.ts).
+  /** Start a skirmish: gate on level/energy, charge energy, snapshot the fighter vs scaled foes. */
+  beginTactics: () => void;
+  /** Select the active action (move / attack / spell) and refresh movement & target highlights. */
+  tacticsSelect: (action: TacticsAction) => void;
+  /** Move the player to a highlighted reachable tile. */
+  tacticsMove: (to: Hex) => void;
+  /** Resolve the player's weapon attack against a targeted enemy hex. */
+  tacticsAttack: (target: Hex) => void;
+  /** Cast a known spell; `target` is required for damage/illusion spells, ignored for support. */
+  tacticsCast: (spellKey: string, target: Hex | null) => void;
+  /** End the player's turn — runs the enemy phase, then restores the player. */
+  tacticsEndTurn: () => void;
+  /** Commit the reward and close the skirmish (gold + stat XP on a win, effort trickle either way). */
+  endTactics: () => void;
 
   updateSettings: (patch: Partial<GameSettings>) => void;
 
@@ -642,6 +723,26 @@ function commitArena(state: GameState, run: ArenaState): GameState {
   };
   const trickle = Math.round((4 + run.tier) * (0.4 + 0.6 * damageProgress(run)));
   applyReward(next, { ...arenaReward(run), statXp: { ST: trickle, DX: trickle, EN: trickle } });
+  checkLevelUp(next);
+  return next;
+}
+
+/**
+ * Bank a finished Hex Tactics skirmish and close it. A win pays scaled gold (tacticsReward) and
+ * records the tier; either outcome earns an Agility-forward Agility/Dexterity/Endurance trickle —
+ * Tactics is the mode that finally rewards mobility, so its XP leans on AG.
+ */
+function commitTactics(state: GameState, run: HexBattleState): GameState {
+  const won = run.status === 'won';
+  const next: GameState = {
+    ...state,
+    character: { ...state.character, statXp: { ...state.character.statXp } },
+    inventory: { ...state.inventory },
+    tactics: null,
+    deepestTacticsTier: won ? Math.max(state.deepestTacticsTier, run.tier) : state.deepestTacticsTier,
+  };
+  const trickle = Math.round((4 + run.tier) * (won ? 1 : 0.4));
+  applyReward(next, { ...tacticsReward(run), statXp: { AG: trickle, DX: trickle, EN: trickle } });
   checkLevelUp(next);
   return next;
 }
@@ -877,6 +978,27 @@ function checkLevelUp(state: GameState): void {
   }
 }
 
+/**
+ * RNG stream for the current Deep Mine run. Defaults to `Math.random` (solo play,
+ * unchanged). For co-op, `beginMining(seed)` swaps in a seeded `mulberry32` so the
+ * host and every client regenerate an identical map; the same stream then drives
+ * the host's per-tick monster simulation. Held at module scope (not in MineState)
+ * so it stays out of the serialized/persisted save.
+ */
+let mineRng: RNG = Math.random;
+
+/**
+ * The co-op run's base seed (undefined in solo play). Each floor's map is generated
+ * from `mulberry32(floorSeed(mineBaseSeed, floor))` so floor N is byte-identical on
+ * every client regardless of how much `mineRng` diverged on earlier floors — this is
+ * what lets a guest follow the host's descent onto the same map.
+ */
+let mineBaseSeed: number | undefined;
+
+/** Wild Forest run RNG + base seed — the forest analog of mineRng/mineBaseSeed. */
+let forestRng: RNG = Math.random;
+let forestBaseSeed: number | undefined;
+
 export const useGameStore = create<GameState>()(
   persist(
     (set) => ({
@@ -903,6 +1025,8 @@ export const useGameStore = create<GameState>()(
       deepestForestStage: 0,
       arena: null,
       deepestArenaTier: 0,
+      tactics: null,
+      deepestTacticsTier: 0,
       trialsClearedOn: emptyTrialsClearedOn(),
       bestTrialScore: emptyBestTrialScore(),
       pendingLevelUp: null,
@@ -1695,10 +1819,13 @@ export const useGameStore = create<GameState>()(
         set((s) => ({ character: { ...s.character, classId: null } })),
 
       // --- Deep Mine (real-time mining minigame) ---
-      beginMining: () =>
+      beginMining: (seed?: number) =>
         set((s) => {
+          // Seed the run's RNG: shared mulberry32 for co-op, Math.random for solo.
+          mineRng = seed !== undefined ? mulberry32(seed) : Math.random;
+          mineBaseSeed = seed;
           const free = s.settings.unlimitedEnergy;
-          if (s.mining || s.character.level < MINE_UNLOCK_LEVEL) return s;
+          if (s.mining) return s;
           if (!free && s.character.energy < MINE_ENERGY_COST) return s;
 
           // Grant the stone_pickaxe if the player has no mining tool yet
@@ -1747,7 +1874,9 @@ export const useGameStore = create<GameState>()(
               knownSpells: s.knownSpells,
               pickaxePower,
             },
-            Math.random,
+            // Floor 1 from the per-floor seed (co-op) so every client matches; solo
+            // falls back to the live mineRng (Math.random).
+            seed !== undefined ? mulberry32(floorSeed(seed, 1)) : mineRng,
           );
           return {
             character: {
@@ -1767,13 +1896,77 @@ export const useGameStore = create<GameState>()(
 
       mineStrike: () =>
         set((s) =>
-          s.mining && s.mining.status === 'active' ? { mining: strike(s.mining, Math.random) } : s,
+          s.mining && s.mining.status === 'active' ? { mining: strike(s.mining, mineRng) } : s,
         ),
 
-      mineTick: (nowMs) =>
+      mineTick: (nowMs, coPlayers) =>
         set((s) => {
           if (!s.mining || s.mining.status !== 'active') return s;
-          const mining = stepMonsters(s.mining, nowMs, Math.random);
+          const mining = stepMonsters(s.mining, nowMs, mineRng, coPlayers);
+          if (mining === s.mining) return s;
+          return { mining };
+        }),
+
+      coopClientTick: (nowMs) =>
+        set((s) => {
+          if (!s.mining || s.mining.status !== 'active') return s;
+          const mining = coopClientStep(s.mining, nowMs);
+          if (mining === s.mining) return s;
+          return { mining };
+        }),
+
+      coopApplyWorld: (slice) =>
+        set((s) => {
+          if (!s.mining) return s;
+          let mining = s.mining;
+
+          // Follow the host's descent: when the host has moved to a deeper floor,
+          // regenerate that floor from its per-floor seed (identical to the host's),
+          // carrying our own hp/haul and clamped sta/mp forward.
+          if (slice.floor !== mining.floor && mineBaseSeed !== undefined) {
+            const next = generateMine(
+              slice.floor,
+              mineSnapshot(mining),
+              mulberry32(floorSeed(mineBaseSeed, slice.floor)),
+            );
+            mining = {
+              ...next,
+              hp: mining.hp,
+              sta: Math.min(next.maxSta, mining.sta),
+              mp: Math.min(next.maxMp, mining.mp),
+              haul: mining.haul,
+              deepest: Math.max(mining.deepest, slice.floor),
+            };
+          }
+
+          const byId = new Map(slice.monsters.map((m) => [m.id, m]));
+          // Update positions/HP from the host; drop monsters the host has killed.
+          // New host monsters absent locally are ignored — the seeded maps match.
+          const merged = mining.monsters
+            .filter((m) => byId.has(m.id))
+            .map((m) => {
+              const sl = byId.get(m.id)!;
+              return { ...m, r: sl.r, c: sl.c, hp: sl.hp, readyAtMs: sl.readyAtMs };
+            });
+          return { mining: { ...mining, monsters: merged } };
+        }),
+
+      coopApplyTile: (floor, r, c, tile) =>
+        set((s) => {
+          // Apply a peer's dig (rock/ore → floor, or durability decay) so resource
+          // nodes vanish for everyone. Ignore events from a floor we've left.
+          if (!s.mining || s.mining.floor !== floor) return s;
+          const cur = s.mining.tiles[r]?.[c];
+          if (!cur || cur === tile) return s;
+          const tiles = s.mining.tiles.map((row) => row.slice());
+          tiles[r][c] = tile;
+          return { mining: { ...s.mining, tiles } };
+        }),
+
+      coopApplyRemoteAttack: (monsterId, dmg) =>
+        set((s) => {
+          if (!s.mining || s.mining.status !== 'active') return s;
+          const mining = damageMonsterById(s.mining, monsterId, dmg, mineRng);
           if (mining === s.mining) return s;
           return { mining };
         }),
@@ -1781,7 +1974,12 @@ export const useGameStore = create<GameState>()(
       mineDescend: () =>
         set((s) => {
           if (!s.mining || s.mining.status !== 'active') return s;
-          const mining = descend(s.mining, Math.random);
+          // Generate the next floor from its per-floor seed (co-op parity); solo uses
+          // the live stream. Independent of mineRng divergence on earlier floors.
+          const nextFloor = s.mining.floor + 1;
+          const genRng =
+            mineBaseSeed !== undefined ? mulberry32(floorSeed(mineBaseSeed, nextFloor)) : mineRng;
+          const mining = descend(s.mining, genRng);
           if (mining === s.mining) return s;
           return { mining, deepestMineFloor: Math.max(s.deepestMineFloor, mining.deepest) };
         }),
@@ -1789,7 +1987,7 @@ export const useGameStore = create<GameState>()(
       mineCast: (spellKey: string) =>
         set((s) => {
           if (!s.mining || s.mining.status !== 'active') return s;
-          const mining = minecastSpellFn(s.mining, spellKey, Date.now(), Math.random);
+          const mining = minecastSpellFn(s.mining, spellKey, Date.now(), mineRng);
           if (mining === s.mining) return s;
           return { mining };
         }),
@@ -1804,10 +2002,13 @@ export const useGameStore = create<GameState>()(
       endMining: () => set((s) => (s.mining ? commitMining(s, s.mining) : s)),
 
       // --- Wild Forest (real-time foraging minigame) ---
-      beginForest: () =>
+      beginForest: (seed?: number) =>
         set((s) => {
+          // Seed the run's RNG: shared mulberry32 for co-op, Math.random for solo.
+          forestRng = seed !== undefined ? mulberry32(seed) : Math.random;
+          forestBaseSeed = seed;
           const free = s.settings.unlimitedEnergy;
-          if (s.forest || s.character.level < FOREST_UNLOCK_LEVEL) return s;
+          if (s.forest) return s;
           if (!free && s.character.energy < FOREST_ENERGY_COST) return s;
 
           // Grant the stone_pickaxe (toolkit) if the player has no tool yet
@@ -1853,7 +2054,8 @@ export const useGameStore = create<GameState>()(
               knownSpells: s.knownSpells,
               chopPower,
             },
-            Math.random,
+            // Stage 1 from the per-stage seed (co-op parity); solo uses live forestRng.
+            seed !== undefined ? mulberry32(floorSeed(seed, 1)) : forestRng,
           );
           return {
             character: {
@@ -1873,13 +2075,13 @@ export const useGameStore = create<GameState>()(
 
       forestAct: () =>
         set((s) =>
-          s.forest && s.forest.status === 'active' ? { forest: forestActFn(s.forest, Math.random) } : s,
+          s.forest && s.forest.status === 'active' ? { forest: forestActFn(s.forest, forestRng) } : s,
         ),
 
-      forestTick: (nowMs) =>
+      forestTick: (nowMs, coPlayers) =>
         set((s) => {
           if (!s.forest || s.forest.status !== 'active') return s;
-          const forest = stepBeasts(s.forest, nowMs, Math.random);
+          const forest = stepBeasts(s.forest, nowMs, forestRng, coPlayers);
           if (forest === s.forest) return s;
           // Death flips status to 'ended' but doesn't commit — the overlay shows the forfeit
           // first, then endForest banks the kept half (mirrors the mine's banking flow).
@@ -1896,7 +2098,11 @@ export const useGameStore = create<GameState>()(
       forestAdvance: () =>
         set((s) => {
           if (!s.forest || s.forest.status !== 'active') return s;
-          const forest = forestAdvanceFn(s.forest, Math.random);
+          // Next stage from its per-stage seed (co-op parity); solo uses forestRng.
+          const nextStage = s.forest.stage + 1;
+          const genRng =
+            forestBaseSeed !== undefined ? mulberry32(floorSeed(forestBaseSeed, nextStage)) : forestRng;
+          const forest = forestAdvanceFn(s.forest, genRng);
           if (forest === s.forest) return s;
           return { forest, deepestForestStage: Math.max(s.deepestForestStage, forest.deepest) };
         }),
@@ -1904,7 +2110,7 @@ export const useGameStore = create<GameState>()(
       forestCast: (spellKey: string) =>
         set((s) => {
           if (!s.forest || s.forest.status !== 'active') return s;
-          const forest = forestCastSpellFn(s.forest, spellKey, Date.now(), Math.random);
+          const forest = forestCastSpellFn(s.forest, spellKey, Date.now(), forestRng);
           if (forest === s.forest) return s;
           return { forest };
         }),
@@ -1912,7 +2118,75 @@ export const useGameStore = create<GameState>()(
       forestShrine: (nowMs: number) =>
         set((s) => {
           if (!s.forest || s.forest.status !== 'active') return s;
-          const forest = forestActivateShrine(s.forest, nowMs, Math.random);
+          const forest = forestActivateShrine(s.forest, nowMs, forestRng);
+          if (forest === s.forest) return s;
+          return { forest };
+        }),
+
+      // --- Co-op Forest (mirrors the mine's coop actions) ---
+      coopApplyForestWorld: (slice) =>
+        set((s) => {
+          if (!s.forest) return s;
+          let forest = s.forest;
+
+          // Follow the host's advance: regenerate the host's stage from its per-stage
+          // seed, carrying our own hp/haul and clamped sta/mp forward.
+          if (slice.floor !== forest.stage && forestBaseSeed !== undefined) {
+            const next = generateForest(
+              slice.floor,
+              forestSnapshot(forest),
+              mulberry32(floorSeed(forestBaseSeed, slice.floor)),
+            );
+            forest = {
+              ...next,
+              hp: forest.hp,
+              sta: Math.min(next.maxSta, forest.sta),
+              mp: Math.min(next.maxMp, forest.mp),
+              haul: forest.haul,
+              deepest: Math.max(forest.deepest, slice.floor),
+            };
+          }
+
+          const byId = new Map(slice.monsters.map((m) => [m.id, m]));
+          const merged = forest.beasts
+            .filter((b) => byId.has(b.id))
+            .map((b) => {
+              const sl = byId.get(b.id)!;
+              // Carry the host's `asleep` so a woken beast shows its HP bar on the guest.
+              return {
+                ...b,
+                r: sl.r,
+                c: sl.c,
+                hp: sl.hp,
+                readyAtMs: sl.readyAtMs,
+                asleep: sl.asleep ?? b.asleep,
+              };
+            });
+          return { forest: { ...forest, beasts: merged } };
+        }),
+
+      coopApplyForestTile: (stage, r, c, tile) =>
+        set((s) => {
+          if (!s.forest || s.forest.stage !== stage) return s;
+          const cur = s.forest.tiles[r]?.[c];
+          if (!cur || cur === tile) return s;
+          const tiles = s.forest.tiles.map((row) => row.slice());
+          tiles[r][c] = tile as ForestTile;
+          return { forest: { ...s.forest, tiles } };
+        }),
+
+      coopApplyForestAttack: (beastId, dmg) =>
+        set((s) => {
+          if (!s.forest || s.forest.status !== 'active') return s;
+          const forest = damageBeastById(s.forest, beastId, dmg, forestRng);
+          if (forest === s.forest) return s;
+          return { forest };
+        }),
+
+      coopForestClientTick: (nowMs) =>
+        set((s) => {
+          if (!s.forest || s.forest.status !== 'active') return s;
+          const forest = forestCoopClientStep(s.forest, nowMs);
           if (forest === s.forest) return s;
           return { forest };
         }),
@@ -2012,6 +2286,58 @@ export const useGameStore = create<GameState>()(
 
       endArena: () => set((s) => (s.arena ? commitArena(s, s.arena) : s)),
 
+      beginTactics: () =>
+        set((s) => {
+          const free = s.settings.unlimitedEnergy;
+          if (s.tactics || s.character.level < TACTICS_UNLOCK_LEVEL) return s;
+          if (!free && s.character.energy < TACTICS_ENERGY_COST) return s;
+          const tier = Math.max(TACTICS_UNLOCK_LEVEL, Math.min(MAX_LEVEL, s.character.level));
+          const tactics = generateSkirmish(fighterFor(s), s.character.statLevels.AG, tier, s.knownSpells, {
+            radius: TACTICS_SIZE_RADIUS[s.settings.tacticsSize],
+            rng: Math.random,
+          });
+          return {
+            character: {
+              ...s.character,
+              energy: free ? s.character.energy : s.character.energy - TACTICS_ENERGY_COST,
+            },
+            tactics,
+          };
+        }),
+
+      tacticsSelect: (action) =>
+        set((s) => (s.tactics && s.tactics.status === 'active' ? { tactics: tacticsSelectFn(s.tactics, action) } : s)),
+
+      tacticsMove: (to) =>
+        set((s) => {
+          if (!s.tactics || s.tactics.status !== 'active') return s;
+          const tactics = tacticsMoveFn(s.tactics, to);
+          return tactics === s.tactics ? s : { tactics };
+        }),
+
+      tacticsAttack: (target) =>
+        set((s) => {
+          if (!s.tactics || s.tactics.status !== 'active') return s;
+          const tactics = tacticsAttackFn(s.tactics, target, Math.random);
+          return tactics === s.tactics ? s : { tactics };
+        }),
+
+      tacticsCast: (spellKey, target) =>
+        set((s) => {
+          if (!s.tactics || s.tactics.status !== 'active') return s;
+          const tactics = tacticsCastFn(s.tactics, spellKey, target, Math.random);
+          return tactics === s.tactics ? s : { tactics };
+        }),
+
+      tacticsEndTurn: () =>
+        set((s) => {
+          if (!s.tactics || s.tactics.status !== 'active') return s;
+          const tactics = tacticsEndTurnFn(s.tactics, Math.random);
+          return tactics === s.tactics ? s : { tactics };
+        }),
+
+      endTactics: () => set((s) => (s.tactics ? commitTactics(s, s.tactics) : s)),
+
       resetGame: () =>
         set(() => ({
           habits: [],
@@ -2035,6 +2361,8 @@ export const useGameStore = create<GameState>()(
           deepestForestStage: 0,
           arena: null,
           deepestArenaTier: 0,
+          tactics: null,
+          deepestTacticsTier: 0,
           trialsClearedOn: emptyTrialsClearedOn(),
           bestTrialScore: emptyBestTrialScore(),
           pendingLevelUp: null,
@@ -2048,7 +2376,7 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 16,
+      version: 17,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -2079,6 +2407,9 @@ export const useGameStore = create<GameState>()(
       //      their empty records via merge (no daily clears survive the upgrade — fair reset).
       // v16: Delve Phase 1 — BattleState gained enemyIntent/enemyGuardBonus/enemyEnrageBonus;
       //      clear any in-progress dungeon run so it regenerates with the new combat shape.
+      // v17: Hex Tactics minigame — new top-level `tactics`/`deepestTacticsTier`; `tactics` is
+      //      cleared below (no in-progress skirmish survives the upgrade) and `deepestTacticsTier`
+      //      defaults via merge.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {
@@ -2106,7 +2437,7 @@ export const useGameStore = create<GameState>()(
               statXpAtLastLevel: p.character.statXpAtLastLevel ?? { ...(p.character.statXp ?? emptyStatXP()) },
             }
           : p.character;
-        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, arena: null, created: true, trialsClearedOn: p.trialsClearedOn ?? emptyTrialsClearedOn(), bestTrialScore: p.bestTrialScore ?? emptyBestTrialScore() } as GameState;
+        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, arena: null, tactics: null, created: true, trialsClearedOn: p.trialsClearedOn ?? emptyTrialsClearedOn(), bestTrialScore: p.bestTrialScore ?? emptyBestTrialScore() } as GameState;
       },
       // Deep-merge the nested `character`/`settings` objects so fields added in later versions
       // (e.g. statLevels) always fall back to their defaults instead of being dropped by the

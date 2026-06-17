@@ -3,7 +3,9 @@
 // clock and which keys/buttons are held. All rules live in the pure engine (src/engine/forest.ts).
 import { useEffect, useRef } from 'react';
 import { useGameStore } from '@/store/useGameStore';
-import { canAdvance, isOnShrine, type Dir } from '@/engine/forest';
+import { canAdvance, isOnShrine, facedCell, facedBeastId, type Dir } from '@/engine/forest';
+import { useCoopStore } from '@/net/coop/session';
+import { useAuthStore } from '@/net/auth';
 
 const KEY_DIRS: Record<string, Dir> = {
   ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
@@ -84,13 +86,40 @@ export function useForestLoop(): ForestControlsApi {
         spellQueue.current = null;
       }
 
+      // Co-op role for this frame (solo when not joined to a session).
+      const coop = useCoopStore.getState();
+      const inCoop = coop.joined && !!coop.session;
+      const myId = useAuthStore.getState().session?.user?.id;
+      const isHost = inCoop && coop.session!.host_id === myId;
+      const isGuest = inCoop && !isHost;
+
       if (actQueued.current && now - lastAct >= ACT_INTERVAL_MS) {
         actQueued.current = false;
         lastAct = now;
-        // Priority: push deeper > activate shrine > act (slash/gather/shoot).
-        if (canAdvance(run)) store.forestAdvance();
-        else if (isOnShrine(run)) store.forestShrine(now);
-        else store.forestAct();
+        // Priority: push deeper (host leads) > guest melee intent > shrine > act/gather.
+        const beastId = isGuest ? facedBeastId(run) : null;
+        if (canAdvance(run) && (!inCoop || isHost)) {
+          store.forestAdvance();
+        } else if (beastId) {
+          // A guest doesn't damage its local beast copy; it sends a melee intent
+          // the host resolves (so a kill + loot happen exactly once).
+          const dmg = run.weapon.attackStat === 'DX' ? run.rangedPower : run.meleePower;
+          coop.send?.({ type: 'attack', userId: myId ?? 'anon', monsterId: beastId, dmg });
+        } else if (isOnShrine(run)) {
+          store.forestShrine(now);
+        } else {
+          // Gather/slash the faced cell locally, then broadcast a changed node tile
+          // so harvested nodes disappear for the whole party.
+          const { r, c } = facedCell(run);
+          const before = run.tiles[r]?.[c];
+          store.forestAct();
+          if (inCoop) {
+            const after = useGameStore.getState().forest?.tiles[r]?.[c];
+            if (after && after !== before) {
+              coop.send?.({ type: 'tile', userId: myId ?? 'anon', floor: run.stage, r, c, tile: after });
+            }
+          }
+        }
       }
       if (held.current.size && now - lastMove >= MOVE_INTERVAL_MS) {
         // Favour the most recently pressed direction when several are held.
@@ -102,7 +131,18 @@ export function useForestLoop(): ForestControlsApi {
         lastMove = now;
       }
       if (now - lastTick >= BEAST_TICK_MS) {
-        store.forestTick(now);
+        if (isHost) {
+          // Host simulates beasts against all players on this stage (nearest-target).
+          const coPlayers = Object.values(coop.remotePlayers)
+            .filter((p) => p.floor === run.stage)
+            .map((p) => ({ r: p.r, c: p.c }));
+          store.forestTick(now, coPlayers);
+        } else if (isGuest) {
+          // Guest advances only its own body; the host owns beast movement.
+          store.coopForestClientTick(now);
+        } else {
+          store.forestTick(now);
+        }
         lastTick = now;
       }
     };

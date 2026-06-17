@@ -227,6 +227,77 @@ body {
   100% { opacity: 0;    transform: translate(-50%, -50%) scale(1.6); }
 }
 
+/* ── Hex Tactics effects ──────────────────────────────────────────────────
+   Driven by the engine's effect queue; the overlay sets --dx/--dy/--rot for
+   the arrow so a single keyframe translates along the shot. */
+@keyframes tactics-arrow {
+  0%   { opacity: 0;   transform: translate(-50%, -50%) rotate(var(--rot)); }
+  12%  { opacity: 1; }
+  88%  { opacity: 1; }
+  100% { opacity: 0;   transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) rotate(var(--rot)); }
+}
+
+/* Melee — a quick impact burst at the target. */
+@keyframes tactics-melee {
+  0%   { opacity: 0;   transform: translate(-50%, -50%) scale(0.4) rotate(-12deg); }
+  35%  { opacity: 1;   transform: translate(-50%, -50%) scale(1.25) rotate(6deg); }
+  100% { opacity: 0;   transform: translate(-50%, -50%) scale(0.9) rotate(0deg); }
+}
+
+/* Generic cast flash (fallback for spells without a bespoke keyframe). */
+@keyframes tactics-cast {
+  0%   { opacity: 0.9; transform: translate(-50%, -50%) scale(0.4); }
+  100% { opacity: 0;   transform: translate(-50%, -50%) scale(1.7); }
+}
+
+/* Sparks — a fast electric zap that snaps and fades. */
+@keyframes tactics-sparks {
+  0%   { opacity: 0;   transform: translate(-50%, -50%) scale(0.5) rotate(0deg); }
+  20%  { opacity: 1;   transform: translate(-50%, -50%) scale(1.3) rotate(-15deg); }
+  45%  { opacity: 0.8; transform: translate(-50%, -50%) scale(1.0) rotate(12deg); }
+  100% { opacity: 0;   transform: translate(-50%, -50%) scale(1.4) rotate(-6deg); }
+}
+
+/* Firebolt — an expanding, flickering blaze. */
+@keyframes tactics-firebolt {
+  0%   { opacity: 0;   transform: translate(-50%, -50%) scale(0.4); filter: brightness(1.6); }
+  30%  { opacity: 1;   transform: translate(-50%, -50%) scale(1.4); }
+  55%  { opacity: 0.9; transform: translate(-50%, -55%) scale(1.2); filter: brightness(1.3); }
+  100% { opacity: 0;   transform: translate(-50%, -70%) scale(1.7); filter: brightness(1); }
+}
+
+/* Mend — a healing glow that rises off the caster. */
+@keyframes tactics-mend {
+  0%   { opacity: 0;   transform: translate(-50%, -40%) scale(0.6); }
+  35%  { opacity: 1;   transform: translate(-50%, -60%) scale(1.1); }
+  100% { opacity: 0;   transform: translate(-50%, -95%) scale(1.2); }
+}
+
+/* Bless — a steady ward shimmer that pulses outward. */
+@keyframes tactics-bless {
+  0%   { opacity: 0;   transform: translate(-50%, -50%) scale(0.5); }
+  40%  { opacity: 1;   transform: translate(-50%, -50%) scale(1.2); }
+  100% { opacity: 0;   transform: translate(-50%, -55%) scale(1.5); }
+}
+
+/* Dazzle — a bright starburst that flares and vanishes. */
+@keyframes tactics-dazzle {
+  0%   { opacity: 0;   transform: translate(-50%, -50%) scale(0.3) rotate(0deg); }
+  30%  { opacity: 1;   transform: translate(-50%, -50%) scale(1.5) rotate(40deg); }
+  100% { opacity: 0;   transform: translate(-50%, -50%) scale(0.8) rotate(90deg); }
+}
+
+/* Hex — a sinking violet curse. */
+@keyframes tactics-hex {
+  0%   { opacity: 0;   transform: translate(-50%, -55%) scale(1.4); }
+  40%  { opacity: 1;   transform: translate(-50%, -50%) scale(1.0); }
+  100% { opacity: 0;   transform: translate(-50%, -40%) scale(0.6); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [style*='tactics-'] { animation-duration: 1ms !important; }
+}
+
 /* Lockpicking — pick-snap violent jolt */
 @keyframes lock-break {
   0%   { transform: translate(0, 0) rotate(0deg); }

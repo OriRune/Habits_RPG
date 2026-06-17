@@ -296,6 +296,18 @@ describe('stepBeasts', () => {
     expect(after.beasts[0].c).toBe(1);
   });
 
+  it('co-op: wakes for the nearest of all players, and an empty coPlayers list matches solo', () => {
+    const s = makeForest({
+      beasts: [{ id: 'a', key: 'wild_boar', r: 1, c: 1, hp: 10, maxHp: 10, readyAtMs: 0, asleep: true }],
+    });
+    // The lone local player at (3,3) is 4 away → dormant; an empty list is identical.
+    expect(stepBeasts(s, 1000, rngFrom(1), [])).toEqual(stepBeasts(s, 1000, rngFrom(1)));
+    expect(stepBeasts(s, 1000, rngFrom(1), []).beasts[0].asleep).toBe(true);
+    // A teammate standing next to the beast wakes it (nearest-player aggro).
+    const after = stepBeasts(s, 1000, rngFrom(1), [{ r: 1, c: 2 }]);
+    expect(after.beasts[0].asleep).toBe(false);
+  });
+
   it('applies contact damage once per i-frame window (with telegraph delay)', () => {
     const s = makeForest({
       hp: 50,

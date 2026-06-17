@@ -39,6 +39,11 @@ export function hexEquals(a: Hex, b: Hex): boolean {
   return a.q === b.q && a.r === b.r;
 }
 
+/** Stable string key for a hex — used to index tile maps and dedupe hex sets. */
+export function hexKey(h: Hex): string {
+  return `${h.q},${h.r}`;
+}
+
 /** Step one hex from `origin` in `dir`. */
 export function hexStep(origin: Hex, dir: HexDir): Hex {
   return hexAdd(origin, DIR_VECTORS[dir]);
@@ -63,6 +68,43 @@ export function hexLine(origin: Hex, dir: HexDir, len: number): Hex[] {
     out.push(cur);
   }
   return out;
+}
+
+/**
+ * The straight line of hexes from `a` to `b` inclusive (length = distance + 1). Unlike
+ * `hexLine` (direction + length), this connects two arbitrary points — used for line-of-sight
+ * sampling, where each intermediate tile is checked for blocking terrain/elevation/units.
+ */
+export function hexLineBetween(a: Hex, b: Hex): Hex[] {
+  const n = hexDistance(a, b);
+  if (n === 0) return [{ q: a.q, r: a.r }];
+  // Cube coordinates: x = q, z = r, y = -x - z. Lerp in cube space, then round back.
+  const ax = a.q;
+  const az = a.r;
+  const ay = -ax - az;
+  const bx = b.q;
+  const bz = b.r;
+  const by = -bx - bz;
+  const out: Hex[] = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    out.push(cubeRound(ax + (bx - ax) * t, ay + (by - ay) * t, az + (bz - az) * t));
+  }
+  return out;
+}
+
+/** Round fractional cube coords to the nearest hex, preserving the x+y+z=0 constraint. */
+function cubeRound(x: number, y: number, z: number): Hex {
+  let rx = Math.round(x);
+  let ry = Math.round(y);
+  let rz = Math.round(z);
+  const dx = Math.abs(rx - x);
+  const dy = Math.abs(ry - y);
+  const dz = Math.abs(rz - z);
+  if (dx > dy && dx > dz) rx = -ry - rz;
+  else if (dy > dz) ry = -rx - rz;
+  else rz = -rx - ry;
+  return { q: rx, r: rz };
 }
 
 /** Every hex within `radius` of `center` (inclusive) — used for AoE/nova telegraphs. */
