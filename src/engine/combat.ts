@@ -2,7 +2,7 @@
 // Stats drive a weapon Attack, MP-gated Spells, an Endurance Stamina pool, and the new
 // combat-trained Defense/Ward mitigations. Pure; randomness is injected for testing.
 import { type StatId } from './stats';
-import type { BossDef, BossPhase } from './bosses';
+import type { BossDef, BossPhase, EnemyMove } from './bosses';
 import { getItem } from './items';
 import { getSpell, SCHOOL_STAT, type StatusKey } from './spells';
 import type { WeaponDef } from './weapons';
@@ -106,6 +106,16 @@ export interface BattleState {
   log: string[];
   status: 'active' | 'won' | 'lost' | 'fled';
   consumedItems: string[];
+  /**
+   * The move the foe is telegraphing for its next turn (null when the foe has no moveset
+   * or immediately after a phase transition). Shown to the player as "intent".
+   */
+  enemyIntent: EnemyMove | null;
+  /** Temporary physical-defense bonus from a 'guard' move — applies to the player's next
+   *  physical attack, then resets at the start of the foe's following turn. */
+  enemyGuardBonus: number;
+  /** Cumulative attack bonus from 'enrage' moves (permanent for the duration of the fight). */
+  enemyEnrageBonus: number;
 }
 
 const ANTI_FRUSTRATION_LOSS_THRESHOLD = 3;
@@ -131,7 +141,12 @@ function applyPhase(s: BattleState, phase: BossPhase, relief: number): void {
   s.resistTo = phase.resistTo ?? [];
 }
 
-export function createBattle(fighter: Fighter, boss: BossDef, opts: CreateBattleOpts = {}): BattleState {
+export function createBattle(
+  fighter: Fighter,
+  boss: BossDef,
+  opts: CreateBattleOpts = {},
+  rng: RNG = Math.random,
+): BattleState {
   const { c } = fighter;
   const lossesBefore = opts.lossesBefore ?? 0;
   const relief =
@@ -150,6 +165,8 @@ export function createBattle(fighter: Fighter, boss: BossDef, opts: CreateBattle
             attackSchool: boss.attackSchool,
             weakTo: boss.weakTo,
             resistTo: boss.resistTo,
+            // Pass single-phase BossDef.moveset through to the synthetic phase.
+            moveset: boss.moveset,
           },
         ];
   const log = [`${boss.name} appears!`];
@@ -182,8 +199,13 @@ export function createBattle(fighter: Fighter, boss: BossDef, opts: CreateBattle
     log,
     status: 'active',
     consumedItems: [],
+    enemyIntent: null,
+    enemyGuardBonus: 0,
+    enemyEnrageBonus: 0,
   };
   applyPhase(s, phases[0], relief);
+  // Telegraph the foe's first move so the player sees intent before they act.
+  s.enemyIntent = pickEnemyMove(phases[0], rng);
   return s;
 }
 
@@ -194,12 +216,28 @@ function resolveBossDown(s: BattleState): void {
     const phase = s.phases[s.phaseIndex];
     applyPhase(s, phase, s.relief);
     s.enemyStatuses = []; // a new form sheds old afflictions
+    s.enemyIntent = null; // intent from old phase is stale; null = default attack this turn
     s.log.push(phase.transitionMsg ?? `${s.bossName} shifts into a new form!`);
   } else {
     s.bossHp = 0;
     s.status = 'won';
     s.log.push(`${s.bossName} is defeated! Victory!`);
   }
+}
+
+/**
+ * Weighted-randomly select the next move from a phase's moveset.
+ * Returns null when the phase has no moveset, which falls back to a basic attack.
+ */
+function pickEnemyMove(phase: BossPhase, rng: RNG): EnemyMove | null {
+  const pool = phase.moveset;
+  if (!pool || pool.length === 0) return null;
+  const total = pool.reduce((a, m) => a + (m.weight ?? 1), 0);
+  let r = rng() * total;
+  for (const m of pool) {
+    if ((r -= m.weight ?? 1) < 0) return m;
+  }
+  return pool[pool.length - 1];
 }
 
 /** ±15% spread on a base magnitude. Exported so the real-time Arena rolls damage identically. */
@@ -285,17 +323,25 @@ export function playerAction(
   };
   s.defending = false;
 
+  // Player-weaken reduces all outgoing damage for this turn.
+  const playerWeaken = hasStatus(s.playerStatuses, 'weaken');
+  const weakenFactor = playerWeaken ? Math.max(0, 1 - playerWeaken.magnitude) : 1;
+
   switch (action.kind) {
     case 'attack': {
       const full = s.playerSta >= weapon.staminaCost;
       s.playerSta = Math.max(0, s.playerSta - weapon.staminaCost);
-      const power = weapon.attackStat === 'DX' ? c.rangedPower : c.meleePower;
+      // Apply player-weaken and enemy guard-bonus to this attack.
+      const rawPower = weapon.attackStat === 'DX' ? c.rangedPower : c.meleePower;
+      const power = rawPower * weakenFactor;
       const { dealt, weak, resist } = attackRoll(
-        power, weapon.bonus, weapon.attackStat, state.weakTo, state.resistTo, full, s.bossDefense, rng,
+        power, weapon.bonus, weapon.attackStat, state.weakTo, state.resistTo, full,
+        s.bossDefense + s.enemyGuardBonus, rng,
       );
       s.bossHp -= dealt;
       const tag = weak ? ' — weak to it!' : resist ? ' — resisted' : '';
-      s.log.push(`You attack with ${weapon.name} for ${dealt}${tag}${full ? '' : ' (exhausted)'}.`);
+      const guardTag = s.enemyGuardBonus > 0 ? ' (guarded)' : '';
+      s.log.push(`You attack with ${weapon.name} for ${dealt}${tag}${guardTag}${full ? '' : ' (exhausted)'}.`);
       break;
     }
     case 'spell': {
@@ -309,16 +355,18 @@ export function playerAction(
       }
       s.playerMp -= spell.mpCost;
       const schoolStat = SCHOOL_STAT[spell.school];
+      // Apply player-weaken to magic damage too.
+      const weakenedDamageSpell = c.damageSpell * weakenFactor;
 
       // --- Special mechanic spells ---
       if (spell.mechanic === 'rune-fire' || spell.mechanic === 'rune-ice' || spell.mechanic === 'rune-poison') {
         const kind = spell.mechanic.slice(5) as 'fire' | 'ice' | 'poison';
-        const { dealt } = spellDamageRoll(spell.power, c.damageSpell, schoolStat, state.weakTo, state.resistTo, s.enemyWard, rng);
+        const { dealt } = spellDamageRoll(spell.power, weakenedDamageSpell, schoolStat, state.weakTo, state.resistTo, s.enemyWard, rng);
         const delay = 1 + Math.floor(rng() * 3);
         s.pendingRunes.push({ kind, turnsLeft: delay, power: dealt });
         s.log.push(`${spell.name} is inscribed on the ground. It triggers in ${delay} turn${delay > 1 ? 's' : ''}!`);
       } else if (spell.mechanic === 'ring-of-fire') {
-        const magnitude = Math.max(2, Math.round(c.damageSpell * 0.4 + spell.power * 0.3));
+        const magnitude = Math.max(2, Math.round(c.damageSpell * weakenFactor * 0.4 + spell.power * 0.3));
         applyStatus(s.enemyStatuses, { key: 'burn', turns: 3, magnitude });
         s.log.push(`${spell.name} engulfs the foe in a ring of flame.`);
       } else if (spell.mechanic === 'teleport') {
@@ -327,7 +375,7 @@ export function playerAction(
         s.log.push(`${spell.name} — you blink evasively, gaining a defensive ward.`);
       } else if (spell.school === 'damage') {
         const { dealt, weak, resist } = spellDamageRoll(
-          spell.power, c.damageSpell, schoolStat, state.weakTo, state.resistTo, s.enemyWard, rng,
+          spell.power, weakenedDamageSpell, schoolStat, state.weakTo, state.resistTo, s.enemyWard, rng,
         );
         s.bossHp -= dealt;
         const tag = weak ? ' — super effective!' : resist ? ' — resisted' : '';
@@ -414,23 +462,14 @@ function applyStatus(list: StatusEffect[], status: StatusEffect): void {
   }
 }
 
-function enemyTurn(s: BattleState, c: Combatant, rng: RNG): void {
-  const freeze = hasStatus(s.enemyStatuses, 'freeze');
-  if (freeze) {
-    s.log.push(`${s.bossName} is frozen solid and cannot act!`);
-    return;
-  }
-  const blind = hasStatus(s.enemyStatuses, 'blind');
-  if (blind && rng() < 0.4) {
-    s.log.push(`${s.bossName} swings blindly and misses!`);
-    return;
-  }
-  if (rng() < c.dodge) {
-    s.log.push(`${s.bossName} attacks — you dodge!`);
-    return;
-  }
-  let dmg = variance(s.bossAttack, rng);
+/**
+ * Compute and apply a melee/magic strike from the foe. Returns the damage dealt so
+ * callers (drain, multi) can use it. Does NOT set `status = 'lost'` — check playerHp <= 0
+ * after calling.
+ */
+function enemyStrike(s: BattleState, c: Combatant, mult: number, rng: RNG): number {
   const weaken = hasStatus(s.enemyStatuses, 'weaken');
+  let dmg = variance(s.bossAttack * mult, rng);
   if (weaken) dmg *= 1 - weaken.magnitude;
   // Mitigate by the matching defense, then Defend, then Bless.
   const mit = s.attackSchool === 'magic' ? c.ward : c.defense;
@@ -440,12 +479,112 @@ function enemyTurn(s: BattleState, c: Combatant, rng: RNG): void {
   if (bless) dmg = Math.max(1, dmg - bless.magnitude);
   const dealt = Math.max(1, Math.round(dmg));
   s.playerHp -= dealt;
-  s.log.push(`${s.bossName} hits you for ${dealt}.`);
-  if (s.playerHp <= 0) {
+  return dealt;
+}
+
+/** Execute the foe's telegraphed (or default) move. Death check is handled by the caller. */
+function executeEnemyMove(s: BattleState, c: Combatant, intent: EnemyMove | null, rng: RNG): void {
+  const kind = intent?.kind ?? 'attack';
+
+  switch (kind) {
+    case 'attack': {
+      if (rng() < c.dodge) { s.log.push(`${s.bossName} attacks — you dodge!`); return; }
+      const dealt = enemyStrike(s, c, 1.0, rng);
+      s.log.push(`${s.bossName} hits you for ${dealt}.`);
+      break;
+    }
+    case 'heavy': {
+      const mult = intent?.mult ?? 1.6;
+      // Heavy blows are harder to dodge — player's dodge chance is halved.
+      if (rng() < c.dodge * 0.5) {
+        s.log.push(`${s.bossName} ${intent?.label ?? 'winds up a heavy blow'} — you barely dodge it!`);
+        return;
+      }
+      const dealt = enemyStrike(s, c, mult, rng);
+      s.log.push(`${s.bossName} ${intent?.label ?? 'winds up a heavy blow'} and hits for ${dealt}!`);
+      break;
+    }
+    case 'multi': {
+      const hits = intent?.hits ?? 2;
+      s.log.push(`${s.bossName} ${intent?.label ?? 'attacks rapidly'}!`);
+      for (let h = 0; h < hits; h++) {
+        if (s.playerHp <= 0) break;
+        if (rng() < c.dodge) { s.log.push(`  Hit ${h + 1}: you dodge!`); continue; }
+        const dealt = enemyStrike(s, c, 0.6, rng);
+        s.log.push(`  Hit ${h + 1}: ${dealt} damage.`);
+        if (s.playerHp <= 0) break;
+      }
+      break;
+    }
+    case 'guard': {
+      const bonus = intent?.bonus ?? 4;
+      s.enemyGuardBonus = bonus;
+      s.log.push(`${s.bossName} ${intent?.label ?? 'braces defensively'} (+${bonus} guard until next turn).`);
+      return;
+    }
+    case 'inflict': {
+      const key = (intent?.inflictKey ?? 'weaken') as StatusKey;
+      const turns = intent?.inflictTurns ?? 3;
+      const mag = intent?.inflictMag != null
+        ? intent.inflictMag
+        : Math.max(1, Math.round(s.bossAttack * 0.3));
+      applyStatus(s.playerStatuses, { key, turns, magnitude: mag });
+      s.log.push(`${s.bossName} ${intent?.label ?? 'afflicts you'}! (${key} ×${turns})`);
+      return;
+    }
+    case 'drain': {
+      if (rng() < c.dodge) {
+        s.log.push(`${s.bossName} tries to drain you — you pull away!`);
+        return;
+      }
+      const dealt = enemyStrike(s, c, 1.0, rng);
+      const healed = Math.min(s.bossMaxHp - s.bossHp, Math.round(dealt * (intent?.drainRatio ?? 0.5)));
+      if (healed > 0) s.bossHp += healed;
+      s.log.push(`${s.bossName} ${intent?.label ?? 'drains your vitality'} for ${dealt}${healed > 0 ? `, healing ${healed}` : ''}.`);
+      break;
+    }
+    case 'enrage': {
+      const bonus = intent?.bonus ?? 3;
+      s.bossAttack += bonus;
+      s.enemyEnrageBonus += bonus;
+      s.log.push(`${s.bossName} ${intent?.label ?? 'enrages'}! Attack +${bonus}.`);
+      return;
+    }
+  }
+}
+
+function enemyTurn(s: BattleState, c: Combatant, rng: RNG): void {
+  // The guard bonus from the foe's previous turn expires now.
+  s.enemyGuardBonus = 0;
+
+  const currentPhase = s.phases[s.phaseIndex];
+  const intent = s.enemyIntent; // the move that was telegraphed last turn
+
+  // Status checks — apply regardless of move type.
+  const freeze = hasStatus(s.enemyStatuses, 'freeze');
+  if (freeze) {
+    s.log.push(`${s.bossName} is frozen solid and cannot act!`);
+    s.enemyIntent = pickEnemyMove(currentPhase, rng);
+    return;
+  }
+  const blind = hasStatus(s.enemyStatuses, 'blind');
+  if (blind && rng() < 0.4) {
+    s.log.push(`${s.bossName} swings blindly and misses!`);
+    s.enemyIntent = pickEnemyMove(currentPhase, rng);
+    return;
+  }
+
+  executeEnemyMove(s, c, intent, rng);
+
+  // Check player death after any damaging move.
+  if (s.playerHp <= 0 && s.status === 'active') {
     s.playerHp = 0;
     s.status = 'lost';
     s.log.push('You fall... but you keep your XP. Train more and try again.');
   }
+
+  // Queue the next intent for the player to see before their turn.
+  s.enemyIntent = pickEnemyMove(currentPhase, rng);
 }
 
 /** End-of-round: apply damage-over-time, fire pending runes, then decrement/expire all statuses. */

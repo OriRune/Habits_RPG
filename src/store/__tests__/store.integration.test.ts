@@ -198,6 +198,9 @@ describe('level-up trial resolution', () => {
       status: 'won' as const,
       consumedItems: [],
       pendingRunes: [],
+      enemyIntent: null,
+      enemyGuardBonus: 0,
+      enemyEnrageBonus: 0,
     } satisfies BattleState;
     useGameStore.setState({ battle: wonBattle });
     const goldBefore = get().character.gold;
@@ -818,8 +821,8 @@ describe('deep mine', () => {
     expect(get().deepestMineFloor).toBe(2);
   });
 
-  it('persists at version 15', () => {
-    expect(useGameStore.persist.getOptions().version).toBe(15);
+  it('persists at version 16', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(16);
   });
 });
 

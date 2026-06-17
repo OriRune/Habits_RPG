@@ -2048,7 +2048,7 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 15,
+      version: 16,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -2077,6 +2077,8 @@ export const useGameStore = create<GameState>()(
       //      (no in-progress fight survives the upgrade) and `deepestArenaTier` defaults via merge.
       // v15: Skill Trials — new top-level `trialsClearedOn`/`bestTrialScore`; both default to
       //      their empty records via merge (no daily clears survive the upgrade — fair reset).
+      // v16: Delve Phase 1 — BattleState gained enemyIntent/enemyGuardBonus/enemyEnrageBonus;
+      //      clear any in-progress dungeon run so it regenerates with the new combat shape.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {

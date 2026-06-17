@@ -3,7 +3,7 @@
  *
  * The hook owns the camera, the player sprite, and every visible mover
  * (beasts / monsters). All are interpolated in absolute world-pixel space so
- * the camera and every entity share one coherent easing curve with no per-step
+ * the camera and every entity share one coherent motion curve with no per-step
  * jump and no competing CSS transitions.
  *
  * Architecture:
@@ -15,19 +15,24 @@
  *                  position, visible mover list, and snapKey.
  *
  * Motion model (per frame):
- *   1. `pp` (player pixel) eases toward (playerC * CELL, playerR * CELL).
+ *   1. `pp` (player pixel) advances toward (playerC * CELL, playerR * CELL) at
+ *      constant velocity: speed = CELL / glideMs px/ms. It covers exactly one
+ *      cell per step interval, producing uniform frame-rate-independent panning.
  *   2. Camera = clamp(pp + CELL/2, BOARD/2, map − BOARD/2) — tracks the player
- *      with the same interpolation, so the avatar stays centred with no lag.
+ *      with the same velocity, so the avatar stays centred with no lag.
  *   3. World container:  translate3d(BOARD/2 − camX + baseC0*CELL, ...)
  *   4. Player element:   translate(pp.x − baseC0*CELL, pp.y − baseR0*CELL)
- *   5. Each mover:       eases independently; same translate formula.
+ *   5. Each mover:       advances independently at moverGlideMs; same formula.
+ *
+ * All transform values are snapped to the device-pixel grid before writing so
+ * pixelated tile art renders crisply at any devicePixelRatio.
  *
  * Because the world-translate's +baseC0*CELL and each sprite's −baseC0*CELL
  * cancel, every element's screen position is purely a function of (interpolated
  * pixel pos, camera). When baseR0/baseC0 jump on a cameraWindow change the
  * cancellation keeps all screen positions continuous — no per-step jerk.
  *
- * Snap conditions (instant, no easing):
+ * Snap conditions (instant, no glide):
  *   • First frame.
  *   • layout.snapKey changed (new floor / stage → map regenerated).
  *   • Player jump > 3 cells (respawn / advance to a new entrance).
@@ -60,6 +65,34 @@ interface Options {
   CELL: number;
   /** Viewport tile count (11 → 572 px board). */
   VIEW: number;
+  /**
+   * Time in ms to glide across one cell (player).
+   * Defaults to 150 — matches MOVE_INTERVAL_MS so the sprite arrives exactly
+   * as the next step fires.
+   */
+  glideMs?: number;
+  /**
+   * Time in ms to glide across one cell (movers).
+   * Defaults to 120 — matches MONSTER_TICK_MS / BEAST_TICK_MS.
+   */
+  moverGlideMs?: number;
+}
+
+/**
+ * Advance `cur` toward `target` by at most `maxStep` px. Returns `target`
+ * exactly when within range so the entity settles without micro-oscillation.
+ */
+function moveToward(cur: number, target: number, maxStep: number): number {
+  const d = target - cur;
+  return Math.abs(d) <= maxStep ? target : cur + Math.sign(d) * maxStep;
+}
+
+/**
+ * Round a CSS pixel value to the nearest physical (device) pixel.
+ * Prevents sub-pixel shimmer on pixelated tile art.
+ */
+function snapPx(v: number, dpr: number): number {
+  return Math.round(v * dpr) / dpr;
 }
 
 /**
@@ -68,7 +101,7 @@ interface Options {
  * @param moverRefs  Stable Map ref — overlay populates via callback refs on
  *                   each beast / monster div; hook reads it each frame.
  * @param layoutRef  Updated every render by the overlay with current state.
- * @param options    CELL and VIEW (stable constants).
+ * @param options    CELL, VIEW, and optional glide cadences.
  */
 export function useSmoothCamera(
   worldRef: React.RefObject<HTMLDivElement | null>,
@@ -77,9 +110,8 @@ export function useSmoothCamera(
   layoutRef: React.RefObject<SmoothCameraLayout>,
   options: Options,
 ): void {
-  const { CELL, VIEW } = options;
+  const { CELL, VIEW, glideMs = 150, moverGlideMs = 120 } = options;
   const BOARD_PX = VIEW * CELL;
-  const EASE = 0.22; // fraction of remaining distance closed per frame (~13 frames to settle)
 
   // Interpolated player pixel position (top-left of player cell in world-pixel space).
   const ppRef = useRef<{ x: number; y: number; snapped: boolean }>({ x: 0, y: 0, snapped: false });
@@ -87,6 +119,8 @@ export function useSmoothCamera(
   const moverPxRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   // Initialise to a unique symbol so the very first frame detects a "change" and snaps.
   const lastSnapKeyRef = useRef<number | string | symbol>(Symbol('init'));
+  // Timestamp of the previous rAF tick — for delta-time computation.
+  const lastTimeRef = useRef<number>(-1);
 
   useEffect(() => {
     const prefersReduced =
@@ -94,12 +128,18 @@ export function useSmoothCamera(
       window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
     let raf = 0;
-    const tick = () => {
+    const tick = (now: number) => {
       raf = requestAnimationFrame(tick);
       const worldEl = worldRef.current;
       const playerEl = playerRef.current;
       const layout = layoutRef.current;
       if (!worldEl || !layout) return;
+
+      // Delta time clamped to [0, 100] ms — prevents a large jump after a tab hide/show.
+      const dt = lastTimeRef.current < 0 ? 0 : Math.min(now - lastTimeRef.current, 100);
+      lastTimeRef.current = now;
+
+      const dpr = window.devicePixelRatio || 1;
 
       const { baseR0, baseC0, playerR, playerC, rows, cols, movers, snapKey } = layout;
 
@@ -110,7 +150,7 @@ export function useSmoothCamera(
         moverPxRef.current.clear(); // snap all movers when map regenerates
       }
 
-      // --- Interpolate player ---
+      // --- Advance player ---
       const pp = ppRef.current;
       const tpx = playerC * CELL;
       const tpy = playerR * CELL;
@@ -124,8 +164,9 @@ export function useSmoothCamera(
         pp.y = tpy;
         pp.snapped = true;
       } else {
-        pp.x += (tpx - pp.x) * EASE;
-        pp.y += (tpy - pp.y) * EASE;
+        const maxStep = (CELL / glideMs) * dt;
+        pp.x = moveToward(pp.x, tpx, maxStep);
+        pp.y = moveToward(pp.y, tpy, maxStep);
       }
 
       // --- Camera follows interpolated player — clamped to map bounds ---
@@ -133,17 +174,22 @@ export function useSmoothCamera(
       const camX = Math.max(half, Math.min(cols * CELL - half, pp.x + CELL / 2));
       const camY = Math.max(half, Math.min(rows * CELL - half, pp.y + CELL / 2));
 
-      // --- World container translate ---
-      worldEl.style.transform = `translate3d(${half - camX + baseC0 * CELL}px,${half - camY + baseR0 * CELL}px,0)`;
+      // --- World container translate (snapped to device pixels) ---
+      const wx = snapPx(half - camX + baseC0 * CELL, dpr);
+      const wy = snapPx(half - camY + baseR0 * CELL, dpr);
+      worldEl.style.transform = `translate3d(${wx}px,${wy}px,0)`;
 
-      // --- Player sprite translate (world-container space) ---
+      // --- Player sprite translate (world-container space, device-pixel snapped) ---
       if (playerEl) {
-        playerEl.style.transform = `translate(${pp.x - baseC0 * CELL}px,${pp.y - baseR0 * CELL}px)`;
+        const px = snapPx(pp.x - baseC0 * CELL, dpr);
+        const py = snapPx(pp.y - baseR0 * CELL, dpr);
+        playerEl.style.transform = `translate(${px}px,${py}px)`;
       }
 
       // --- Mover translates ---
       const moverPx = moverPxRef.current;
       const moverEls = moverRefs.current;
+      const moverMaxStep = (CELL / moverGlideMs) * dt;
 
       // Remove stale entries whose entities are no longer visible
       const liveIds = new Set(movers.map((m) => m.id));
@@ -168,14 +214,16 @@ export function useSmoothCamera(
             mp.x = tmx;
             mp.y = tmy;
           } else {
-            mp.x += (tmx - mp.x) * EASE;
-            mp.y += (tmy - mp.y) * EASE;
+            mp.x = moveToward(mp.x, tmx, moverMaxStep);
+            mp.y = moveToward(mp.y, tmy, moverMaxStep);
           }
         }
 
         const moverEl = moverEls?.get(mv.id);
         if (moverEl) {
-          moverEl.style.transform = `translate(${mp.x - baseC0 * CELL}px,${mp.y - baseR0 * CELL}px)`;
+          const mx = snapPx(mp.x - baseC0 * CELL, dpr);
+          const my = snapPx(mp.y - baseR0 * CELL, dpr);
+          moverEl.style.transform = `translate(${mx}px,${my}px)`;
         }
       }
     };
@@ -183,5 +231,5 @@ export function useSmoothCamera(
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [CELL, VIEW, BOARD_PX, worldRef, playerRef, moverRefs, layoutRef]);
+  }, [CELL, VIEW, BOARD_PX, glideMs, moverGlideMs, worldRef, playerRef, moverRefs, layoutRef]);
 }
