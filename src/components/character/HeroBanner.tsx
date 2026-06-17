@@ -29,21 +29,21 @@ export function HeroBanner() {
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           <h1 className="truncate font-display text-2xl font-bold text-gold-bright">{name}</h1>
-          <span className="font-display text-sm text-parchment-300">
+          <span className="font-display text-sm text-on-wood-mid">
             Lv {character.level}
             {character.level >= MAX_LEVEL && <span className="ml-1 text-gold-bright">MAX</span>}
           </span>
         </div>
-        <div className="font-display text-sm italic text-parchment-300/90">the {title}</div>
+        <div className="font-display text-sm italic text-on-wood-hi">the {title}</div>
 
-        <div className="mt-0.5 flex items-center gap-2 text-sm text-parchment-300">
+        <div className="mt-0.5 flex items-center gap-2 text-sm text-on-wood-mid">
           <span title={mood.note}>{mood.emoji}</span>
           <span className="italic">{mood.label}</span>
         </div>
 
         {/* XP to next level */}
         <div className="mt-3">
-          <div className="mb-1 flex justify-between font-display text-[11px] uppercase tracking-wider text-parchment-300/80">
+          <div className="mb-1 flex justify-between font-display text-[11px] uppercase tracking-wider text-on-wood-mid">
             <span>Experience</span>
             <span className="tabular-nums">
               {progress.intoLevel} / {progress.neededForNext}
@@ -66,7 +66,7 @@ export function HeroBanner() {
           <span className="flex items-center gap-1.5 text-stat-AG">
             <Zap className="h-4 w-4" />
             <span className="tabular-nums">{character.energy}</span>
-            <span className="text-parchment-300/70">energy</span>
+            <span className="text-on-wood-mid">energy</span>
           </span>
         </div>
       </div>

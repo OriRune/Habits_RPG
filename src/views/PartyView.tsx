@@ -18,7 +18,7 @@ export function PartyView() {
   const party = usePartyStore((s) => s.party);
 
   if (loading) {
-    return <p className="py-10 text-center font-display text-sm text-parchment-300">Loading party…</p>;
+    return <p className="py-10 text-center font-display text-sm text-on-wood-mid">Loading party…</p>;
   }
 
   return (
@@ -39,7 +39,7 @@ function PartyScreen() {
     <div className="space-y-4">
       <header className="text-center">
         <h1 className="font-display text-2xl font-bold text-gold-bright drop-shadow">{party.name}</h1>
-        <p className="mt-0.5 text-xs text-parchment-300">
+        <p className="mt-0.5 text-xs text-on-wood-mid">
           {members.length} / {party.max_members} members
         </p>
       </header>

@@ -14,6 +14,7 @@
   --c-parchment-200: 243 231 201; /* #f3e7c9 */
   --c-parchment-300: 233 217 178; /* #e9d9b2 */
   --c-parchment-400: 220 199 154; /* #dcc79a */
+  --c-on-wood: 236 218 172;       /* parchment hue at l≈0.80; always light for text on dark surfaces */
 
   --c-ink: 58 42 22; /* #3a2a16 */
   --c-ink-muted: 107 85 56; /* #6b5538 */
@@ -51,18 +52,16 @@ body {
   /* Dark wood backdrop: vertical gradient + faint vertical grain. */
   background-color: rgb(var(--c-body-bg));
   background-image:
-    repeating-linear-gradient(
-      90deg,
-      rgba(0, 0, 0, 0.18) 0px,
-      rgba(0, 0, 0, 0.18) 1px,
-      rgba(120, 80, 40, 0.04) 2px,
-      rgba(120, 80, 40, 0.04) 5px
-    ),
+    /* Soft warm grain blotches — replaces harsh vertical stripes */
+    radial-gradient(ellipse 140% 35% at 15% 8%,  rgb(var(--c-wood-500) / 0.30) 0%, transparent 55%),
+    radial-gradient(ellipse 100% 45% at 85% 92%, rgb(var(--c-wood-600) / 0.25) 0%, transparent 55%),
+    radial-gradient(ellipse 180% 30% at 50% 50%, rgb(var(--c-wood-500) / 0.10) 0%, transparent 60%),
+    /* Core vignette — lighter top, darker toward edges */
     radial-gradient(
       ellipse at 50% 0%,
       rgb(var(--c-wood-600)) 0%,
-      rgb(var(--c-wood)) 45%,
-      rgb(var(--c-body-bg)) 100%
+      rgb(var(--c-wood))     45%,
+      rgb(var(--c-body-bg))  100%
     );
   background-attachment: fixed;
 }
@@ -89,13 +88,8 @@ body {
   .texture-wood {
     background-color: rgb(var(--c-wood));
     background-image:
-      repeating-linear-gradient(
-        90deg,
-        rgba(0, 0, 0, 0.22) 0px,
-        rgba(0, 0, 0, 0.22) 1px,
-        rgba(150, 100, 50, 0.05) 2px,
-        rgba(150, 100, 50, 0.05) 6px
-      ),
+      /* Subtle warm bloom — softens the flat colour without harsh lines */
+      radial-gradient(ellipse 200% 70% at 30% 0%, rgb(150 100 50 / 0.07) 0%, transparent 55%),
       linear-gradient(
         180deg,
         rgb(var(--c-wood-600)) 0%,
@@ -126,6 +120,14 @@ body {
   .image-pixel {
     image-rendering: pixelated;
   }
+
+  /* Text for dark wood surfaces — uses --c-on-wood (always l≈0.80, palette-hued)
+     so labels/icons on nav bars, wood panels, and buttons stay readable in both
+     light and dark mode without relying on Tailwind config being hot-reloaded. */
+  .text-on-wood-dim { color: rgb(var(--c-on-wood) / 0.55); }
+  .text-on-wood-mid { color: rgb(var(--c-on-wood) / 0.70); }
+  .text-on-wood-hi  { color: rgb(var(--c-on-wood) / 0.82); }
+  .text-on-wood     { color: rgb(var(--c-on-wood) / 1.00); }
 }
 
 @keyframes mine-pop {

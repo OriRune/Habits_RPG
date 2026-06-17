@@ -313,6 +313,8 @@ export interface GameSettings {
   tacticsSize: TacticsSize;
   /** Skip the once-per-day gate on Skill Trials so they can be replayed immediately. */
   repeatMinigames: boolean;
+  /** Render the app in dark mode (panel surfaces go dark, text goes light). */
+  darkMode: boolean;
 }
 
 function freshSettings(): GameSettings {
@@ -325,6 +327,7 @@ function freshSettings(): GameSettings {
     arenaSpeed: 'auto',
     tacticsSize: 'small',
     repeatMinigames: false,
+    darkMode: false,
   };
 }
 

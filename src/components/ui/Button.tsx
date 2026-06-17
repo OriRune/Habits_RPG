@@ -14,7 +14,7 @@ const VARIANTS: Record<Variant, string> = {
     'hover:from-gold hover:to-gold-deep shadow-[inset_0_1px_0_rgba(255,255,255,0.5)]',
   // Carved wood with gold trim.
   secondary:
-    'texture-wood text-parchment-200 border border-gold-deep/70 hover:border-gold ' +
+    'texture-wood text-on-wood border border-gold-deep/70 hover:border-gold ' +
     'shadow-[inset_0_1px_0_rgba(255,200,120,0.12)]',
   // Ember for destructive/alert.
   danger:

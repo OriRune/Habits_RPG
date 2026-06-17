@@ -5,6 +5,9 @@ import { classCrest } from '@/lib/sprites';
 import { StatBar } from '@/components/character/StatBar';
 import { HeroBanner } from '@/components/character/HeroBanner';
 import { LoadoutPanel } from '@/components/character/LoadoutPanel';
+import { WeaponsSection } from '@/components/character/WeaponsSection';
+import { ItemsSection } from '@/components/character/ItemsSection';
+import { GearSection } from '@/components/inventory/GearSection';
 import { Panel } from '@/components/ui/Panel';
 import { Sprite } from '@/components/ui/Sprite';
 import { SectionTitle } from '@/components/ui/Divider';
@@ -23,6 +26,11 @@ export function CharacterView() {
       <HeroBanner />
 
       <LoadoutPanel />
+
+      {/* Armory — weapons, gear, and items (below paper doll, above attributes) */}
+      <WeaponsSection />
+      <GearSection />
+      <ItemsSection />
 
       {/* Attributes */}
       <Panel tone="parchment" className="p-4">

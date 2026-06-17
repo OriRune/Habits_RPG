@@ -52,7 +52,7 @@ export function DashboardView({ onOpenHistory }: { onOpenHistory: () => void }) 
           <Swords className="h-7 w-7 shrink-0 text-ember-bright" />
           <div className="min-w-0 flex-1">
             <div className="font-display text-base font-bold text-gold-bright">A Challenger Appears!</div>
-            <div className="text-sm text-parchment-300">
+            <div className="text-sm text-on-wood-hi">
               Win the Level-Up Trial to ascend to Level {pendingLevelUp}.
             </div>
           </div>
