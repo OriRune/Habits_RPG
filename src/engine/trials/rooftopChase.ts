@@ -1,7 +1,14 @@
 // Rooftop Chase trial engine (pure, no React).
-// Side-view endless runner: hero auto-sprints across rooftops, jumping hazards,
-// gaps, and goomba mooks. A chaser gains on stumbles; reaching TARGET_DISTANCE wins.
-// New: double-jump, slide/duck under lowbars, re-tuned physics, fair gap widths.
+// Side-view endless runner: hero leaps between rooftops of a medieval town.
+// Gaps between buildings are lethal — fall in and the run ends.
+// A beast chaser appears after the opening stretch; dash to shove it back.
+//
+// New in round 2:
+//   - Building model (discrete platforms at varied heights) replaces flat-floor + 'gap' features.
+//   - hasFallen() / buildingAt() / nextBuilding() pure helpers.
+//   - resolveContact() now takes roofY (5-arg).
+//   - Chaser delayed spawn (CHASER_SPAWN_DISTANCE) + updateLead() takes active flag + 'dash' event.
+//   - Dash constants: DASH_COOLDOWN_MS, DASH_LEAD_GAIN, DASH_DURATION_MS, DASH_SPEED_BONUS.
 
 // ── Tuning constants ───────────────────────────────────────────────────────────
 
@@ -38,14 +45,19 @@ export const STUMBLE_MS = 480;
 /** Slide/duck duration in ms — hero crouches to clear lowbar obstacles. */
 export const SLIDE_MS = 450;
 
-/** Starting lead buffer (world-units ahead of chaser). */
-export const LEAD_START = 30;
+// ── Chaser constants ───────────────────────────────────────────────────────────
+
+/** Distance (wu) the hero must travel before the chaser appears. */
+export const CHASER_SPAWN_DISTANCE = 45;
+
+/** Starting lead buffer (world-units ahead of chaser). Used as LEAD_MAX too. */
+export const LEAD_START = 50;
 
 /** Maximum lead the hero can accumulate. */
 export const LEAD_MAX = 50;
 
-/** Lead regenerated per second of clean running. */
-export const LEAD_REGEN_PER_SEC = 2;
+/** Lead the chaser closes per second once active. */
+export const CHASER_GAIN_PER_SEC = 4.5;
 
 /** Lead lost on each stumble. */
 export const STUMBLE_LEAD_LOSS = 12;
@@ -53,23 +65,33 @@ export const STUMBLE_LEAD_LOSS = 12;
 /** Lead gained on each stomp. */
 export const STOMP_LEAD_GAIN = 4;
 
+/** Lead gained from a single dash burst. */
+export const DASH_LEAD_GAIN = 16;
+
 /** Upward vy given to hero after a stomp (world-units / sec). */
 export const STOMP_BOUNCE_VELOCITY = 14;
 
-/** World-units of clear opening at the start of the course (no features). */
-export const GRACE_DISTANCE = 20;
+// ── Dash constants ─────────────────────────────────────────────────────────────
 
-/** Minimum gap between the start of consecutive features (world-units). */
-export const MIN_FEATURE_SPACING = 14;
+/** How long the dash speed burst lasts (ms). */
+export const DASH_DURATION_MS = 380;
 
-/** Maximum gap between consecutive features (tightens with feature index). */
-export const MAX_FEATURE_SPACING = 30;
+/** Cooldown between dashes (ms). */
+export const DASH_COOLDOWN_MS = 2600;
 
-/** How many features to pre-generate for the course. */
-export const FEATURE_COUNT = 60;
+/** Speed multiplier during a dash (base speed * (1 + DASH_SPEED_BONUS)). */
+export const DASH_SPEED_BONUS = 0.4;
 
-/** Y coordinate of the roof surface (hero feet rest here when grounded). */
-export const ROOF_Y = 0;
+// ── Course generation constants ────────────────────────────────────────────────
+
+/** Width of the first (grace) building — no props, roofY = 0. */
+export const GRACE_DISTANCE = 22;
+
+/** How many buildings to pre-generate for the course. */
+export const BUILDING_COUNT = 50;
+
+/** Possible roof elevation levels (world-units above baseline). */
+export const ROOF_LEVELS = [0, 2.5, 5] as const;
 
 /** Height of a hazard / mook hitbox (world-units). */
 export const OBSTACLE_HEIGHT = 4;
@@ -79,16 +101,28 @@ export const STOMP_WINDOW = 2.5;
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-/** 'hazard' = jump over  ·  'gap' = jump across  ·  'mook' = jump/stomp  ·  'lowbar' = slide under */
-export type FeatureKind = 'hazard' | 'gap' | 'mook' | 'lowbar';
+/** Kinds of obstacles that sit on a rooftop. 'gap' is no longer a prop kind — gaps are structural. */
+export type PropKind = 'hazard' | 'mook' | 'lowbar';
 
-export interface RoofFeature {
+export interface RoofProp {
   id: number;
-  kind: FeatureKind;
-  /** Left edge position in world-units. */
+  kind: PropKind;
+  /** Left edge position in world-units (absolute). */
   x: number;
   /** Width in world-units. */
   width: number;
+}
+
+export interface Building {
+  id: number;
+  /** Left edge of the rooftop in world-units. */
+  x: number;
+  /** Width of the rooftop in world-units. */
+  width: number;
+  /** Roof elevation above the baseline (world-units). Hero stands at this Y when grounded here. */
+  roofY: number;
+  /** Obstacles sitting on this roof. */
+  props: RoofProp[];
 }
 
 // ── Pure helpers ───────────────────────────────────────────────────────────────
@@ -111,50 +145,6 @@ export function maxClearableGap(distance: number): number {
 }
 
 /**
- * Generate a deterministic feature stream for the course.
- * - First GRACE_DISTANCE units are clear.
- * - Spacing tightens as the course progresses.
- * - Kinds: ~30% hazard, ~25% gap, ~25% mook, ~20% lowbar.
- * - Gap widths are clamped so every gap is beatable with a single well-timed jump.
- */
-export function generateFeatures(rng: () => number, count = FEATURE_COUNT): RoofFeature[] {
-  const features: RoofFeature[] = [];
-  let cursor = GRACE_DISTANCE;
-
-  for (let i = 0; i < count; i++) {
-    // Spacing tightens from MAX→MIN as index advances
-    const t = Math.min(1, i / (count * 0.7));
-    const spacing = MIN_FEATURE_SPACING + (1 - t) * (MAX_FEATURE_SPACING - MIN_FEATURE_SPACING);
-    cursor += spacing * (0.7 + rng() * 0.6); // ±30% jitter
-
-    const r = rng();
-    let kind: FeatureKind;
-    let width: number;
-
-    if (r < 0.30) {
-      kind = 'hazard';
-      width = 2 + rng() * 1.5;           // 2–3.5 wu
-    } else if (r < 0.55) {
-      kind = 'gap';
-      const desired = 7 + rng() * 5;     // 7–12 wu ideal
-      // Clamp to what a single jump can clear at this speed
-      const clearable = maxClearableGap(cursor);
-      width = Math.max(5, Math.min(desired, clearable));
-    } else if (r < 0.80) {
-      kind = 'mook';
-      width = 2.5;
-    } else {
-      kind = 'lowbar';
-      width = 3 + rng() * 2;             // 3–5 wu (wide enough to see coming)
-    }
-
-    features.push({ id: i, kind, x: cursor, width });
-  }
-
-  return features;
-}
-
-/**
  * Current scroll speed at a given distance.
  * Monotonically increases from BASE_SPEED, capped at MAX_SPEED.
  */
@@ -162,29 +152,164 @@ export function speedAt(distance: number): number {
   return Math.min(MAX_SPEED, BASE_SPEED + SPEED_RAMP * distance);
 }
 
+// ── Course generation ──────────────────────────────────────────────────────────
+
+/**
+ * Generate a deterministic list of buildings for the course.
+ * - First building is wide (GRACE_DISTANCE), at roofY = 0, no props.
+ * - Subsequent buildings: varied heights (step at most ±1 ROOF_LEVEL), random gaps between them.
+ * - Gaps are clamped so every jump is survivable; up-leaps get tighter clamps.
+ * - Props placed at least 3 wu from each building edge so there's room to land before reacting.
+ */
+export function generateCourse(rng: () => number, count = BUILDING_COUNT): Building[] {
+  const buildings: Building[] = [];
+  let propIdCounter = 0;
+
+  // First building: the grace platform
+  buildings.push({
+    id: 0,
+    x: 0,
+    width: GRACE_DISTANCE,
+    roofY: 0,
+    props: [],
+  });
+
+  let levelIndex = 0; // index into ROOF_LEVELS for the previous building
+
+  for (let i = 1; i < count; i++) {
+    const prevBuilding = buildings[i - 1];
+    const prevRight = prevBuilding.x + prevBuilding.width;
+    const cursor = prevRight; // where we are placing a gap
+
+    // Pick next roof level (step ±1, clamped to [0, ROOF_LEVELS.length - 1])
+    const levelStep = rng() < 0.5 ? -1 : 1;
+    const nextLevelIndex = Math.max(0, Math.min(ROOF_LEVELS.length - 1, levelIndex + levelStep));
+    const nextRoofY = ROOF_LEVELS[nextLevelIndex];
+    const prevRoofY = ROOF_LEVELS[levelIndex];
+    const goingUp = nextRoofY > prevRoofY;
+
+    // Gap width: tighter when going up (rise eats horizontal reach)
+    const baseGap = maxClearableGap(cursor);
+    const gapMax = goingUp ? baseGap * 0.7 : baseGap;
+    const gapMin = 3; // always visually a gap
+    const desiredGap = 4 + rng() * 8; // 4–12 wu
+    const gapWidth = Math.max(gapMin, Math.min(desiredGap, gapMax));
+
+    const buildingX = prevRight + gapWidth;
+
+    // Building width: varies 10–28 wu
+    const buildingWidth = 10 + rng() * 18;
+
+    // Props: 65% chance of one prop per roof
+    const props: RoofProp[] = [];
+    if (rng() > 0.35 && buildingWidth >= 8) {
+      const propR = rng();
+      let kind: PropKind;
+      let propWidth: number;
+      if (propR < 0.4) {
+        kind = 'hazard';
+        propWidth = 2 + rng() * 1.5; // 2–3.5 wu
+      } else if (propR < 0.75) {
+        kind = 'mook';
+        propWidth = 2.5;
+      } else {
+        kind = 'lowbar';
+        propWidth = 3 + rng() * 2; // 3–5 wu
+      }
+      // Place prop at least 3 wu from the left edge, leaving 3 wu on the right
+      const safeLeft = buildingX + 3;
+      const safeRight = buildingX + buildingWidth - 3 - propWidth;
+      if (safeRight > safeLeft) {
+        const propX = safeLeft + rng() * (safeRight - safeLeft);
+        props.push({ id: propIdCounter++, kind, x: propX, width: propWidth });
+      }
+    }
+
+    buildings.push({
+      id: i,
+      x: buildingX,
+      width: buildingWidth,
+      roofY: nextRoofY,
+      props,
+    });
+
+    levelIndex = nextLevelIndex;
+  }
+
+  return buildings;
+}
+
+// ── Navigation helpers ─────────────────────────────────────────────────────────
+
+/**
+ * The building whose rooftop spans world-x `footX`, or null if `footX` is over a gap.
+ */
+export function buildingAt(buildings: Building[], footX: number): Building | null {
+  for (const b of buildings) {
+    if (footX >= b.x && footX < b.x + b.width) return b;
+  }
+  return null;
+}
+
+/**
+ * The next building that starts *after* `footX` (the likely landing target while airborne).
+ */
+export function nextBuilding(buildings: Building[], footX: number): Building | null {
+  for (const b of buildings) {
+    if (b.x > footX) return b;
+  }
+  return null;
+}
+
+/**
+ * True when the hero is over a gap (not on any building) AND has fallen below the top of the
+ * next building ahead — meaning they failed to clear it and the run should end.
+ *
+ * Special cases:
+ * - If standing on a building: false (not in a gap).
+ * - If airborne over a gap but still above the next roof top: false (still in the arc).
+ * - No next building ahead: false (beyond the course end; finish handles that).
+ */
+export function hasFallen(buildings: Building[], footX: number, heroY: number): boolean {
+  if (buildingAt(buildings, footX) !== null) return false; // on a roof
+  const next = nextBuilding(buildings, footX);
+  if (next === null) return false; // past the end — let the win/finish logic handle it
+  return heroY < next.roofY; // fell below the target roof's top
+}
+
+// ── Lead / chaser ──────────────────────────────────────────────────────────────
+
 /**
  * Update the chaser lead value.
- * Regeneration happens every tick (call with dtSec).
- * Pass 'stumble' or 'stomp' on those event frames.
+ *
+ * When inactive (before CHASER_SPAWN_DISTANCE), lead is pinned at LEAD_MAX.
+ * When active, the chaser steadily closes (CHASER_GAIN_PER_SEC per second).
+ * Events: 'stumble' loses lead, 'stomp' and 'dash' gain lead.
  */
 export function updateLead(
   lead: number,
   dtSec: number,
-  event?: 'stumble' | 'stomp',
+  active: boolean,
+  event?: 'stumble' | 'stomp' | 'dash',
 ): number {
-  let next = lead + LEAD_REGEN_PER_SEC * dtSec;
+  if (!active) return LEAD_MAX;
+  let next = lead - CHASER_GAIN_PER_SEC * dtSec;
   if (event === 'stumble') next -= STUMBLE_LEAD_LOSS;
   if (event === 'stomp')   next += STOMP_LEAD_GAIN;
+  if (event === 'dash')    next += DASH_LEAD_GAIN;
   return Math.max(0, Math.min(LEAD_MAX, next));
 }
 
+// ── Collision resolution ───────────────────────────────────────────────────────
+
 /**
- * Classify the hero's interaction with a feature.
+ * Classify the hero's interaction with a prop on a rooftop.
  *
- * heroY:   vertical offset above roof (0 = grounded, positive = airborne).
+ * heroY:   absolute vertical offset above baseline (0 = baseline, positive = airborne).
  * heroVy:  current vertical velocity (+up = rising, -down = falling).
  * sliding: true while the hero is in a slide/duck (lowbar only clears when sliding).
- * feature: the feature currently overlapping the hero's hitbox.
+ * prop:    the prop currently overlapping the hero's hitbox.
+ * roofY:   the elevation of the roof the prop stands on.
  *
  * Returns:
  *   'stomp'   — hero descends onto mook's head within the stomp window.
@@ -195,35 +320,36 @@ export function resolveContact(
   heroY: number,
   heroVy: number,
   sliding: boolean,
-  feature: RoofFeature,
+  prop: RoofProp,
+  roofY: number,
 ): 'clear' | 'stumble' | 'stomp' {
-  const grounded = heroY <= 0;
+  // Grounded = hero's feet at or below this roof surface
+  const grounded = heroY <= roofY + 0.05;
 
-  if (feature.kind === 'gap') {
-    return grounded ? 'stumble' : 'clear';
-  }
-
-  if (feature.kind === 'mook') {
+  if (prop.kind === 'mook') {
     // Stomp: descending (vy < 0), airborne, feet within stomp window above mook top
-    if (!grounded && heroVy < 0 && heroY > 0 && heroY <= STOMP_WINDOW + OBSTACLE_HEIGHT) {
+    const mookTop = roofY + OBSTACLE_HEIGHT;
+    if (!grounded && heroVy < 0 && heroY > roofY && heroY <= mookTop + STOMP_WINDOW) {
       return 'stomp';
     }
     return grounded ? 'stumble' : 'clear';
   }
 
-  if (feature.kind === 'hazard') {
+  if (prop.kind === 'hazard') {
     // Must be airborne to clear
     return grounded ? 'stumble' : 'clear';
   }
 
-  // 'lowbar': a hanging banner / rope at head height — must slide under it.
-  // Cannot be jumped over. Being airborne while not sliding still stumbles.
-  if (feature.kind === 'lowbar') {
+  // 'lowbar': a hanging banner at head height — must slide under it.
+  // Jumping into it or running into it both stumble.
+  if (prop.kind === 'lowbar') {
     return sliding ? 'clear' : 'stumble';
   }
 
   return grounded ? 'stumble' : 'clear';
 }
+
+// ── Score ──────────────────────────────────────────────────────────────────────
 
 /** Map distance traveled to a normalised 0..1 score. */
 export function chaseScore(distance: number): number {

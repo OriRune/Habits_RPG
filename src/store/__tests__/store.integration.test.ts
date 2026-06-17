@@ -9,7 +9,7 @@ import { type FloorMap } from '@/engine/dungeonMap';
 import { type MineState, type MineTile } from '@/engine/mining';
 import { getWeapon, STARTER_WEAPON } from '@/engine/weapons';
 import { STA_REGEN_MS, MP_REGEN_MS } from '@/engine/crawl';
-import { type ForestState, type ForestTile } from '@/engine/forest';
+import { type ForestState, type ForestTile, FOREST_WINDUP_MS } from '@/engine/forest';
 import { getEncounter, startEncounter } from '@/engine/encounters';
 import { toISODate, weekKey } from '@/engine/date';
 
@@ -906,7 +906,11 @@ describe('wild forest', () => {
       }),
     });
     const goldBefore = get().character.gold;
-    get().forestTick(1000); // wild_boar touchDamage 4 > 3 hp → status 'ended', not yet committed
+    // First tick: beast becomes adjacent → windup starts; no damage yet (telegraph).
+    get().forestTick(1000);
+    expect(get().forest!.status).toBe('active');
+    // Second tick: past the windup window → fatal damage applied.
+    get().forestTick(1000 + FOREST_WINDUP_MS + 50); // wild_boar touchDamage 4 > 3 hp → 'ended'
     expect(get().forest).not.toBeNull();
     expect(get().forest!.status).toBe('ended');
     expect(get().character.gold).toBe(goldBefore); // nothing banked until the player leaves

@@ -24,4 +24,6 @@ export const MATERIALS: Record<string, MaterialDef> = {
   gemstone: { key: 'gemstone', name: 'Gemstone', glyph: '◆', color: '#b8487f' },
   stone: { key: 'stone', name: 'Stone', glyph: 'S', color: '#8a8a8a' },
   wood: { key: 'wood', name: 'Wood', glyph: 'W', color: '#7a5a30' },
+  game_meat: { key: 'game_meat', name: 'Game Meat', glyph: 'M', color: '#a8443a' },
+  pelt: { key: 'pelt', name: 'Soft Pelt', glyph: 'P', color: '#caa06a' },
 };

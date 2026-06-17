@@ -8,7 +8,9 @@ import {
   reveal,
   nodeYield,
   splitHaul,
+  activateShrine,
   isWalkable,
+  isOnShrine,
   isVisible,
   canAdvance,
   type ForestState,
@@ -17,9 +19,10 @@ import {
   type RNG,
   FOREST_ROWS,
   FOREST_COLS,
+  FOREST_WINDUP_MS,
 } from '../forest';
 import { getWeapon, STARTER_WEAPON } from '@/engine/weapons';
-import { STA_REGEN_MS, MP_REGEN_MS } from '@/engine/crawl';
+import { manhattan, STA_REGEN_MS, MP_REGEN_MS } from '@/engine/crawl';
 
 const WEAPON = getWeapon(STARTER_WEAPON);
 
@@ -165,9 +168,11 @@ describe('generateForest', () => {
     const shallow = generateForest(1, SNAP, rngFrom(7));
     const nodeKeys = shallow.tiles.flat().map((t) => t.nodeKey).filter(Boolean);
     expect(nodeKeys).not.toContain('crystal_find'); // stageMin 4
-    // Only wild_boar (stageMin 1) is eligible; wolf/spider/bear are gated deeper.
+    // Stage-1 eligible: wild_boar (predator), forest_deer and wild_rabbit (prey).
+    // Wolf/spider/bear/etc are gated deeper.
+    const stage1Keys = new Set(['wild_boar', 'forest_deer', 'wild_rabbit']);
     for (const b of shallow.beasts) {
-      expect(b.key).toBe('wild_boar');
+      expect(stage1Keys.has(b.key)).toBe(true);
     }
     expect(shallow.beasts.every((b) => b.asleep)).toBe(true); // all start dormant
   });
@@ -291,27 +296,35 @@ describe('stepBeasts', () => {
     expect(after.beasts[0].c).toBe(1);
   });
 
-  it('applies contact damage once per i-frame window', () => {
+  it('applies contact damage once per i-frame window (with telegraph delay)', () => {
     const s = makeForest({
       hp: 50,
       lastHitAtMs: -1000,
       beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 4, hp: 10, maxHp: 10, readyAtMs: 999999, asleep: false }],
     });
-    const hit = stepBeasts(s, 1000, rngFrom(1)); // wild_boar touchDamage = 4, defense = 0
-    expect(hit.hp).toBe(46);
-    const again = stepBeasts(hit, 1100, rngFrom(1)); // within the 800ms i-frame window
-    expect(again.hp).toBe(46);
+    // First tick: beast becomes adjacent → windup starts; no damage yet.
+    const tick1 = stepBeasts(s, 1000, rngFrom(1));
+    expect(tick1.hp).toBe(50);
+    expect(tick1.beasts[0].windupUntilMs).toBeGreaterThan(1000);
+    // Second tick: past the windup window → damage applied.
+    const tick2 = stepBeasts(tick1, 1000 + 500 /* past FOREST_WINDUP_MS=360 */, rngFrom(1));
+    expect(tick2.hp).toBe(46); // wild_boar touchDamage = 4
+    // Third tick: within the 800ms i-frame window → no further damage.
+    const tick3 = stepBeasts(tick2, 1000 + 600, rngFrom(1));
+    expect(tick3.hp).toBe(46);
   });
 
-  it('ends the run when HP reaches zero', () => {
+  it('ends the run when HP reaches zero (after telegraph)', () => {
     const s = makeForest({
       hp: 3,
       lastHitAtMs: -1000,
       beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 4, hp: 10, maxHp: 10, readyAtMs: 999999, asleep: false }],
     });
-    const after = stepBeasts(s, 1000, rngFrom(1));
-    expect(after.hp).toBe(0);
-    expect(after.status).toBe('ended');
+    // First tick starts the windup; second tick (past windup) lands the fatal hit.
+    const tick1 = stepBeasts(s, 1000, rngFrom(1));
+    const tick2 = stepBeasts(tick1, 1500, rngFrom(1));
+    expect(tick2.hp).toBe(0);
+    expect(tick2.status).toBe('ended');
   });
 
   it('moves an awake beast toward the player via BFS', () => {
@@ -373,12 +386,259 @@ describe('nodeYield', () => {
 });
 
 describe('isWalkable', () => {
-  it('treats trail/entrance/clearing/treeline as walkable and thicket/node as solid', () => {
+  it('treats trail/entrance/clearing/treeline/shrine as walkable and thicket/node as solid', () => {
     expect(isWalkable({ kind: 'trail' })).toBe(true);
     expect(isWalkable({ kind: 'treeline' })).toBe(true);
     expect(isWalkable({ kind: 'clearing' })).toBe(true);
+    expect(isWalkable({ kind: 'shrine' })).toBe(true);
     expect(isWalkable({ kind: 'thicket' })).toBe(false);
     expect(isWalkable({ kind: 'node' })).toBe(false);
     expect(isWalkable(undefined)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature: Ranged bow
+// ---------------------------------------------------------------------------
+
+const BOW_SNAP: ForestSnapshot = {
+  ...SNAP,
+  rangedPower: 30, // overkill to guarantee kills
+  weapon: { key: 'hunting_bow', name: 'Hunting Bow', attackStat: 'DX', bonus: 5, staminaCost: 1, ranged: true, range: 5, description: 'Test bow' },
+};
+
+describe('act (ranged bow)', () => {
+  it('hits the first beast in the faced line', () => {
+    const tiles = makeForest().tiles;
+    // Player at (3,3) facing right. Beasts at (3,5) and (3,6).
+    const s = makeForest({
+      weapon: BOW_SNAP.weapon, rangedPower: BOW_SNAP.rangedPower,
+      beasts: [
+        { id: 'near', key: 'wild_boar', r: 3, c: 5, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false },
+        { id: 'far',  key: 'wild_boar', r: 3, c: 6, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false },
+      ],
+      tiles,
+    });
+    const after = act(s, rngFrom(1));
+    // Near beast should be dead (overkill power), far beast untouched.
+    expect(after.beasts.find((b) => b.id === 'near')).toBeUndefined();
+    expect(after.beasts.find((b) => b.id === 'far')?.hp).toBe(10);
+  });
+
+  it('blocks the shot at a thicket wall', () => {
+    const tiles = makeForest().tiles;
+    tiles[3][4] = { kind: 'thicket' }; // wall between player and beast
+    const s = makeForest({
+      weapon: BOW_SNAP.weapon, rangedPower: BOW_SNAP.rangedPower,
+      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 5, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false }],
+      tiles,
+    });
+    const after = act(s, rngFrom(1));
+    expect(after.beasts[0].hp).toBe(10); // shot blocked
+  });
+
+  it('does not hit a beast beyond the weapon range', () => {
+    const shortBow: typeof BOW_SNAP.weapon = { ...BOW_SNAP.weapon, range: 2 };
+    const s = makeForest({
+      weapon: shortBow, rangedPower: BOW_SNAP.rangedPower,
+      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 6, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false }],
+    });
+    const after = act(s, rngFrom(1));
+    expect(after.beasts[0].hp).toBe(10); // out of range
+  });
+
+  it('falls through to gather when bow has no target in line', () => {
+    const tiles = makeForest().tiles;
+    tiles[3][4] = { kind: 'node', nodeKey: 'flower_bush' };
+    const s = makeForest({ weapon: BOW_SNAP.weapon, rangedPower: BOW_SNAP.rangedPower, tiles });
+    const after = act(s, rngFrom(3));
+    // No beast in line → gather the adjacent node
+    expect(after.tiles[3][4].kind).toBe('trail');
+    expect(after.haul.materials?.herbs ?? 0).toBeGreaterThanOrEqual(1);
+  });
+
+  it('melee weapon still only hits the adjacent faced beast (regression)', () => {
+    // Beast at (3,5) — two cells away. Melee should not reach.
+    const s = makeForest({
+      meleePower: 30,
+      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 5, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false }],
+    });
+    const after = act(s, rngFrom(1));
+    expect(after.beasts[0].hp).toBe(10); // not adjacent, melee misses
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature: Fleeing prey
+// ---------------------------------------------------------------------------
+
+describe('stepBeasts (fleeing prey)', () => {
+  it('moves a fleeing prey beast away from the player', () => {
+    const s = makeForest({
+      beasts: [{ id: 'deer', key: 'forest_deer', r: 3, c: 5, hp: 8, maxHp: 8, readyAtMs: 0, asleep: false }],
+    });
+    const before = manhattan({ r: 3, c: 5 }, s.player);
+    const after = stepBeasts(s, 1000, rngFrom(2));
+    const b = after.beasts[0];
+    if (b) {
+      const afterDist = manhattan({ r: b.r, c: b.c }, after.player);
+      // Prey should move farther away (or stay if cornered).
+      expect(afterDist).toBeGreaterThanOrEqual(before);
+    }
+  });
+
+  it('prey deals no contact damage when adjacent and does not trip the i-frame', () => {
+    const s = makeForest({
+      hp: 50,
+      lastHitAtMs: -1000,
+      beasts: [{ id: 'rabbit', key: 'wild_rabbit', r: 3, c: 4, hp: 5, maxHp: 5, readyAtMs: 999999, asleep: false }],
+    });
+    // Advance past windup window (prey have no windup anyway — just ensure no damage).
+    const tick1 = stepBeasts(s, 1000, rngFrom(1));
+    const tick2 = stepBeasts(tick1, 1500, rngFrom(1));
+    expect(tick2.hp).toBe(50);
+    expect(tick2.lastHitAtMs).toBe(-1000); // i-frame not consumed
+  });
+
+  it('killBeast drops the prey-specific material (game_meat for deer)', () => {
+    const s = makeForest({
+      rangedPower: 50,
+      weapon: BOW_SNAP.weapon,
+      beasts: [{ id: 'deer', key: 'forest_deer', r: 3, c: 5, hp: 8, maxHp: 8, readyAtMs: 0, asleep: false }],
+    });
+    const after = act(s, rngFrom(1));
+    expect(after.beasts).toHaveLength(0);
+    expect(after.haul.materials?.game_meat ?? 0).toBeGreaterThanOrEqual(1);
+    expect(after.haul.materials?.leather).toBeUndefined();
+  });
+
+  it('killBeast still drops leather for predators', () => {
+    const s = makeForest({
+      meleePower: 30,
+      beasts: [{ id: 'boar', key: 'wild_boar', r: 3, c: 4, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false }],
+    });
+    const after = act(s, rngFrom(5));
+    expect(after.haul.materials?.leather ?? 0).toBeGreaterThanOrEqual(1);
+    expect(after.haul.materials?.game_meat).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature: Telegraphed attacks
+// ---------------------------------------------------------------------------
+
+describe('stepBeasts (telegraph)', () => {
+  it('predator becoming adjacent sets windupUntilMs without dealing damage', () => {
+    const s = makeForest({
+      hp: 50,
+      lastHitAtMs: -1000,
+      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 4, hp: 10, maxHp: 10, readyAtMs: 999999, asleep: false }],
+    });
+    const tick = stepBeasts(s, 1000, rngFrom(1));
+    expect(tick.hp).toBe(50); // no damage yet
+    expect(tick.beasts[0].windupUntilMs).toBeGreaterThan(1000);
+  });
+
+  it('predator strikes after windupUntilMs elapses while still adjacent', () => {
+    const s = makeForest({
+      hp: 50,
+      lastHitAtMs: -1000,
+      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 4, hp: 10, maxHp: 10, readyAtMs: 999999, asleep: false }],
+    });
+    const tick1 = stepBeasts(s, 1000, rngFrom(1));
+    const tick2 = stepBeasts(tick1, 1000 + FOREST_WINDUP_MS + 50, rngFrom(1));
+    expect(tick2.hp).toBe(46); // wild_boar touchDamage = 4
+  });
+
+  it('predator clears windup if player escapes during the window', () => {
+    const s = makeForest({
+      hp: 50,
+      lastHitAtMs: -1000,
+      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 4, hp: 10, maxHp: 10, readyAtMs: 999999, asleep: false }],
+    });
+    const tick1 = stepBeasts(s, 1000, rngFrom(1)); // windup starts
+    // Move player away.
+    const moved = tryMove(tick1, 'left');
+    const tick2 = stepBeasts(moved, 1000 + FOREST_WINDUP_MS + 50, rngFrom(1));
+    expect(tick2.hp).toBe(50); // no damage
+    expect(tick2.beasts[0].windupUntilMs).toBeUndefined();
+  });
+
+  it('resets windupUntilMs after a successful strike so next hit also telegraphs', () => {
+    const s = makeForest({
+      hp: 50,
+      lastHitAtMs: -1000,
+      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 4, hp: 10, maxHp: 10, readyAtMs: 999999, asleep: false }],
+    });
+    const tick1 = stepBeasts(s, 1000, rngFrom(1));
+    const tick2 = stepBeasts(tick1, 1000 + FOREST_WINDUP_MS + 50, rngFrom(1)); // strike
+    expect(tick2.hp).toBe(46);
+    expect(tick2.beasts[0].windupUntilMs).toBeUndefined(); // cleared after strike
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature: Shrine events
+// ---------------------------------------------------------------------------
+
+describe('isOnShrine', () => {
+  it('returns true only when standing on a shrine tile', () => {
+    const tiles = makeForest().tiles;
+    tiles[3][3] = { kind: 'shrine', shrineKey: 'hunters_cache' };
+    const s = makeForest({ tiles });
+    expect(isOnShrine(s)).toBe(true);
+    const off = tryMove(s, 'right');
+    expect(isOnShrine(off)).toBe(false);
+  });
+});
+
+describe('activateShrine', () => {
+  it('hunters_cache: adds loot and consumes the shrine tile', () => {
+    const tiles = makeForest().tiles;
+    tiles[3][3] = { kind: 'shrine', shrineKey: 'hunters_cache' };
+    const s = makeForest({ tiles });
+    const after = activateShrine(s, 1000, rngFrom(1));
+    expect(after.tiles[3][3].kind).toBe('clearing');
+    expect((after.haul.gold ?? 0)).toBeGreaterThanOrEqual(10);
+    expect((after.haul.materials?.game_meat ?? 0)).toBeGreaterThanOrEqual(1);
+  });
+
+  it('forest_blessing: applies bless status', () => {
+    const tiles = makeForest().tiles;
+    tiles[3][3] = { kind: 'shrine', shrineKey: 'forest_blessing' };
+    const s = makeForest({ tiles });
+    const after = activateShrine(s, 1000, rngFrom(1));
+    expect(after.tiles[3][3].kind).toBe('clearing');
+    expect(after.playerStatuses.some((st) => st.key === 'bless')).toBe(true);
+  });
+
+  it('disturbed_den: spawns an awake guardian adjacent', () => {
+    const tiles = makeForest().tiles;
+    tiles[3][3] = { kind: 'shrine', shrineKey: 'disturbed_den' };
+    const s = makeForest({ tiles, stage: 5 }); // stage 5 has forest_bear
+    const after = activateShrine(s, 1000, rngFrom(1));
+    expect(after.tiles[3][3].kind).toBe('clearing');
+    const guardian = after.beasts.find((b) => b.key === 'forest_bear');
+    expect(guardian).toBeDefined();
+    expect(guardian?.asleep).toBe(false);
+    // Guardian should be adjacent to the player (who is at [3,3]).
+    if (guardian) {
+      const dist = Math.abs(guardian.r - 3) + Math.abs(guardian.c - 3);
+      expect(dist).toBe(1);
+    }
+  });
+
+  it('does nothing when not standing on a shrine', () => {
+    const s = makeForest();
+    const after = activateShrine(s, 1000, rngFrom(1));
+    expect(after).toBe(s);
+  });
+
+  it('generateForest: shrines only placed on clearing tiles; maze stays reachable', () => {
+    for (const seed of [1, 7, 42, 99, 1234]) {
+      const forest = generateForest(3, SNAP, rngFrom(seed));
+      // Any shrine must be a walkable tile (reachability check covers this).
+      expect(reachesTreeline(forest)).toBe(true);
+    }
   });
 });

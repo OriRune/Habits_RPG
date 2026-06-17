@@ -87,6 +87,7 @@ import {
   castSpell as forestCastSpellFn,
   stepBeasts,
   advance as forestAdvanceFn,
+  activateShrine as forestActivateShrine,
   splitHaul,
   FOREST_ENERGY_COST,
   FOREST_UNLOCK_LEVEL,
@@ -457,6 +458,8 @@ export interface GameState {
   forestAdvance: () => void;
   /** Cast a known spell in the forest run. */
   forestCast: (spellKey: string) => void;
+  /** Activate the shrine the forager is standing on. */
+  forestShrine: (nowMs: number) => void;
   /** Commit the haul and close the run — full on confirmed banking, halved on death. */
   endForest: () => void;
 
@@ -1902,6 +1905,14 @@ export const useGameStore = create<GameState>()(
         set((s) => {
           if (!s.forest || s.forest.status !== 'active') return s;
           const forest = forestCastSpellFn(s.forest, spellKey, Date.now(), Math.random);
+          if (forest === s.forest) return s;
+          return { forest };
+        }),
+
+      forestShrine: (nowMs: number) =>
+        set((s) => {
+          if (!s.forest || s.forest.status !== 'active') return s;
+          const forest = forestActivateShrine(s.forest, nowMs, Math.random);
           if (forest === s.forest) return s;
           return { forest };
         }),

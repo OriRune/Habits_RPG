@@ -9,6 +9,7 @@ import {
   sightRadiusFor,
   splitHaul,
   FOREST_DEATH_KEEP,
+  FOREST_WINDUP_MS,
   type ForestTile,
   type ForestBeast,
 } from '@/engine/forest';
@@ -16,7 +17,7 @@ import { cameraWindow, VIEW } from '@/engine/crawl';
 import { useSmoothCamera, type SmoothCameraLayout } from '@/hooks/useSmoothCamera';
 import { getSpell } from '@/engine/spells';
 import type { Reward } from '@/engine/challenges';
-import { FOREST_NODES, FOREST_BEASTS } from '@/content/forest';
+import { FOREST_NODES, FOREST_BEASTS, SHRINE_EVENTS } from '@/content/forest';
 import { forestThicketTree, forestFloorTile, forestNodeSprite } from '@/lib/minigameArt';
 import { getMaterial } from '@/engine/materials';
 import { Button } from '@/components/ui/Button';
@@ -39,6 +40,7 @@ const TILE_BG: Record<ForestTile['kind'], [number, number, number]> = {
   entrance: [107, 83,  32],
   treeline: [26,  58,  38],
   node:     [52,  48,  29],
+  shrine:   [88,  72,  38],
 };
 
 /** Deterministic 0..1 hash for a cell — stable across renders. */
@@ -105,6 +107,12 @@ function floorStyle(kind: ForestTile['kind'], r: number, c: number): React.CSSPr
   }
   if (kind === 'node') {
     return { backgroundColor: bg };
+  }
+  if (kind === 'shrine') {
+    return {
+      backgroundColor: bg,
+      backgroundImage: 'radial-gradient(circle at 50% 44%, rgba(255,220,100,0.55) 0%, rgba(200,140,40,0.20) 50%, transparent 72%)',
+    };
   }
   // tree / thicket — dark base, sprite rendered separately
   return { backgroundColor: '#111d0d' };
@@ -363,6 +371,7 @@ export function ForestRunOverlay() {
             }
             const vis = isVisible(forest, r, c);
             const node = tile.kind === 'node' && tile.nodeKey ? FOREST_NODES[tile.nodeKey] : null;
+            const shrine = tile.kind === 'shrine' && tile.shrineKey ? SHRINE_EVENTS[tile.shrineKey] : null;
             const isTree = tile.kind === 'tree';
             const isThicket = tile.kind === 'thicket';
             const floorImg = !isThicket && !isTree ? forestFloorTile(tile.kind, r, c) : undefined;
@@ -431,6 +440,8 @@ export function ForestRunOverlay() {
                   overflow: 'visible',
                   boxShadow: node
                     ? `inset 0 0 0 1px rgba(0,0,0,0.3), inset 0 0 8px ${node.color}77`
+                    : shrine
+                    ? `inset 0 0 0 2px rgba(255,210,80,0.7), inset 0 0 12px rgba(255,190,40,0.4)`
                     : isTree
                     ? 'inset 0 0 0 2px rgba(110,170,70,0.5)'
                     : 'inset 0 0 0 1px rgba(0,0,0,0.28)',
@@ -462,6 +473,18 @@ export function ForestRunOverlay() {
                   ) : node ? (
                     <span title={node.name} style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.8))' }}>
                       {node.glyph}
+                    </span>
+                  ) : shrine ? (
+                    <span
+                      title={shrine.name}
+                      style={{
+                        fontSize: CELL * 0.52,
+                        lineHeight: 1,
+                        filter: 'drop-shadow(0 0 6px rgba(255,200,60,0.9))',
+                        animation: 'forest-shaft-pulse 3s ease-in-out infinite',
+                      }}
+                    >
+                      {shrine.glyph}
                     </span>
                   ) : tile.kind === 'treeline' ? (
                     <Trees className="h-6 w-6 text-emerald-300" style={{ filter: 'drop-shadow(0 0 4px rgba(72,202,140,0.7))' }} />
@@ -525,6 +548,45 @@ export function ForestRunOverlay() {
           );
         })}
 
+        {/* Ranged shot tracer — a brief arrow streak along the shot path */}
+        {(() => {
+          const shot = forest.lastShot;
+          if (!shot || Date.now() - shot.at > 180) return null;
+          const progress = Math.max(0, 1 - (Date.now() - shot.at) / 180);
+          // Trace each cell along the path (horizontal or vertical corridor).
+          const cells: React.ReactNode[] = [];
+          const dr = shot.toR === shot.fromR ? 0 : shot.toR > shot.fromR ? 1 : -1;
+          const dc = shot.toC === shot.fromC ? 0 : shot.toC > shot.fromC ? 1 : -1;
+          let r = shot.fromR + dr;
+          let c = shot.fromC + dc;
+          let idx = 0;
+          while (true) {
+            if (inView(r, c)) {
+              cells.push(
+                <div
+                  key={idx}
+                  className="pointer-events-none absolute z-[9]"
+                  style={{
+                    width: dc !== 0 ? CELL : CELL * 0.25,
+                    height: dr !== 0 ? CELL : CELL * 0.25,
+                    left: vc(c) * CELL + (dc !== 0 ? 0 : CELL * 0.375),
+                    top: vr(r) * CELL + (dr !== 0 ? 0 : CELL * 0.375),
+                    backgroundColor: 'rgba(255,220,80,0.7)',
+                    opacity: progress * 0.9,
+                    borderRadius: 2,
+                    boxShadow: '0 0 6px rgba(255,200,40,0.8)',
+                  }}
+                />
+              );
+            }
+            idx++;
+            if (r === shot.toR && c === shot.toC) break;
+            if (idx > 10) break; // safety
+            r += dr; c += dc;
+          }
+          return cells;
+        })()}
+
         {/* Clear / harvest pops */}
         {pops.map((p) => {
           if (!inView(p.r, p.c)) return null;
@@ -570,6 +632,10 @@ export function ForestRunOverlay() {
           if (!inView(b.r, b.c)) return null;
           const def = FOREST_BEASTS[b.key];
           const frozen = (b.frozenUntilMs ?? 0) > Date.now();
+          const windingUp = b.windupUntilMs !== undefined && b.windupUntilMs > Date.now();
+          const windupProgress = windingUp && b.windupUntilMs
+            ? Math.max(0, Math.min(1, 1 - (b.windupUntilMs - Date.now()) / FOREST_WINDUP_MS))
+            : 0;
           return (
             <div
               key={b.id}
@@ -586,6 +652,15 @@ export function ForestRunOverlay() {
             >
               {frozen && (
                 <div className="absolute inset-0 rounded-sm bg-blue-400/30 ring-1 ring-blue-300/60" />
+              )}
+              {windingUp && (
+                <div
+                  className="absolute inset-0 rounded-sm ring-2 ring-red-500/80"
+                  style={{
+                    backgroundColor: `rgba(220,38,38,${0.08 + windupProgress * 0.18})`,
+                    boxShadow: `0 0 ${4 + windupProgress * 8}px rgba(220,38,38,0.6)`,
+                  }}
+                />
               )}
               <span className="text-[22px] leading-none" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.85))' }}>
                 {def?.glyph ?? '?'}

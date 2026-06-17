@@ -57,6 +57,12 @@ export interface ForestBeastDef {
   weakTo?: string[];
   /** Stats this beast resists (lower damage). */
   resistTo?: string[];
+  /** Prey that flee from the player instead of chasing; deal no contact damage. */
+  flees?: boolean;
+  /** Override the default 'leather' drop material. */
+  dropMaterial?: string;
+  /** Override the default drop amount formula [min, max]. */
+  dropAmount?: [number, number];
 }
 
 export const FOREST_NODES: Record<string, ForestNodeDef> = {
@@ -87,6 +93,18 @@ export const FOREST_NODES: Record<string, ForestNodeDef> = {
 };
 
 export const FOREST_BEASTS: Record<string, ForestBeastDef> = {
+  // --- Fleeing prey (drop premium loot; deal no contact damage; faster than the player) ---
+  forest_deer: {
+    key: 'forest_deer', name: 'Forest Deer', glyph: '🦌', color: '#a9805a',
+    stageMin: 1, hp: 8, touchDamage: 0, moveCadenceMs: 150, aggroRadius: 4, bounty: [2, 6],
+    flees: true, weakTo: ['DX'], dropMaterial: 'game_meat', dropAmount: [1, 2],
+  },
+  wild_rabbit: {
+    key: 'wild_rabbit', name: 'Wild Rabbit', glyph: '🐇', color: '#c9b79a',
+    stageMin: 1, hp: 5, touchDamage: 0, moveCadenceMs: 130, aggroRadius: 3, bounty: [1, 3],
+    flees: true, weakTo: ['DX'], dropMaterial: 'pelt', dropAmount: [1, 1],
+  },
+  // --- Predators (pursue and strike the player) ---
   wild_boar: {
     key: 'wild_boar', name: 'Wild Boar', glyph: '🐗', color: '#8a6a4a',
     stageMin: 1, hp: 10, touchDamage: 4, moveCadenceMs: 620, aggroRadius: 3, bounty: [1, 4],
@@ -116,6 +134,45 @@ export const FOREST_BEASTS: Record<string, ForestBeastDef> = {
     key: 'ancient_guardian', name: 'Ancient Guardian', glyph: '🌳', color: '#2a6a3a',
     stageMin: 10, hp: 55, touchDamage: 18, moveCadenceMs: 600, aggroRadius: 2, bounty: [20, 35],
     defense: 5, resistTo: ['DX'], weakTo: ['ST'],
+  },
+};
+
+// ============================================================================
+//  SHRINE EVENTS — activatable once per clearing-centre shrine (stand on it, Act)
+// ============================================================================
+
+export type ShrineEventKind = 'cache' | 'blessing' | 'den';
+
+export interface ShrineEventDef {
+  key: string;
+  name: string;
+  glyph: string;
+  color: string;
+  weight: number;
+  kind: ShrineEventKind;
+  /** 'cache' — instant loot reward */
+  loot?: { gold?: [number, number]; material?: string; amount?: [number, number] };
+  /** 'blessing' — temporary player status applied via applyStatus */
+  buff?: { status: 'bless'; magnitude: number; turns: number };
+  /** 'den' — spawns an awake guardian beast adjacent */
+  guardianKey?: string;
+}
+
+export const SHRINE_EVENTS: Record<string, ShrineEventDef> = {
+  hunters_cache: {
+    key: 'hunters_cache', name: "Hunter's Cache", glyph: '📦', color: '#caa05a',
+    weight: 3, kind: 'cache',
+    loot: { gold: [10, 25], material: 'game_meat', amount: [1, 3] },
+  },
+  forest_blessing: {
+    key: 'forest_blessing', name: 'Forest Blessing', glyph: '✨', color: '#7fd6a0',
+    weight: 2, kind: 'blessing',
+    buff: { status: 'bless', magnitude: 4, turns: 8 },
+  },
+  disturbed_den: {
+    key: 'disturbed_den', name: 'Disturbed Den', glyph: '🕳', color: '#b05a5a',
+    weight: 2, kind: 'den',
+    guardianKey: 'forest_bear',
   },
 };
 

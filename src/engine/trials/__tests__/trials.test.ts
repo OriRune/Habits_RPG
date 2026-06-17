@@ -14,7 +14,10 @@ import {
 } from '../lockpicking';
 import {
   chaseScore,
-  generateFeatures,
+  generateCourse,
+  buildingAt,
+  nextBuilding,
+  hasFallen,
   speedAt,
   updateLead,
   resolveContact,
@@ -27,8 +30,11 @@ import {
   LEAD_START,
   STUMBLE_LEAD_LOSS,
   STOMP_LEAD_GAIN,
-  GRACE_DISTANCE,
-  FEATURE_COUNT,
+  CHASER_SPAWN_DISTANCE,
+  CHASER_GAIN_PER_SEC,
+  DASH_LEAD_GAIN,
+  BUILDING_COUNT,
+  ROOF_LEVELS,
   MAX_JUMPS,
   SLIDE_MS,
 } from '../rooftopChase';
@@ -231,45 +237,131 @@ describe('lockpicking', () => {
 // ── Rooftop Chase ──────────────────────────────────────────────────────────────
 
 describe('rooftopChase', () => {
-  // generateFeatures
-  it('generateFeatures returns FEATURE_COUNT features', () => {
-    const f = generateFeatures(seededRng());
-    expect(f).toHaveLength(FEATURE_COUNT);
+  // ── generateCourse ──────────────────────────────────────────────────────────
+  it('generateCourse returns BUILDING_COUNT buildings', () => {
+    expect(generateCourse(seededRng())).toHaveLength(BUILDING_COUNT);
   });
 
-  it('all features have valid kinds', () => {
-    const valid = new Set(['hazard', 'gap', 'mook', 'lowbar']);
-    for (const f of generateFeatures(seededRng())) {
-      expect(valid.has(f.kind)).toBe(true);
-    }
-  });
-
-  it('all features start after GRACE_DISTANCE', () => {
-    for (const f of generateFeatures(seededRng())) {
-      expect(f.x).toBeGreaterThanOrEqual(GRACE_DISTANCE);
-    }
-  });
-
-  it('features are sorted by x (ascending)', () => {
-    const fs = generateFeatures(seededRng());
-    for (let i = 1; i < fs.length; i++) {
-      expect(fs[i].x).toBeGreaterThan(fs[i - 1].x);
-    }
-  });
-
-  it('generateFeatures is deterministic for the same seed', () => {
-    const a = generateFeatures(seededRng(99));
-    const b = generateFeatures(seededRng(99));
+  it('generateCourse is deterministic for the same seed', () => {
+    const a = generateCourse(seededRng(99));
+    const b = generateCourse(seededRng(99));
     expect(a).toEqual(b);
   });
 
-  it('all features have positive width', () => {
-    for (const f of generateFeatures(seededRng())) {
-      expect(f.width).toBeGreaterThan(0);
+  it('buildings are sorted by x (ascending, non-overlapping)', () => {
+    const bs = generateCourse(seededRng());
+    for (let i = 1; i < bs.length; i++) {
+      expect(bs[i].x).toBeGreaterThan(bs[i - 1].x + bs[i - 1].width);
     }
   });
 
-  // speedAt
+  it('all buildings have positive width', () => {
+    for (const b of generateCourse(seededRng())) {
+      expect(b.width).toBeGreaterThan(0);
+    }
+  });
+
+  it('all roofY values are in ROOF_LEVELS', () => {
+    const levelsSet = new Set(ROOF_LEVELS);
+    for (const b of generateCourse(seededRng())) {
+      expect(levelsSet.has(b.roofY as 0 | 2.5 | 5)).toBe(true);
+    }
+  });
+
+  it('adjacent buildings differ by at most one ROOF_LEVEL step', () => {
+    const bs = generateCourse(seededRng());
+    const step = ROOF_LEVELS[1] - ROOF_LEVELS[0]; // 2.5
+    for (let i = 1; i < bs.length; i++) {
+      expect(Math.abs(bs[i].roofY - bs[i - 1].roofY)).toBeLessThanOrEqual(step + 0.01);
+    }
+  });
+
+  it('first building starts at x = 0', () => {
+    expect(generateCourse(seededRng())[0].x).toBe(0);
+  });
+
+  it('first building has roofY = 0', () => {
+    expect(generateCourse(seededRng())[0].roofY).toBe(0);
+  });
+
+  it('all prop kinds are in {hazard, mook, lowbar}', () => {
+    const valid = new Set(['hazard', 'mook', 'lowbar']);
+    for (const b of generateCourse(seededRng())) {
+      for (const p of b.props) {
+        expect(valid.has(p.kind)).toBe(true);
+      }
+    }
+  });
+
+  it('all props have positive width and sit within their building', () => {
+    for (const b of generateCourse(seededRng())) {
+      for (const p of b.props) {
+        expect(p.width).toBeGreaterThan(0);
+        expect(p.x).toBeGreaterThanOrEqual(b.x);
+        expect(p.x + p.width).toBeLessThanOrEqual(b.x + b.width);
+      }
+    }
+  });
+
+  it('gap between consecutive buildings is <= maxClearableGap at the gap start', () => {
+    const bs = generateCourse(seededRng());
+    for (let i = 1; i < bs.length; i++) {
+      const gapStart = bs[i - 1].x + bs[i - 1].width;
+      const gapWidth = bs[i].x - gapStart;
+      // Use the tightest clamp (upward gap); base clearable is always ≥ the upward one
+      expect(gapWidth).toBeLessThanOrEqual(maxClearableGap(gapStart) + 0.01);
+    }
+  });
+
+  // ── buildingAt ──────────────────────────────────────────────────────────────
+  it('buildingAt returns the correct building when footX is on a roof', () => {
+    const bs = generateCourse(seededRng());
+    const b = bs[1]; // skip grace building
+    const mid = b.x + b.width / 2;
+    expect(buildingAt(bs, mid)).toBe(b);
+  });
+
+  it('buildingAt returns null when footX is over a gap', () => {
+    const bs = generateCourse(seededRng());
+    const gapX = bs[0].x + bs[0].width + 0.1; // just past the first building
+    expect(buildingAt(bs, gapX)).toBeNull();
+  });
+
+  // ── nextBuilding ────────────────────────────────────────────────────────────
+  it('nextBuilding returns the first building whose x is > footX', () => {
+    const bs = generateCourse(seededRng());
+    const gapX = bs[0].x + bs[0].width + 0.1;
+    expect(nextBuilding(bs, gapX)).toBe(bs[1]);
+  });
+
+  it('nextBuilding returns null when past all buildings', () => {
+    const bs = generateCourse(seededRng());
+    const last = bs[bs.length - 1];
+    expect(nextBuilding(bs, last.x + last.width + 100)).toBeNull();
+  });
+
+  // ── hasFallen ───────────────────────────────────────────────────────────────
+  it('hasFallen is false when standing on a building', () => {
+    const bs = generateCourse(seededRng());
+    const mid = bs[0].x + bs[0].width / 2;
+    expect(hasFallen(bs, mid, bs[0].roofY)).toBe(false);
+  });
+
+  it('hasFallen is false when airborne over a gap but above the next roof', () => {
+    const bs = generateCourse(seededRng());
+    const gapX = bs[0].x + bs[0].width + 0.5;
+    const nextRoof = bs[1].roofY;
+    expect(hasFallen(bs, gapX, nextRoof + 1)).toBe(false); // above next roof top
+  });
+
+  it('hasFallen is true when over a gap and below the next roof top', () => {
+    const bs = generateCourse(seededRng());
+    const gapX = bs[0].x + bs[0].width + 0.5;
+    const nextRoof = bs[1].roofY;
+    expect(hasFallen(bs, gapX, nextRoof - 0.5)).toBe(true); // below next roof top
+  });
+
+  // ── speedAt ─────────────────────────────────────────────────────────────────
   it('speedAt starts at BASE_SPEED at distance 0', () => {
     expect(speedAt(0)).toBeCloseTo(BASE_SPEED, 5);
   });
@@ -285,87 +377,109 @@ describe('rooftopChase', () => {
     expect(speedAt(100000)).toBe(MAX_SPEED);
   });
 
-  // updateLead
-  it('updateLead regenerates lead over time', () => {
-    const next = updateLead(LEAD_START, 1);
-    expect(next).toBeGreaterThan(LEAD_START);
+  // ── updateLead ──────────────────────────────────────────────────────────────
+  it('updateLead returns LEAD_MAX when inactive (before spawn)', () => {
+    expect(updateLead(20, 1, false)).toBe(LEAD_MAX);
+    expect(updateLead(0, 5, false)).toBe(LEAD_MAX);
   });
 
-  it('updateLead stumble reduces lead', () => {
-    const next = updateLead(LEAD_START, 0, 'stumble');
+  it('updateLead drains lead when active over time', () => {
+    const next = updateLead(LEAD_MAX, 1, true);
+    expect(next).toBeLessThan(LEAD_MAX);
+    expect(next).toBeCloseTo(LEAD_MAX - CHASER_GAIN_PER_SEC, 4);
+  });
+
+  it('updateLead stumble reduces lead when active', () => {
+    const next = updateLead(LEAD_START, 0, true, 'stumble');
     expect(next).toBeLessThan(LEAD_START);
     expect(next).toBeCloseTo(Math.max(0, LEAD_START - STUMBLE_LEAD_LOSS), 5);
   });
 
-  it('updateLead stomp increases lead', () => {
-    const next = updateLead(LEAD_START, 0, 'stomp');
-    expect(next).toBeGreaterThan(LEAD_START);
-    expect(next).toBeCloseTo(Math.min(LEAD_MAX, LEAD_START + STOMP_LEAD_GAIN), 5);
+  it('updateLead stomp increases lead when active', () => {
+    const start = 30; // below LEAD_MAX so the gain is visible
+    const next = updateLead(start, 0, true, 'stomp');
+    expect(next).toBeGreaterThan(start);
+    expect(next).toBeCloseTo(Math.min(LEAD_MAX, start + STOMP_LEAD_GAIN), 5);
+  });
+
+  it('updateLead dash increases lead when active', () => {
+    const next = updateLead(20, 0, true, 'dash');
+    expect(next).toBeGreaterThan(20);
+    expect(next).toBeCloseTo(Math.min(LEAD_MAX, 20 + DASH_LEAD_GAIN), 5);
   });
 
   it('updateLead is clamped to [0, LEAD_MAX]', () => {
-    expect(updateLead(0, 0, 'stumble')).toBe(0);
-    expect(updateLead(LEAD_MAX, 1, 'stomp')).toBe(LEAD_MAX);
+    expect(updateLead(0, 0, true, 'stumble')).toBe(0);
+    expect(updateLead(LEAD_MAX, 0, true, 'stomp')).toBe(LEAD_MAX);
+    expect(updateLead(LEAD_MAX, 0, true, 'dash')).toBe(LEAD_MAX);
   });
 
-  // resolveContact (4-arg: heroY, heroVy, sliding, feature)
-  it('resolveContact: grounded on hazard = stumble', () => {
-    const f = { id: 0, kind: 'hazard' as const, x: 10, width: 3 };
-    expect(resolveContact(0, 0, false, f)).toBe('stumble');
+  it('CHASER_SPAWN_DISTANCE is a positive distance before TARGET', () => {
+    expect(CHASER_SPAWN_DISTANCE).toBeGreaterThan(0);
+    expect(CHASER_SPAWN_DISTANCE).toBeLessThan(CHASE_TARGET_DISTANCE);
   });
 
-  it('resolveContact: airborne over hazard = clear', () => {
-    const f = { id: 0, kind: 'hazard' as const, x: 10, width: 3 };
-    expect(resolveContact(5, -1, false, f)).toBe('clear');
+  // ── resolveContact (5-arg: heroY, heroVy, sliding, prop, roofY) ────────────
+  it('resolveContact: grounded on hazard at roofY=0 = stumble', () => {
+    const p = { id: 0, kind: 'hazard' as const, x: 10, width: 3 };
+    expect(resolveContact(0, 0, false, p, 0)).toBe('stumble');
   });
 
-  it('resolveContact: grounded inside gap = stumble', () => {
-    const f = { id: 1, kind: 'gap' as const, x: 10, width: 10 };
-    expect(resolveContact(0, 0, false, f)).toBe('stumble');
+  it('resolveContact: airborne over hazard at roofY=0 = clear', () => {
+    const p = { id: 0, kind: 'hazard' as const, x: 10, width: 3 };
+    expect(resolveContact(5, -1, false, p, 0)).toBe('clear');
   });
 
-  it('resolveContact: airborne over gap = clear', () => {
-    const f = { id: 1, kind: 'gap' as const, x: 10, width: 10 };
-    expect(resolveContact(4, -0.5, false, f)).toBe('clear');
+  it('resolveContact: grounded on hazard at elevated roofY = stumble', () => {
+    const p = { id: 0, kind: 'hazard' as const, x: 10, width: 3 };
+    expect(resolveContact(2.5, 0, false, p, 2.5)).toBe('stumble');
   });
 
-  it('resolveContact: descending onto mook head = stomp', () => {
-    const f = { id: 2, kind: 'mook' as const, x: 10, width: 2.5 };
-    // heroY = 4 (airborne), heroVy = -2 (falling) — within stomp window
-    expect(resolveContact(4, -2, false, f)).toBe('stomp');
+  it('resolveContact: airborne over hazard at elevated roofY = clear', () => {
+    const p = { id: 0, kind: 'hazard' as const, x: 10, width: 3 };
+    expect(resolveContact(7, -1, false, p, 2.5)).toBe('clear');
   });
 
-  it('resolveContact: grounded into mook side = stumble', () => {
-    const f = { id: 2, kind: 'mook' as const, x: 10, width: 2.5 };
-    expect(resolveContact(0, 0, false, f)).toBe('stumble');
+  it('resolveContact: descending onto mook head at roofY=0 = stomp', () => {
+    const p = { id: 2, kind: 'mook' as const, x: 10, width: 2.5 };
+    // heroY = 4 (airborne), heroVy = -2 (falling) — within stomp window above mook top
+    expect(resolveContact(4, -2, false, p, 0)).toBe('stomp');
   });
 
-  it('resolveContact: lowbar not sliding = stumble (grounded)', () => {
-    const f = { id: 3, kind: 'lowbar' as const, x: 10, width: 4 };
-    expect(resolveContact(0, 0, false, f)).toBe('stumble');
+  it('resolveContact: descending onto mook head at elevated roofY = stomp', () => {
+    const p = { id: 2, kind: 'mook' as const, x: 10, width: 2.5 };
+    // roofY=2.5, mookTop = 2.5 + 4 = 6.5, heroY=7 (within stomp window above mookTop)
+    expect(resolveContact(7, -2, false, p, 2.5)).toBe('stomp');
   });
 
-  it('resolveContact: lowbar not sliding = stumble (airborne)', () => {
-    const f = { id: 3, kind: 'lowbar' as const, x: 10, width: 4 };
-    expect(resolveContact(3, 1, false, f)).toBe('stumble');
+  it('resolveContact: grounded into mook side at roofY=0 = stumble', () => {
+    const p = { id: 2, kind: 'mook' as const, x: 10, width: 2.5 };
+    expect(resolveContact(0, 0, false, p, 0)).toBe('stumble');
   });
 
-  it('resolveContact: lowbar sliding = clear', () => {
-    const f = { id: 3, kind: 'lowbar' as const, x: 10, width: 4 };
-    expect(resolveContact(0, 0, true, f)).toBe('clear');
+  it('resolveContact: lowbar not sliding at roofY=0 = stumble (grounded)', () => {
+    const p = { id: 3, kind: 'lowbar' as const, x: 10, width: 4 };
+    expect(resolveContact(0, 0, false, p, 0)).toBe('stumble');
   });
 
-  // jumpAirTime / maxClearableGap / gap-clamp sanity
+  it('resolveContact: lowbar not sliding at roofY=0 = stumble (airborne)', () => {
+    const p = { id: 3, kind: 'lowbar' as const, x: 10, width: 4 };
+    expect(resolveContact(3, 1, false, p, 0)).toBe('stumble');
+  });
+
+  it('resolveContact: lowbar sliding at roofY=0 = clear', () => {
+    const p = { id: 3, kind: 'lowbar' as const, x: 10, width: 4 };
+    expect(resolveContact(0, 0, true, p, 0)).toBe('clear');
+  });
+
+  it('resolveContact: lowbar sliding at elevated roofY = clear', () => {
+    const p = { id: 3, kind: 'lowbar' as const, x: 10, width: 4 };
+    expect(resolveContact(2.5, 0, true, p, 2.5)).toBe('clear');
+  });
+
+  // ── jumpAirTime / maxClearableGap ────────────────────────────────────────────
   it('jumpAirTime returns a value > 1 s with current physics', () => {
     expect(jumpAirTime()).toBeGreaterThan(1.0);
-  });
-
-  it('all generated gap widths are <= maxClearableGap at their x', () => {
-    const fs = generateFeatures(seededRng());
-    for (const f of fs.filter((x) => x.kind === 'gap')) {
-      // Allow a tiny float tolerance
-      expect(f.width).toBeLessThanOrEqual(maxClearableGap(f.x) + 0.01);
-    }
   });
 
   it('MAX_JUMPS is 2 (double-jump enabled)', () => {
@@ -376,7 +490,7 @@ describe('rooftopChase', () => {
     expect(SLIDE_MS).toBeGreaterThan(0);
   });
 
-  // chaseScore
+  // ── chaseScore ───────────────────────────────────────────────────────────────
   it('chaseScore(0) = 0', () => {
     expect(chaseScore(0)).toBe(0);
   });

@@ -314,6 +314,18 @@ body {
   15%  { opacity: 0.85; transform: scaleX(1); }
   100% { opacity: 0;    transform: scaleX(1) translateX(-160px); }
 }
+/* Dash speed-burst whoosh — wider, brighter streak flying left */
+@keyframes rooftop-dash {
+  0%   { opacity: 0;    transform: scaleX(0.2) scaleY(1); }
+  10%  { opacity: 1;    transform: scaleX(1) scaleY(1.4); }
+  100% { opacity: 0;    transform: scaleX(1) scaleY(0.6) translateX(-220px); }
+}
+/* Hero fall-tumble when dropping into a gap */
+@keyframes rooftop-fall {
+  0%   { transform: translateY(0) rotate(0deg); opacity: 1; }
+  40%  { transform: translateY(18px) rotate(-90deg); opacity: 0.9; }
+  100% { transform: translateY(60px) rotate(-200deg); opacity: 0; }
+}
 /* Cloud drift */
 @keyframes rooftop-cloud {
   from { transform: translateX(0); }

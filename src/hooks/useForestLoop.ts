@@ -3,7 +3,7 @@
 // clock and which keys/buttons are held. All rules live in the pure engine (src/engine/forest.ts).
 import { useEffect, useRef } from 'react';
 import { useGameStore } from '@/store/useGameStore';
-import { canAdvance, type Dir } from '@/engine/forest';
+import { canAdvance, isOnShrine, type Dir } from '@/engine/forest';
 
 const KEY_DIRS: Record<string, Dir> = {
   ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
@@ -87,8 +87,9 @@ export function useForestLoop(): ForestControlsApi {
       if (actQueued.current && now - lastAct >= ACT_INTERVAL_MS) {
         actQueued.current = false;
         lastAct = now;
-        // On the tree line, the action key pushes deeper instead of acting.
+        // Priority: push deeper > activate shrine > act (slash/gather/shoot).
         if (canAdvance(run)) store.forestAdvance();
+        else if (isOnShrine(run)) store.forestShrine(now);
         else store.forestAct();
       }
       if (held.current.size && now - lastMove >= MOVE_INTERVAL_MS) {

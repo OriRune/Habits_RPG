@@ -20,7 +20,7 @@ import { mergeReward } from './dungeon';
 import { attackRoll, spellDamageRoll, spellHealAmount } from './combat';
 import { getSpell, SCHOOL_STAT } from './spells';
 import type { WeaponDef } from './weapons';
-import { FOREST_NODES, FOREST_BEASTS, type ForestNodeDef } from '@/content/forest';
+import { FOREST_NODES, FOREST_BEASTS, SHRINE_EVENTS, type ForestNodeDef } from '@/content/forest';
 import {
   type Dir,
   type RNG,
@@ -79,6 +79,10 @@ const CLEARING_SIGHT_RADIUS = 4;
 const SLASH_STA_COST = 2;
 /** Stamina cost per axe swing against a choppable tree. */
 const CHOP_STA_COST = 1;
+/** Stamina cost per ranged shot (bow). */
+const ARROW_STA_COST = 1;
+/** How long before a winding-up beast actually strikes (ms). */
+export const FOREST_WINDUP_MS = 360;
 /** Spell effect cooldown between casts (ms). */
 const SPELL_CD_MS = 500;
 
@@ -86,7 +90,7 @@ const SPELL_CD_MS = 500;
 // Tile types
 // ---------------------------------------------------------------------------
 
-export type ForestTileKind = 'trail' | 'thicket' | 'tree' | 'clearing' | 'entrance' | 'treeline' | 'node';
+export type ForestTileKind = 'trail' | 'thicket' | 'tree' | 'clearing' | 'entrance' | 'treeline' | 'node' | 'shrine';
 
 export interface ForestTile {
   kind: ForestTileKind;
@@ -95,6 +99,8 @@ export interface ForestTile {
   maxDurability?: number;
   /** Which gatherable this tile holds (node only — keys FOREST_NODES). */
   nodeKey?: string;
+  /** Which shrine event this tile holds (shrine only — keys SHRINE_EVENTS). */
+  shrineKey?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +124,12 @@ export interface ForestBeast {
   poisonDmg?: number;
   poisonNextTickMs?: number;
   poisonExpiresMs?: number;
+  /**
+   * Telegraph: the ms timestamp when the beast's wind-up expires and it may strike.
+   * Undefined = not yet adjacent. Set on the first tick the beast becomes adjacent;
+   * cleared again if the player escapes before the windup expires.
+   */
+  windupUntilMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +199,8 @@ export interface ForestState {
   playerStatuses: CrawlStatusEffect[];
   lastSpellMs: number;
   nextRuneId: number;
+  /** Transient: where the last ranged shot travelled — used to render a tracer in the overlay. */
+  lastShot?: { fromR: number; fromC: number; toR: number; toC: number; at: number } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,8 +214,14 @@ export function tileAt(state: ForestState, r: number, c: number): ForestTile | u
 export function isWalkable(tile: ForestTile | undefined): boolean {
   return (
     !!tile &&
-    (tile.kind === 'trail' || tile.kind === 'entrance' || tile.kind === 'clearing' || tile.kind === 'treeline')
+    (tile.kind === 'trail' || tile.kind === 'entrance' || tile.kind === 'clearing' ||
+     tile.kind === 'treeline' || tile.kind === 'shrine')
   );
+}
+
+/** Whether the player is currently standing on an unactivated shrine. */
+export function isOnShrine(state: ForestState): boolean {
+  return tileAt(state, state.player.r, state.player.c)?.kind === 'shrine';
 }
 
 export function beastAt(state: ForestState, r: number, c: number): ForestBeast | undefined {
@@ -298,10 +318,14 @@ export function nodeYield(nodeKey: string, rng: RNG): Reward {
 
 function killBeast(state: ForestState, beast: ForestBeast, rng: RNG): ForestState {
   const def = FOREST_BEASTS[beast.key];
-  const qty = Math.max(1, Math.round(beast.maxHp / 10) + state.killsThisStage);
   const gold = def ? randInt(def.bounty[0], def.bounty[1], rng) : 0;
+  // Prey carry a custom material/amount; predators default to leather scaled by kill streak.
+  const matKey = def?.dropMaterial ?? 'leather';
+  const qty = def?.dropAmount
+    ? randInt(def.dropAmount[0], def.dropAmount[1], rng)
+    : Math.max(1, Math.round(beast.maxHp / 10) + state.killsThisStage);
   const drop: Reward = mergeReward(
-    { materials: { leather: qty } },
+    { materials: { [matKey]: qty } },
     gold > 0 ? { gold } : {},
   );
   return {
@@ -310,6 +334,32 @@ function killBeast(state: ForestState, beast: ForestBeast, rng: RNG): ForestStat
     haul: mergeReward(state.haul, drop),
     killsThisStage: state.killsThisStage + 1,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Flee helper — mirror of flowStep but maximises BFS distance (prey escaping).
+// Local to forest.ts so the shared crawl.ts / mine stay untouched.
+// ---------------------------------------------------------------------------
+
+function fleeStep(
+  from: { r: number; c: number },
+  field: Map<string, number>,
+  blocked: Set<string>,
+): { r: number; c: number } | null {
+  const curDist = field.get(`${from.r},${from.c}`) ?? 0;
+  let best: { r: number; c: number } | null = null;
+  let bestDist = -Infinity;
+  for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as [number, number][]) {
+    const nr = from.r + dr;
+    const nc = from.c + dc;
+    const key = `${nr},${nc}`;
+    if (blocked.has(key)) continue;
+    const d = field.get(key);
+    if (d === undefined) continue; // not reachable / not walkable
+    // Only flee if moving to a cell farther from the player.
+    if (d > curDist && d > bestDist) { bestDist = d; best = { r: nr, c: nc }; }
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------------------
@@ -501,6 +551,14 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
         treesPlaced++;
       }
     }
+
+    // ~40% chance: turn the clearing centre into an activatable shrine.
+    // The centre is always connected via the room's edge cells, so walkable
+    // shrine tiles preserve maze reachability.
+    if (rng() < 0.4 && tiles[cr][cc].kind === 'clearing') {
+      const ev = weightedShrine(stage, rng);
+      tiles[cr][cc] = { kind: 'shrine', shrineKey: ev.key };
+    }
   }
 
   // --- Choppable trees on degree-1 wall cells (routing-safe) ---
@@ -582,6 +640,7 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
     playerStatuses: [],
     lastSpellMs: -SPELL_CD_MS,
     nextRuneId: 1,
+    lastShot: null,
   });
 }
 
@@ -637,14 +696,63 @@ export function tryMove(state: ForestState, dir: Dir): ForestState {
 
 /**
  * Act on the faced cell — context-sensitive (one button):
+ *   • ranged weapon: shoot down the faced line, hitting the first beast in range
+ *     (walls / trees / nodes block the shot; falls through to gather/chop if no target)
  *   • beast → weapon attack (costs stamina)
  *   • node  → gather instantly (free; stamina nodes refill)
  */
 export function act(state: ForestState, rng: RNG): ForestState {
   if (state.status !== 'active') return state;
+
+  // --- Ranged shot: scan the faced direction ---
+  if (state.weapon.ranged && state.weapon.range) {
+    if (state.sta >= 1) {
+      const [dr, dc] = DIRS[state.player.facing];
+      const range = state.weapon.range;
+      let shotTo: { r: number; c: number } | null = null;
+      let target: ForestBeast | null = null;
+
+      for (let i = 1; i <= range; i++) {
+        const tr = state.player.r + dr * i;
+        const tc = state.player.c + dc * i;
+        const tile = tileAt(state, tr, tc);
+        // Walls, trees, and nodes block the arrow.
+        if (!tile || !isWalkable(tile)) { shotTo = { r: tr - dr, c: tc - dc }; break; }
+        const b = beastAt(state, tr, tc);
+        if (b) { target = b; shotTo = { r: tr, c: tc }; break; }
+        shotTo = { r: tr, c: tc };
+      }
+
+      if (target && shotTo) {
+        const def = FOREST_BEASTS[target.key];
+        const full = state.sta >= ARROW_STA_COST;
+        const { dealt: dmg } = attackRoll(
+          state.rangedPower,
+          state.weapon.bonus ?? 0,
+          state.weapon.attackStat,
+          (def?.weakTo ?? []) as StatId[],
+          (def?.resistTo ?? []) as StatId[],
+          full,
+          def?.defense ?? 0,
+          rng,
+        );
+        const shot = { fromR: state.player.r, fromC: state.player.c, toR: shotTo.r, toC: shotTo.c, at: Date.now() };
+        const afterSta = { ...state, sta: Math.max(0, state.sta - ARROW_STA_COST), lastShot: shot };
+        const newHp = target.hp - dmg;
+        if (newHp <= 0) return killBeast(afterSta, target, rng);
+        return {
+          ...afterSta,
+          beasts: afterSta.beasts.map((b) => (b.id === target!.id ? { ...b, hp: newHp } : b)),
+        };
+      }
+
+      // No target in the faced line — fall through to gather/chop on the adjacent cell.
+    }
+  }
+
   const { r, c } = facedCell(state);
 
-  // --- Weapon attack vs a beast ---
+  // --- Weapon attack vs a beast (melee) ---
   const beast = beastAt(state, r, c);
   if (beast) {
     if (state.sta < 1) return state;
@@ -1014,17 +1122,25 @@ export function stepBeasts(state: ForestState, nowMs: number, rng: RNG): ForestS
     const def = FOREST_BEASTS[b.key];
     if (b.asleep || !def || nowMs < b.readyAtMs) return b;
     if (b.frozenUntilMs && nowMs < b.frozenUntilMs) return b;
-    // Already adjacent — let the contact phase handle it
+    // Predators already adjacent — windup/contact phase handles them.
+    // Prey adjacent to the player have nowhere useful to flee; let them cower.
     if (adjacent(b, s.player)) return b;
     // Build per-beast blocked set: other beasts + player cell
     const blocked = new Set<string>([`${s.player.r},${s.player.c}`]);
     for (const other of beasts) {
       if (other.id !== b.id) blocked.add(`${other.r},${other.c}`);
     }
-    const next = flowStep({ r: b.r, c: b.c }, field, blocked);
+    let next: { r: number; c: number } | null;
+    if (def.flees) {
+      // Prey flee: step toward the cell farthest from the player.
+      next = fleeStep({ r: b.r, c: b.c }, field, blocked);
+    } else {
+      // Predator chases.
+      next = flowStep({ r: b.r, c: b.c }, field, blocked);
+      // Skip if step would land on player (contact handled below).
+      if (next && next.r === s.player.r && next.c === s.player.c) next = null;
+    }
     if (!next) return b;
-    // Skip if step would land on player (contact damage handled below)
-    if (next.r === s.player.r && next.c === s.player.c) return b;
     newOccupied.delete(`${b.r},${b.c}`);
     newOccupied.add(`${next.r},${next.c}`);
     return { ...b, r: next.r, c: next.c, readyAtMs: nowMs + def.moveCadenceMs };
@@ -1034,17 +1150,53 @@ export function stepBeasts(state: ForestState, nowMs: number, rng: RNG): ForestS
   // ---------- Rune triggers ----------
   s = triggerRunes(s, nowMs, rng);
 
-  // ---------- Contact damage ----------
+  // ---------- Telegraph + contact damage ----------
+  // Two-phase per predator: set windupUntilMs when first becoming adjacent (no
+  // damage yet); deal damage only after the windup expires and the beast is still
+  // adjacent.  Prey never wind up or deal contact damage.
+  s = {
+    ...s,
+    beasts: s.beasts.map((b) => {
+      const def = FOREST_BEASTS[b.key];
+      if (b.asleep || !def || (def.flees) || def.touchDamage <= 0) return b;
+      if (b.frozenUntilMs && nowMs < b.frozenUntilMs) return b;
+      const adj = adjacent(b, s.player);
+      if (adj && b.windupUntilMs === undefined) {
+        // First tick adjacent — start the telegraph.
+        return { ...b, windupUntilMs: nowMs + FOREST_WINDUP_MS };
+      }
+      if (!adj && b.windupUntilMs !== undefined) {
+        // Player escaped during windup — cancel.
+        return { ...b, windupUntilMs: undefined };
+      }
+      return b;
+    }),
+  };
+  // Resolve one strike per tick (i-frame gate prevents more than one per 800ms).
   if (nowMs - s.lastHitAtMs >= FOREST_IFRAME_MS) {
-    const toucher = s.beasts.find((b) => !b.asleep && adjacent(b, s.player));
-    if (toucher) {
-      const def = FOREST_BEASTS[toucher.key];
+    const striker = s.beasts.find((b) => {
+      if (b.asleep || b.windupUntilMs === undefined) return false;
+      if (nowMs < b.windupUntilMs) return false;         // still winding up
+      if (b.frozenUntilMs && nowMs < b.frozenUntilMs) return false;
+      return adjacent(b, s.player);
+    });
+    if (striker) {
+      const def = FOREST_BEASTS[striker.key];
       const rawDmg = def?.touchDamage ?? 0;
       // Defense (from support-spell bless) mitigates contact damage.
       const blessedDefense = activeStatus(s.playerStatuses, 'bless', nowMs) ? s.defense : 0;
       const dealt = Math.max(1, rawDmg - blessedDefense - s.ward);
       const hp = Math.max(0, s.hp - dealt);
-      s = { ...s, hp, lastHitAtMs: nowMs, status: hp <= 0 ? 'ended' : 'active' };
+      // Reset windupUntilMs so the next hit also telegraphs.
+      s = {
+        ...s,
+        hp,
+        lastHitAtMs: nowMs,
+        status: hp <= 0 ? 'ended' : 'active',
+        beasts: s.beasts.map((b) =>
+          b.id === striker.id ? { ...b, windupUntilMs: undefined } : b
+        ),
+      };
     }
   }
 
@@ -1074,4 +1226,93 @@ export function splitHaul(haul: Reward, keepFraction: number): { kept: Reward; l
     }
   }
   return { kept, lost };
+}
+
+// ---------------------------------------------------------------------------
+// Shrine activation
+// ---------------------------------------------------------------------------
+
+/** Weighted random shrine event selection (mirror of weightedNode). */
+function weightedShrine(stage: number, rng: RNG): { key: string } {
+  const pool = Object.values(SHRINE_EVENTS).filter((e) => e.weight > 0);
+  // Scale den chance up at higher depths (bears available from stage 5).
+  const total = pool.reduce((a, e) => a + e.weight + (e.kind === 'den' && stage >= 5 ? 1 : 0), 0);
+  let roll = rng() * total;
+  for (const e of pool) {
+    const w = e.weight + (e.kind === 'den' && stage >= 5 ? 1 : 0);
+    roll -= w;
+    if (roll < 0) return e;
+  }
+  return pool[pool.length - 1];
+}
+
+/**
+ * Activate the shrine the player is standing on.  Consumes it (shrine → clearing).
+ * Needs `nowMs` for the blessing duration; provided by the store, not `act()`.
+ */
+export function activateShrine(state: ForestState, nowMs: number, rng: RNG): ForestState {
+  if (state.status !== 'active') return state;
+  const tile = tileAt(state, state.player.r, state.player.c);
+  if (tile?.kind !== 'shrine' || !tile.shrineKey) return state;
+
+  const event = SHRINE_EVENTS[tile.shrineKey];
+  if (!event) return state;
+
+  // Consume the shrine tile.
+  const tiles = state.tiles.map((row) => row.slice());
+  tiles[state.player.r][state.player.c] = { kind: 'clearing' };
+  let s: ForestState = { ...state, tiles };
+
+  if (event.kind === 'cache' && event.loot) {
+    const goldAmt = event.loot.gold ? randInt(event.loot.gold[0], event.loot.gold[1], rng) : 0;
+    const matAmt = event.loot.material && event.loot.amount
+      ? randInt(event.loot.amount[0], event.loot.amount[1], rng)
+      : 0;
+    const loot: Reward = mergeReward(
+      goldAmt > 0 ? { gold: goldAmt } : {},
+      matAmt > 0 && event.loot.material ? { materials: { [event.loot.material]: matAmt } } : {},
+    );
+    s = { ...s, haul: mergeReward(s.haul, loot) };
+  }
+
+  if (event.kind === 'blessing' && event.buff) {
+    const { status, magnitude, turns } = event.buff;
+    s = {
+      ...s,
+      playerStatuses: applyStatus(
+        s.playerStatuses,
+        { key: status, magnitude, durationMs: turns * DOT_TICK_MS },
+        nowMs,
+      ),
+    };
+  }
+
+  if (event.kind === 'den' && event.guardianKey) {
+    const def = FOREST_BEASTS[event.guardianKey];
+    if (def) {
+      // Spawn the guardian on a random adjacent walkable, unoccupied cell.
+      const candidates: [number, number][] = [];
+      for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as [number, number][]) {
+        const nr = state.player.r + dr;
+        const nc = state.player.c + dc;
+        if (isWalkable(tileAt(s, nr, nc)) && !beastAt(s, nr, nc)) {
+          candidates.push([nr, nc]);
+        }
+      }
+      if (candidates.length > 0) {
+        const [br, bc] = candidates[Math.floor(rng() * candidates.length)];
+        const guardian: ForestBeast = {
+          id: `shrine-${nowMs}`,
+          key: event.guardianKey,
+          r: br, c: bc,
+          hp: def.hp, maxHp: def.hp,
+          readyAtMs: nowMs,
+          asleep: false,
+        };
+        s = { ...s, beasts: [...s.beasts, guardian] };
+      }
+    }
+  }
+
+  return s;
 }
