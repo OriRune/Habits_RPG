@@ -821,8 +821,8 @@ describe('deep mine', () => {
     expect(get().deepestMineFloor).toBe(2);
   });
 
-  it('persists at version 16', () => {
-    expect(useGameStore.persist.getOptions().version).toBe(16);
+  it('persists at version 17', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(17);
   });
 });
 

@@ -118,6 +118,22 @@ import {
   ARENA_ENERGY_COST,
   ARENA_UNLOCK_LEVEL,
 } from '@/engine/arena';
+import {
+  type HexBattleState,
+  type SelectedAction as TacticsAction,
+  type TacticsSize,
+  TACTICS_SIZE_RADIUS,
+  generateSkirmish,
+  selectAction as tacticsSelectFn,
+  movePlayer as tacticsMoveFn,
+  playerAttack as tacticsAttackFn,
+  playerCastSpell as tacticsCastFn,
+  endPlayerTurn as tacticsEndTurnFn,
+  tacticsReward,
+  TACTICS_ENERGY_COST,
+  TACTICS_UNLOCK_LEVEL,
+} from '@/engine/hexBattle';
+import type { Hex } from '@/engine/hex';
 import type { Dir as GridDir, Cell as GridCell } from '@/engine/grid';
 import { biomeForDepth, getBiome, bossFor } from '@/engine/biomes';
 import {
@@ -293,6 +309,8 @@ export interface GameSettings {
   customPalette: PaletteColors | null;
   /** Arena difficulty pace. 'auto' eases low levels and quickens high ones; otherwise fixed. */
   arenaSpeed: ArenaSpeed;
+  /** Board size for a Hex Tactics skirmish (small 37 / medium 61 / large 127 tiles). */
+  tacticsSize: TacticsSize;
   /** Skip the once-per-day gate on Skill Trials so they can be replayed immediately. */
   repeatMinigames: boolean;
 }
@@ -305,6 +323,7 @@ function freshSettings(): GameSettings {
     paletteId: 'default',
     customPalette: null,
     arenaSpeed: 'auto',
+    tacticsSize: 'small',
     repeatMinigames: false,
   };
 }
@@ -348,6 +367,10 @@ export interface GameState {
   arena: ArenaState | null;
   /** Highest boss tier ever defeated in the Arena — a persistent record. */
   deepestArenaTier: number;
+  /** Active Hex Tactics skirmish (turn-based hex combat), or null when not fighting. */
+  tactics: HexBattleState | null;
+  /** Highest tier ever won in Hex Tactics — a persistent record. */
+  deepestTacticsTier: number;
   /** ISO date of the last daily clear per Skill Trial, for daily gating ('' = never). */
   trialsClearedOn: Record<TrialId, string>;
   /** Personal best score (0..1) per Skill Trial, for hub star display. */
@@ -527,6 +550,22 @@ export interface GameState {
   /** Commit the reward and close the fight — full on a win, partial on retreat/death. */
   endArena: () => void;
 
+  // Hex Tactics (turn-based hex skirmish; see src/engine/hexBattle.ts).
+  /** Start a skirmish: gate on level/energy, charge energy, snapshot the fighter vs scaled foes. */
+  beginTactics: () => void;
+  /** Select the active action (move / attack / spell) and refresh movement & target highlights. */
+  tacticsSelect: (action: TacticsAction) => void;
+  /** Move the player to a highlighted reachable tile. */
+  tacticsMove: (to: Hex) => void;
+  /** Resolve the player's weapon attack against a targeted enemy hex. */
+  tacticsAttack: (target: Hex) => void;
+  /** Cast a known spell; `target` is required for damage/illusion spells, ignored for support. */
+  tacticsCast: (spellKey: string, target: Hex | null) => void;
+  /** End the player's turn — runs the enemy phase, then restores the player. */
+  tacticsEndTurn: () => void;
+  /** Commit the reward and close the skirmish (gold + stat XP on a win, effort trickle either way). */
+  endTactics: () => void;
+
   updateSettings: (patch: Partial<GameSettings>) => void;
 
   /**
@@ -684,6 +723,26 @@ function commitArena(state: GameState, run: ArenaState): GameState {
   };
   const trickle = Math.round((4 + run.tier) * (0.4 + 0.6 * damageProgress(run)));
   applyReward(next, { ...arenaReward(run), statXp: { ST: trickle, DX: trickle, EN: trickle } });
+  checkLevelUp(next);
+  return next;
+}
+
+/**
+ * Bank a finished Hex Tactics skirmish and close it. A win pays scaled gold (tacticsReward) and
+ * records the tier; either outcome earns an Agility-forward Agility/Dexterity/Endurance trickle —
+ * Tactics is the mode that finally rewards mobility, so its XP leans on AG.
+ */
+function commitTactics(state: GameState, run: HexBattleState): GameState {
+  const won = run.status === 'won';
+  const next: GameState = {
+    ...state,
+    character: { ...state.character, statXp: { ...state.character.statXp } },
+    inventory: { ...state.inventory },
+    tactics: null,
+    deepestTacticsTier: won ? Math.max(state.deepestTacticsTier, run.tier) : state.deepestTacticsTier,
+  };
+  const trickle = Math.round((4 + run.tier) * (won ? 1 : 0.4));
+  applyReward(next, { ...tacticsReward(run), statXp: { AG: trickle, DX: trickle, EN: trickle } });
   checkLevelUp(next);
   return next;
 }
@@ -966,6 +1025,8 @@ export const useGameStore = create<GameState>()(
       deepestForestStage: 0,
       arena: null,
       deepestArenaTier: 0,
+      tactics: null,
+      deepestTacticsTier: 0,
       trialsClearedOn: emptyTrialsClearedOn(),
       bestTrialScore: emptyBestTrialScore(),
       pendingLevelUp: null,
@@ -2225,6 +2286,58 @@ export const useGameStore = create<GameState>()(
 
       endArena: () => set((s) => (s.arena ? commitArena(s, s.arena) : s)),
 
+      beginTactics: () =>
+        set((s) => {
+          const free = s.settings.unlimitedEnergy;
+          if (s.tactics || s.character.level < TACTICS_UNLOCK_LEVEL) return s;
+          if (!free && s.character.energy < TACTICS_ENERGY_COST) return s;
+          const tier = Math.max(TACTICS_UNLOCK_LEVEL, Math.min(MAX_LEVEL, s.character.level));
+          const tactics = generateSkirmish(fighterFor(s), s.character.statLevels.AG, tier, s.knownSpells, {
+            radius: TACTICS_SIZE_RADIUS[s.settings.tacticsSize],
+            rng: Math.random,
+          });
+          return {
+            character: {
+              ...s.character,
+              energy: free ? s.character.energy : s.character.energy - TACTICS_ENERGY_COST,
+            },
+            tactics,
+          };
+        }),
+
+      tacticsSelect: (action) =>
+        set((s) => (s.tactics && s.tactics.status === 'active' ? { tactics: tacticsSelectFn(s.tactics, action) } : s)),
+
+      tacticsMove: (to) =>
+        set((s) => {
+          if (!s.tactics || s.tactics.status !== 'active') return s;
+          const tactics = tacticsMoveFn(s.tactics, to);
+          return tactics === s.tactics ? s : { tactics };
+        }),
+
+      tacticsAttack: (target) =>
+        set((s) => {
+          if (!s.tactics || s.tactics.status !== 'active') return s;
+          const tactics = tacticsAttackFn(s.tactics, target, Math.random);
+          return tactics === s.tactics ? s : { tactics };
+        }),
+
+      tacticsCast: (spellKey, target) =>
+        set((s) => {
+          if (!s.tactics || s.tactics.status !== 'active') return s;
+          const tactics = tacticsCastFn(s.tactics, spellKey, target, Math.random);
+          return tactics === s.tactics ? s : { tactics };
+        }),
+
+      tacticsEndTurn: () =>
+        set((s) => {
+          if (!s.tactics || s.tactics.status !== 'active') return s;
+          const tactics = tacticsEndTurnFn(s.tactics, Math.random);
+          return tactics === s.tactics ? s : { tactics };
+        }),
+
+      endTactics: () => set((s) => (s.tactics ? commitTactics(s, s.tactics) : s)),
+
       resetGame: () =>
         set(() => ({
           habits: [],
@@ -2248,6 +2361,8 @@ export const useGameStore = create<GameState>()(
           deepestForestStage: 0,
           arena: null,
           deepestArenaTier: 0,
+          tactics: null,
+          deepestTacticsTier: 0,
           trialsClearedOn: emptyTrialsClearedOn(),
           bestTrialScore: emptyBestTrialScore(),
           pendingLevelUp: null,
@@ -2261,7 +2376,7 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 16,
+      version: 17,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -2292,6 +2407,9 @@ export const useGameStore = create<GameState>()(
       //      their empty records via merge (no daily clears survive the upgrade — fair reset).
       // v16: Delve Phase 1 — BattleState gained enemyIntent/enemyGuardBonus/enemyEnrageBonus;
       //      clear any in-progress dungeon run so it regenerates with the new combat shape.
+      // v17: Hex Tactics minigame — new top-level `tactics`/`deepestTacticsTier`; `tactics` is
+      //      cleared below (no in-progress skirmish survives the upgrade) and `deepestTacticsTier`
+      //      defaults via merge.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {
@@ -2319,7 +2437,7 @@ export const useGameStore = create<GameState>()(
               statXpAtLastLevel: p.character.statXpAtLastLevel ?? { ...(p.character.statXp ?? emptyStatXP()) },
             }
           : p.character;
-        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, arena: null, created: true, trialsClearedOn: p.trialsClearedOn ?? emptyTrialsClearedOn(), bestTrialScore: p.bestTrialScore ?? emptyBestTrialScore() } as GameState;
+        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, arena: null, tactics: null, created: true, trialsClearedOn: p.trialsClearedOn ?? emptyTrialsClearedOn(), bestTrialScore: p.bestTrialScore ?? emptyBestTrialScore() } as GameState;
       },
       // Deep-merge the nested `character`/`settings` objects so fields added in later versions
       // (e.g. statLevels) always fall back to their defaults instead of being dropped by the

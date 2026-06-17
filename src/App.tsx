@@ -13,6 +13,7 @@ import { DungeonView } from '@/views/DungeonView';
 import { MiningView } from '@/views/MiningView';
 import { ForestView } from '@/views/ForestView';
 import { ArenaView } from '@/views/ArenaView';
+import { TacticsView } from '@/views/TacticsView';
 import { TrialsView } from '@/views/TrialsView';
 import { PartyView } from '@/views/PartyView';
 import { InventoryView } from '@/views/InventoryView';
@@ -38,6 +39,9 @@ const ForestRunOverlay = lazy(() =>
 const ArenaOverlay = lazy(() =>
   import('@/components/arena/ArenaOverlay').then((m) => ({ default: m.ArenaOverlay })),
 );
+const TacticsOverlay = lazy(() =>
+  import('@/components/tactics/TacticsOverlay').then((m) => ({ default: m.TacticsOverlay })),
+);
 const BattleOverlay = lazy(() =>
   import('@/components/combat/BattleOverlay').then((m) => ({ default: m.BattleOverlay })),
 );
@@ -51,6 +55,7 @@ export default function App() {
   const mining = useGameStore((s) => s.mining);
   const forest = useGameStore((s) => s.forest);
   const arena = useGameStore((s) => s.arena);
+  const tactics = useGameStore((s) => s.tactics);
   const classChoice = useGameStore((s) => s.pendingClassChoice);
   const normalizeHabits = useGameStore((s) => s.normalizeHabits);
   const checkWeeklyRollover = useGameStore((s) => s.checkWeeklyRollover);
@@ -106,6 +111,7 @@ export default function App() {
         {tab === 'mine' && <MiningView />}
         {tab === 'forest' && <ForestView />}
         {tab === 'arena' && <ArenaView />}
+        {tab === 'tactics' && <TacticsView />}
         {tab === 'skills' && <TrialsView />}
         {tab === 'party' && <PartyView />}
         {tab === 'inventory' && <InventoryView />}
@@ -118,6 +124,7 @@ export default function App() {
         {mining && <MineRunOverlay />}
         {forest && <ForestRunOverlay />}
         {arena && <ArenaOverlay />}
+        {tactics && <TacticsOverlay />}
         {battle && <BattleOverlay />}
       </Suspense>
       <BoonChoice />
