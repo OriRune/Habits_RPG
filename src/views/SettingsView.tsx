@@ -2,11 +2,13 @@ import { useState } from 'react';
 import { ChevronLeft, FlaskConical } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { STATS, type StatId } from '@/engine/stats';
+import type { ArenaSpeed } from '@/engine/arena';
 import { classFor } from '@/engine/classes';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { Toggle } from '@/components/ui/Toggle';
 import { SectionTitle } from '@/components/ui/Divider';
+import { AppearanceSection } from '@/components/settings/AppearanceSection';
 
 const LEVEL_JUMPS = [3, 5, 10, 20, 50];
 const FLOOR_JUMPS = [0, 5, 8, 10];
@@ -53,7 +55,31 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
         {/* General */}
         <Panel tone="parchment" className="space-y-3 p-4">
           <SectionTitle>General</SectionTitle>
-          <p className="text-xs text-ink-muted">More options will appear here as the game grows.</p>
+
+          {/* Arena pace */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-display text-xs font-bold uppercase tracking-wider text-ink">
+                Arena speed
+              </span>
+              <select
+                value={settings.arenaSpeed}
+                onChange={(e) => updateSettings({ arenaSpeed: e.target.value as ArenaSpeed })}
+                aria-label="Arena speed"
+                className="rounded-md border border-gold-deep/50 bg-parchment-100/80 px-2 py-1 text-xs text-ink focus:border-gold-deep focus:outline-none"
+              >
+                <option value="auto">Auto (by level)</option>
+                <option value="slow">Slow (easier)</option>
+                <option value="normal">Normal</option>
+                <option value="fast">Fast (harder)</option>
+              </select>
+            </div>
+            <p className="text-[10px] text-ink-light">
+              How fast the boss attacks and moves in the Arena. Auto eases lower levels and quickens
+              higher ones.
+            </p>
+          </div>
+
           <button
             onClick={() => {
               if (confirm('Reset all progress? This cannot be undone.')) {
@@ -66,6 +92,9 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             Reset game
           </button>
         </Panel>
+
+        {/* Appearance */}
+        <AppearanceSection />
 
         {/* Developer */}
         <Panel tone="parchment" className="space-y-3 p-4">
@@ -96,6 +125,12 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
               description="HP, mana, and stamina stay full in combat — you can't fall."
               checked={settings.invincible}
               onChange={(v) => updateSettings({ invincible: v })}
+            />
+            <Toggle
+              label="Repeat Skill Trials"
+              description="Skip the once-per-day gate — trials can be replayed immediately."
+              checked={settings.repeatMinigames}
+              onChange={(v) => updateSettings({ repeatMinigames: v })}
             />
           </div>
 

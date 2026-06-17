@@ -47,7 +47,7 @@ export function Sprite({ spriteKey, look, size = 'md', shrouded, alt, label, cla
     <img
       src={src}
       alt={alt ?? label ?? ''}
-      className={cn(real ? 'clip-shield object-cover' : 'rounded-md object-cover', BOX[size], 'shrink-0', className)}
+      className={cn(real ? 'object-contain image-pixel' : 'rounded-md object-cover', BOX[size], 'shrink-0', className)}
     />
   );
 }

@@ -60,7 +60,7 @@ export function ForgeSection() {
                 <div className="flex min-w-0 items-center gap-2.5">
                   {(() => {
                     const art = resultArt(recipe.result.kind, recipe.result.key);
-                    return <Sprite spriteKey={art.spriteKey} look={art.look} size="sm" />;
+                    return <Sprite spriteKey={art.spriteKey} look={art.look} size="md" />;
                   })()}
                   <div className="min-w-0">
                     <div className="truncate text-sm font-semibold text-ink">{recipe.name}</div>

@@ -51,7 +51,7 @@ export function InventoryView() {
               return (
                 <div key={key} className="flex flex-col gap-2 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-2.5">
                   <div className="flex items-center gap-3">
-                    <Sprite spriteKey={`item:${key}`} look={itemCrest(def.name, def.kind)} size="sm" />
+                    <Sprite spriteKey={`item:${key}`} look={itemCrest(def.name, def.kind)} size="md" />
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
                         <span className="truncate text-sm font-semibold text-ink">{def.name}</span>
@@ -87,7 +87,7 @@ export function InventoryView() {
             return (
               <div key={key} className="flex items-center justify-between gap-3 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-2.5">
                 <div className="flex min-w-0 items-center gap-2.5">
-                  <Sprite spriteKey={`weapon:${key}`} look={weaponCrest(w.name, w.attackStat)} size="sm" />
+                  <Sprite spriteKey={`weapon:${key}`} look={weaponCrest(w.name, w.attackStat)} size="md" />
                   <div className="min-w-0">
                     <div className="text-sm font-semibold text-ink">{w.name}</div>
                     <div className="truncate text-[11px] text-ink-muted">
@@ -117,7 +117,7 @@ export function InventoryView() {
           <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
             {ownedMaterials.map(([key, qty]) => (
               <div key={key} className="flex flex-col items-center gap-1 text-center">
-                <Sprite spriteKey={`material:${key}`} look={materialCrest(key)} size="md" />
+                <Sprite spriteKey={`material:${key}`} look={materialCrest(key)} size="lg" />
                 <div className="text-xs font-semibold text-ink">{getMaterial(key)?.name ?? key}</div>
                 <div className="text-[11px] text-ink-light">×{qty}</div>
               </div>
@@ -161,7 +161,7 @@ export function InventoryView() {
         {weaponsForSale.map((w) => (
           <div key={w.key} className="flex items-center justify-between gap-3 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-2.5">
             <div className="flex min-w-0 items-center gap-3">
-              <Sprite spriteKey={`weapon:${w.key}`} look={weaponCrest(w.name, w.attackStat)} size="sm" />
+              <Sprite spriteKey={`weapon:${w.key}`} look={weaponCrest(w.name, w.attackStat)} size="md" />
               <div className="min-w-0">
                 <div className="text-sm font-semibold text-ink">{w.name}</div>
                 <div className="truncate text-[11px] text-ink-muted">{w.description}</div>
@@ -179,7 +179,7 @@ export function InventoryView() {
         {SHOP_ITEMS.map((item) => (
           <div key={item.key} className="flex items-center justify-between gap-3 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-2.5">
             <div className="flex min-w-0 items-center gap-3">
-              <Sprite spriteKey={`item:${item.key}`} look={itemCrest(item.name, item.kind)} size="sm" />
+              <Sprite spriteKey={`item:${item.key}`} look={itemCrest(item.name, item.kind)} size="md" />
               <div className="min-w-0">
                 <div className="text-sm font-semibold text-ink">{item.name}</div>
                 <div className="truncate text-[11px] text-ink-muted">{item.description}</div>

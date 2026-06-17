@@ -32,7 +32,7 @@ describe('deriveCombatant', () => {
     const c = deriveCombatant(lv, 1, emptyCombatStats());
     expect(c.maxHp).toBe(123); // 50 + 10*7 + 1*3
     expect(c.maxMp).toBe(38); // 8 + 10*3
-    expect(c.maxSta).toBe(14); // 4 + 10
+    expect(c.maxSta).toBe(22); // 12 + 10
     expect(c.meleePower).toBe(10); // raw Strength level
   });
 
@@ -125,6 +125,98 @@ describe('flee', () => {
     const s0 = createBattle(f, bossForLevel(7));
     const s1 = playerAction(s0, f, { kind: 'flee' }, fixed(0.1));
     expect(s1.status).toBe('fled');
+  });
+});
+
+// ── Iteration 4 combat tests ──────────────────────────────────────────────────
+
+describe('pending rune spells', () => {
+  const HALF = fixed(0.5); // variance ×1.0, delay=2, no backfire (0.5 >= 0.15)
+
+  it('fire rune deals damage to the boss 2 turns after casting with rng=0.5', () => {
+    const lv = emptyStatLevels();
+    lv.KN = 5; // enough MP for fire_rune (costs 7)
+    const f = fighter(lv);
+    const s0 = createBattle(f, bossForLevel(7));
+    const s1 = playerAction(s0, f, { kind: 'spell', spellKey: 'fire_rune' }, HALF);
+    // After cast: rune pending with turnsLeft=1 (decremented once by enemyTurn's tickStatuses)
+    expect(s1.pendingRunes).toHaveLength(1);
+    const s2 = playerAction(s1, f, { kind: 'attack' }, HALF);
+    // Rune fires after the second tickStatuses decrement
+    expect(s2.pendingRunes).toHaveLength(0);
+    expect(s2.bossHp).toBeLessThan(s0.bossMaxHp);
+  });
+
+  it('ice rune applies freeze status to the boss', () => {
+    const lv = emptyStatLevels();
+    lv.KN = 5;
+    const f = fighter(lv);
+    const s0 = createBattle(f, bossForLevel(7));
+    const s1 = playerAction(s0, f, { kind: 'spell', spellKey: 'ice_rune' }, HALF);
+    expect(s1.pendingRunes).toHaveLength(1);
+    const s2 = playerAction(s1, f, { kind: 'attack' }, HALF);
+    expect(s2.pendingRunes).toHaveLength(0);
+    expect(s2.enemyStatuses.some((x) => x.key === 'freeze')).toBe(true);
+  });
+
+  it('poison rune applies poison DoT to the boss', () => {
+    const lv = emptyStatLevels();
+    lv.KN = 5;
+    const f = fighter(lv);
+    const s0 = createBattle(f, bossForLevel(7));
+    const s1 = playerAction(s0, f, { kind: 'spell', spellKey: 'poison_rune' }, HALF);
+    const s2 = playerAction(s1, f, { kind: 'attack' }, HALF);
+    expect(s2.pendingRunes).toHaveLength(0);
+    expect(s2.enemyStatuses.some((x) => x.key === 'poison')).toBe(true);
+  });
+
+  it('backfire hits the player when rng < 0.15', () => {
+    // With fixed(0), delay = 1+floor(0*3) = 1, backfire check 0 < 0.15 → backfire
+    const ZERO = fixed(0);
+    const lv = emptyStatLevels();
+    lv.KN = 5;
+    const f = fighter(lv);
+    const s0 = createBattle(f, bossForLevel(7));
+    const s1 = playerAction(s0, f, { kind: 'spell', spellKey: 'fire_rune' }, ZERO);
+    // With turnsLeft=1 and fixed(0), the rune fires immediately (same turn, backfire)
+    expect(s1.pendingRunes).toHaveLength(0); // consumed
+    expect(s1.playerHp).toBeLessThan(s0.playerMaxHp); // player was hit
+    expect(s1.bossHp).toBe(s0.bossMaxHp); // boss untouched (backfire)
+  });
+});
+
+describe('freeze status effect in turn-based combat', () => {
+  it('a frozen boss skips its turn', () => {
+    const f = fighter();
+    const s0 = createBattle(f, bossForLevel(7));
+    // Manually place freeze on the boss
+    s0.enemyStatuses = [{ key: 'freeze', turns: 1, magnitude: 1 }];
+    const hpBefore = s0.playerMaxHp;
+    const s1 = playerAction(s0, f, { kind: 'defend' }, fixed(0.5));
+    // Boss was frozen — player should not have taken damage
+    expect(s1.playerHp).toBe(hpBefore);
+    // Freeze wears off after the turn
+    expect(s1.enemyStatuses.some((x) => x.key === 'freeze')).toBe(false);
+  });
+});
+
+describe('ring of fire turn-based fallback', () => {
+  it('applies burn status to the boss', () => {
+    const lv = emptyStatLevels();
+    lv.KN = 5;
+    const f = fighter(lv);
+    const s0 = createBattle(f, bossForLevel(7));
+    const s1 = playerAction(s0, f, { kind: 'spell', spellKey: 'ring_of_fire' }, fixed(0.5));
+    expect(s1.enemyStatuses.some((x) => x.key === 'burn')).toBe(true);
+  });
+});
+
+describe('teleport turn-based fallback', () => {
+  it('grants bless (evasive ward) to the player', () => {
+    const f = fighter();
+    const s0 = createBattle(f, bossForLevel(7));
+    const s1 = playerAction(s0, f, { kind: 'spell', spellKey: 'chaotic_blink' }, fixed(0.5));
+    expect(s1.playerStatuses.some((x) => x.key === 'bless')).toBe(true);
   });
 });
 

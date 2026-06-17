@@ -25,7 +25,7 @@ export function BoonChoice() {
               onClick={() => chooseBoon(key)}
               className="flex w-full items-center gap-3 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3 text-left transition-colors hover:border-gold-deep/70 hover:bg-parchment-300/50"
             >
-              <Sprite spriteKey={`relic:${key}`} look={relicCrest(relic.name, relic.tier)} size="md" />
+              <Sprite spriteKey={`relic:${key}`} look={relicCrest(relic.name, relic.tier)} size="lg" />
               <span className="min-w-0 flex-1">
                 <span className="flex items-center gap-2">
                   <span className="font-display text-sm font-bold text-ink">{relic.name}</span>

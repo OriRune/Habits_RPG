@@ -135,7 +135,7 @@ export function CreationView() {
                       : 'border-gold-deep/30 bg-parchment-100/70 hover:border-gold-deep/70'
                   }`}
                 >
-                  <Sprite spriteKey={`weapon:${key}`} look={weaponCrest(w.name, w.attackStat)} size="md" />
+                  <Sprite spriteKey={`weapon:${key}`} look={weaponCrest(w.name, w.attackStat)} size="lg" />
                   <span className="font-display text-sm font-bold text-ink">{w.name}</span>
                   <span className="text-[11px] uppercase tracking-wide text-gold-deep">
                     +{w.bonus} · {w.attackStat === 'ST' ? 'Strength' : 'Dexterity'}

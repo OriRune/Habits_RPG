@@ -13,7 +13,7 @@ export function RelicTray({ relics }: { relics: string[] }) {
         if (!relic) return null;
         return (
           <span key={`${key}:${i}`} title={`${relic.name} — ${relic.description}`}>
-            <Sprite spriteKey={`relic:${key}`} look={relicCrest(relic.name, relic.tier, relic.curse)} size="xs" />
+            <Sprite spriteKey={`relic:${key}`} look={relicCrest(relic.name, relic.tier, relic.curse)} size="sm" />
           </span>
         );
       })}

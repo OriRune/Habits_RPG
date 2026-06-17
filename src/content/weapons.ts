@@ -46,8 +46,21 @@ export const WEAPONS: Record<string, WeaponDef> = {
     attackStat: 'DX',
     bonus: 4,
     staminaCost: 2,
-    description: 'Strike from range. Scales with Dexterity.',
+    ranged: true,
+    range: 3,
+    description: 'Loose an arrow along the line you face (range 3). Scales with Dexterity.',
     price: 120,
+  },
+  hunting_bow: {
+    key: 'hunting_bow',
+    name: 'Hunting Bow',
+    attackStat: 'DX',
+    bonus: 5,
+    staminaCost: 1,
+    ranged: true,
+    range: 5,
+    description: 'Strike fleeing prey from afar (range 5). Light draw, low stamina cost. Scales with Dexterity.',
+    price: 170,
   },
 };
 

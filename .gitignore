@@ -5,3 +5,8 @@ dist-ssr
 .DS_Store
 .vscode/*
 !.vscode/extensions.json
+
+# Raw sprite drop folder + scratch reference images (used copies live under src/assets/)
+Pixelsnapped_sprites/
+homm3_artifacts.jpg
+homm3_spellbook.png

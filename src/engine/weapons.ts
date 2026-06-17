@@ -16,6 +16,10 @@ export interface WeaponDef {
   description: string;
   /** Shop price in gold; undefined = not directly purchasable. */
   price?: number;
+  /** Fires a projectile down the faced line instead of hitting the adjacent cell. */
+  ranged?: boolean;
+  /** Max cells the shot travels (ranged only). */
+  range?: number;
 }
 
 // Re-export the editable catalog so existing imports (`@/engine/weapons`) keep working.

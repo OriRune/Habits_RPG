@@ -4,6 +4,37 @@
 
 :root {
   color-scheme: dark;
+
+  /* Default color palette — channel form (R G B) consumed by Tailwind as
+     rgb(var(--c-x) / <alpha-value>). A palette swap overrides these inline on
+     :root (src/engine/palettes.ts); the "default" palette clears the overrides
+     so these exact baseline values show through. */
+  --c-parchment: 243 231 201; /* #f3e7c9 */
+  --c-parchment-100: 248 240 219; /* #f8f0db */
+  --c-parchment-200: 243 231 201; /* #f3e7c9 */
+  --c-parchment-300: 233 217 178; /* #e9d9b2 */
+  --c-parchment-400: 220 199 154; /* #dcc79a */
+
+  --c-ink: 58 42 22; /* #3a2a16 */
+  --c-ink-muted: 107 85 56; /* #6b5538 */
+  --c-ink-light: 138 115 80; /* #8a7350 */
+
+  --c-wood: 36 23 16; /* #241710 */
+  --c-wood-900: 20 12 6; /* #140c06 */
+  --c-wood-800: 26 15 9; /* #1a0f09 */
+  --c-wood-700: 36 23 16; /* #241710 */
+  --c-wood-600: 51 33 15; /* #33210f */
+  --c-wood-500: 74 51 32; /* #4a3320 */
+
+  --c-gold: 201 162 39; /* #c9a227 */
+  --c-gold-bright: 232 200 96; /* #e8c860 */
+  --c-gold-deep: 138 109 31; /* #8a6d1f */
+  --c-gold-dim: 107 84 26; /* #6b541a */
+
+  --c-ember: 156 58 37; /* #9c3a25 */
+  --c-ember-bright: 194 90 58; /* #c25a3a */
+
+  --c-body-bg: 22 12 6; /* #160c06 */
 }
 
 html,
@@ -14,11 +45,11 @@ body,
 
 body {
   margin: 0;
-  color: theme('colors.parchment.200');
+  color: rgb(var(--c-parchment-200));
   font-family: theme('fontFamily.serif');
   font-size: 17px;
   /* Dark wood backdrop: vertical gradient + faint vertical grain. */
-  background-color: #160c06;
+  background-color: rgb(var(--c-body-bg));
   background-image:
     repeating-linear-gradient(
       90deg,
@@ -27,26 +58,36 @@ body {
       rgba(120, 80, 40, 0.04) 2px,
       rgba(120, 80, 40, 0.04) 5px
     ),
-    radial-gradient(ellipse at 50% 0%, #3a2616 0%, #241710 45%, #160c06 100%);
+    radial-gradient(
+      ellipse at 50% 0%,
+      rgb(var(--c-wood-600)) 0%,
+      rgb(var(--c-wood)) 45%,
+      rgb(var(--c-body-bg)) 100%
+    );
   background-attachment: fixed;
 }
 
 @layer components {
   /* Aged parchment surface — light, mottled. */
   .texture-parchment {
-    background-color: #f1e4c3;
+    background-color: rgb(var(--c-parchment));
     background-image:
       radial-gradient(circle at 18% 22%, rgba(168, 130, 70, 0.16) 0%, transparent 32%),
       radial-gradient(circle at 82% 18%, rgba(168, 130, 70, 0.12) 0%, transparent 30%),
       radial-gradient(circle at 70% 84%, rgba(150, 110, 55, 0.16) 0%, transparent 36%),
       radial-gradient(circle at 25% 78%, rgba(150, 110, 55, 0.1) 0%, transparent 30%),
-      linear-gradient(180deg, #f6ecd2 0%, #efe1bf 55%, #e6d4ac 100%);
-    color: theme('colors.ink.DEFAULT');
+      linear-gradient(
+        180deg,
+        rgb(var(--c-parchment-100)) 0%,
+        rgb(var(--c-parchment-200)) 55%,
+        rgb(var(--c-parchment-300)) 100%
+      );
+    color: rgb(var(--c-ink));
   }
 
   /* Carved dark-wood surface — for dark panels / bars. */
   .texture-wood {
-    background-color: #241710;
+    background-color: rgb(var(--c-wood));
     background-image:
       repeating-linear-gradient(
         90deg,
@@ -55,14 +96,23 @@ body {
         rgba(150, 100, 50, 0.05) 2px,
         rgba(150, 100, 50, 0.05) 6px
       ),
-      linear-gradient(180deg, #33210f 0%, #241710 60%, #1a0f09 100%);
+      linear-gradient(
+        180deg,
+        rgb(var(--c-wood-600)) 0%,
+        rgb(var(--c-wood-700)) 60%,
+        rgb(var(--c-wood-800)) 100%
+      );
   }
 
   /* Worn scroll surface — battle log / notices. */
   .texture-scroll {
-    background-color: #e8d8b0;
-    background-image: linear-gradient(180deg, #efe1bf 0%, #e2cfa0 100%);
-    color: theme('colors.ink.DEFAULT');
+    background-color: rgb(var(--c-parchment-300));
+    background-image: linear-gradient(
+      180deg,
+      rgb(var(--c-parchment-200)) 0%,
+      rgb(var(--c-parchment-400)) 100%
+    );
+    color: rgb(var(--c-ink));
   }
 }
 
@@ -71,6 +121,218 @@ body {
   .clip-shield {
     clip-path: polygon(50% 0%, 100% 14%, 100% 58%, 50% 100%, 0% 58%, 0% 14%);
   }
+
+  /* Crisp upscaling for pixel-art sprites (sources are ~90-102px). */
+  .image-pixel {
+    image-rendering: pixelated;
+  }
+}
+
+@keyframes mine-pop {
+  0%   { opacity: 0.85; transform: scale(0.9); }
+  60%  { opacity: 0.4;  transform: scale(1.7); }
+  100% { opacity: 0;    transform: scale(2.1); }
+}
+
+@keyframes loot-float {
+  0%   { opacity: 0; transform: translateX(-50%) translateY(0) scale(0.85); }
+  15%  { opacity: 1; transform: translateX(-50%) translateY(-6px) scale(1.05); }
+  60%  { opacity: 1; transform: translateX(-50%) translateY(-14px) scale(1); }
+  100% { opacity: 0; transform: translateX(-50%) translateY(-30px) scale(0.95); }
+}
+
+/* Forest: pollen/dust motes gently drifting upward. */
+@keyframes forest-mote-float {
+  0%   { opacity: 0;    transform: translate(0, 0) scale(1); }
+  12%  { opacity: 0.68; }
+  88%  { opacity: 0.48; }
+  100% { opacity: 0;    transform: translate(13px, -88px) scale(0.65); }
+}
+
+/* Forest: faint light shafts slowly pulsing. */
+@keyframes forest-shaft-pulse {
+  0%, 100% { opacity: 0.35; }
+  50%       { opacity: 1; }
+}
+
+/* Mine: fine dust particles slowly falling. */
+@keyframes mine-dust-fall {
+  0%   { opacity: 0;   transform: translate(0, -8px); }
+  14%  { opacity: 0.5; }
+  86%  { opacity: 0.3; }
+  100% { opacity: 0;   transform: translate(5px, 68px); }
+}
+
+/* Mine: crystal vein sparkle twinkle. */
+@keyframes mine-sparkle {
+  0%, 100% { opacity: 0.07; transform: scale(0.7); }
+  50%       { opacity: 0.52; transform: scale(1.35); }
+}
+
+/* Crawl avatar — gentle idle breathe when standing still. */
+@keyframes crawler-idle {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-0.6px); }
+}
+/* Crawl avatar — body bob while walking. */
+@keyframes crawler-walk {
+  0%, 100% { transform: translateY(0); }
+  25%, 75% { transform: translateY(-1.4px); }
+}
+/* Crawl avatar — front leg swing. */
+@keyframes crawler-leg-f {
+  0%, 100% { transform: rotate(-26deg); }
+  50%      { transform: rotate(26deg); }
+}
+/* Crawl avatar — back leg swing (opposite phase). */
+@keyframes crawler-leg-b {
+  0%, 100% { transform: rotate(26deg); }
+  50%      { transform: rotate(-26deg); }
+}
+
+/* Mine: a slow vignette pulse so the torchlight feels alive. */
+@keyframes mine-torch-flicker {
+  0%, 100% { opacity: 0.92; }
+  45%      { opacity: 1; }
+  70%      { opacity: 0.86; }
+}
+
+/* Disable ambient + avatar animations when the user prefers reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .forest-ambient *,
+  .mine-ambient *,
+  .crawler-avatar,
+  .crawler-avatar * {
+    animation: none !important;
+  }
+}
+
+/* Arena boss telegraph — a danger zone brightens as the blow winds up (duration set per-cast). */
+@keyframes arena-telegraph {
+  0%   { opacity: 0.16; }
+  70%  { opacity: 0.48; }
+  100% { opacity: 0.82; }
+}
+
+/* Arena: a red edge-vignette pulse when the player is struck. */
+@keyframes arena-hit {
+  0%   { box-shadow: inset 0 0 0 9999px rgba(239,68,68,0); }
+  25%  { box-shadow: inset 0 0 80px 12px rgba(239,68,68,0.55); }
+  100% { box-shadow: inset 0 0 80px 12px rgba(239,68,68,0); }
+}
+
+/* Arena: an expanding ring on the caster when a spell goes off. */
+@keyframes arena-cast {
+  0%   { opacity: 0.85; transform: translate(-50%, -50%) scale(0.5); }
+  100% { opacity: 0;    transform: translate(-50%, -50%) scale(1.6); }
+}
+
+/* Lockpicking — pick-snap violent jolt */
+@keyframes lock-break {
+  0%   { transform: translate(0, 0) rotate(0deg); }
+  15%  { transform: translate(-6px, -5px) rotate(-3deg); }
+  30%  { transform: translate(8px, 4px) rotate(2deg); }
+  50%  { transform: translate(-5px, -7px) rotate(-2deg); }
+  70%  { transform: translate(6px, 5px) rotate(1deg); }
+  85%  { transform: translate(-3px, 2px) rotate(-1deg); }
+  100% { transform: translate(0, 0) rotate(0deg); }
+}
+
+/* Lockpicking — cylinder opens with a satisfying pop */
+@keyframes lock-open {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.6); }
+  25%  { opacity: 1; transform: translate(-50%, -50%) scale(1.15); }
+  60%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(1.1); }
+}
+
+/* Lockpicking — pick-break flash: red text pops then fades */
+@keyframes lock-snap {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.7); }
+  20%  { opacity: 1; transform: translate(-50%, -50%) scale(1.2); }
+  60%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(0.9) translateY(-8px); }
+}
+
+/* ── Rooftop Chase ────────────────────────────────────────────────────────── */
+/* Hero body bob during run */
+@keyframes rooftop-run {
+  0%, 100% { transform: translateY(0); }
+  25%      { transform: translateY(-2px); }
+  75%      { transform: translateY(-2px); }
+}
+/* Hero front leg swing */
+@keyframes rooftop-leg-f {
+  0%, 100% { transform: rotate(-25deg); }
+  50%      { transform: rotate(25deg); }
+}
+/* Hero back leg swing — opposite phase */
+@keyframes rooftop-leg-b {
+  0%, 100% { transform: rotate(25deg); }
+  50%      { transform: rotate(-25deg); }
+}
+/* Hero cloak flap */
+@keyframes rooftop-cloak {
+  0%, 100% { transform: scaleX(1) skewX(-4deg); }
+  50%      { transform: scaleX(0.88) skewX(4deg); }
+}
+/* Hero land squash (triggered on landing) */
+@keyframes rooftop-land {
+  0%   { transform: scaleX(1.3) scaleY(0.7); }
+  45%  { transform: scaleX(0.96) scaleY(1.06); }
+  100% { transform: scaleX(1) scaleY(1); }
+}
+/* Chaser beast gallop — whole body bounce */
+@keyframes rooftop-chaser {
+  0%, 50%, 100% { transform: translateY(0) scaleY(1); }
+  25%, 75%      { transform: translateY(3px) scaleY(0.84); }
+}
+/* Chaser front claws */
+@keyframes rooftop-claws-f {
+  0%, 100% { transform: rotate(-30deg); }
+  50%      { transform: rotate(30deg); }
+}
+/* Chaser back claws */
+@keyframes rooftop-claws-b {
+  0%, 100% { transform: rotate(30deg); }
+  50%      { transform: rotate(-30deg); }
+}
+/* Lowbar banner sway */
+@keyframes rooftop-banner {
+  0%, 100% { transform: skewX(-3deg); }
+  50%      { transform: skewX(3deg); }
+}
+/* Dust puff on landing or footfall */
+@keyframes rooftop-dust {
+  0%   { opacity: 0.65; transform: translate(-50%, 0) scale(0.4); }
+  45%  { opacity: 0.35; transform: translate(-50%, -5px) scale(1.3); }
+  100% { opacity: 0;    transform: translate(-50%, -12px) scale(1.7); }
+}
+/* Speed-line streak (flies left off screen) */
+@keyframes rooftop-streak {
+  0%   { opacity: 0;    transform: scaleX(0.1); }
+  15%  { opacity: 0.85; transform: scaleX(1); }
+  100% { opacity: 0;    transform: scaleX(1) translateX(-160px); }
+}
+/* Dash speed-burst whoosh — wider, brighter streak flying left */
+@keyframes rooftop-dash {
+  0%   { opacity: 0;    transform: scaleX(0.2) scaleY(1); }
+  10%  { opacity: 1;    transform: scaleX(1) scaleY(1.4); }
+  100% { opacity: 0;    transform: scaleX(1) scaleY(0.6) translateX(-220px); }
+}
+/* Hero fall-tumble when dropping into a gap */
+@keyframes rooftop-fall {
+  0%   { transform: translateY(0) rotate(0deg); opacity: 1; }
+  40%  { transform: translateY(18px) rotate(-90deg); opacity: 0.9; }
+  100% { transform: translateY(60px) rotate(-200deg); opacity: 0; }
+}
+/* Cloud drift */
+@keyframes rooftop-cloud {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  [class*="rooftop-"] { animation: none !important; }
 }
 
 /* Themed scrollbar */
@@ -79,17 +341,17 @@ body {
   height: 10px;
 }
 ::-webkit-scrollbar-track {
-  background: #1a0f09;
+  background: rgb(var(--c-wood-800));
 }
 ::-webkit-scrollbar-thumb {
-  background: #6b541a;
+  background: rgb(var(--c-gold-dim));
   border-radius: 6px;
-  border: 2px solid #1a0f09;
+  border: 2px solid rgb(var(--c-wood-800));
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #8a6d1f;
+  background: rgb(var(--c-gold-deep));
 }
 
 ::selection {
-  background: rgba(201, 162, 39, 0.4);
+  background: rgb(var(--c-gold) / 0.4);
 }

@@ -92,4 +92,37 @@ export const GEAR: Record<string, GearDef> = {
     statBonuses: { DX: 5 },
     description: 'Nimble fingers for traps and treasure. +5 Dexterity.',
   },
+
+  // -------------------------------------------------------------------------
+  // Pickaxes — earned / purchased, used automatically when mining rock in the
+  // Deep Mine (also function as melee weapons against monsters).
+  // -------------------------------------------------------------------------
+  stone_pickaxe: {
+    key: 'stone_pickaxe',
+    name: 'Stone Toolkit',
+    slot: 'tool',
+    mining: { power: 1 },
+    chopping: { power: 1 },
+    statBonuses: { ST: 1 },
+    description: 'A crude pick and hand-axe. Chips 1 durability per swing in the mine or forest. +1 Strength.',
+  },
+  iron_pickaxe: {
+    key: 'iron_pickaxe',
+    name: 'Iron Toolkit',
+    slot: 'tool',
+    mining: { power: 2 },
+    chopping: { power: 2 },
+    statBonuses: { ST: 3 },
+    description: 'Forged iron head and hatchet. Breaks 2-durability rock or tree in a single swing. +3 Strength.',
+    price: 200,
+  },
+  mithril_pickaxe: {
+    key: 'mithril_pickaxe',
+    name: 'Mithril Toolkit',
+    slot: 'tool',
+    mining: { power: 3 },
+    chopping: { power: 3 },
+    statBonuses: { ST: 5 },
+    description: 'Legendary lightness and edge. Shatters even the hardest rock or ancient tree in one blow. +5 Strength.',
+  },
 };

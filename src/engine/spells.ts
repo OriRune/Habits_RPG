@@ -12,7 +12,9 @@ export const SCHOOL_STAT: Record<SpellSchool, StatId> = {
   illusion: 'CH',
 };
 
-export type StatusKey = 'burn' | 'blind' | 'weaken' | 'bless';
+export type StatusKey = 'burn' | 'blind' | 'weaken' | 'bless' | 'freeze' | 'poison';
+
+export type SpellMechanic = 'rune-fire' | 'rune-ice' | 'rune-poison' | 'ring-of-fire' | 'teleport';
 
 export interface SpellDef {
   key: string;
@@ -23,6 +25,8 @@ export interface SpellDef {
   power: number;
   /** Status the spell inflicts (illusion/damage) or grants (support). */
   status?: { key: StatusKey; turns: number; magnitude: number };
+  /** Special arena mechanic (absent = standard behaviour). Drives rune placement, ring, teleport. */
+  mechanic?: SpellMechanic;
   description: string;
 }
 

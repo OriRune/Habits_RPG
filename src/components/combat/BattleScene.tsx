@@ -13,7 +13,7 @@ import { Sprite } from '@/components/ui/Sprite';
 import { Button } from '@/components/ui/Button';
 import { SceneArt } from '@/components/ui/SceneArt';
 
-const STATUS_ICON: Record<string, string> = { burn: '🔥', blind: '🌀', weaken: '⬇️', bless: '✨' };
+const STATUS_ICON: Record<string, string> = { burn: '🔥', blind: '🌀', weaken: '⬇️', bless: '✨', freeze: '❄️', poison: '☠️' };
 
 function Gauge({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
   const pct = max > 0 ? Math.max(0, Math.round((value / max) * 100)) : 0;
