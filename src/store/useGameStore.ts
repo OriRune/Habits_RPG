@@ -78,7 +78,8 @@ import {
   MINE_ENERGY_COST,
   MINE_UNLOCK_LEVEL,
 } from '@/engine/mining';
-import { dungeonStamina } from '@/engine/crawl';
+import { dungeonStamina, type RNG } from '@/engine/crawl';
+import { mulberry32 } from '@/engine/rng';
 import {
   type ForestState,
   generateForest,
@@ -427,13 +428,15 @@ export interface GameState {
 
   // Deep Mine (real-time mining minigame; see src/engine/mining.ts).
   /** Start a run: gate on level/energy, charge energy, generate floor 1. */
-  beginMining: () => void;
+  /** `seed` (co-op) makes the map deterministic and shared; omitted = solo (Math.random). */
+  beginMining: (seed?: number) => void;
   /** Step/turn the miner one cell. */
   mineMove: (dir: Dir) => void;
   /** Swing the pick at the faced cell (dig rock/ore or hit a monster). */
   mineStrike: () => void;
   /** Advance monsters on the loop's clock; commits the haul if the miner falls. */
-  mineTick: (nowMs: number) => void;
+  /** `coPlayers` (co-op) lets monsters target the nearest of all players. */
+  mineTick: (nowMs: number, coPlayers?: ReadonlyArray<{ r: number; c: number }>) => void;
   /** Descend the shaft to a deeper, richer floor. */
   mineDescend: () => void;
   /** Cast a known spell by key (costs MP). */
@@ -876,6 +879,15 @@ function checkLevelUp(state: GameState): void {
     applyLevelUp(state, next);
   }
 }
+
+/**
+ * RNG stream for the current Deep Mine run. Defaults to `Math.random` (solo play,
+ * unchanged). For co-op, `beginMining(seed)` swaps in a seeded `mulberry32` so the
+ * host and every client regenerate an identical map; the same stream then drives
+ * the host's per-tick monster simulation. Held at module scope (not in MineState)
+ * so it stays out of the serialized/persisted save.
+ */
+let mineRng: RNG = Math.random;
 
 export const useGameStore = create<GameState>()(
   persist(
@@ -1695,8 +1707,10 @@ export const useGameStore = create<GameState>()(
         set((s) => ({ character: { ...s.character, classId: null } })),
 
       // --- Deep Mine (real-time mining minigame) ---
-      beginMining: () =>
+      beginMining: (seed?: number) =>
         set((s) => {
+          // Seed the run's RNG: shared mulberry32 for co-op, Math.random for solo.
+          mineRng = seed !== undefined ? mulberry32(seed) : Math.random;
           const free = s.settings.unlimitedEnergy;
           if (s.mining || s.character.level < MINE_UNLOCK_LEVEL) return s;
           if (!free && s.character.energy < MINE_ENERGY_COST) return s;
@@ -1747,7 +1761,7 @@ export const useGameStore = create<GameState>()(
               knownSpells: s.knownSpells,
               pickaxePower,
             },
-            Math.random,
+            mineRng,
           );
           return {
             character: {
@@ -1767,13 +1781,13 @@ export const useGameStore = create<GameState>()(
 
       mineStrike: () =>
         set((s) =>
-          s.mining && s.mining.status === 'active' ? { mining: strike(s.mining, Math.random) } : s,
+          s.mining && s.mining.status === 'active' ? { mining: strike(s.mining, mineRng) } : s,
         ),
 
-      mineTick: (nowMs) =>
+      mineTick: (nowMs, coPlayers) =>
         set((s) => {
           if (!s.mining || s.mining.status !== 'active') return s;
-          const mining = stepMonsters(s.mining, nowMs, Math.random);
+          const mining = stepMonsters(s.mining, nowMs, mineRng, coPlayers);
           if (mining === s.mining) return s;
           return { mining };
         }),
@@ -1781,7 +1795,7 @@ export const useGameStore = create<GameState>()(
       mineDescend: () =>
         set((s) => {
           if (!s.mining || s.mining.status !== 'active') return s;
-          const mining = descend(s.mining, Math.random);
+          const mining = descend(s.mining, mineRng);
           if (mining === s.mining) return s;
           return { mining, deepestMineFloor: Math.max(s.deepestMineFloor, mining.deepest) };
         }),
@@ -1789,7 +1803,7 @@ export const useGameStore = create<GameState>()(
       mineCast: (spellKey: string) =>
         set((s) => {
           if (!s.mining || s.mining.status !== 'active') return s;
-          const mining = minecastSpellFn(s.mining, spellKey, Date.now(), Math.random);
+          const mining = minecastSpellFn(s.mining, spellKey, Date.now(), mineRng);
           if (mining === s.mining) return s;
           return { mining };
         }),

@@ -63,7 +63,7 @@ export function MiningView() {
           <div className="mt-1 text-[11px] text-ink-muted">{milestoneHint(deepestMineFloor)}</div>
         </div>
 
-        <Button onClick={beginMining} disabled={!canEnter} className="w-full py-2.5">
+        <Button onClick={() => beginMining()} disabled={!canEnter} className="w-full py-2.5">
           {!unlocked
             ? `Unlocks at Level ${MINE_UNLOCK_LEVEL}`
             : canEnter

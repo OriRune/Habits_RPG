@@ -106,6 +106,43 @@ export function floodField(
 }
 
 /**
+ * Multi-source BFS: floods from several target cells at once, so each cell's
+ * distance is to the *nearest* target. Used for co-op enemy targeting (chase the
+ * closest of several players). With a single target this is identical to
+ * {@link floodField}, so the single-player path is unchanged.
+ */
+export function floodFieldMulti(
+  targets: ReadonlyArray<{ r: number; c: number }>,
+  rows: number,
+  cols: number,
+  passable: (r: number, c: number) => boolean,
+): Map<string, number> {
+  const dist = new Map<string, number>();
+  const queue: Array<{ r: number; c: number }> = [];
+  for (const t of targets) {
+    const k = `${t.r},${t.c}`;
+    if (dist.has(k)) continue;
+    dist.set(k, 0);
+    queue.push({ r: t.r, c: t.c });
+  }
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    const d = dist.get(`${cur.r},${cur.c}`)!;
+    for (const [dr, dc] of DIR_OFFSETS) {
+      const nr = cur.r + dr;
+      const nc = cur.c + dc;
+      if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+      const k = `${nr},${nc}`;
+      if (dist.has(k)) continue;
+      if (!passable(nr, nc)) continue;
+      dist.set(k, d + 1);
+      queue.push({ r: nr, c: nc });
+    }
+  }
+  return dist;
+}
+
+/**
  * Pick the best adjacent step for a monster using the pre-built flow field.
  * `blocked` includes other monsters + the player's cell to avoid collisions.
  * Returns `null` when no improvement is possible (monster is already adjacent or stuck).

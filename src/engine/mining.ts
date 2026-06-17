@@ -30,7 +30,7 @@ import {
   type CrawlRingOfFire,
   DIRS,
   randInt,
-  floodField,
+  floodFieldMulti,
   flowStep,
   adjacent,
   manhattan,
@@ -903,7 +903,18 @@ function triggerRunes(state: MineState, nowMs: number, rng: RNG): MineState {
  *   4. Ring-of-fire damage to any monster adjacent to the player.
  *   5. Trigger any runes stepped on by a moving monster.
  */
-export function stepMonsters(state: MineState, nowMs: number, rng: RNG): MineState {
+export function stepMonsters(
+  state: MineState,
+  nowMs: number,
+  rng: RNG,
+  /**
+   * Co-op only: positions of the OTHER players sharing this run. Monsters then
+   * chase the nearest of all players. Contact damage / i-frames stay against
+   * `state.player` (each client simulates its own body), so passing `[]` (the
+   * default) preserves single-player behavior exactly.
+   */
+  coPlayers: ReadonlyArray<{ r: number; c: number }> = [],
+): MineState {
   if (state.status !== 'active') return state;
 
   // --- Regen stamina / mp ---
@@ -934,9 +945,10 @@ export function stepMonsters(state: MineState, nowMs: number, rng: RNG): MineSta
   s = sSoFar;
   monsters = s.monsters;
 
-  // --- BFS flow field from player ---
-  const field = floodField(
-    s.player,
+  // --- BFS flow field toward the nearest player (all players in co-op) ---
+  const players = coPlayers.length > 0 ? [s.player, ...coPlayers] : [s.player];
+  const field = floodFieldMulti(
+    players,
     s.rows,
     s.cols,
     (r, c) => isWalkable(tileAt(s, r, c) as MineTile | undefined),
@@ -951,11 +963,11 @@ export function stepMonsters(state: MineState, nowMs: number, rng: RNG): MineSta
     if (!def || nowMs < m.readyAtMs) return m;
     if (m.frozenUntilMs && nowMs < m.frozenUntilMs) return m;
 
-    // Don't move if already adjacent to the player (just attack in contact phase)
-    if (adjacent(m, s.player)) return m;
+    // Don't move if already adjacent to any player (just attack in contact phase)
+    if (players.some((p) => adjacent(m, p))) return m;
 
-    // Per-monster blocked set: other monsters + player cell
-    const blocked = new Set<string>([`${s.player.r},${s.player.c}`]);
+    // Per-monster blocked set: other monsters + every player's cell
+    const blocked = new Set<string>(players.map((p) => `${p.r},${p.c}`));
     for (const other of monsters) {
       if (other.id !== m.id) blocked.add(`${other.r},${other.c}`);
     }
