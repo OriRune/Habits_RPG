@@ -102,6 +102,17 @@ export function BattleScene({
         </div>
       </div>
 
+      {/* Telegraphed intent — shown when the foe has queued a specific move. */}
+      {active && battle.enemyIntent && (
+        <div className="my-2 flex items-center gap-2 rounded-md border border-ember/40 bg-ember/5 px-3 py-1.5 text-xs">
+          <span className="shrink-0 text-base leading-none">{battle.enemyIntent.icon ?? '⚔️'}</span>
+          <span className="text-ink-muted">
+            <span className="font-semibold text-ember-bright">{battle.bossName}</span>{' '}
+            {battle.enemyIntent.label}…
+          </span>
+        </div>
+      )}
+
       {/* Latest update (no scrolling — just the freshest events) */}
       <div className="texture-scroll my-3 rounded-md border-2 border-gold-deep/60 p-3 shadow-gold-sm">
         {prev && <div className="text-xs text-ink-light">{prev}</div>}
