@@ -14,6 +14,7 @@ import { MiningView } from '@/views/MiningView';
 import { ForestView } from '@/views/ForestView';
 import { ArenaView } from '@/views/ArenaView';
 import { TrialsView } from '@/views/TrialsView';
+import { PartyView } from '@/views/PartyView';
 import { InventoryView } from '@/views/InventoryView';
 import { HistoryView } from '@/views/HistoryView';
 import { SettingsView } from '@/views/SettingsView';
@@ -22,6 +23,7 @@ import { applyPalette, resolvePalette } from '@/engine/palettes';
 import { isBackendConfigured } from '@/net/env';
 import { useAuthStore } from '@/net/auth';
 import { useCloudSync } from '@/hooks/useCloudSync';
+import { useParty, usePartyQuestReporter } from '@/hooks/useParty';
 
 // Minigame/combat overlays are heavy (each pulls in its engine: mining/forest/
 // arena/combat). Code-split them so the initial bundle stays lean — each chunk
@@ -57,6 +59,10 @@ export default function App() {
 
   // Wire the Supabase session ↔ cloud-save lifecycle (no-op without a backend).
   const { cloudReady } = useCloudSync();
+  // Party realtime (presence/chat/quests) + quest-progress reporting (no-op when
+  // not in a party / no backend).
+  useParty();
+  usePartyQuestReporter();
 
   // Single apply path: re-skin the app whenever the selected palette changes
   // (and once on mount, after the store has hydrated from localStorage).
@@ -99,6 +105,7 @@ export default function App() {
         {tab === 'forest' && <ForestView />}
         {tab === 'arena' && <ArenaView />}
         {tab === 'skills' && <TrialsView />}
+        {tab === 'party' && <PartyView />}
         {tab === 'inventory' && <InventoryView />}
       </main>
       <TabBar active={tab} onChange={setTab} />

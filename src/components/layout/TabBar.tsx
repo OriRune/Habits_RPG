@@ -1,7 +1,8 @@
-import { ListChecks, User, Trophy, DoorOpen, Pickaxe, Trees, Swords, Backpack, Target } from 'lucide-react';
+import { ListChecks, User, Trophy, DoorOpen, Pickaxe, Trees, Swords, Backpack, Target, Users } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { isBackendConfigured } from '@/net/env';
 
-export type Tab = 'habits' | 'character' | 'challenges' | 'dungeon' | 'mine' | 'forest' | 'arena' | 'skills' | 'inventory';
+export type Tab = 'habits' | 'character' | 'challenges' | 'dungeon' | 'mine' | 'forest' | 'arena' | 'skills' | 'inventory' | 'party';
 
 const TABS: { id: Tab; label: string; icon: typeof ListChecks }[] = [
   { id: 'habits', label: 'Quests', icon: ListChecks },
@@ -13,6 +14,8 @@ const TABS: { id: Tab; label: string; icon: typeof ListChecks }[] = [
   { id: 'arena', label: 'Arena', icon: Swords },
   { id: 'skills', label: 'Skills', icon: Target },
   { id: 'inventory', label: 'Satchel', icon: Backpack },
+  // The Party tab only appears when a backend is configured (multiplayer build).
+  ...(isBackendConfigured() ? [{ id: 'party' as Tab, label: 'Party', icon: Users }] : []),
 ];
 
 interface TabBarProps {
