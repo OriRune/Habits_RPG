@@ -1,6 +1,6 @@
 import { Trees, Zap } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
-import { FOREST_ENERGY_COST, FOREST_UNLOCK_LEVEL } from '@/engine/forest';
+import { FOREST_ENERGY_COST } from '@/engine/forest';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
@@ -16,12 +16,10 @@ function milestoneHint(deepest: number): string {
 /** Entrance screen for the Wild Forest (the active run renders in ForestRunOverlay). */
 export function ForestView() {
   const energy = useGameStore((s) => s.character.energy);
-  const level = useGameStore((s) => s.character.level);
   const deepestForestStage = useGameStore((s) => s.deepestForestStage);
   const beginForest = useGameStore((s) => s.beginForest);
 
-  const unlocked = level >= FOREST_UNLOCK_LEVEL;
-  const canEnter = unlocked && energy >= FOREST_ENERGY_COST;
+  const canEnter = energy >= FOREST_ENERGY_COST;
 
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
@@ -62,18 +60,9 @@ export function ForestView() {
           <div className="mt-1 text-[11px] text-ink-muted">{milestoneHint(deepestForestStage)}</div>
         </div>
 
-        <Button onClick={beginForest} disabled={!canEnter} className="w-full py-2.5">
-          {!unlocked
-            ? `Unlocks at Level ${FOREST_UNLOCK_LEVEL}`
-            : canEnter
-              ? 'Enter the Forest'
-              : `Need ${FOREST_ENERGY_COST} energy (complete habits)`}
+        <Button onClick={() => beginForest()} disabled={!canEnter} className="w-full py-2.5">
+          {canEnter ? 'Enter the Forest' : `Need ${FOREST_ENERGY_COST} energy (complete habits)`}
         </Button>
-        {!unlocked && (
-          <p className="text-center text-xs text-ink-muted">
-            Train your habits to reach Level {FOREST_UNLOCK_LEVEL} — you'll level up automatically.
-          </p>
-        )}
       </Panel>
     </div>
   );

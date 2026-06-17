@@ -64,9 +64,8 @@ const MINE_SCALE_BAND = 4;
 export const MINE_ROWS = MINE_BASE_ROWS;
 export const MINE_COLS = MINE_BASE_COLS;
 
-/** Run entry gates. */
+/** Run entry gate. */
 export const MINE_ENERGY_COST = 2;
-export const MINE_UNLOCK_LEVEL = 2;
 
 /** Stamina spent per pick swing (rock / ore). */
 const STRIKE_STA_COST = 1;
@@ -527,10 +526,9 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
   };
 }
 
-/** Descend the shaft into a richer, deeper floor — carries HP/sta/mp/haul forward. */
-export function descend(state: MineState, rng: RNG): MineState {
-  if (!canDescend(state) || state.status !== 'active') return state;
-  const snap: MineSnapshot = {
+/** The player power-stat snapshot a fresh floor is generated from. */
+export function mineSnapshot(state: MineState): MineSnapshot {
+  return {
     meleePower: state.meleePower,
     rangedPower: state.rangedPower,
     damageSpell: state.damageSpell,
@@ -545,7 +543,12 @@ export function descend(state: MineState, rng: RNG): MineState {
     knownSpells: state.knownSpells,
     pickaxePower: state.pickaxePower,
   };
-  const next = generateMine(state.floor + 1, snap, rng);
+}
+
+/** Descend the shaft into a richer, deeper floor — carries HP/sta/mp/haul forward. */
+export function descend(state: MineState, rng: RNG): MineState {
+  if (!canDescend(state) || state.status !== 'active') return state;
+  const next = generateMine(state.floor + 1, mineSnapshot(state), rng);
   return {
     ...next,
     hp: state.hp,

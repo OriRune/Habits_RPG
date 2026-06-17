@@ -4,7 +4,7 @@
 // engine (src/engine/mining.ts); this is purely the "when".
 import { useEffect, useRef } from 'react';
 import { useGameStore } from '@/store/useGameStore';
-import { canDescend, facedMonsterId, type Dir } from '@/engine/mining';
+import { canDescend, facedCell, facedMonsterId, type Dir } from '@/engine/mining';
 import { useCoopStore } from '@/net/coop/session';
 import { useAuthStore } from '@/net/auth';
 
@@ -97,21 +97,28 @@ export function useMiningLoop(): MiningControls {
       if (strikeQueued.current && now - lastSwing >= SWING_INTERVAL_MS) {
         strikeQueued.current = false;
         lastSwing = now;
-        // Descend is host/solo only — co-op MVP is single-floor (guests can't follow a descent yet).
-        if (canDescend(run) && !inCoop) {
+        // The host leads the descent in co-op (guests follow via the world slice);
+        // solo descends freely. A guest can never change the floor itself.
+        const monsterId = isGuest ? facedMonsterId(run) : null;
+        if (canDescend(run) && (!inCoop || isHost)) {
           store.mineDescend();
-        } else if (isGuest) {
+        } else if (monsterId) {
           // A guest doesn't damage its local monster copy; it sends a melee intent
-          // the host resolves (so a kill + loot happen exactly once). Ore is local.
-          const monsterId = facedMonsterId(run);
-          if (monsterId) {
-            const dmg = run.weapon.attackStat === 'DX' ? run.rangedPower : run.meleePower;
-            coop.send?.({ type: 'attack', userId: myId ?? 'anon', monsterId, dmg });
-          } else {
-            store.mineStrike();
-          }
+          // the host resolves (so a kill + loot happen exactly once).
+          const dmg = run.weapon.attackStat === 'DX' ? run.rangedPower : run.meleePower;
+          coop.send?.({ type: 'attack', userId: myId ?? 'anon', monsterId, dmg });
         } else {
+          // Mining a rock/ore (or host/solo hitting a monster). Mine locally, then
+          // broadcast the changed cell so the node disappears for the whole party.
+          const { r, c } = facedCell(run);
+          const before = run.tiles[r]?.[c];
           store.mineStrike();
+          if (inCoop) {
+            const after = useGameStore.getState().mining?.tiles[r]?.[c];
+            if (after && after !== before) {
+              coop.send?.({ type: 'tile', userId: myId ?? 'anon', floor: run.floor, r, c, tile: after });
+            }
+          }
         }
       }
       if (held.current.size && now - lastMove >= MOVE_INTERVAL_MS) {

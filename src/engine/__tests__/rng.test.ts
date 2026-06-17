@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mulberry32, randomSeed } from '../rng';
+import { mulberry32, randomSeed, floorSeed } from '../rng';
 import { floodFieldMulti } from '../crawl';
 import { generateMine, type MineSnapshot } from '../mining';
 import { getWeapon, STARTER_WEAPON } from '../weapons';
@@ -68,6 +68,38 @@ describe('generateMine determinism (co-op map parity)', () => {
     const a = generateMine(3, SNAP, mulberry32(1));
     const b = generateMine(3, SNAP, mulberry32(2));
     expect(JSON.stringify(a.tiles)).not.toEqual(JSON.stringify(b.tiles));
+  });
+});
+
+describe('floorSeed (per-floor co-op parity)', () => {
+  it('is deterministic and a 32-bit unsigned integer', () => {
+    const s = floorSeed(0xc0ffee, 3);
+    expect(s).toEqual(floorSeed(0xc0ffee, 3));
+    expect(Number.isInteger(s)).toBe(true);
+    expect(s).toBeGreaterThanOrEqual(0);
+    expect(s).toBeLessThanOrEqual(0xffffffff);
+  });
+
+  it('differs between floors of the same run', () => {
+    const base = 0xc0ffee;
+    const seeds = [1, 2, 3, 4, 5].map((f) => floorSeed(base, f));
+    expect(new Set(seeds).size).toBe(seeds.length);
+  });
+
+  it('regenerates a floor identically regardless of prior RNG consumption', () => {
+    // The whole point: two clients consume their run RNG at different rates (mining,
+    // combat), but floor N must still generate the same map on both. Seeding from
+    // floorSeed(base, N) makes generation independent of that divergence.
+    const base = 0xabcdef;
+    const clean = generateMine(2, SNAP, mulberry32(floorSeed(base, 2)));
+
+    // Simulate a client whose run RNG has been heavily consumed before descending.
+    const drained = mulberry32(base);
+    for (let i = 0; i < 5000; i++) drained();
+    const afterDrain = generateMine(2, SNAP, mulberry32(floorSeed(base, 2)));
+
+    expect(JSON.stringify(afterDrain.tiles)).toEqual(JSON.stringify(clean.tiles));
+    expect(JSON.stringify(afterDrain.monsters)).toEqual(JSON.stringify(clean.monsters));
   });
 });
 

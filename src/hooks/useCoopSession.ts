@@ -77,9 +77,14 @@ export function useCoopSession(): void {
           remotePlayers: { ...st.remotePlayers, [msg.userId]: { ...msg, lastSeen: performance.now() } },
         }));
       } else if (msg.type === 'world') {
-        if (!isHost) useGameStore.getState().coopApplyWorld(msg.monsters);
+        if (!isHost) useGameStore.getState().coopApplyWorld(msg);
       } else if (msg.type === 'attack') {
         if (isHost) useGameStore.getState().coopApplyRemoteAttack(msg.monsterId, msg.dmg);
+      } else if (msg.type === 'tile') {
+        // Peer-to-peer: both host and guests apply each other's digs.
+        if (msg.userId !== userId) {
+          useGameStore.getState().coopApplyTile(msg.floor, msg.r, msg.c, msg.tile);
+        }
       }
     });
     void channel.subscribe();

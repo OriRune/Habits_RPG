@@ -1,4 +1,4 @@
-import type { Dir } from '@/engine/mining';
+import type { Dir, MineTile } from '@/engine/mining';
 
 /**
  * Co-op wire protocol (Phase 3) — the messages broadcast over the Supabase
@@ -56,7 +56,22 @@ export interface AttackIntent {
   dmg: number;
 }
 
-export type CoopMessage = WorldSlice | PlayerSlice | AttackIntent;
+/**
+ * Any player → everyone: a single dug cell (rock/ore → floor, or durability decay).
+ * Peer-to-peer (not host-gated) so resource nodes vanish for the whole party; each
+ * player still keeps its own haul. `floor` lets receivers drop events from a floor
+ * they've already left.
+ */
+export interface TileSlice {
+  type: 'tile';
+  userId: string;
+  floor: number;
+  r: number;
+  c: number;
+  tile: MineTile;
+}
+
+export type CoopMessage = WorldSlice | PlayerSlice | AttackIntent | TileSlice;
 
 /** The Realtime channel name for a session's world sync. */
 export function coopChannelName(sessionId: string): string {

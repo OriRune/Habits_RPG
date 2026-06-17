@@ -14,6 +14,7 @@ import { cn } from '@/lib/cn';
 import { MineControls } from './MineControls';
 import { CrawlerAvatar } from '@/components/minigame/CrawlerAvatar';
 import { useCoopStore } from '@/net/coop/session';
+import { useAuthStore } from '@/net/auth';
 
 const CELL = 52;
 const BOARD_PX = VIEW * CELL;
@@ -115,6 +116,12 @@ export function MineRunOverlay() {
   const beginBanking = useGameStore((s) => s.beginBanking);
   const mineDescend = useGameStore((s) => s.mineDescend);
   const remotePlayers = useCoopStore((s) => s.remotePlayers);
+  const coopSession = useCoopStore((s) => s.session);
+  const coopJoined = useCoopStore((s) => s.joined);
+  const myId = useAuthStore((s) => s.session?.user?.id);
+  // In co-op the host leads the descent; guests follow via the world slice and
+  // can't change the floor themselves.
+  const isCoopGuest = coopJoined && !!coopSession && coopSession.host_id !== myId;
 
   // Smooth-camera refs
   const worldRef = useRef<HTMLDivElement>(null);
@@ -236,9 +243,15 @@ export function MineRunOverlay() {
     rows: mine.rows,
     cols: mine.cols,
     snapKey: mine.floor,
-    movers: mine.monsters
-      .filter((m) => inView(m.r, m.c))
-      .map((m) => ({ id: m.id, r: m.r, c: m.c })),
+    // Monsters and co-op party members share the rAF interpolation path so both
+    // glide smoothly and stay locked to the camera. Remote players use an
+    // `rp:` id namespace so they never collide with a monster id.
+    movers: [
+      ...mine.monsters.filter((m) => inView(m.r, m.c)).map((m) => ({ id: m.id, r: m.r, c: m.c })),
+      ...Object.values(remotePlayers)
+        .filter((p) => p.floor === mine.floor && inView(p.r, p.c))
+        .map((p) => ({ id: `rp:${p.userId}`, r: p.r, c: p.c })),
+    ],
   };
 
   // Torch glow in world-container space
@@ -504,8 +517,10 @@ export function MineRunOverlay() {
           );
         })}
 
-        {/* Co-op party members — positions arrive over the broadcast channel (~10 Hz),
-            smoothed with a CSS transition (they're not on the rAF camera path). */}
+        {/* Co-op party members — positions arrive over the broadcast channel (~10 Hz).
+            Registered as movers so the rAF loop interpolates them in world-pixel space
+            (smooth cell-to-cell glide) and keeps the baseC0/baseR0 offset cancelled, so
+            they stay locked to their cell as the camera scrolls — same path as monsters. */}
         {Object.values(remotePlayers).map((p) => {
           if (p.floor !== mine.floor) return null;
           const vj = p.c - baseC0;
@@ -514,12 +529,16 @@ export function MineRunOverlay() {
           return (
             <div
               key={p.userId}
+              ref={(el) => {
+                const id = `rp:${p.userId}`;
+                if (el) moverRefs.current.set(id, el);
+                else moverRefs.current.delete(id);
+              }}
               className="pointer-events-none absolute z-[9]"
               style={{
                 width: CELL,
                 height: CELL,
                 transform: `translate(${vj * CELL}px, ${vi * CELL}px)`,
-                transition: 'transform 110ms linear',
               }}
             >
               <CrawlerAvatar variant="miner" facing={p.facing} moving dead={p.hp <= 0} cell={CELL} />
@@ -682,18 +701,27 @@ export function MineRunOverlay() {
       )}
 
       {/* Descend / leave */}
-      <div className="flex w-full max-w-lg items-center justify-center gap-2">
-        <Button
-          variant={onShaft ? 'primary' : 'secondary'}
-          onClick={mineDescend}
-          disabled={!onShaft}
-          className={cn('flex items-center gap-1.5 px-3 py-1.5 text-xs', !onShaft && 'opacity-60')}
-        >
-          <ChevronsDown className="h-4 w-4" /> Descend
-        </Button>
-        <Button variant="danger" onClick={beginBanking} className="flex items-center gap-1.5 px-3 py-1.5 text-xs">
-          <LogOut className="h-4 w-4" /> Bank &amp; leave
-        </Button>
+      <div className="flex w-full max-w-lg flex-col items-center gap-1">
+        <div className="flex items-center justify-center gap-2">
+          <Button
+            variant={onShaft && !isCoopGuest ? 'primary' : 'secondary'}
+            onClick={mineDescend}
+            disabled={!onShaft || isCoopGuest}
+            title={isCoopGuest ? 'The host leads the descent' : undefined}
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-1.5 text-xs',
+              (!onShaft || isCoopGuest) && 'opacity-60',
+            )}
+          >
+            <ChevronsDown className="h-4 w-4" /> Descend
+          </Button>
+          <Button variant="danger" onClick={beginBanking} className="flex items-center gap-1.5 px-3 py-1.5 text-xs">
+            <LogOut className="h-4 w-4" /> Bank &amp; leave
+          </Button>
+        </div>
+        {isCoopGuest && (
+          <p className="text-[10px] text-parchment-300/50">The host leads the descent.</p>
+        )}
       </div>
 
       {/* Touch controls */}

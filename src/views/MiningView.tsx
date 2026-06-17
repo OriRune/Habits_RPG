@@ -1,6 +1,6 @@
 import { Pickaxe, Zap } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
-import { MINE_ENERGY_COST, MINE_UNLOCK_LEVEL } from '@/engine/mining';
+import { MINE_ENERGY_COST } from '@/engine/mining';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
@@ -17,12 +17,10 @@ function milestoneHint(deepest: number): string {
 /** Entrance screen for the Deep Mine (the active run renders in MineRunOverlay). */
 export function MiningView() {
   const energy = useGameStore((s) => s.character.energy);
-  const level = useGameStore((s) => s.character.level);
   const deepestMineFloor = useGameStore((s) => s.deepestMineFloor);
   const beginMining = useGameStore((s) => s.beginMining);
 
-  const unlocked = level >= MINE_UNLOCK_LEVEL;
-  const canEnter = unlocked && energy >= MINE_ENERGY_COST;
+  const canEnter = energy >= MINE_ENERGY_COST;
 
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
@@ -64,17 +62,8 @@ export function MiningView() {
         </div>
 
         <Button onClick={() => beginMining()} disabled={!canEnter} className="w-full py-2.5">
-          {!unlocked
-            ? `Unlocks at Level ${MINE_UNLOCK_LEVEL}`
-            : canEnter
-              ? 'Enter the Mine'
-              : `Need ${MINE_ENERGY_COST} energy (complete habits)`}
+          {canEnter ? 'Enter the Mine' : `Need ${MINE_ENERGY_COST} energy (complete habits)`}
         </Button>
-        {!unlocked && (
-          <p className="text-center text-xs text-ink-muted">
-            Train your habits to reach Level {MINE_UNLOCK_LEVEL} — you'll level up automatically.
-          </p>
-        )}
       </Panel>
     </div>
   );

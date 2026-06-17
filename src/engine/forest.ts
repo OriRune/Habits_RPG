@@ -63,9 +63,8 @@ const FOREST_SCALE_BAND = 4;
 export const FOREST_ROWS = FOREST_BASE_ROWS;
 export const FOREST_COLS = FOREST_BASE_COLS;
 
-/** Run entry gates (parallel to the mine). */
+/** Run entry gate (parallel to the mine). */
 export const FOREST_ENERGY_COST = 2;
-export const FOREST_UNLOCK_LEVEL = 2;
 /** Fraction of the haul a fallen forager keeps; the rest is forfeit on death. */
 export const FOREST_DEATH_KEEP = 0.5;
 

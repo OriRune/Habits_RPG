@@ -68,8 +68,10 @@ import {
 import { type FloorMap, generateFloorMap } from '@/engine/dungeonMap';
 import {
   type MineState,
+  type MineTile,
   type Dir,
   generateMine,
+  mineSnapshot,
   tryMove,
   strike,
   stepMonsters,
@@ -78,10 +80,9 @@ import {
   descend,
   castSpell as minecastSpellFn,
   MINE_ENERGY_COST,
-  MINE_UNLOCK_LEVEL,
 } from '@/engine/mining';
 import { dungeonStamina, type RNG } from '@/engine/crawl';
-import { mulberry32 } from '@/engine/rng';
+import { mulberry32, floorSeed } from '@/engine/rng';
 import {
   type ForestState,
   generateForest,
@@ -93,7 +94,6 @@ import {
   activateShrine as forestActivateShrine,
   splitHaul,
   FOREST_ENERGY_COST,
-  FOREST_UNLOCK_LEVEL,
   FOREST_DEATH_KEEP,
 } from '@/engine/forest';
 import {
@@ -441,10 +441,16 @@ export interface GameState {
   mineTick: (nowMs: number, coPlayers?: ReadonlyArray<{ r: number; c: number }>) => void;
   /** Co-op guest per-tick: advance only own body (regen + contact damage). */
   coopClientTick: (nowMs: number) => void;
-  /** Co-op guest: replace the host's authoritative monster positions/HP. */
-  coopApplyWorld: (
-    monsters: ReadonlyArray<{ id: string; r: number; c: number; hp: number; readyAtMs: number }>,
-  ) => void;
+  /**
+   * Co-op guest: apply the host's authoritative world slice — follow the host's
+   * floor (regenerate on descent) and replace monster positions/HP.
+   */
+  coopApplyWorld: (slice: {
+    floor: number;
+    monsters: ReadonlyArray<{ id: string; r: number; c: number; hp: number; readyAtMs: number }>;
+  }) => void;
+  /** Co-op: apply a peer's tile change (shared resource nodes). */
+  coopApplyTile: (floor: number, r: number, c: number, tile: MineTile) => void;
   /** Co-op host: resolve a remote player's melee attack on a monster (once). */
   coopApplyRemoteAttack: (monsterId: string, dmg: number) => void;
   /** Descend the shaft to a deeper, richer floor. */
@@ -898,6 +904,14 @@ function checkLevelUp(state: GameState): void {
  * so it stays out of the serialized/persisted save.
  */
 let mineRng: RNG = Math.random;
+
+/**
+ * The co-op run's base seed (undefined in solo play). Each floor's map is generated
+ * from `mulberry32(floorSeed(mineBaseSeed, floor))` so floor N is byte-identical on
+ * every client regardless of how much `mineRng` diverged on earlier floors — this is
+ * what lets a guest follow the host's descent onto the same map.
+ */
+let mineBaseSeed: number | undefined;
 
 export const useGameStore = create<GameState>()(
   persist(
@@ -1721,8 +1735,9 @@ export const useGameStore = create<GameState>()(
         set((s) => {
           // Seed the run's RNG: shared mulberry32 for co-op, Math.random for solo.
           mineRng = seed !== undefined ? mulberry32(seed) : Math.random;
+          mineBaseSeed = seed;
           const free = s.settings.unlimitedEnergy;
-          if (s.mining || s.character.level < MINE_UNLOCK_LEVEL) return s;
+          if (s.mining) return s;
           if (!free && s.character.energy < MINE_ENERGY_COST) return s;
 
           // Grant the stone_pickaxe if the player has no mining tool yet
@@ -1771,7 +1786,9 @@ export const useGameStore = create<GameState>()(
               knownSpells: s.knownSpells,
               pickaxePower,
             },
-            mineRng,
+            // Floor 1 from the per-floor seed (co-op) so every client matches; solo
+            // falls back to the live mineRng (Math.random).
+            seed !== undefined ? mulberry32(floorSeed(seed, 1)) : mineRng,
           );
           return {
             character: {
@@ -1810,19 +1827,52 @@ export const useGameStore = create<GameState>()(
           return { mining };
         }),
 
-      coopApplyWorld: (monsters) =>
+      coopApplyWorld: (slice) =>
         set((s) => {
           if (!s.mining) return s;
-          const byId = new Map(monsters.map((m) => [m.id, m]));
+          let mining = s.mining;
+
+          // Follow the host's descent: when the host has moved to a deeper floor,
+          // regenerate that floor from its per-floor seed (identical to the host's),
+          // carrying our own hp/haul and clamped sta/mp forward.
+          if (slice.floor !== mining.floor && mineBaseSeed !== undefined) {
+            const next = generateMine(
+              slice.floor,
+              mineSnapshot(mining),
+              mulberry32(floorSeed(mineBaseSeed, slice.floor)),
+            );
+            mining = {
+              ...next,
+              hp: mining.hp,
+              sta: Math.min(next.maxSta, mining.sta),
+              mp: Math.min(next.maxMp, mining.mp),
+              haul: mining.haul,
+              deepest: Math.max(mining.deepest, slice.floor),
+            };
+          }
+
+          const byId = new Map(slice.monsters.map((m) => [m.id, m]));
           // Update positions/HP from the host; drop monsters the host has killed.
           // New host monsters absent locally are ignored — the seeded maps match.
-          const merged = s.mining.monsters
+          const merged = mining.monsters
             .filter((m) => byId.has(m.id))
             .map((m) => {
               const sl = byId.get(m.id)!;
               return { ...m, r: sl.r, c: sl.c, hp: sl.hp, readyAtMs: sl.readyAtMs };
             });
-          return { mining: { ...s.mining, monsters: merged } };
+          return { mining: { ...mining, monsters: merged } };
+        }),
+
+      coopApplyTile: (floor, r, c, tile) =>
+        set((s) => {
+          // Apply a peer's dig (rock/ore → floor, or durability decay) so resource
+          // nodes vanish for everyone. Ignore events from a floor we've left.
+          if (!s.mining || s.mining.floor !== floor) return s;
+          const cur = s.mining.tiles[r]?.[c];
+          if (!cur || cur === tile) return s;
+          const tiles = s.mining.tiles.map((row) => row.slice());
+          tiles[r][c] = tile;
+          return { mining: { ...s.mining, tiles } };
         }),
 
       coopApplyRemoteAttack: (monsterId, dmg) =>
@@ -1836,7 +1886,12 @@ export const useGameStore = create<GameState>()(
       mineDescend: () =>
         set((s) => {
           if (!s.mining || s.mining.status !== 'active') return s;
-          const mining = descend(s.mining, mineRng);
+          // Generate the next floor from its per-floor seed (co-op parity); solo uses
+          // the live stream. Independent of mineRng divergence on earlier floors.
+          const nextFloor = s.mining.floor + 1;
+          const genRng =
+            mineBaseSeed !== undefined ? mulberry32(floorSeed(mineBaseSeed, nextFloor)) : mineRng;
+          const mining = descend(s.mining, genRng);
           if (mining === s.mining) return s;
           return { mining, deepestMineFloor: Math.max(s.deepestMineFloor, mining.deepest) };
         }),
@@ -1862,7 +1917,7 @@ export const useGameStore = create<GameState>()(
       beginForest: () =>
         set((s) => {
           const free = s.settings.unlimitedEnergy;
-          if (s.forest || s.character.level < FOREST_UNLOCK_LEVEL) return s;
+          if (s.forest) return s;
           if (!free && s.character.energy < FOREST_ENERGY_COST) return s;
 
           // Grant the stone_pickaxe (toolkit) if the player has no tool yet

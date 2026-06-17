@@ -26,6 +26,19 @@ export function mulberry32(seed: number): RNG {
 /** Alias kept for readability at call sites: build an RNG from a numeric seed. */
 export const rngFromSeed = mulberry32;
 
+/**
+ * Derive a stable per-floor seed from a run's base seed and a floor number.
+ *
+ * Co-op map parity needs each floor to regenerate identically on every client,
+ * *independent* of how much the run's live RNG has been consumed (mining and
+ * combat draw from it at different rates per client). Seeding each floor's
+ * generation from `floorSeed(base, floor)` makes floor N byte-identical on every
+ * client regardless of what happened on earlier floors.
+ */
+export function floorSeed(base: number, floor: number): number {
+  return Math.imul(((base ^ Math.imul(floor, 0x9e3779b1)) >>> 0) ^ 0x85ebca6b, 0xc2b2ae35) >>> 0;
+}
+
 /** A random 32-bit seed (used by the co-op host to start a session). */
 export function randomSeed(): number {
   return (Math.random() * 0x100000000) >>> 0;
