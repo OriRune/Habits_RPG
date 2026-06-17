@@ -24,6 +24,7 @@ import { isBackendConfigured } from '@/net/env';
 import { useAuthStore } from '@/net/auth';
 import { useCloudSync } from '@/hooks/useCloudSync';
 import { useParty, usePartyQuestReporter } from '@/hooks/useParty';
+import { useCoopSession } from '@/hooks/useCoopSession';
 
 // Minigame/combat overlays are heavy (each pulls in its engine: mining/forest/
 // arena/combat). Code-split them so the initial bundle stays lean — each chunk
@@ -63,6 +64,7 @@ export default function App() {
   // not in a party / no backend).
   useParty();
   usePartyQuestReporter();
+  useCoopSession();
 
   // Single apply path: re-skin the app whenever the selected palette changes
   // (and once on mount, after the store has hydrated from localStorage).

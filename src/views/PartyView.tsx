@@ -3,9 +3,11 @@ import { Copy, Check, Crown, LogOut, UserX, Circle } from 'lucide-react';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
+import { Pickaxe } from 'lucide-react';
 import { useAuthStore } from '@/net/auth';
 import { getLeaderboard, type LeaderboardRow } from '@/net/party';
 import { partyActions, usePartyStore } from '@/hooks/useParty';
+import { joinCoopMine, startCoopMine, useCoopStore } from '@/net/coop/session';
 import { CreateJoinPanel } from '@/components/party/CreateJoinPanel';
 import { PartyChat } from '@/components/party/PartyChat';
 import { PartyQuestPanel } from '@/components/party/PartyQuestPanel';
@@ -43,6 +45,8 @@ function PartyScreen() {
       </header>
 
       {isLead && <LeadControls />}
+
+      <CoopRaidPanel />
 
       {/* Roster */}
       <Panel tone="parchment" className="space-y-2 p-4">
@@ -98,6 +102,61 @@ function PartyScreen() {
         <LogOut size={16} /> Leave party
       </Button>
     </div>
+  );
+}
+
+function CoopRaidPanel() {
+  const party = usePartyStore((s) => s.party)!;
+  const members = usePartyStore((s) => s.members);
+  const myId = useAuthStore((s) => s.session?.user?.id);
+  const session = useCoopStore((s) => s.session);
+  const joined = useCoopStore((s) => s.joined);
+  const [busy, setBusy] = useState(false);
+
+  // A live session someone else started that I haven't joined yet.
+  const canJoin = session && session.status === 'active' && session.host_id !== myId && !joined;
+  const hostName = session ? members.find((m) => m.user_id === session.host_id)?.username : null;
+
+  return (
+    <Panel tone="parchment" className="space-y-3 p-4">
+      <SectionTitle>Co-op Raid</SectionTitle>
+      {joined ? (
+        <p className="text-center text-xs italic text-ink-muted">
+          You're in a Mine raid — the run window is open.
+        </p>
+      ) : canJoin ? (
+        <div className="space-y-2">
+          <p className="text-sm text-ink">
+            <span className="font-bold text-gold-deep">{hostName ?? 'A member'}</span> is raiding the
+            Deep Mine.
+          </p>
+          <Button
+            className="flex w-full items-center justify-center gap-2"
+            disabled={busy}
+            onClick={() => session && joinCoopMine(session)}
+          >
+            <Pickaxe size={16} /> Join the raid
+          </Button>
+        </div>
+      ) : (
+        <>
+          <p className="text-xs text-ink-muted">
+            Start a shared Deep Mine run — everyone dives the same map together in real time.
+          </p>
+          <Button
+            className="flex w-full items-center justify-center gap-2"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              await startCoopMine(party.id);
+              setBusy(false);
+            }}
+          >
+            <Pickaxe size={16} /> Raid the Deep Mine together
+          </Button>
+        </>
+      )}
+    </Panel>
   );
 }
 

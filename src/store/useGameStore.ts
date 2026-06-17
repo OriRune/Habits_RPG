@@ -73,6 +73,8 @@ import {
   tryMove,
   strike,
   stepMonsters,
+  coopClientStep,
+  damageMonsterById,
   descend,
   castSpell as minecastSpellFn,
   MINE_ENERGY_COST,
@@ -437,6 +439,14 @@ export interface GameState {
   /** Advance monsters on the loop's clock; commits the haul if the miner falls. */
   /** `coPlayers` (co-op) lets monsters target the nearest of all players. */
   mineTick: (nowMs: number, coPlayers?: ReadonlyArray<{ r: number; c: number }>) => void;
+  /** Co-op guest per-tick: advance only own body (regen + contact damage). */
+  coopClientTick: (nowMs: number) => void;
+  /** Co-op guest: replace the host's authoritative monster positions/HP. */
+  coopApplyWorld: (
+    monsters: ReadonlyArray<{ id: string; r: number; c: number; hp: number; readyAtMs: number }>,
+  ) => void;
+  /** Co-op host: resolve a remote player's melee attack on a monster (once). */
+  coopApplyRemoteAttack: (monsterId: string, dmg: number) => void;
   /** Descend the shaft to a deeper, richer floor. */
   mineDescend: () => void;
   /** Cast a known spell by key (costs MP). */
@@ -1788,6 +1798,37 @@ export const useGameStore = create<GameState>()(
         set((s) => {
           if (!s.mining || s.mining.status !== 'active') return s;
           const mining = stepMonsters(s.mining, nowMs, mineRng, coPlayers);
+          if (mining === s.mining) return s;
+          return { mining };
+        }),
+
+      coopClientTick: (nowMs) =>
+        set((s) => {
+          if (!s.mining || s.mining.status !== 'active') return s;
+          const mining = coopClientStep(s.mining, nowMs);
+          if (mining === s.mining) return s;
+          return { mining };
+        }),
+
+      coopApplyWorld: (monsters) =>
+        set((s) => {
+          if (!s.mining) return s;
+          const byId = new Map(monsters.map((m) => [m.id, m]));
+          // Update positions/HP from the host; drop monsters the host has killed.
+          // New host monsters absent locally are ignored — the seeded maps match.
+          const merged = s.mining.monsters
+            .filter((m) => byId.has(m.id))
+            .map((m) => {
+              const sl = byId.get(m.id)!;
+              return { ...m, r: sl.r, c: sl.c, hp: sl.hp, readyAtMs: sl.readyAtMs };
+            });
+          return { mining: { ...s.mining, monsters: merged } };
+        }),
+
+      coopApplyRemoteAttack: (monsterId, dmg) =>
+        set((s) => {
+          if (!s.mining || s.mining.status !== 'active') return s;
+          const mining = damageMonsterById(s.mining, monsterId, dmg, mineRng);
           if (mining === s.mining) return s;
           return { mining };
         }),

@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/cn';
 import { MineControls } from './MineControls';
 import { CrawlerAvatar } from '@/components/minigame/CrawlerAvatar';
+import { useCoopStore } from '@/net/coop/session';
 
 const CELL = 52;
 const BOARD_PX = VIEW * CELL;
@@ -113,6 +114,7 @@ export function MineRunOverlay() {
   const endMining = useGameStore((s) => s.endMining);
   const beginBanking = useGameStore((s) => s.beginBanking);
   const mineDescend = useGameStore((s) => s.mineDescend);
+  const remotePlayers = useCoopStore((s) => s.remotePlayers);
 
   // Smooth-camera refs
   const worldRef = useRef<HTMLDivElement>(null);
@@ -498,6 +500,32 @@ export function MineRunOverlay() {
               {(m.frozenUntilMs ?? 0) > Date.now() && (
                 <div className="absolute inset-0 rounded bg-blue-400/25 ring-1 ring-blue-300" />
               )}
+            </div>
+          );
+        })}
+
+        {/* Co-op party members — positions arrive over the broadcast channel (~10 Hz),
+            smoothed with a CSS transition (they're not on the rAF camera path). */}
+        {Object.values(remotePlayers).map((p) => {
+          if (p.floor !== mine.floor) return null;
+          const vj = p.c - baseC0;
+          const vi = p.r - baseR0;
+          if (vi < 0 || vi >= RENDER_VIEW || vj < 0 || vj >= RENDER_VIEW) return null;
+          return (
+            <div
+              key={p.userId}
+              className="pointer-events-none absolute z-[9]"
+              style={{
+                width: CELL,
+                height: CELL,
+                transform: `translate(${vj * CELL}px, ${vi * CELL}px)`,
+                transition: 'transform 110ms linear',
+              }}
+            >
+              <CrawlerAvatar variant="miner" facing={p.facing} moving dead={p.hp <= 0} cell={CELL} />
+              <span className="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-black/60 px-1 font-display text-[9px] text-gold-bright">
+                {p.username}
+              </span>
             </div>
           );
         })}

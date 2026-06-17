@@ -598,6 +598,16 @@ function killMonster(state: MineState, mon: MineMonster, rng: RNG): MineState {
  *   • monster → weapon attack (uses equipped weapon's stat, bonus, staminaCost)
  *   • rock/ore → pickaxe mining (uses pickaxePower; falls back to 1 if no pick)
  */
+/**
+ * Co-op client helper: the id of the monster in the cell the player faces, or
+ * null. A guest uses this to send a melee attack-intent to the host (which
+ * resolves the damage authoritatively) instead of damaging its local copy.
+ */
+export function facedMonsterId(state: MineState): string | null {
+  const { r, c } = facedCell(state);
+  return monsterAt(state, r, c)?.id ?? null;
+}
+
 export function strike(state: MineState, rng: RNG): MineState {
   if (state.status !== 'active') return state;
   const { r, c } = facedCell(state);
@@ -1039,4 +1049,68 @@ export function stepMonsters(
 
   if (!changed && result === s) return state; // idle tick: skip re-render
   return { ...result, status: result.hp <= 0 ? 'ended' : result.status };
+}
+
+// ---------------------------------------------------------------------------
+// Co-op helpers (Phase 3). The host runs stepMonsters (above) authoritatively;
+// these support the client side and host-resolved remote attacks.
+// ---------------------------------------------------------------------------
+
+/**
+ * Client-side per-tick step for a co-op guest. Monsters are positioned by the
+ * host (applied separately), so this does NOT move monsters, run runes, or resolve
+ * monster kills (all host-authoritative). It only advances the LOCAL player's own
+ * body: stamina/mp regen, status expiry, and contact damage from any adjacent
+ * monster (each client owns its own HP under trust-the-client). Mirrors the regen
+ * + contact-damage blocks of {@link stepMonsters}.
+ */
+export function coopClientStep(state: MineState, nowMs: number): MineState {
+  if (state.status !== 'active') return state;
+  let s = state;
+
+  if (nowMs >= s.staNextRegenMs && s.sta < s.maxSta) {
+    s = { ...s, sta: Math.min(s.maxSta, s.sta + 1), staNextRegenMs: nowMs + STA_REGEN_MS };
+  }
+  if (nowMs >= s.mpNextRegenMs && s.mp < s.maxMp) {
+    s = { ...s, mp: Math.min(s.maxMp, s.mp + 1), mpNextRegenMs: nowMs + MP_REGEN_MS };
+  }
+
+  let hp = s.hp;
+  let lastHitAtMs = s.lastHitAtMs;
+  if (nowMs - s.lastHitAtMs >= MINE_IFRAME_MS) {
+    const toucher = s.monsters.find((m) => adjacent(m, s.player));
+    if (toucher) {
+      const raw = MINE_MONSTERS[toucher.key]?.touchDamage ?? 1;
+      const bless = activeStatus(s.playerStatuses, 'bless', nowMs);
+      const dealt = Math.max(1, raw - s.defense - (bless ? bless.magnitude : 0));
+      hp = Math.max(0, hp - dealt);
+      lastHitAtMs = nowMs;
+    }
+  }
+
+  const playerStatuses = pruneStatuses(s.playerStatuses, nowMs);
+  if (hp === s.hp && lastHitAtMs === s.lastHitAtMs && s === state) return state;
+  return { ...s, hp, lastHitAtMs, playerStatuses, status: hp <= 0 ? 'ended' : s.status };
+}
+
+/**
+ * Host-side: apply a remote player's attack to a monster by id, so that a kill
+ * resolves exactly once on the authoritative host (loot is granted to the host's
+ * `haul`; remote players bank their own ore/kills client-side under trust-client).
+ */
+export function damageMonsterById(
+  state: MineState,
+  monsterId: string,
+  dmg: number,
+  rng: RNG,
+): MineState {
+  if (state.status !== 'active' || dmg <= 0) return state;
+  const mon = state.monsters.find((m) => m.id === monsterId);
+  if (!mon) return state;
+  const newHp = mon.hp - dmg;
+  if (newHp <= 0) return killMonster(state, mon, rng);
+  return {
+    ...state,
+    monsters: state.monsters.map((m) => (m.id === monsterId ? { ...m, hp: newHp } : m)),
+  };
 }
