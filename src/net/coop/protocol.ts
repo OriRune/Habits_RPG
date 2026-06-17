@@ -1,4 +1,5 @@
 import type { Dir, MineTile } from '@/engine/mining';
+import type { ForestTile } from '@/engine/forest';
 
 /**
  * Co-op wire protocol (Phase 3) — the messages broadcast over the Supabase
@@ -13,7 +14,7 @@ import type { Dir, MineTile } from '@/engine/mining';
  * Keep these payloads small — broadcast Hz is the dominant free-tier cost.
  */
 
-export type CoopGame = 'mine';
+export type CoopGame = 'mine' | 'forest';
 
 /** Minimal per-monster state needed to render + target. */
 export interface MonsterSlice {
@@ -23,6 +24,8 @@ export interface MonsterSlice {
   c: number;
   hp: number;
   readyAtMs: number;
+  /** Forest beasts only: whether still dormant — drives the guest's HP-bar/dim render. */
+  asleep?: boolean;
 }
 
 /** Host → everyone: the authoritative dynamic world for this frame. */
@@ -65,13 +68,22 @@ export interface AttackIntent {
 export interface TileSlice {
   type: 'tile';
   userId: string;
+  /** Depth the change belongs to (mine floor / forest stage). */
   floor: number;
   r: number;
   c: number;
-  tile: MineTile;
+  tile: MineTile | ForestTile;
 }
 
-export type CoopMessage = WorldSlice | PlayerSlice | AttackIntent | TileSlice;
+/** Any player → everyone: a clean departure, so peers drop the avatar + toast at once
+ *  (rather than waiting out the stale-player timeout, which still covers hard disconnects). */
+export interface ByeIntent {
+  type: 'bye';
+  userId: string;
+  username: string;
+}
+
+export type CoopMessage = WorldSlice | PlayerSlice | AttackIntent | TileSlice | ByeIntent;
 
 /** The Realtime channel name for a session's world sync. */
 export function coopChannelName(sessionId: string): string {

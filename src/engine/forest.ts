@@ -29,7 +29,7 @@ import {
   type CrawlRingOfFire,
   DIRS,
   randInt,
-  floodField,
+  floodFieldMulti,
   flowStep,
   adjacent,
   manhattan,
@@ -230,6 +230,12 @@ export function beastAt(state: ForestState, r: number, c: number): ForestBeast |
 export function facedCell(state: ForestState): { r: number; c: number } {
   const [dr, dc] = DIRS[state.player.facing];
   return { r: state.player.r + dr, c: state.player.c + dc };
+}
+
+/** Id of the beast in the faced cell, if any (co-op guests send an attack intent for it). */
+export function facedBeastId(state: ForestState): string | null {
+  const { r, c } = facedCell(state);
+  return beastAt(state, r, c)?.id ?? null;
 }
 
 /** Standing on the far tree line means the way deeper is open. */
@@ -644,9 +650,9 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
 }
 
 /** Push on through the tree line into a deeper, richer stage — carries HP + haul, refills sta/mp partially. */
-export function advance(state: ForestState, rng: RNG): ForestState {
-  if (!canAdvance(state) || state.status !== 'active') return state;
-  const snap: ForestSnapshot = {
+/** The player power-stat snapshot a fresh stage is generated from. */
+export function forestSnapshot(state: ForestState): ForestSnapshot {
+  return {
     meleePower: state.meleePower,
     rangedPower: state.rangedPower,
     damageSpell: state.damageSpell,
@@ -661,7 +667,11 @@ export function advance(state: ForestState, rng: RNG): ForestState {
     knownSpells: state.knownSpells,
     chopPower: state.chopPower,
   };
-  const next = generateForest(state.stage + 1, snap, rng);
+}
+
+export function advance(state: ForestState, rng: RNG): ForestState {
+  if (!canAdvance(state) || state.status !== 'active') return state;
+  const next = generateForest(state.stage + 1, forestSnapshot(state), rng);
   const staRefill = Math.round(state.maxSta * 0.25);
   const mpRefill = Math.round(state.maxMp * 0.25);
   return {
@@ -1035,9 +1045,18 @@ function triggerRunes(state: ForestState, nowMs: number, rng: RNG): ForestState 
  * Advance the beast clock by one tick.  Also advances passive sta/mp regen,
  * DoT ticks on beasts, ring-of-fire, rune triggers, and contact damage.
  */
-export function stepBeasts(state: ForestState, nowMs: number, rng: RNG): ForestState {
+export function stepBeasts(
+  state: ForestState,
+  nowMs: number,
+  rng: RNG,
+  coPlayers: ReadonlyArray<{ r: number; c: number }> = [],
+): ForestState {
   if (state.status !== 'active') return state;
   let s = state;
+  // In co-op, beasts wake to / chase / flee the NEAREST of all players. The local
+  // player is always first; contact damage below stays host-only (s.player) — each
+  // guest takes its own contact damage via coopClientStep.
+  const players = coPlayers.length > 0 ? [s.player, ...coPlayers] : [s.player];
 
   // ---------- Passive regen ----------
   if (nowMs >= s.staNextRegenMs && s.sta < s.maxSta) {
@@ -1101,7 +1120,7 @@ export function stepBeasts(state: ForestState, nowMs: number, rng: RNG): ForestS
     beasts: s.beasts.map((b) => {
       if (!b.asleep) return b;
       const def = FOREST_BEASTS[b.key];
-      const dist = manhattan(b, s.player);
+      const dist = Math.min(...players.map((p) => manhattan(b, p)));
       if (def && dist <= def.aggroRadius) {
         return { ...b, asleep: false, readyAtMs: nowMs };
       }
@@ -1110,34 +1129,36 @@ export function stepBeasts(state: ForestState, nowMs: number, rng: RNG): ForestS
   };
 
   // ---------- BFS movement pass ----------
-  const field = floodField(
-    s.player, s.rows, s.cols,
+  // Multi-source flood: distance to the nearest player (single-source when solo).
+  const field = floodFieldMulti(
+    players, s.rows, s.cols,
     (r, c) => isWalkable(tileAt(s, r, c) as ForestTile | undefined),
   );
   const beasts = s.beasts;
   const newOccupied = new Set<string>(beasts.map((b) => `${b.r},${b.c}`));
+  const playerCells = new Set<string>(players.map((p) => `${p.r},${p.c}`));
 
   const movedBeasts = beasts.map((b) => {
     const def = FOREST_BEASTS[b.key];
     if (b.asleep || !def || nowMs < b.readyAtMs) return b;
     if (b.frozenUntilMs && nowMs < b.frozenUntilMs) return b;
-    // Predators already adjacent — windup/contact phase handles them.
-    // Prey adjacent to the player have nowhere useful to flee; let them cower.
-    if (adjacent(b, s.player)) return b;
-    // Build per-beast blocked set: other beasts + player cell
-    const blocked = new Set<string>([`${s.player.r},${s.player.c}`]);
+    // Predators already adjacent to any player — windup/contact phase handles them.
+    // Prey adjacent to a player have nowhere useful to flee; let them cower.
+    if (players.some((p) => adjacent(b, p))) return b;
+    // Build per-beast blocked set: other beasts + every player cell
+    const blocked = new Set<string>(playerCells);
     for (const other of beasts) {
       if (other.id !== b.id) blocked.add(`${other.r},${other.c}`);
     }
     let next: { r: number; c: number } | null;
     if (def.flees) {
-      // Prey flee: step toward the cell farthest from the player.
+      // Prey flee: step toward the cell farthest from the nearest player.
       next = fleeStep({ r: b.r, c: b.c }, field, blocked);
     } else {
-      // Predator chases.
+      // Predator chases the nearest player.
       next = flowStep({ r: b.r, c: b.c }, field, blocked);
-      // Skip if step would land on player (contact handled below).
-      if (next && next.r === s.player.r && next.c === s.player.c) next = null;
+      // Skip if step would land on any player (contact handled below).
+      if (next && playerCells.has(`${next.r},${next.c}`)) next = null;
     }
     if (!next) return b;
     newOccupied.delete(`${b.r},${b.c}`);
@@ -1200,6 +1221,66 @@ export function stepBeasts(state: ForestState, nowMs: number, rng: RNG): ForestS
   }
 
   return s;
+}
+
+/**
+ * Co-op host: apply a guest's melee attack to a beast (resolved once, host-side),
+ * killing it (with loot) if HP drops to zero. Mirrors the mine's damageMonsterById.
+ */
+export function damageBeastById(
+  state: ForestState,
+  beastId: string,
+  dmg: number,
+  rng: RNG,
+): ForestState {
+  if (state.status !== 'active' || dmg <= 0) return state;
+  const beast = state.beasts.find((b) => b.id === beastId);
+  if (!beast) return state;
+  const newHp = beast.hp - dmg;
+  if (newHp <= 0) return killBeast(state, beast, rng);
+  return {
+    ...state,
+    beasts: state.beasts.map((b) => (b.id === beastId ? { ...b, hp: newHp } : b)),
+  };
+}
+
+/**
+ * Co-op guest per-tick: advance only the local body — regen, own contact damage
+ * from an adjacent predator (i-frame gated, no windup telegraph), status pruning.
+ * The host owns beast movement/AI and broadcasts it. Mirrors the mine's coopClientStep.
+ */
+export function coopClientStep(state: ForestState, nowMs: number): ForestState {
+  if (state.status !== 'active') return state;
+  let s = state;
+
+  if (nowMs >= s.staNextRegenMs && s.sta < s.maxSta) {
+    s = { ...s, sta: Math.min(s.maxSta, s.sta + 1), staNextRegenMs: nowMs + STA_REGEN_MS };
+  }
+  if (nowMs >= s.mpNextRegenMs && s.mp < s.maxMp) {
+    s = { ...s, mp: Math.min(s.maxMp, s.mp + 1), mpNextRegenMs: nowMs + MP_REGEN_MS };
+  }
+
+  let hp = s.hp;
+  let lastHitAtMs = s.lastHitAtMs;
+  if (nowMs - s.lastHitAtMs >= FOREST_IFRAME_MS) {
+    const toucher = s.beasts.find((b) => {
+      const def = FOREST_BEASTS[b.key];
+      if (b.asleep || !def || def.flees || def.touchDamage <= 0) return false;
+      if (b.frozenUntilMs && nowMs < b.frozenUntilMs) return false;
+      return adjacent(b, s.player);
+    });
+    if (toucher) {
+      const def = FOREST_BEASTS[toucher.key];
+      const blessedDefense = activeStatus(s.playerStatuses, 'bless', nowMs) ? s.defense : 0;
+      const dealt = Math.max(1, (def?.touchDamage ?? 0) - blessedDefense - s.ward);
+      hp = Math.max(0, hp - dealt);
+      lastHitAtMs = nowMs;
+    }
+  }
+
+  const playerStatuses = pruneStatuses(s.playerStatuses, nowMs);
+  if (hp === s.hp && lastHitAtMs === s.lastHitAtMs && s === state) return state;
+  return { ...s, hp, lastHitAtMs, playerStatuses, status: hp <= 0 ? 'ended' : s.status };
 }
 
 // ---------------------------------------------------------------------------

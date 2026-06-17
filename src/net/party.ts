@@ -192,6 +192,30 @@ export async function sendMessage(partyId: string, body: string): Promise<ApiRes
   return error ? { ok: false, error: error.message } : { ok: true, data: null };
 }
 
+/**
+ * Zero-width marker that flags a chat row as a system event line (e.g. joins/leaves).
+ * Avoids a schema column — the full sentence (incl. the actor's name) is baked into
+ * the body so existing members don't need a fresh member list to render it.
+ */
+export const SYSTEM_MSG_PREFIX = '​';
+
+export function isSystemMessage(body: string): boolean {
+  return body.startsWith(SYSTEM_MSG_PREFIX);
+}
+
+export function systemMessageText(body: string): string {
+  return body.slice(SYSTEM_MSG_PREFIX.length);
+}
+
+/** Post a system event line (e.g. "Orion has joined the party"), authored by the acting user. */
+export async function sendSystemMessage(partyId: string, text: string): Promise<void> {
+  if (!supabase) return;
+  const { data: uid } = await supabase.auth.getUser();
+  await supabase
+    .from('party_messages')
+    .insert({ party_id: partyId, user_id: uid.user?.id, body: (SYSTEM_MSG_PREFIX + text).slice(0, 500) });
+}
+
 export async function getActiveQuest(partyId: string): Promise<PartyQuest | null> {
   if (!supabase) return null;
   const { data } = await supabase

@@ -3,11 +3,11 @@ import { Copy, Check, Crown, LogOut, UserX, Circle } from 'lucide-react';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
-import { Pickaxe } from 'lucide-react';
+import { Pickaxe, Trees } from 'lucide-react';
 import { useAuthStore } from '@/net/auth';
 import { getLeaderboard, type LeaderboardRow } from '@/net/party';
 import { partyActions, usePartyStore } from '@/hooks/useParty';
-import { joinCoopMine, startCoopMine, useCoopStore } from '@/net/coop/session';
+import { joinCoop, startCoop, useCoopStore } from '@/net/coop/session';
 import { CreateJoinPanel } from '@/components/party/CreateJoinPanel';
 import { PartyChat } from '@/components/party/PartyChat';
 import { PartyQuestPanel } from '@/components/party/PartyQuestPanel';
@@ -116,44 +116,59 @@ function CoopRaidPanel() {
   // A live session someone else started that I haven't joined yet.
   const canJoin = session && session.status === 'active' && session.host_id !== myId && !joined;
   const hostName = session ? members.find((m) => m.user_id === session.host_id)?.username : null;
+  const gameLabel = session?.game === 'forest' ? 'Wild Forest' : 'Deep Mine';
+  const GameIcon = session?.game === 'forest' ? Trees : Pickaxe;
 
   return (
     <Panel tone="parchment" className="space-y-3 p-4">
       <SectionTitle>Co-op Raid</SectionTitle>
       {joined ? (
         <p className="text-center text-xs italic text-ink-muted">
-          You're in a Mine raid — the run window is open.
+          You're in a {gameLabel} raid — the run window is open.
         </p>
       ) : canJoin ? (
         <div className="space-y-2">
           <p className="text-sm text-ink">
-            <span className="font-bold text-gold-deep">{hostName ?? 'A member'}</span> is raiding the
-            Deep Mine.
+            <span className="font-bold text-gold-deep">{hostName ?? 'A member'}</span> is raiding the{' '}
+            {gameLabel}.
           </p>
           <Button
             className="flex w-full items-center justify-center gap-2"
             disabled={busy}
-            onClick={() => session && joinCoopMine(session)}
+            onClick={() => session && joinCoop(session)}
           >
-            <Pickaxe size={16} /> Join the raid
+            <GameIcon size={16} /> Join the raid
           </Button>
         </div>
       ) : (
         <>
           <p className="text-xs text-ink-muted">
-            Start a shared Deep Mine run — everyone dives the same map together in real time.
+            Start a shared run — everyone dives the same map together in real time.
           </p>
-          <Button
-            className="flex w-full items-center justify-center gap-2"
-            disabled={busy}
-            onClick={async () => {
-              setBusy(true);
-              await startCoopMine(party.id);
-              setBusy(false);
-            }}
-          >
-            <Pickaxe size={16} /> Raid the Deep Mine together
-          </Button>
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              className="flex items-center justify-center gap-2"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                await startCoop(party.id, 'mine');
+                setBusy(false);
+              }}
+            >
+              <Pickaxe size={16} /> Deep Mine
+            </Button>
+            <Button
+              className="flex items-center justify-center gap-2"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                await startCoop(party.id, 'forest');
+                setBusy(false);
+              }}
+            >
+              <Trees size={16} /> Wild Forest
+            </Button>
+          </div>
         </>
       )}
     </Panel>

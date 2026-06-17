@@ -24,6 +24,10 @@ import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/cn';
 import { ForestControls } from './ForestControls';
 import { CrawlerAvatar } from '@/components/minigame/CrawlerAvatar';
+import { useCoopStore } from '@/net/coop/session';
+import { useAuthStore } from '@/net/auth';
+import { usePartyStore } from '@/hooks/useParty';
+import { CoopToasts } from '@/components/minigame/CoopToasts';
 
 const CELL = 52; // px per tile
 const BOARD_PX = VIEW * CELL; // 572px
@@ -166,6 +170,16 @@ export function ForestRunOverlay() {
   const endForest = useGameStore((s) => s.endForest);
   const forestAdvance = useGameStore((s) => s.forestAdvance);
   const beginForestBanking = useGameStore((s) => s.beginForestBanking);
+  const remotePlayers = useCoopStore((s) => s.remotePlayers);
+  const coopSession = useCoopStore((s) => s.session);
+  const coopJoined = useCoopStore((s) => s.joined);
+  const partyMembers = usePartyStore((s) => s.members);
+  const myId = useAuthStore((s) => s.session?.user?.id);
+  // Prefer the authoritative party-roster name; fall back to the broadcast name.
+  const nameFor = (userId: string, fallback: string) =>
+    partyMembers.find((m) => m.user_id === userId)?.username ?? fallback;
+  // In co-op the host leads the descent; guests follow via the world slice.
+  const isCoopGuest = coopJoined && !!coopSession && coopSession.host_id !== myId;
 
   // Smooth-camera refs
   const worldRef = useRef<HTMLDivElement>(null);
@@ -288,9 +302,17 @@ export function ForestRunOverlay() {
     rows: forest.rows,
     cols: forest.cols,
     snapKey: forest.stage,
-    movers: forest.beasts
-      .filter((b) => isVisible(forest, b.r, b.c) && inView(b.r, b.c))
-      .map((b) => ({ id: b.id, r: b.r, c: b.c })),
+    // Beasts (only when in sight) + co-op party members on this stage. Teammates are
+    // shown through fog so the party stays visible; the `rp:` id namespace avoids
+    // colliding with beast ids. Both ride the rAF mover path for smooth motion.
+    movers: [
+      ...forest.beasts
+        .filter((b) => isVisible(forest, b.r, b.c) && inView(b.r, b.c))
+        .map((b) => ({ id: b.id, r: b.r, c: b.c })),
+      ...Object.values(remotePlayers)
+        .filter((p) => p.floor === forest.stage && inView(p.r, p.c))
+        .map((p) => ({ id: `rp:${p.userId}`, r: p.r, c: p.c })),
+    ],
   };
 
   // Torch-glow radius and position in world-container space
@@ -302,6 +324,7 @@ export function ForestRunOverlay() {
 
   return (
     <div className="texture-wood fixed inset-0 z-50 flex flex-col items-center gap-3 overflow-auto px-4 py-4">
+      <CoopToasts />
       {/* HUD */}
       <div className="flex w-full max-w-[600px] items-center justify-between gap-3">
         <span className="font-display text-sm font-bold text-gold-bright">
@@ -674,6 +697,33 @@ export function ForestRunOverlay() {
           );
         })}
 
+        {/* Co-op party members — positions arrive over the broadcast channel (~10 Hz).
+            Registered as movers so the rAF loop interpolates them in world-pixel space
+            (smooth glide + camera-locked), same path as beasts. Shown through fog. */}
+        {Object.values(remotePlayers).map((p) => {
+          if (p.floor !== forest.stage) return null;
+          const vci = vc(p.c);
+          const vri = vr(p.r);
+          if (vri < 0 || vri >= RENDER_VIEW || vci < 0 || vci >= RENDER_VIEW) return null;
+          return (
+            <div
+              key={p.userId}
+              ref={(el) => {
+                const id = `rp:${p.userId}`;
+                if (el) moverRefs.current.set(id, el);
+                else moverRefs.current.delete(id);
+              }}
+              className="pointer-events-none absolute z-[10]"
+              style={{ width: CELL, height: CELL, transform: `translate(${vci * CELL}px, ${vri * CELL}px)` }}
+            >
+              <CrawlerAvatar variant="forager" facing={p.facing} moving dead={p.hp <= 0} cell={CELL} />
+              <span className="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-black/60 px-1 font-display text-[9px] text-gold-bright">
+                {nameFor(p.userId, p.username)}
+              </span>
+            </div>
+          );
+        })}
+
         {/* Player — rAF drives position */}
         <div
           ref={playerRef}
@@ -840,18 +890,27 @@ export function ForestRunOverlay() {
       )}
 
       {/* Push deeper / leave */}
-      <div className="flex w-full max-w-[600px] items-center justify-center gap-2">
-        <Button
-          variant={onTreeline ? 'primary' : 'secondary'}
-          onClick={forestAdvance}
-          disabled={!onTreeline}
-          className={cn('flex items-center gap-1.5 px-3 py-1.5 text-xs', !onTreeline && 'opacity-60')}
-        >
-          <ChevronsDown className="h-4 w-4" /> Push deeper
-        </Button>
-        <Button variant="danger" onClick={beginForestBanking} className="flex items-center gap-1.5 px-3 py-1.5 text-xs">
-          <LogOut className="h-4 w-4" /> Bank &amp; leave
-        </Button>
+      <div className="flex w-full max-w-[600px] flex-col items-center gap-1">
+        <div className="flex items-center justify-center gap-2">
+          <Button
+            variant={onTreeline && !isCoopGuest ? 'primary' : 'secondary'}
+            onClick={forestAdvance}
+            disabled={!onTreeline || isCoopGuest}
+            title={isCoopGuest ? 'The host leads the way deeper' : undefined}
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-1.5 text-xs',
+              (!onTreeline || isCoopGuest) && 'opacity-60',
+            )}
+          >
+            <ChevronsDown className="h-4 w-4" /> Push deeper
+          </Button>
+          <Button variant="danger" onClick={beginForestBanking} className="flex items-center gap-1.5 px-3 py-1.5 text-xs">
+            <LogOut className="h-4 w-4" /> Bank &amp; leave
+          </Button>
+        </div>
+        {isCoopGuest && (
+          <p className="text-[10px] text-parchment-300/50">The host leads the way deeper.</p>
+        )}
       </div>
 
       {/* Touch controls */}

@@ -15,6 +15,8 @@ import { MineControls } from './MineControls';
 import { CrawlerAvatar } from '@/components/minigame/CrawlerAvatar';
 import { useCoopStore } from '@/net/coop/session';
 import { useAuthStore } from '@/net/auth';
+import { usePartyStore } from '@/hooks/useParty';
+import { CoopToasts } from '@/components/minigame/CoopToasts';
 
 const CELL = 52;
 const BOARD_PX = VIEW * CELL;
@@ -118,7 +120,12 @@ export function MineRunOverlay() {
   const remotePlayers = useCoopStore((s) => s.remotePlayers);
   const coopSession = useCoopStore((s) => s.session);
   const coopJoined = useCoopStore((s) => s.joined);
+  const partyMembers = usePartyStore((s) => s.members);
   const myId = useAuthStore((s) => s.session?.user?.id);
+  // Prefer the authoritative party-roster name (every client has it), fall back to
+  // the player's self-reported broadcast name.
+  const nameFor = (userId: string, fallback: string) =>
+    partyMembers.find((m) => m.user_id === userId)?.username ?? fallback;
   // In co-op the host leads the descent; guests follow via the world slice and
   // can't change the floor themselves.
   const isCoopGuest = coopJoined && !!coopSession && coopSession.host_id !== myId;
@@ -260,6 +267,7 @@ export function MineRunOverlay() {
 
   return (
     <div className="texture-wood fixed inset-0 z-50 flex flex-col items-center gap-3 overflow-auto px-4 py-4">
+      <CoopToasts />
       {/* HUD */}
       <div className="flex w-full max-w-lg items-center justify-between gap-3">
         <span className="font-display text-sm font-bold text-gold-bright">
@@ -543,7 +551,7 @@ export function MineRunOverlay() {
             >
               <CrawlerAvatar variant="miner" facing={p.facing} moving dead={p.hp <= 0} cell={CELL} />
               <span className="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-black/60 px-1 font-display text-[9px] text-gold-bright">
-                {p.username}
+                {nameFor(p.userId, p.username)}
               </span>
             </div>
           );

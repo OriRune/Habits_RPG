@@ -85,13 +85,17 @@ import { dungeonStamina, type RNG } from '@/engine/crawl';
 import { mulberry32, floorSeed } from '@/engine/rng';
 import {
   type ForestState,
+  type ForestTile,
   generateForest,
+  forestSnapshot,
   tryMove as forestTryMove,
   act as forestActFn,
   castSpell as forestCastSpellFn,
   stepBeasts,
   advance as forestAdvanceFn,
   activateShrine as forestActivateShrine,
+  damageBeastById,
+  coopClientStep as forestCoopClientStep,
   splitHaul,
   FOREST_ENERGY_COST,
   FOREST_DEATH_KEEP,
@@ -463,14 +467,15 @@ export interface GameState {
   endMining: () => void;
 
   // Wild Forest (real-time foraging minigame; see src/engine/forest.ts).
-  /** Start a run: gate on level/energy, charge energy, generate stage 1. */
-  beginForest: () => void;
+  /** Start a run: gate on energy, charge energy, generate stage 1. `seed` shares the map in co-op. */
+  beginForest: (seed?: number) => void;
   /** Step/turn the forager one cell (re-lights the fog). */
   forestMove: (dir: Dir) => void;
   /** Act on the faced cell (slash a beast or gather a node). */
   forestAct: () => void;
   /** Advance beasts on the loop's clock; flips the run to 'ended' if the forager falls. */
-  forestTick: (nowMs: number) => void;
+  /** `coPlayers` (co-op) lets beasts target the nearest of all players. */
+  forestTick: (nowMs: number, coPlayers?: ReadonlyArray<{ r: number; c: number }>) => void;
   /** Pause the run and show the banking summary screen (voluntary leave). */
   beginForestBanking: () => void;
   /** Push on through the far tree line into a deeper, richer stage. */
@@ -479,6 +484,24 @@ export interface GameState {
   forestCast: (spellKey: string) => void;
   /** Activate the shrine the forager is standing on. */
   forestShrine: (nowMs: number) => void;
+  /** Co-op guest: apply the host's authoritative forest world — follow stage + beasts. */
+  coopApplyForestWorld: (slice: {
+    floor: number;
+    monsters: ReadonlyArray<{
+      id: string;
+      r: number;
+      c: number;
+      hp: number;
+      readyAtMs: number;
+      asleep?: boolean;
+    }>;
+  }) => void;
+  /** Co-op: apply a peer's forest tile change (shared resource nodes). */
+  coopApplyForestTile: (stage: number, r: number, c: number, tile: ForestTile) => void;
+  /** Co-op host: resolve a remote player's melee attack on a beast (once). */
+  coopApplyForestAttack: (beastId: string, dmg: number) => void;
+  /** Co-op guest per-tick: advance only own body (regen + contact damage). */
+  coopForestClientTick: (nowMs: number) => void;
   /** Commit the haul and close the run — full on confirmed banking, halved on death. */
   endForest: () => void;
 
@@ -912,6 +935,10 @@ let mineRng: RNG = Math.random;
  * what lets a guest follow the host's descent onto the same map.
  */
 let mineBaseSeed: number | undefined;
+
+/** Wild Forest run RNG + base seed — the forest analog of mineRng/mineBaseSeed. */
+let forestRng: RNG = Math.random;
+let forestBaseSeed: number | undefined;
 
 export const useGameStore = create<GameState>()(
   persist(
@@ -1914,8 +1941,11 @@ export const useGameStore = create<GameState>()(
       endMining: () => set((s) => (s.mining ? commitMining(s, s.mining) : s)),
 
       // --- Wild Forest (real-time foraging minigame) ---
-      beginForest: () =>
+      beginForest: (seed?: number) =>
         set((s) => {
+          // Seed the run's RNG: shared mulberry32 for co-op, Math.random for solo.
+          forestRng = seed !== undefined ? mulberry32(seed) : Math.random;
+          forestBaseSeed = seed;
           const free = s.settings.unlimitedEnergy;
           if (s.forest) return s;
           if (!free && s.character.energy < FOREST_ENERGY_COST) return s;
@@ -1963,7 +1993,8 @@ export const useGameStore = create<GameState>()(
               knownSpells: s.knownSpells,
               chopPower,
             },
-            Math.random,
+            // Stage 1 from the per-stage seed (co-op parity); solo uses live forestRng.
+            seed !== undefined ? mulberry32(floorSeed(seed, 1)) : forestRng,
           );
           return {
             character: {
@@ -1983,13 +2014,13 @@ export const useGameStore = create<GameState>()(
 
       forestAct: () =>
         set((s) =>
-          s.forest && s.forest.status === 'active' ? { forest: forestActFn(s.forest, Math.random) } : s,
+          s.forest && s.forest.status === 'active' ? { forest: forestActFn(s.forest, forestRng) } : s,
         ),
 
-      forestTick: (nowMs) =>
+      forestTick: (nowMs, coPlayers) =>
         set((s) => {
           if (!s.forest || s.forest.status !== 'active') return s;
-          const forest = stepBeasts(s.forest, nowMs, Math.random);
+          const forest = stepBeasts(s.forest, nowMs, forestRng, coPlayers);
           if (forest === s.forest) return s;
           // Death flips status to 'ended' but doesn't commit — the overlay shows the forfeit
           // first, then endForest banks the kept half (mirrors the mine's banking flow).
@@ -2006,7 +2037,11 @@ export const useGameStore = create<GameState>()(
       forestAdvance: () =>
         set((s) => {
           if (!s.forest || s.forest.status !== 'active') return s;
-          const forest = forestAdvanceFn(s.forest, Math.random);
+          // Next stage from its per-stage seed (co-op parity); solo uses forestRng.
+          const nextStage = s.forest.stage + 1;
+          const genRng =
+            forestBaseSeed !== undefined ? mulberry32(floorSeed(forestBaseSeed, nextStage)) : forestRng;
+          const forest = forestAdvanceFn(s.forest, genRng);
           if (forest === s.forest) return s;
           return { forest, deepestForestStage: Math.max(s.deepestForestStage, forest.deepest) };
         }),
@@ -2014,7 +2049,7 @@ export const useGameStore = create<GameState>()(
       forestCast: (spellKey: string) =>
         set((s) => {
           if (!s.forest || s.forest.status !== 'active') return s;
-          const forest = forestCastSpellFn(s.forest, spellKey, Date.now(), Math.random);
+          const forest = forestCastSpellFn(s.forest, spellKey, Date.now(), forestRng);
           if (forest === s.forest) return s;
           return { forest };
         }),
@@ -2022,7 +2057,75 @@ export const useGameStore = create<GameState>()(
       forestShrine: (nowMs: number) =>
         set((s) => {
           if (!s.forest || s.forest.status !== 'active') return s;
-          const forest = forestActivateShrine(s.forest, nowMs, Math.random);
+          const forest = forestActivateShrine(s.forest, nowMs, forestRng);
+          if (forest === s.forest) return s;
+          return { forest };
+        }),
+
+      // --- Co-op Forest (mirrors the mine's coop actions) ---
+      coopApplyForestWorld: (slice) =>
+        set((s) => {
+          if (!s.forest) return s;
+          let forest = s.forest;
+
+          // Follow the host's advance: regenerate the host's stage from its per-stage
+          // seed, carrying our own hp/haul and clamped sta/mp forward.
+          if (slice.floor !== forest.stage && forestBaseSeed !== undefined) {
+            const next = generateForest(
+              slice.floor,
+              forestSnapshot(forest),
+              mulberry32(floorSeed(forestBaseSeed, slice.floor)),
+            );
+            forest = {
+              ...next,
+              hp: forest.hp,
+              sta: Math.min(next.maxSta, forest.sta),
+              mp: Math.min(next.maxMp, forest.mp),
+              haul: forest.haul,
+              deepest: Math.max(forest.deepest, slice.floor),
+            };
+          }
+
+          const byId = new Map(slice.monsters.map((m) => [m.id, m]));
+          const merged = forest.beasts
+            .filter((b) => byId.has(b.id))
+            .map((b) => {
+              const sl = byId.get(b.id)!;
+              // Carry the host's `asleep` so a woken beast shows its HP bar on the guest.
+              return {
+                ...b,
+                r: sl.r,
+                c: sl.c,
+                hp: sl.hp,
+                readyAtMs: sl.readyAtMs,
+                asleep: sl.asleep ?? b.asleep,
+              };
+            });
+          return { forest: { ...forest, beasts: merged } };
+        }),
+
+      coopApplyForestTile: (stage, r, c, tile) =>
+        set((s) => {
+          if (!s.forest || s.forest.stage !== stage) return s;
+          const cur = s.forest.tiles[r]?.[c];
+          if (!cur || cur === tile) return s;
+          const tiles = s.forest.tiles.map((row) => row.slice());
+          tiles[r][c] = tile as ForestTile;
+          return { forest: { ...s.forest, tiles } };
+        }),
+
+      coopApplyForestAttack: (beastId, dmg) =>
+        set((s) => {
+          if (!s.forest || s.forest.status !== 'active') return s;
+          const forest = damageBeastById(s.forest, beastId, dmg, forestRng);
+          if (forest === s.forest) return s;
+          return { forest };
+        }),
+
+      coopForestClientTick: (nowMs) =>
+        set((s) => {
+          if (!s.forest || s.forest.status !== 'active') return s;
+          const forest = forestCoopClientStep(s.forest, nowMs);
           if (forest === s.forest) return s;
           return { forest };
         }),

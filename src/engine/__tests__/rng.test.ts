@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mulberry32, randomSeed, floorSeed } from '../rng';
 import { floodFieldMulti } from '../crawl';
 import { generateMine, type MineSnapshot } from '../mining';
+import { generateForest, type ForestSnapshot } from '../forest';
 import { getWeapon, STARTER_WEAPON } from '../weapons';
 
 describe('mulberry32', () => {
@@ -100,6 +101,43 @@ describe('floorSeed (per-floor co-op parity)', () => {
 
     expect(JSON.stringify(afterDrain.tiles)).toEqual(JSON.stringify(clean.tiles));
     expect(JSON.stringify(afterDrain.monsters)).toEqual(JSON.stringify(clean.monsters));
+  });
+});
+
+const FOREST_SNAP: ForestSnapshot = {
+  meleePower: 5,
+  rangedPower: 3,
+  damageSpell: 2,
+  supportSpell: 2,
+  illusionPower: 1,
+  defense: 0,
+  ward: 0,
+  maxHp: 50,
+  maxSta: 55,
+  maxMp: 8,
+  weapon: getWeapon(STARTER_WEAPON),
+  knownSpells: [],
+  chopPower: 1,
+};
+
+describe('generateForest determinism (co-op map parity)', () => {
+  it('regenerates a stage identically regardless of prior RNG consumption', () => {
+    const base = 0x1234;
+    const clean = generateForest(2, FOREST_SNAP, mulberry32(floorSeed(base, 2)));
+
+    const drained = mulberry32(base);
+    for (let i = 0; i < 5000; i++) drained();
+    const afterDrain = generateForest(2, FOREST_SNAP, mulberry32(floorSeed(base, 2)));
+
+    expect(JSON.stringify(afterDrain.tiles)).toEqual(JSON.stringify(clean.tiles));
+    expect(JSON.stringify(afterDrain.beasts)).toEqual(JSON.stringify(clean.beasts));
+    expect(afterDrain.player).toEqual(clean.player);
+  });
+
+  it('produces a different stage from a different seed', () => {
+    const a = generateForest(2, FOREST_SNAP, mulberry32(1));
+    const b = generateForest(2, FOREST_SNAP, mulberry32(2));
+    expect(JSON.stringify(a.tiles)).not.toEqual(JSON.stringify(b.tiles));
   });
 });
 

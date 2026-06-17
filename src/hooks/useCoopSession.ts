@@ -3,7 +3,14 @@ import { supabase } from '@/net/supabaseClient';
 import { useAuthStore } from '@/net/auth';
 import { usePartyStore } from '@/hooks/useParty';
 import { useGameStore } from '@/store/useGameStore';
-import { getActiveCoopSession, leaveCoop, setSession, useCoopStore } from '@/net/coop/session';
+import {
+  coopGameName,
+  getActiveCoopSession,
+  leaveCoop,
+  pushCoopNotice,
+  setSession,
+  useCoopStore,
+} from '@/net/coop/session';
 import {
   COOP_BROADCAST_MS,
   COOP_PLAYER_TIMEOUT_MS,
@@ -12,6 +19,8 @@ import {
   type PlayerSlice,
   type WorldSlice,
 } from '@/net/coop/protocol';
+import type { MineTile } from '@/engine/mining';
+import type { ForestTile } from '@/engine/forest';
 
 /**
  * Co-op transport (Phase 3), mounted once in App.
@@ -60,6 +69,7 @@ export function useCoopSession(): void {
   const sessionId = coopSession?.id ?? null;
   const userId = authSession?.user?.id ?? 'anon';
   const isHost = !!coopSession && coopSession.host_id === userId;
+  const game = coopSession?.game ?? 'mine';
 
   useEffect(() => {
     if (!supabase || !sessionId || !joined) return;
@@ -73,17 +83,41 @@ export function useCoopSession(): void {
       const msg = payload as CoopMessage;
       if (msg.type === 'player') {
         if (msg.userId === userId) return;
+        // First slice from a player → they just joined the raid.
+        const known = !!useCoopStore.getState().remotePlayers[msg.userId];
         useCoopStore.setState((st) => ({
           remotePlayers: { ...st.remotePlayers, [msg.userId]: { ...msg, lastSeen: performance.now() } },
         }));
+        if (!known) pushCoopNotice(`${msg.username} joined the raid`);
+      } else if (msg.type === 'bye') {
+        if (msg.userId === userId) return;
+        const rp = useCoopStore.getState().remotePlayers[msg.userId];
+        if (rp) {
+          pushCoopNotice(`${msg.username} retreated from the ${coopGameName(game)}`);
+          useCoopStore.setState((st) => {
+            const next = { ...st.remotePlayers };
+            delete next[msg.userId];
+            return { remotePlayers: next };
+          });
+        }
       } else if (msg.type === 'world') {
-        if (!isHost) useGameStore.getState().coopApplyWorld(msg);
+        if (!isHost) {
+          if (game === 'forest') useGameStore.getState().coopApplyForestWorld(msg);
+          else useGameStore.getState().coopApplyWorld(msg);
+        }
       } else if (msg.type === 'attack') {
-        if (isHost) useGameStore.getState().coopApplyRemoteAttack(msg.monsterId, msg.dmg);
+        if (isHost) {
+          if (game === 'forest') useGameStore.getState().coopApplyForestAttack(msg.monsterId, msg.dmg);
+          else useGameStore.getState().coopApplyRemoteAttack(msg.monsterId, msg.dmg);
+        }
       } else if (msg.type === 'tile') {
-        // Peer-to-peer: both host and guests apply each other's digs.
+        // Peer-to-peer: both host and guests apply each other's digs/gathers.
         if (msg.userId !== userId) {
-          useGameStore.getState().coopApplyTile(msg.floor, msg.r, msg.c, msg.tile);
+          if (game === 'forest') {
+            useGameStore.getState().coopApplyForestTile(msg.floor, msg.r, msg.c, msg.tile as ForestTile);
+          } else {
+            useGameStore.getState().coopApplyTile(msg.floor, msg.r, msg.c, msg.tile as MineTile);
+          }
         }
       }
     });
@@ -95,34 +129,40 @@ export function useCoopSession(): void {
     useCoopStore.setState({ send });
 
     const interval = setInterval(() => {
-      const mining = useGameStore.getState().mining;
-      if (!mining) return;
+      const st = useGameStore.getState();
+      const run = game === 'forest' ? st.forest : st.mining;
+      if (!run) return;
+      // floor (mine) / stage (forest) both carry the run's depth on the wire.
+      const depth = 'floor' in run ? run.floor : run.stage;
+      const entities = 'monsters' in run ? run.monsters : run.beasts;
 
       send({
         type: 'player',
         userId,
         username,
-        r: mining.player.r,
-        c: mining.player.c,
-        facing: mining.player.facing,
-        hp: mining.hp,
-        maxHp: mining.maxHp,
-        floor: mining.floor,
+        r: run.player.r,
+        c: run.player.c,
+        facing: run.player.facing,
+        hp: run.hp,
+        maxHp: run.maxHp,
+        floor: depth,
       } satisfies PlayerSlice);
 
       if (isHost) {
         send({
           type: 'world',
           t: performance.now(),
-          floor: mining.floor,
-          status: mining.status,
-          monsters: mining.monsters.map((m) => ({
+          floor: depth,
+          status: run.status,
+          monsters: entities.map((m) => ({
             id: m.id,
             key: m.key,
             r: m.r,
             c: m.c,
             hp: m.hp,
             readyAtMs: m.readyAtMs,
+            // Forest beasts carry an `asleep` flag the guest needs for HP-bar/dim render.
+            asleep: (m as { asleep?: boolean }).asleep,
           })),
         } satisfies WorldSlice);
       }
@@ -134,7 +174,11 @@ export function useCoopSession(): void {
       let changed = false;
       for (const k of Object.keys(rp)) {
         if (now - rp[k].lastSeen < COOP_PLAYER_TIMEOUT_MS) next[k] = rp[k];
-        else changed = true;
+        else {
+          changed = true;
+          // Timed out without a clean 'bye' (disconnect / tab close).
+          pushCoopNotice(`${rp[k].username} left the ${coopGameName(game)}`);
+        }
       }
       if (changed) useCoopStore.setState({ remotePlayers: next });
     }, COOP_BROADCAST_MS);
@@ -144,15 +188,15 @@ export function useCoopSession(): void {
       useCoopStore.setState({ send: null, remotePlayers: {} });
       void sb.removeChannel(channel);
     };
-  }, [sessionId, joined, isHost, userId]);
+  }, [sessionId, joined, isHost, userId, game]);
 
   // Auto-leave the session when the local run ends (banked / died / quit).
   useEffect(() => {
     const unsub = useGameStore.subscribe((s) => {
       const { joined: stillJoined, session } = useCoopStore.getState();
-      if (stillJoined && !s.mining) {
-        void leaveCoop(!!session && session.host_id === userId);
-      }
+      if (!stillJoined || !session) return;
+      const run = session.game === 'forest' ? s.forest : s.mining;
+      if (!run) void leaveCoop(session.host_id === userId);
     });
     return unsub;
   }, [userId]);

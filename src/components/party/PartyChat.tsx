@@ -3,6 +3,7 @@ import { Send } from 'lucide-react';
 import { Panel } from '@/components/ui/Panel';
 import { SectionTitle } from '@/components/ui/Divider';
 import { useAuthStore } from '@/net/auth';
+import { isSystemMessage, systemMessageText } from '@/net/party';
 import { partyActions, usePartyStore } from '@/hooks/useParty';
 
 /** Live party chat: history + a send box. New messages arrive via realtime. */
@@ -41,6 +42,13 @@ export function PartyChat() {
           <p className="py-4 text-center text-xs italic text-ink-muted">No messages yet — say hello!</p>
         )}
         {messages.map((m) => {
+          if (isSystemMessage(m.body)) {
+            return (
+              <div key={m.id} className="py-0.5 text-center">
+                <span className="text-[11px] italic text-ink-muted">{systemMessageText(m.body)}</span>
+              </div>
+            );
+          }
           const mine = m.user_id === myId;
           return (
             <div key={m.id} className={mine ? 'text-right' : 'text-left'}>
