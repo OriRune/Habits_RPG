@@ -2,13 +2,18 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 // Fantasy typography (offline, bundled): Cinzel for display, EB Garamond for body.
-import '@fontsource/cinzel/500.css';
-import '@fontsource/cinzel/600.css';
-import '@fontsource/cinzel/700.css';
-import '@fontsource/eb-garamond/400.css';
-import '@fontsource/eb-garamond/500.css';
-import '@fontsource/eb-garamond/600.css';
-import '@fontsource/eb-garamond/400-italic.css';
+// All seven weight/style variants are in use (weightless `font-display` text relies
+// on Cinzel 500; body uses 400/500/600 + 400-italic). We import the *latin-only*
+// subsets — the bare `cinzel/500.css` etc. also bundle latin-ext/cyrillic/greek/
+// vietnamese glyph files this English-only app never renders. Latin-only keeps every
+// weight identical while dropping the unused glyph payload.
+import '@fontsource/cinzel/latin-500.css';
+import '@fontsource/cinzel/latin-600.css';
+import '@fontsource/cinzel/latin-700.css';
+import '@fontsource/eb-garamond/latin-400.css';
+import '@fontsource/eb-garamond/latin-500.css';
+import '@fontsource/eb-garamond/latin-600.css';
+import '@fontsource/eb-garamond/latin-400-italic.css';
 import './index.css';
 import { applyPalette, resolvePalette } from '@/engine/palettes';
 

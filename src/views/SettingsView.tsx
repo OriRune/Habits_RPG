@@ -9,6 +9,9 @@ import { Button } from '@/components/ui/Button';
 import { Toggle } from '@/components/ui/Toggle';
 import { SectionTitle } from '@/components/ui/Divider';
 import { AppearanceSection } from '@/components/settings/AppearanceSection';
+import { isBackendConfigured } from '@/net/env';
+import { signOut, useAuthStore } from '@/net/auth';
+import { pushCloudSave } from '@/net/cloudSave';
 
 const LEVEL_JUMPS = [3, 5, 10, 20, 50];
 const FLOOR_JUMPS = [0, 5, 8, 10];
@@ -37,6 +40,13 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
   const [secondary, setSecondary] = useState<StatId>('DX');
   const previewClass = classFor(primary, secondary);
 
+  const username = useAuthStore((s) => s.username);
+  const handleSignOut = async () => {
+    // Flush a final save so nothing since the last debounce is lost, then sign out.
+    await pushCloudSave();
+    await signOut();
+  };
+
   const spawn = (lvl: number) => {
     devSpawnTrial(lvl);
     onClose(); // surface the BattleOverlay over the dashboard
@@ -52,6 +62,24 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
       </header>
 
       <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
+        {/* Account (only when signed in to a backend) */}
+        {isBackendConfigured() && username && (
+          <Panel tone="parchment" className="space-y-3 p-4">
+            <SectionTitle>Account</SectionTitle>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-sm text-ink">
+                Signed in as <span className="font-bold text-gold-deep">{username}</span>
+              </span>
+              <Button variant="secondary" onClick={handleSignOut}>
+                Sign out
+              </Button>
+            </div>
+            <p className="text-[11px] text-ink-muted">
+              Your progress syncs to this account across devices.
+            </p>
+          </Panel>
+        )}
+
         {/* General */}
         <Panel tone="parchment" className="space-y-3 p-4">
           <SectionTitle>General</SectionTitle>
