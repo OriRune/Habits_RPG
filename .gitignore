@@ -10,6 +10,9 @@ dist-ssr
 .DS_Store
 .vscode/*
 !.vscode/extensions.json
+# Personal Claude Code permissions — keep local, not shared in the repo.
+.claude/settings.json
+.claude/settings.local.json
 
 # Raw sprite drop folder + scratch reference images (used copies live under src/assets/)
 Pixelsnapped_sprites/
