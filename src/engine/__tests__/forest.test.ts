@@ -40,6 +40,7 @@ const SNAP: ForestSnapshot = {
   weapon: WEAPON,
   knownSpells: [],
   chopPower: 1,
+  agLevel: 0,
 };
 
 /** Deterministic RNG (mulberry32) for repeatable generation. */
@@ -104,6 +105,11 @@ function makeForest(over: Partial<ForestState> = {}): ForestState {
     playerStatuses: [],
     lastSpellMs: -1000,
     nextRuneId: 1,
+    // Phase 1 fields
+    lastDashMs: -2000,
+    dashCooldownMs: 2000,
+    moveIntervalMs: 150,
+    agLevel: 0,
     ...over,
   };
 }

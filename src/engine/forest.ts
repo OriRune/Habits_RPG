@@ -42,6 +42,11 @@ import {
   RING_DURATION_MS,
   STA_REGEN_MS,
   MP_REGEN_MS,
+  DASH_BASE_CD_MS,
+  STAGGER_MS,
+  CHARGE_DAMAGE_MULT,
+  dashCooldown,
+  moveInterval,
 } from './crawl';
 
 export type { Dir, RNG } from './crawl';
@@ -151,6 +156,8 @@ export interface ForestSnapshot {
   knownSpells: string[];
   /** Equipped tool's chopping power (1 = one swing per durability, 2 = one-shots tier-2 trees, etc.). */
   chopPower: number;
+  /** Agility level — drives dash cooldown and move speed. */
+  agLevel: number;
 }
 
 export interface ForestState {
@@ -200,6 +207,15 @@ export interface ForestState {
   nextRuneId: number;
   /** Transient: where the last ranged shot travelled — used to render a tracer in the overlay. */
   lastShot?: { fromR: number; fromC: number; toR: number; toC: number; at: number } | null;
+  // Phase 1: dash + AG-derived timing
+  /** Timestamp of the last successful dash (ms). Negative = ready immediately. */
+  lastDashMs: number;
+  /** Dash cooldown computed from AG at run start (ms). */
+  dashCooldownMs: number;
+  /** Move cadence computed from AG at run start (ms). */
+  moveIntervalMs: number;
+  /** Agility level snapshot — preserved across stages. */
+  agLevel: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -646,6 +662,11 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
     lastSpellMs: -SPELL_CD_MS,
     nextRuneId: 1,
     lastShot: null,
+    // Phase 1: dash + speed derived from AG
+    lastDashMs: -DASH_BASE_CD_MS,
+    dashCooldownMs: dashCooldown(snapshot.agLevel),
+    moveIntervalMs: moveInterval(snapshot.agLevel),
+    agLevel: snapshot.agLevel,
   });
 }
 
@@ -666,6 +687,7 @@ export function forestSnapshot(state: ForestState): ForestSnapshot {
     weapon: state.weapon,
     knownSpells: state.knownSpells,
     chopPower: state.chopPower,
+    agLevel: state.agLevel,
   };
 }
 
@@ -699,6 +721,41 @@ export function tryMove(state: ForestState, dir: Dir): ForestState {
   return reveal({ ...state, player: { r, c, facing: dir } });
 }
 
+/**
+ * Dash in `dir` — skips 1 or 2 cells (2 if clear, else 1), consuming the dash cooldown
+ * and briefly granting i-frame immunity by setting `lastHitAtMs`.  This is the counter to
+ * the {@link FOREST_WINDUP_MS} telegraph: sidestep during the wind-up window to cancel it.
+ * No-ops when on cooldown or when there's nowhere to land.
+ */
+export function tryDash(state: ForestState, dir: Dir, nowMs: number): ForestState {
+  if (state.status !== 'active') return state;
+  const cd = state.dashCooldownMs ?? DASH_BASE_CD_MS;
+  if (nowMs - (state.lastDashMs ?? -cd) < cd) return state;
+
+  const [dr, dc] = DIRS[dir];
+  let destR = state.player.r;
+  let destC = state.player.c;
+
+  for (let steps = 2; steps >= 1; steps--) {
+    const r = state.player.r + dr * steps;
+    const c = state.player.c + dc * steps;
+    if (isWalkable(tileAt(state, r, c)) && !beastAt(state, r, c)) {
+      destR = r;
+      destC = c;
+      break;
+    }
+  }
+
+  if (destR === state.player.r && destC === state.player.c) return state;
+
+  return reveal({
+    ...state,
+    player: { r: destR, c: destC, facing: dir },
+    lastDashMs: nowMs,
+    lastHitAtMs: nowMs, // i-frame: no contact damage for FOREST_IFRAME_MS after the dash
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Context-sensitive act: beast → weapon attack, node → gather
 // ---------------------------------------------------------------------------
@@ -709,8 +766,11 @@ export function tryMove(state: ForestState, dir: Dir): ForestState {
  *     (walls / trees / nodes block the shot; falls through to gather/chop if no target)
  *   • beast → weapon attack (costs stamina)
  *   • node  → gather instantly (free; stamina nodes refill)
+ *
+ * @param nowMs   Current timestamp (ms); required for charged-swing stagger timing.
+ * @param charged If true, applies {@link CHARGE_DAMAGE_MULT} and staggers hit beasts briefly.
  */
-export function act(state: ForestState, rng: RNG): ForestState {
+export function act(state: ForestState, rng: RNG, nowMs = 0, charged = false): ForestState {
   if (state.status !== 'active') return state;
 
   // --- Ranged shot: scan the faced direction ---
@@ -767,7 +827,9 @@ export function act(state: ForestState, rng: RNG): ForestState {
     if (state.sta < 1) return state;
     const def = FOREST_BEASTS[beast.key];
     const isRanged = state.weapon.attackStat === 'DX';
-    const power = isRanged ? state.rangedPower : state.meleePower;
+    const basePower = isRanged ? state.rangedPower : state.meleePower;
+    // Charged swing multiplies attack power.
+    const power = charged ? basePower * CHARGE_DAMAGE_MULT : basePower;
     const full = state.sta >= (state.weapon.staminaCost ?? SLASH_STA_COST);
     const { dealt: dmg } = attackRoll(
       power,
@@ -784,11 +846,13 @@ export function act(state: ForestState, rng: RNG): ForestState {
     if (newHp <= 0) {
       return killBeast({ ...state, sta: Math.max(0, state.sta - staCost) }, beast, rng);
     }
-    return {
-      ...state,
-      sta: Math.max(0, state.sta - staCost),
-      beasts: state.beasts.map((b) => (b.id === beast.id ? { ...b, hp: newHp } : b)),
-    };
+    // Charged hit staggers the beast (brief freeze).
+    const updatedBeasts = state.beasts.map((b) => {
+      if (b.id !== beast.id) return b;
+      if (charged && nowMs > 0) return { ...b, hp: newHp, frozenUntilMs: nowMs + STAGGER_MS };
+      return { ...b, hp: newHp };
+    });
+    return { ...state, sta: Math.max(0, state.sta - staCost), beasts: updatedBeasts };
   }
 
   const tile = tileAt(state, r, c);
@@ -797,9 +861,14 @@ export function act(state: ForestState, rng: RNG): ForestState {
   // --- Chop a tree (costs stamina, yields wood) ---
   if (tile.kind === 'tree') {
     if (state.sta <= 0) return state;
-    const chopPower = state.chopPower > 0 ? state.chopPower : 1;
+    // ST-scaled chopping: +1 effective chop power per 8 Strength levels.
+    const stBonus = Math.floor(state.meleePower / 8);
+    const baseChop = state.chopPower > 0 ? state.chopPower : 1;
+    const effectiveChop = charged
+      ? Math.ceil((baseChop + stBonus) * CHARGE_DAMAGE_MULT)
+      : baseChop + stBonus;
     const maxDur = tile.maxDurability ?? 1;
-    const dur = (tile.durability ?? 1) - chopPower;
+    const dur = (tile.durability ?? 1) - effectiveChop;
     const tiles = state.tiles.map((row) => row.slice());
     let haul = state.haul;
     const newSta = Math.max(0, state.sta - CHOP_STA_COST);

@@ -1,4 +1,4 @@
-import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Scissors } from 'lucide-react';
+import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Scissors, Zap } from 'lucide-react';
 import type { Dir } from '@/engine/forest';
 import type { ForestControlsApi } from '@/hooks/useForestLoop';
 import { cn } from '@/lib/cn';
@@ -40,20 +40,36 @@ export function ForestControls({ controls }: { controls: ForestControlsApi }) {
         {blank}
       </div>
 
-      <button
-        onPointerDown={(e) => {
-          e.preventDefault();
-          controls.act();
-        }}
-        aria-label="Slash / gather"
-        className={cn(
-          pad,
-          'h-20 w-20 flex-col gap-0.5 rounded-full font-display text-xs uppercase tracking-wider',
-        )}
-      >
-        <Scissors className="h-7 w-7" />
-        Act
-      </button>
+      <div className="flex flex-col items-center gap-2">
+        <button
+          onPointerDown={(e) => {
+            e.preventDefault();
+            controls.act();
+          }}
+          aria-label="Slash / gather"
+          className={cn(
+            pad,
+            'h-20 w-20 flex-col gap-0.5 rounded-full font-display text-xs uppercase tracking-wider',
+          )}
+        >
+          <Scissors className="h-7 w-7" />
+          Act
+        </button>
+        <button
+          onPointerDown={(e) => {
+            e.preventDefault();
+            controls.dash();
+          }}
+          aria-label="Dash"
+          className={cn(
+            pad,
+            'h-10 w-20 flex-row gap-1 rounded-full font-display text-xs uppercase tracking-wider',
+          )}
+        >
+          <Zap className="h-4 w-4" />
+          Dash
+        </button>
+      </div>
     </div>
   );
 }

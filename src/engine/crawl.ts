@@ -289,6 +289,35 @@ export function manhattan(a: { r: number; c: number }, b: { r: number; c: number
 }
 
 // ---------------------------------------------------------------------------
+// Phase 1 — Dash + charge constants & stat-scaling formulas
+// ---------------------------------------------------------------------------
+
+/** Base cooldown between dashes (ms). Reduced by Agility via {@link dashCooldown}. */
+export const DASH_BASE_CD_MS = 2000;
+/** How many swing intervals (of 240 ms each) the attack button must be held to charge. */
+export const CHARGE_SWING_COUNT = 2;
+/** Damage multiplier applied to a charged/heavy swing. */
+export const CHARGE_DAMAGE_MULT = 1.75;
+/** How long a staggered monster is briefly frozen after a charged hit (ms). */
+export const STAGGER_MS = 500;
+
+/**
+ * Dash cooldown in ms, scaling down with Agility. A high-AG character can dash every
+ * ~800 ms (the cap); low-AG characters wait up to 2 seconds between dashes.
+ */
+export function dashCooldown(agLevel: number): number {
+  return Math.max(800, DASH_BASE_CD_MS - agLevel * 40);
+}
+
+/**
+ * Move cadence in ms, scaling down slightly with Agility. Capped at 100 ms so the
+ * player never moves so fast the viewport can't keep up.
+ */
+export function moveInterval(agLevel: number): number {
+  return Math.max(100, 150 - agLevel * 2);
+}
+
+// ---------------------------------------------------------------------------
 // Shared monster combat types (extended by MineMonsterDef / ForestBeastDef)
 // ---------------------------------------------------------------------------
 

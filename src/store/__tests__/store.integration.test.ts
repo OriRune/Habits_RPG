@@ -760,6 +760,8 @@ describe('deep mine', () => {
       monsters: [], haul: {}, status: 'active', lastHitAtMs: -1000, deepest: 1, killsThisFloor: 0,
       runes: [], ringOfFire: null, ringNextHitMs: {}, playerStatuses: [],
       lastSpellMs: -1000, nextRuneId: 1,
+      // Phase 1 fields
+      lastDashMs: -2000, dashCooldownMs: 2000, moveIntervalMs: 150, agLevel: 0,
       ...over,
     };
   }
@@ -858,6 +860,8 @@ describe('wild forest', () => {
       beasts: [], haul: {}, status: 'active', lastHitAtMs: -1000, deepest: 1, killsThisStage: 0,
       runes: [], ringOfFire: null, ringNextHitMs: {}, playerStatuses: [],
       lastSpellMs: -1000, nextRuneId: 1,
+      // Phase 1 fields
+      lastDashMs: -2000, dashCooldownMs: 2000, moveIntervalMs: 150, agLevel: 0,
       ...over,
     };
   }

@@ -43,6 +43,11 @@ import {
   RING_DURATION_MS,
   STA_REGEN_MS,
   MP_REGEN_MS,
+  DASH_BASE_CD_MS,
+  STAGGER_MS,
+  CHARGE_DAMAGE_MULT,
+  dashCooldown,
+  moveInterval,
 } from './crawl';
 
 export type { Dir, RNG } from './crawl';
@@ -133,6 +138,8 @@ export interface MineSnapshot {
   weapon: WeaponDef;
   knownSpells: string[];
   pickaxePower: number;
+  /** Agility level — drives dash cooldown and move speed. */
+  agLevel: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +190,15 @@ export interface MineState {
   lastSpellMs: number;
   // Running rune ID counter
   nextRuneId: number;
+  // Phase 1: dash + AG-derived timing
+  /** Timestamp of the last successful dash (ms). Negative = ready immediately. */
+  lastDashMs: number;
+  /** Dash cooldown computed from AG at run start (ms). */
+  dashCooldownMs: number;
+  /** Move cadence computed from AG at run start (ms). */
+  moveIntervalMs: number;
+  /** Agility level snapshot — preserved across floors. */
+  agLevel: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -523,6 +539,11 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
     playerStatuses: [],
     lastSpellMs: -SPELL_CD_MS,
     nextRuneId: 1,
+    // Phase 1: dash + speed derived from AG
+    lastDashMs: -DASH_BASE_CD_MS,
+    dashCooldownMs: dashCooldown(snapshot.agLevel),
+    moveIntervalMs: moveInterval(snapshot.agLevel),
+    agLevel: snapshot.agLevel,
   };
 }
 
@@ -542,6 +563,7 @@ export function mineSnapshot(state: MineState): MineSnapshot {
     weapon: state.weapon,
     knownSpells: state.knownSpells,
     pickaxePower: state.pickaxePower,
+    agLevel: state.agLevel,
   };
 }
 
@@ -560,7 +582,7 @@ export function descend(state: MineState, rng: RNG): MineState {
 }
 
 // ---------------------------------------------------------------------------
-// Player movement
+// Player movement + dash (Phase 1)
 // ---------------------------------------------------------------------------
 
 /** Turn to face `dir`; step into the cell if walkable and unoccupied. */
@@ -573,6 +595,41 @@ export function tryMove(state: MineState, dir: Dir): MineState {
   return {
     ...state,
     player: blocked ? { ...state.player, facing: dir } : { r, c, facing: dir },
+  };
+}
+
+/**
+ * Dash in `dir` — skips 1 or 2 cells (2 if clear, else 1), consuming the dash
+ * cooldown and briefly granting i-frame immunity by setting `lastHitAtMs`.
+ * No-ops when on cooldown or when there's nowhere to land.
+ */
+export function tryDash(state: MineState, dir: Dir, nowMs: number): MineState {
+  if (state.status !== 'active') return state;
+  const cd = state.dashCooldownMs ?? DASH_BASE_CD_MS;
+  if (nowMs - (state.lastDashMs ?? -cd) < cd) return state;
+
+  const [dr, dc] = DIRS[dir];
+  let destR = state.player.r;
+  let destC = state.player.c;
+
+  // Prefer 2-cell dash; fall back to 1 if blocked.
+  for (let steps = 2; steps >= 1; steps--) {
+    const r = state.player.r + dr * steps;
+    const c = state.player.c + dc * steps;
+    if (isWalkable(tileAt(state, r, c)) && !monsterAt(state, r, c)) {
+      destR = r;
+      destC = c;
+      break;
+    }
+  }
+
+  if (destR === state.player.r && destC === state.player.c) return state;
+
+  return {
+    ...state,
+    player: { r: destR, c: destC, facing: dir },
+    lastDashMs: nowMs,
+    lastHitAtMs: nowMs, // i-frame: no contact damage for MINE_IFRAME_MS after the dash
   };
 }
 
@@ -597,11 +654,6 @@ function killMonster(state: MineState, mon: MineMonster, rng: RNG): MineState {
 }
 
 /**
- * Swing the pick at the faced cell.  Auto-context:
- *   • monster → weapon attack (uses equipped weapon's stat, bonus, staminaCost)
- *   • rock/ore → pickaxe mining (uses pickaxePower; falls back to 1 if no pick)
- */
-/**
  * Co-op client helper: the id of the monster in the cell the player faces, or
  * null. A guest uses this to send a melee attack-intent to the host (which
  * resolves the damage authoritatively) instead of damaging its local copy.
@@ -611,7 +663,13 @@ export function facedMonsterId(state: MineState): string | null {
   return monsterAt(state, r, c)?.id ?? null;
 }
 
-export function strike(state: MineState, rng: RNG): MineState {
+/**
+ * Swing at the faced cell.  Auto-context: monster → weapon attack; rock/ore → pickaxe mining.
+ *
+ * @param nowMs  Current timestamp (ms); required for charged-swing stagger timing.
+ * @param charged  If true, applies {@link CHARGE_DAMAGE_MULT} and staggers hit monsters briefly.
+ */
+export function strike(state: MineState, rng: RNG, nowMs = 0, charged = false): MineState {
   if (state.status !== 'active') return state;
   const { r, c } = facedCell(state);
 
@@ -622,7 +680,9 @@ export function strike(state: MineState, rng: RNG): MineState {
     const staCost = state.weapon.staminaCost ?? MELEE_STA_FALLBACK;
     if (state.sta < 1) return state; // need at least 1 sta
     const full = state.sta >= staCost;
-    const power = state.weapon.attackStat === 'DX' ? state.rangedPower : state.meleePower;
+    const basePower = state.weapon.attackStat === 'DX' ? state.rangedPower : state.meleePower;
+    // Charged swing multiplies attack power.
+    const power = charged ? basePower * CHARGE_DAMAGE_MULT : basePower;
     const { dealt } = attackRoll(
       power,
       state.weapon.bonus,
@@ -638,11 +698,13 @@ export function strike(state: MineState, rng: RNG): MineState {
     if (newHp <= 0) {
       return killMonster({ ...state, sta: newSta }, mon, rng);
     }
-    return {
-      ...state,
-      sta: newSta,
-      monsters: state.monsters.map((m) => (m.id === mon.id ? { ...m, hp: newHp } : m)),
-    };
+    // Charged hit staggers the monster (brief freeze).
+    const updatedMonsters = state.monsters.map((m) => {
+      if (m.id !== mon.id) return m;
+      if (charged && nowMs > 0) return { ...m, hp: newHp, frozenUntilMs: nowMs + STAGGER_MS };
+      return { ...m, hp: newHp };
+    });
+    return { ...state, sta: newSta, monsters: updatedMonsters };
   }
 
   // --- Rock or ore: pickaxe mining ---
@@ -650,8 +712,14 @@ export function strike(state: MineState, rng: RNG): MineState {
   if (!tile || (tile.kind !== 'rock' && tile.kind !== 'ore')) return state;
   if (state.sta <= 0) return state;
 
-  const pickPower = state.pickaxePower > 0 ? state.pickaxePower : 1;
-  const dur = (tile.durability ?? 1) - pickPower;
+  // ST-scaled mining: +1 effective pick power per 8 Strength levels.
+  const stBonus = Math.floor(state.meleePower / 8);
+  const basePick = state.pickaxePower > 0 ? state.pickaxePower : 1;
+  // Charged swing also boosts mining speed — rounds up so even tier-1 rock is cleared in 1 swing.
+  const effectivePick = charged
+    ? Math.ceil((basePick + stBonus) * CHARGE_DAMAGE_MULT)
+    : basePick + stBonus;
+  const dur = (tile.durability ?? 1) - effectivePick;
   const tiles = state.tiles.map((row) => row.slice());
   let haul = state.haul;
   const oreBroke = dur <= 0 && tile.kind === 'ore';

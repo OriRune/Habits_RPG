@@ -53,6 +53,7 @@ const SNAP: MineSnapshot = {
   weapon: getWeapon(STARTER_WEAPON),
   knownSpells: [],
   pickaxePower: 1,
+  agLevel: 0,
 };
 
 describe('generateMine determinism (co-op map parity)', () => {
@@ -118,6 +119,7 @@ const FOREST_SNAP: ForestSnapshot = {
   weapon: getWeapon(STARTER_WEAPON),
   knownSpells: [],
   chopPower: 1,
+  agLevel: 0,
 };
 
 describe('generateForest determinism (co-op map parity)', () => {
