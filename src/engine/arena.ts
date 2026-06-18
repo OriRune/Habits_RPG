@@ -365,6 +365,41 @@ export function arenaSpeedFactor(setting: ArenaSpeed, level: number): number {
   }
 }
 
+/**
+ * Hand-authored obstacle layouts keyed by board radius.
+ * Each entry is a list of obstacle sets; one is chosen at random.
+ * All layouts are verified to leave a clear path between player (0,R) and boss (0,-R).
+ */
+const AUTHORED_LAYOUTS: Partial<Record<number, Cell[][]>> = {
+  3: [
+    // "Sentinel Posts" — 4 symmetric pillars, open center
+    [{ x: 1, y: 1 }, { x: 1, y: -1 }, { x: -1, y: 1 }, { x: -1, y: -1 }],
+    // "Gauntlet" — side walls with approach cover near each spawn
+    [{ x: 2, y: 0 }, { x: -2, y: 0 }, { x: 1, y: 2 }, { x: -1, y: 2 }, { x: 1, y: -2 }, { x: -1, y: -2 }],
+  ],
+  4: [
+    // "Barrier Wings" — two vertical walls creating three lanes; center is clear
+    [{ x: 2, y: 1 }, { x: 2, y: 0 }, { x: 2, y: -1 }, { x: -2, y: 1 }, { x: -2, y: 0 }, { x: -2, y: -1 }],
+    // "Corner Islands" — cover clusters in the far corners, open mid
+    [{ x: 3, y: 3 }, { x: 3, y: 2 }, { x: -3, y: 3 }, { x: -3, y: 2 }, { x: 3, y: -3 }, { x: 3, y: -2 }, { x: -3, y: -3 }, { x: -3, y: -2 }],
+  ],
+  5: [
+    // "The Cross" — center + shape; routes around via x=±3..5 lanes
+    [{ x: 2, y: 0 }, { x: 1, y: 0 }, { x: -1, y: 0 }, { x: -2, y: 0 }, { x: 0, y: 2 }, { x: 0, y: -2 }],
+    // "Dual Pillars" — two tall walls at x=±3, leaving wide center and edge lanes
+    [{ x: 3, y: 2 }, { x: 3, y: 1 }, { x: 3, y: -1 }, { x: 3, y: -2 }, { x: -3, y: 2 }, { x: -3, y: 1 }, { x: -3, y: -1 }, { x: -3, y: -2 }],
+  ],
+};
+
+/** Pick obstacles: ~30 % authored layout, rest random. */
+function chooseObstacles(radius: number, density: ObstacleDensity, rng: RNG, playerStart: Cell, bossStart: Cell): Cell[] {
+  const authored = AUTHORED_LAYOUTS[radius];
+  if (authored && authored.length > 0 && rng() < 0.30) {
+    return authored[Math.floor(rng() * authored.length)].map((h) => ({ ...h }));
+  }
+  return genObstacles(radius, density, rng, [playerStart], bossStart);
+}
+
 function genObstacles(radius: number, density: ObstacleDensity, rng: RNG, start: Cell[], boss: Cell): Cell[] {
   const cells = board(radius);
   const target = Math.floor(cells.length * DENSITY_FRAC[density]);
@@ -474,7 +509,7 @@ export function createArena(
   }
   const s: ArenaState = {
     radius,
-    obstacles: genObstacles(radius, opts.density ?? 'light', rng, [playerStart], bossStart),
+    obstacles: chooseObstacles(radius, opts.density ?? 'light', rng, playerStart, bossStart),
     bossId: boss.id,
     bossName: boss.name,
     bossFlavor: boss.flavor,
