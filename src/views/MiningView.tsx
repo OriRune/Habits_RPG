@@ -18,6 +18,7 @@ function milestoneHint(deepest: number): string {
 export function MiningView() {
   const energy = useGameStore((s) => s.character.energy);
   const deepestMineFloor = useGameStore((s) => s.deepestMineFloor);
+  const bestMineScore = useGameStore((s) => s.bestMineScore);
   const beginMining = useGameStore((s) => s.beginMining);
 
   const canEnter = energy >= MINE_ENERGY_COST;
@@ -41,7 +42,8 @@ export function MiningView() {
           <span className="text-ink">gold and crafting materials</span>. Cave monsters roam — bonk them
           with your pick before they wear you down. Find the{' '}
           <span className="text-ink">shaft</span> to descend to deeper, richer floors. Leave whenever you
-          like — your haul is always kept.
+          like, but{' '}
+          <span className="text-ink">fall to a monster and you'll forfeit half your haul</span>.
         </p>
 
         <div className="flex items-center justify-between rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3">
@@ -51,14 +53,20 @@ export function MiningView() {
           <span className="text-sm text-ink-muted">You have {energy} ⚡</span>
         </div>
 
-        <div className="rounded-md border border-gold-deep/30 bg-parchment-300/40 p-3 text-sm">
+        <div className="rounded-md border border-gold-deep/30 bg-parchment-300/40 p-3 text-sm space-y-1">
           <div className="flex items-center justify-between">
             <span className="font-display text-ink">Deepest dig</span>
             <span className="font-display font-bold text-gold-deep">
               {deepestMineFloor > 0 ? `Floor ${deepestMineFloor}` : '—'}
             </span>
           </div>
-          <div className="mt-1 text-[11px] text-ink-muted">{milestoneHint(deepestMineFloor)}</div>
+          {bestMineScore > 0 && (
+            <div className="flex items-center justify-between">
+              <span className="text-ink-muted">Best run score</span>
+              <span className="font-mono text-xs text-ink">{bestMineScore.toLocaleString()}</span>
+            </div>
+          )}
+          <div className="text-[11px] text-ink-muted">{milestoneHint(deepestMineFloor)}</div>
         </div>
 
         <Button onClick={() => beginMining()} disabled={!canEnter} className="w-full py-2.5">

@@ -71,6 +71,8 @@ export const MINE_COLS = MINE_BASE_COLS;
 
 /** Run entry gate. */
 export const MINE_ENERGY_COST = 2;
+/** Fraction of the haul a fallen miner keeps on death; mirrors FOREST_DEATH_KEEP. */
+export const MINE_DEATH_KEEP = 0.5;
 
 /** Stamina spent per pick swing (rock / ore). */
 const STRIKE_STA_COST = 1;
@@ -182,6 +184,8 @@ export interface MineState {
   lastHitAtMs: number;
   deepest: number;
   killsThisFloor: number;
+  /** Accumulated run score: +10×floor per kill, +100×floor on each descent. */
+  score: number;
   // Spell effects
   runes: CrawlRune[];
   ringOfFire: CrawlRingOfFire | null;
@@ -533,6 +537,7 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
     lastHitAtMs: -MINE_IFRAME_MS,
     deepest: floor,
     killsThisFloor: 0,
+    score: 0,
     runes: [],
     ringOfFire: null,
     ringNextHitMs: {},
@@ -567,17 +572,19 @@ export function mineSnapshot(state: MineState): MineSnapshot {
   };
 }
 
-/** Descend the shaft into a richer, deeper floor — carries HP/sta/mp/haul forward. */
+/** Descend the shaft into a richer, deeper floor — carries HP/sta/mp/haul/score forward. */
 export function descend(state: MineState, rng: RNG): MineState {
   if (!canDescend(state) || state.status !== 'active') return state;
-  const next = generateMine(state.floor + 1, mineSnapshot(state), rng);
+  const nextFloor = state.floor + 1;
+  const next = generateMine(nextFloor, mineSnapshot(state), rng);
   return {
     ...next,
     hp: state.hp,
     sta: Math.min(state.maxSta, state.sta + Math.round(state.maxSta * 0.25)), // partial refill
     mp: Math.min(state.maxMp, state.mp + Math.round(state.maxMp * 0.25)),
     haul: state.haul,
-    deepest: Math.max(state.deepest, state.floor + 1),
+    deepest: Math.max(state.deepest, nextFloor),
+    score: state.score + 100 * nextFloor,
   };
 }
 
@@ -650,6 +657,7 @@ function killMonster(state: MineState, mon: MineMonster, rng: RNG): MineState {
     monsters: state.monsters.filter((m) => m.id !== mon.id),
     haul: mergeReward(state.haul, drop),
     killsThisFloor: state.killsThisFloor + 1,
+    score: state.score + 10 * state.floor,
   };
 }
 

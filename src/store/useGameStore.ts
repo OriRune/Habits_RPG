@@ -81,6 +81,7 @@ import {
   descend,
   castSpell as minecastSpellFn,
   MINE_ENERGY_COST,
+  MINE_DEATH_KEEP,
 } from '@/engine/mining';
 import { dungeonStamina, type RNG } from '@/engine/crawl';
 import { mulberry32, floorSeed } from '@/engine/rng';
@@ -365,9 +366,13 @@ export interface GameState {
   mining: MineState | null;
   /** Deepest mine floor ever reached — a persistent record (mirrors deepestFloor). */
   deepestMineFloor: number;
+  /** Personal best run score in the Deep Mine. */
+  bestMineScore: number;
   forest: ForestState | null;
   /** Deepest forest stage ever reached — a persistent record (mirrors deepestMineFloor). */
   deepestForestStage: number;
+  /** Personal best run score in the Wild Forest. */
+  bestForestScore: number;
   /** Active Arena run (real-time hex boss fight), or null when not fighting. */
   arena: ArenaState | null;
   /** Highest boss tier ever defeated in the Arena — a persistent record. */
@@ -669,10 +674,35 @@ function commitMining(state: GameState, run: MineState): GameState {
     ownedGear: [...state.ownedGear],
     mining: null,
     deepestMineFloor: Math.max(state.deepestMineFloor, run.deepest),
+    bestMineScore: Math.max(state.bestMineScore, run.score),
   };
   // The run's gold/materials, plus a modest Strength/Endurance trickle for the labour.
   const trickle = 4 + 3 * run.deepest;
   applyReward(next, { ...run.haul, statXp: { ST: trickle, EN: trickle } });
+  checkLevelUp(next);
+  return next;
+}
+
+/**
+ * Bank only the kept half of a fallen miner's haul (the rest is forfeit to the rock) and clear
+ * the run. Mirrors commitForestDeath; the overlay shows the split beforehand.
+ */
+function commitMineDeath(state: GameState, run: MineState): GameState {
+  const { kept } = splitHaul(run.haul, MINE_DEATH_KEEP);
+  const next: GameState = {
+    ...state,
+    character: { ...state.character, statXp: { ...state.character.statXp } },
+    inventory: { ...state.inventory },
+    materials: { ...state.materials },
+    ownedWeapons: [...state.ownedWeapons],
+    ownedGear: [...state.ownedGear],
+    mining: null,
+    deepestMineFloor: Math.max(state.deepestMineFloor, run.deepest),
+    bestMineScore: Math.max(state.bestMineScore, run.score),
+  };
+  // The dig still earns its Strength/Endurance trickle — only the haul is docked.
+  const trickle = 4 + 3 * run.deepest;
+  applyReward(next, { ...kept, statXp: { ST: trickle, EN: trickle } });
   checkLevelUp(next);
   return next;
 }
@@ -688,6 +718,7 @@ function commitForest(state: GameState, run: ForestState): GameState {
     ownedGear: [...state.ownedGear],
     forest: null,
     deepestForestStage: Math.max(state.deepestForestStage, run.deepest),
+    bestForestScore: Math.max(state.bestForestScore, run.score),
   };
   // The run's gold/materials, plus a modest Dexterity/Endurance trickle for the foraging trek.
   const trickle = 4 + 3 * run.deepest;
@@ -711,6 +742,7 @@ function commitForestDeath(state: GameState, run: ForestState): GameState {
     ownedGear: [...state.ownedGear],
     forest: null,
     deepestForestStage: Math.max(state.deepestForestStage, run.deepest),
+    bestForestScore: Math.max(state.bestForestScore, run.score),
   };
   // The trek still earns its Dexterity/Endurance trickle — only the haul is docked.
   const trickle = 4 + 3 * run.deepest;
@@ -1048,8 +1080,10 @@ export const useGameStore = create<GameState>()(
       dungeon: null,
       mining: null,
       deepestMineFloor: 0,
+      bestMineScore: 0,
       forest: null,
       deepestForestStage: 0,
+      bestForestScore: 0,
       arena: null,
       deepestArenaTier: 0,
       tactics: null,
@@ -2044,7 +2078,15 @@ export const useGameStore = create<GameState>()(
             : s,
         ),
 
-      endMining: () => set((s) => (s.mining ? commitMining(s, s.mining) : s)),
+      // Death forfeits half the haul; a confirmed bank keeps it all.
+      endMining: () =>
+        set((s) =>
+          !s.mining
+            ? s
+            : s.mining.status === 'ended'
+              ? commitMineDeath(s, s.mining)
+              : commitMining(s, s.mining),
+        ),
 
       // --- Wild Forest (real-time foraging minigame) ---
       beginForest: (seed?: number) =>
@@ -2420,8 +2462,10 @@ export const useGameStore = create<GameState>()(
           dungeon: null,
           mining: null,
           deepestMineFloor: 0,
+          bestMineScore: 0,
           forest: null,
           deepestForestStage: 0,
+          bestForestScore: 0,
           arena: null,
           deepestArenaTier: 0,
           tactics: null,
@@ -2439,7 +2483,7 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 17,
+      version: 18,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -2473,6 +2517,9 @@ export const useGameStore = create<GameState>()(
       // v17: Hex Tactics minigame — new top-level `tactics`/`deepestTacticsTier`; `tactics` is
       //      cleared below (no in-progress skirmish survives the upgrade) and `deepestTacticsTier`
       //      defaults via merge.
+      // v18: Mine death penalty + run scoring — new scalar fields `bestMineScore`/`bestForestScore`
+      //      default to 0 via merge; MineState and ForestState gained `score` but active runs are
+      //      cleared below (mining: null, forest: null) so no migration of run-level `score` needed.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {

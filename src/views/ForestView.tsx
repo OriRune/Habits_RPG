@@ -17,6 +17,7 @@ function milestoneHint(deepest: number): string {
 export function ForestView() {
   const energy = useGameStore((s) => s.character.energy);
   const deepestForestStage = useGameStore((s) => s.deepestForestStage);
+  const bestForestScore = useGameStore((s) => s.bestForestScore);
   const beginForest = useGameStore((s) => s.beginForest);
 
   const canEnter = energy >= FOREST_ENERGY_COST;
@@ -50,14 +51,20 @@ export function ForestView() {
           <span className="text-sm text-ink-muted">You have {energy} ⚡</span>
         </div>
 
-        <div className="rounded-md border border-gold-deep/30 bg-parchment-300/40 p-3 text-sm">
+        <div className="rounded-md border border-gold-deep/30 bg-parchment-300/40 p-3 text-sm space-y-1">
           <div className="flex items-center justify-between">
             <span className="font-display text-ink">Deepest trek</span>
             <span className="font-display font-bold text-gold-deep">
               {deepestForestStage > 0 ? `Depth ${deepestForestStage}` : '—'}
             </span>
           </div>
-          <div className="mt-1 text-[11px] text-ink-muted">{milestoneHint(deepestForestStage)}</div>
+          {bestForestScore > 0 && (
+            <div className="flex items-center justify-between">
+              <span className="text-ink-muted">Best run score</span>
+              <span className="font-mono text-xs text-ink">{bestForestScore.toLocaleString()}</span>
+            </div>
+          )}
+          <div className="text-[11px] text-ink-muted">{milestoneHint(deepestForestStage)}</div>
         </div>
 
         <Button onClick={() => beginForest()} disabled={!canEnter} className="w-full py-2.5">

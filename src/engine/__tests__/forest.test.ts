@@ -99,6 +99,7 @@ function makeForest(over: Partial<ForestState> = {}): ForestState {
     lastHitAtMs: -1000,
     deepest: 1,
     killsThisStage: 0,
+    score: 0,
     runes: [],
     ringOfFire: null,
     ringNextHitMs: {},

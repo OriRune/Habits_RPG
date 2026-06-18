@@ -758,6 +758,7 @@ describe('deep mine', () => {
       knownSpells: [],
       pickaxePower: 1,
       monsters: [], haul: {}, status: 'active', lastHitAtMs: -1000, deepest: 1, killsThisFloor: 0,
+      score: 0,
       runes: [], ringOfFire: null, ringNextHitMs: {}, playerStatuses: [],
       lastSpellMs: -1000, nextRuneId: 1,
       // Phase 1 fields
@@ -819,12 +820,13 @@ describe('deep mine', () => {
     expect(get().character.gold).toBe(goldBefore); // nothing banked until the player leaves
     get().endMining();
     expect(get().mining).toBeNull();
-    expect(get().character.gold).toBe(goldBefore + 12);
+    // Death now forfeits half the haul (MINE_DEATH_KEEP = 0.5), so 12 gold → 6 kept.
+    expect(get().character.gold).toBe(goldBefore + 6);
     expect(get().deepestMineFloor).toBe(2);
   });
 
-  it('persists at version 17', () => {
-    expect(useGameStore.persist.getOptions().version).toBe(17);
+  it('persists at version 18', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(18);
   });
 });
 
@@ -858,6 +860,7 @@ describe('wild forest', () => {
       knownSpells: [],
       chopPower: 1,
       beasts: [], haul: {}, status: 'active', lastHitAtMs: -1000, deepest: 1, killsThisStage: 0,
+      score: 0,
       runes: [], ringOfFire: null, ringNextHitMs: {}, playerStatuses: [],
       lastSpellMs: -1000, nextRuneId: 1,
       // Phase 1 fields

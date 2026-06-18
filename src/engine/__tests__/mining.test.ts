@@ -91,6 +91,7 @@ function makeState(over: Partial<MineState> = {}): MineState {
     lastHitAtMs: -1000,
     deepest: 1,
     killsThisFloor: 0,
+    score: 0,
     runes: [],
     ringOfFire: null,
     ringNextHitMs: {},

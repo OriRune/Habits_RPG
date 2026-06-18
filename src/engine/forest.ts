@@ -198,6 +198,8 @@ export interface ForestState {
   lastHitAtMs: number;
   deepest: number;
   killsThisStage: number;
+  /** Accumulated run score: +10×stage per kill, +100×stage on each advance. */
+  score: number;
   // Spell effects
   runes: CrawlRune[];
   ringOfFire: CrawlRingOfFire | null;
@@ -354,6 +356,7 @@ function killBeast(state: ForestState, beast: ForestBeast, rng: RNG): ForestStat
     beasts: state.beasts.filter((b) => b.id !== beast.id),
     haul: mergeReward(state.haul, drop),
     killsThisStage: state.killsThisStage + 1,
+    score: state.score + 10 * state.stage,
   };
 }
 
@@ -655,6 +658,7 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
     lastHitAtMs: -FOREST_IFRAME_MS,
     deepest: stage,
     killsThisStage: 0,
+    score: 0,
     runes: [],
     ringOfFire: null,
     ringNextHitMs: {},
@@ -693,7 +697,8 @@ export function forestSnapshot(state: ForestState): ForestSnapshot {
 
 export function advance(state: ForestState, rng: RNG): ForestState {
   if (!canAdvance(state) || state.status !== 'active') return state;
-  const next = generateForest(state.stage + 1, forestSnapshot(state), rng);
+  const nextStage = state.stage + 1;
+  const next = generateForest(nextStage, forestSnapshot(state), rng);
   const staRefill = Math.round(state.maxSta * 0.25);
   const mpRefill = Math.round(state.maxMp * 0.25);
   return {
@@ -702,7 +707,8 @@ export function advance(state: ForestState, rng: RNG): ForestState {
     sta: Math.min(state.maxSta, state.sta + staRefill),
     mp: Math.min(state.maxMp, state.mp + mpRefill),
     haul: state.haul,
-    deepest: Math.max(state.deepest, state.stage + 1),
+    deepest: Math.max(state.deepest, nextStage),
+    score: state.score + 100 * nextStage,
   };
 }
 
