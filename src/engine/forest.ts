@@ -21,6 +21,7 @@ import { attackRoll, spellDamageRoll, spellHealAmount } from './combat';
 import { getSpell, SCHOOL_STAT } from './spells';
 import type { WeaponDef } from './weapons';
 import { FOREST_NODES, FOREST_BEASTS, SHRINE_EVENTS, type ForestNodeDef } from '@/content/forest';
+import { bandForStage } from './crawlBiomes';
 import {
   type Dir,
   type RNG,
@@ -309,7 +310,10 @@ function nearestBeast(state: ForestState): ForestBeast | null {
 // ---------------------------------------------------------------------------
 
 function eligibleNodes(stage: number): ForestNodeDef[] {
-  return Object.values(FOREST_NODES).filter((n) => n.stageMin <= stage);
+  const bandId = bandForStage(stage).id;
+  return Object.values(FOREST_NODES).filter(
+    (n) => n.stageMin <= stage && (!n.band || n.band === bandId),
+  );
 }
 
 function weightedNode(stage: number, rng: RNG): ForestNodeDef {
@@ -491,7 +495,10 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
   // Each room is centred on a through-corridor lattice cell and contains a cluster
   // of nodes, dormant beasts, and corner trees.  The centre is already a trail cell
   // so the room is always connected to the maze.
-  const eligibleBeasts = Object.values(FOREST_BEASTS).filter((b) => b.stageMin <= stage);
+  const currentBandId = bandForStage(stage).id;
+  const eligibleBeasts = Object.values(FOREST_BEASTS).filter(
+    (b) => b.stageMin <= stage && (!b.band || b.band === currentBandId),
+  );
   const beasts: ForestBeast[] = [];
   let beastId = 0;
 

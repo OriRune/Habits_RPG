@@ -38,6 +38,11 @@ export interface ForestNodeDef {
     | { kind: 'gold'; amount: [number, number] }
     | { kind: 'material'; material: string; amount: [number, number] }
     | { kind: 'stamina'; amount: [number, number] };
+  /**
+   * If set, this node only spawns in the named biome band.
+   * Omit for band-agnostic nodes (eligible in any band at or above stageMin).
+   */
+  band?: import('@/engine/crawlBiomes').ForestBandId;
 }
 
 export interface ForestBeastDef {
@@ -63,6 +68,11 @@ export interface ForestBeastDef {
   dropMaterial?: string;
   /** Override the default drop amount formula [min, max]. */
   dropAmount?: [number, number];
+  /**
+   * If set, this beast only spawns in the named biome band.
+   * Omit for band-agnostic beasts (eligible in any band at or above stageMin).
+   */
+  band?: import('@/engine/crawlBiomes').ForestBandId;
 }
 
 export const FOREST_NODES: Record<string, ForestNodeDef> = {
@@ -89,6 +99,18 @@ export const FOREST_NODES: Record<string, ForestNodeDef> = {
   ancient_spring: {
     key: 'ancient_spring', name: 'Ancient Spring', glyph: '🌊', color: '#06b6d4',
     stageMin: 4, weight: 0, grants: { kind: 'stamina', amount: [20, 25] },
+  },
+  // --- Deepwood Grove band (stages 4–7) ---
+  glowcap: {
+    key: 'glowcap', name: 'Glowcap Mushroom', glyph: '🍄', color: '#a070d0',
+    stageMin: 4, weight: 2, band: 'deepwood',
+    grants: { kind: 'material', material: 'crystals', amount: [1, 2] },
+  },
+  // --- Ancient Heart band (stages 8+) ---
+  heart_bloom: {
+    key: 'heart_bloom', name: 'Heartwood Bloom', glyph: '🌺', color: '#e8a020',
+    stageMin: 8, weight: 1.5, band: 'ancient',
+    grants: { kind: 'material', material: 'amber_resin', amount: [1, 2] },
   },
 };
 
@@ -134,6 +156,19 @@ export const FOREST_BEASTS: Record<string, ForestBeastDef> = {
     key: 'ancient_guardian', name: 'Ancient Guardian', glyph: '🌳', color: '#2a6a3a',
     stageMin: 10, hp: 55, touchDamage: 18, moveCadenceMs: 600, aggroRadius: 2, bounty: [20, 35],
     defense: 5, resistTo: ['DX'], weakTo: ['ST'],
+  },
+  // --- Deepwood Grove band (stages 4–7) ---
+  shadow_lynx: {
+    key: 'shadow_lynx', name: 'Shadow Lynx', glyph: '🐈', color: '#6a4a9a',
+    stageMin: 4, hp: 18, touchDamage: 9, moveCadenceMs: 300, aggroRadius: 4, bounty: [6, 14],
+    band: 'deepwood', weakTo: ['DX'], resistTo: ['ST'],
+  },
+  // --- Ancient Heart band (stages 8+) ---
+  grove_wraith: {
+    key: 'grove_wraith', name: 'Grove Wraith', glyph: '👻', color: '#c8a030',
+    stageMin: 8, hp: 28, touchDamage: 12, moveCadenceMs: 420, aggroRadius: 5, bounty: [14, 28],
+    band: 'ancient', defense: 2, weakTo: ['WI'], resistTo: ['DX'],
+    dropMaterial: 'amber_resin', dropAmount: [1, 2],
   },
 };
 

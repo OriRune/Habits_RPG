@@ -4,6 +4,7 @@ import { useGameStore } from '@/store/useGameStore';
 import { useMiningLoop } from '@/hooks/useMiningLoop';
 import { canDescend, facedCell, type MineTile, type MineMonster } from '@/engine/mining';
 import { cameraWindow, VIEW } from '@/engine/crawl';
+import { bandForFloor, type CrawlPalette } from '@/engine/crawlBiomes';
 import { useSmoothCamera, type SmoothCameraLayout } from '@/hooks/useSmoothCamera';
 import { MINE_ORES, MINE_MONSTERS } from '@/content/mining';
 import { getSpell } from '@/engine/spells';
@@ -30,15 +31,16 @@ function cellHash(r: number, c: number): number {
   return (h % 1000) / 1000;
 }
 
-/** Per-cell floor background with decal variety. */
-function floorStyle(r: number, c: number): React.CSSProperties {
+/** Per-cell floor background with decal variety. Palette drives the base colour. */
+function floorStyle(r: number, c: number, palette: CrawlPalette): React.CSSProperties {
   const j1 = cellHash(r * 3 + 1, c * 3 + 2);
   const j2 = cellHash(r + 11, c + 5);
   const j3 = cellHash(r + 3, c + 8);
   const tint = 0.88 + 0.22 * cellHash(r, c);
-  const base = Math.round(42 * tint);
-  const baseG = Math.round(30 * tint);
-  const baseB = Math.round(18 * tint);
+  const [fr, fg, fb] = palette.floor;
+  const base  = Math.round(fr * tint);
+  const baseG = Math.round(fg * tint);
+  const baseB = Math.round(fb * tint);
 
   let extra = '';
   if (j1 < 0.12) {
@@ -65,14 +67,15 @@ function floorStyle(r: number, c: number): React.CSSProperties {
   };
 }
 
-/** Rock tile style — richer variation so walls look craggy. */
-function rockStyle(r: number, c: number): React.CSSProperties {
+/** Rock tile style — richer variation so walls look craggy. Palette drives the base colour. */
+function rockStyle(r: number, c: number, palette: CrawlPalette): React.CSSProperties {
   const j = cellHash(r, c);
   const m = 0.78 + 0.36 * j;
   const jc = cellHash(r + 5, c + 3);
-  const R = Math.round(Math.min(255, 74 * m));
-  const G = Math.round(Math.min(255, 58 * m));
-  const B = Math.round(Math.min(255, 41 * m));
+  const [rr, rg, rb] = palette.rock;
+  const R = Math.round(Math.min(255, rr * m));
+  const G = Math.round(Math.min(255, rg * m));
+  const B = Math.round(Math.min(255, rb * m));
   const cragX = Math.floor(jc * 80) + 10;
   const cragY = Math.floor(cellHash(r + 2, c + 7) * 80) + 10;
   return {
@@ -227,6 +230,7 @@ export function MineRunOverlay() {
 
   if (!mine) return null;
 
+  const band = bandForFloor(mine.floor);
   const dead = mine.status === 'ended';
   const onShaft = canDescend(mine);
   const faced = facedCell(mine);
@@ -272,6 +276,7 @@ export function MineRunOverlay() {
       <div className="flex w-full max-w-lg items-center justify-between gap-3">
         <span className="font-display text-sm font-bold text-gold-bright">
           The Deep Mine · Floor {mine.floor}
+          <span className="ml-2 text-[11px] font-normal opacity-70">{band.name}</span>
         </span>
         <div className="flex flex-col items-end gap-1">
           <Gauge icon={<Heart className="h-3.5 w-3.5 text-stat-HP" />} value={mine.hp} max={mine.maxHp} fill="#2e8a5e" />
@@ -333,9 +338,9 @@ export function MineRunOverlay() {
                       'repeating-linear-gradient(45deg, rgba(255,255,255,0.025) 0px, rgba(255,255,255,0.025) 1px, transparent 1px, transparent 8px)',
                   }
                 : tile.kind === 'rock'
-                ? rockStyle(r, c)
+                ? rockStyle(r, c, band.palette)
                 : tile.kind === 'shaft'
-                ? { backgroundColor: '#1c2a30', backgroundImage: 'radial-gradient(circle at 50% 50%, rgba(40,180,220,0.12) 0%, transparent 65%)' }
+                ? { backgroundColor: '#1c2a30', backgroundImage: `radial-gradient(circle at 50% 50%, ${band.palette.accent}22 0%, transparent 65%)` }
                 : isFloor
                 ? floorImg
                   ? {
@@ -345,7 +350,7 @@ export function MineRunOverlay() {
                       backgroundPosition: 'center',
                       imageRendering: 'pixelated',
                     }
-                  : floorStyle(r, c)
+                  : floorStyle(r, c, band.palette)
                 : tile.kind === 'ore'
                 ? { backgroundColor: '#3a2c1c', backgroundImage: ore ? `radial-gradient(circle at 55% 42%, ${ore.color}22 0%, transparent 60%)` : undefined }
                 : { backgroundColor: '#2a1e12' };

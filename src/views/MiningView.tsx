@@ -5,13 +5,14 @@ import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
 
-/** What the next depth milestone unlocks (mirrors content/mining floorMin gates). */
+/** What the next depth milestone unlocks (mirrors content/mining floorMin gates + biome bands). */
 function milestoneHint(deepest: number): string {
-  if (deepest < 3) return 'Reach Floor 3 for Iron veins.';
-  if (deepest < 4) return 'Reach Floor 4 for Gold veins.';
-  if (deepest < 6) return 'Reach Floor 6 for Crystal nodes.';
-  if (deepest < 10) return 'Reach Floor 10 for Gemstones.';
-  return 'All veins unlocked — chase a new record.';
+  if (deepest < 3)  return 'Reach Floor 3 for Iron veins.';
+  if (deepest < 4)  return 'Reach Floor 4 for Gold veins.';
+  if (deepest < 7)  return 'Reach Floor 7 — the Frozen Depths await.';
+  if (deepest < 10) return 'Reach Floor 10 for Gemstones & Ice Crawlers.';
+  if (deepest < 15) return 'Reach Floor 15 — the Magma Core.';
+  return 'The Magma Core — chase a new record.';
 }
 
 /** Entrance screen for the Deep Mine (the active run renders in MineRunOverlay). */

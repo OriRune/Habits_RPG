@@ -15,6 +15,7 @@ import {
 } from '@/engine/forest';
 import { cameraWindow, VIEW } from '@/engine/crawl';
 import { useSmoothCamera, type SmoothCameraLayout } from '@/hooks/useSmoothCamera';
+import { bandForStage, type ForestBandId } from '@/engine/crawlBiomes';
 import { getSpell } from '@/engine/spells';
 import type { Reward } from '@/engine/challenges';
 import { FOREST_NODES, FOREST_BEASTS, SHRINE_EVENTS } from '@/content/forest';
@@ -35,7 +36,7 @@ const BOARD_PX = VIEW * CELL; // 572px
 const MARGIN = 1;
 const RENDER_VIEW = VIEW + 2 * MARGIN; // 13 rendered rows/cols
 
-/** Base colour per tile kind. */
+/** Base colour per tile kind (Thicket band / default). */
 const TILE_BG: Record<ForestTile['kind'], [number, number, number]> = {
   tree:     [18,  34,  14],
   thicket:  [22,  56,  32],
@@ -47,6 +48,22 @@ const TILE_BG: Record<ForestTile['kind'], [number, number, number]> = {
   shrine:   [88,  72,  38],
 };
 
+/** Blend TILE_BG base colour toward the band's accent hue for visual differentiation. */
+const BAND_TINTS: Partial<Record<ForestBandId, [number, number, number]>> = {
+  deepwood: [80,  50, 120], // violet hue
+  ancient:  [120, 90,  30], // amber hue
+};
+function tintForBand(bandId: ForestBandId, rgb: [number, number, number]): [number, number, number] {
+  const tint = BAND_TINTS[bandId];
+  if (!tint) return rgb; // thicket — no change
+  const f = 0.20;
+  return [
+    Math.round(rgb[0] * (1 - f) + tint[0] * f),
+    Math.round(rgb[1] * (1 - f) + tint[1] * f),
+    Math.round(rgb[2] * (1 - f) + tint[2] * f),
+  ];
+}
+
 /** Deterministic 0..1 hash for a cell — stable across renders. */
 function tileJitter(r: number, c: number): number {
   let h = (Math.imul(r, 73856093) ^ Math.imul(c, 19349663)) >>> 0;
@@ -54,9 +71,9 @@ function tileJitter(r: number, c: number): number {
   return (h % 1000) / 1000;
 }
 
-/** Per-cell floor background — richer than a flat colour. */
-function floorStyle(kind: ForestTile['kind'], r: number, c: number): React.CSSProperties {
-  const [R0, G0, B0] = TILE_BG[kind];
+/** Per-cell floor background — richer than a flat colour. Band tints the base palette. */
+function floorStyle(kind: ForestTile['kind'], r: number, c: number, bandId: ForestBandId): React.CSSProperties {
+  const [R0, G0, B0] = tintForBand(bandId, TILE_BG[kind]);
   const m = 0.84 + 0.3 * tileJitter(r, c);
   const [R, G, B] = [R0, G0, B0].map((v) => Math.round(Math.min(255, v * m)));
   const bg = `rgb(${R},${G},${B})`;
@@ -276,6 +293,7 @@ export function ForestRunOverlay() {
 
   if (!forest) return null;
 
+  const band = bandForStage(forest.stage);
   const dead = forest.status === 'ended';
   const onTreeline = canAdvance(forest);
   const faced = facedCell(forest);
@@ -329,6 +347,7 @@ export function ForestRunOverlay() {
       <div className="flex w-full max-w-[600px] items-center justify-between gap-3">
         <span className="font-display text-sm font-bold text-gold-bright">
           The Wild Forest · Depth {forest.stage}
+          <span className="ml-2 text-[11px] font-normal opacity-70">{band.name}</span>
         </span>
         <div className="flex flex-col items-end gap-1">
           <Gauge icon={<Heart className="h-3.5 w-3.5 text-stat-HP" />} value={forest.hp} max={forest.maxHp} fill="#2e8a5e" />
@@ -445,7 +464,7 @@ export function ForestRunOverlay() {
                   ...(isThicket || isTree
                     ? { backgroundColor: '#111d0d' }
                     : {
-                        ...floorStyle(tile.kind, r, c),
+                        ...floorStyle(tile.kind, r, c, band.id),
                         ...(floorImg
                           ? {
                               backgroundColor: '#0f1a10',

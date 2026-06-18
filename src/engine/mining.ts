@@ -22,6 +22,7 @@ import { attackRoll, spellDamageRoll, spellHealAmount } from './combat';
 import { getSpell, SCHOOL_STAT } from './spells';
 import type { WeaponDef } from './weapons';
 import { MINE_ORES, MINE_MONSTERS, type MineOreDef } from '@/content/mining';
+import { bandForFloor } from './crawlBiomes';
 import {
   type Dir,
   type RNG,
@@ -241,18 +242,20 @@ function nearestMonster(state: MineState): MineMonster | null {
   return best;
 }
 
-/** Kill-drop: loot pool scales with floor depth. */
+/** Kill-drop: loot pool scales with floor depth and biome band. */
 function monsterLootPool(floor: number): Array<{ kind: 'gold' } | { kind: 'material'; material: string }> {
   const pool: Array<{ kind: 'gold' } | { kind: 'material'; material: string }> = [{ kind: 'gold' }];
   pool.push({ kind: 'material', material: 'bronze_bar' });
   if (floor >= 3) pool.push({ kind: 'material', material: 'iron_bar' });
   if (floor >= 6) pool.push({ kind: 'material', material: 'crystals' });
+  if (floor >= 7) pool.push({ kind: 'material', material: 'frost_quartz' }); // frozen band
   if (floor >= 10) pool.push({ kind: 'material', material: 'gemstone' });
+  if (floor >= 15) pool.push({ kind: 'material', material: 'obsidian' }); // magma band
   return pool;
 }
 
 function avgNodeDurability(floor: number): number {
-  const ores = Object.values(MINE_ORES).filter((o) => o.floorMin <= floor && o.weight > 0);
+  const ores = eligibleOres(floor).filter((o) => o.weight > 0);
   if (ores.length === 0) return 1;
   const totalWeight = ores.reduce((a, o) => a + o.weight, 0);
   return ores.reduce((a, o) => a + o.durability * o.weight, 0) / totalWeight;
@@ -271,7 +274,10 @@ export function oreYield(oreKey: string, rng: RNG): Reward {
 }
 
 function eligibleOres(floor: number): MineOreDef[] {
-  return Object.values(MINE_ORES).filter((o) => o.floorMin <= floor);
+  const bandId = bandForFloor(floor).id;
+  return Object.values(MINE_ORES).filter(
+    (o) => o.floorMin <= floor && (!o.band || o.band === bandId),
+  );
 }
 
 function weightedOre(floor: number, rng: RNG): MineOreDef {
@@ -494,7 +500,10 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
     const j = Math.floor(rng() * (i + 1));
     [mFloor[i], mFloor[j]] = [mFloor[j], mFloor[i]];
   }
-  const eligibleMon = Object.values(MINE_MONSTERS).filter((m) => m.floorMin <= floor);
+  const currentBandId = bandForFloor(floor).id;
+  const eligibleMon = Object.values(MINE_MONSTERS).filter(
+    (m) => m.floorMin <= floor && (!m.band || m.band === currentBandId),
+  );
   const monCount = eligibleMon.length === 0 ? 0 : Math.min(10, 2 + Math.floor(floor * 0.6));
   const monsters: MineMonster[] = [];
   for (let i = 0; i < monCount && i < mFloor.length; i++) {
