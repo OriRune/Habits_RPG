@@ -102,9 +102,9 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
         </button>
       </div>
 
-      {/* Body */}
+      {/* Body — rooftop chase uses a wider container to accommodate VIEW_W = 500 */}
       <div className="flex-1 flex flex-col items-center justify-center p-4">
-        <div className="w-full max-w-sm">
+        <div className={`w-full ${trialId === 'rooftop_chase' ? 'max-w-xl' : 'max-w-sm'}`}>
           {stage === 'intro' && (
             <div className="space-y-5">
               <div className="rounded-md border border-gold-deep/30 texture-parchment p-5 space-y-3">

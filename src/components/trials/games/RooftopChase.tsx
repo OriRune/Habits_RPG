@@ -36,16 +36,17 @@ interface RooftopChaseProps {
 
 // ── Display constants ──────────────────────────────────────────────────────────
 
-const VIEW_W = 320;
-const VIEW_H = 210;
+const VIEW_W = 500;
+const VIEW_H = 260;
 /** Screen Y of the roof surface at elevation 0 (measured from top of play area). */
-const ROOF_BASE_PX = 158;
+const ROOF_BASE_PX = 196;
 /** Height below the roof base to the bottom of the view (street + parapet). */
 const BELOW_ROOF_PX = VIEW_H - ROOF_BASE_PX;
-/** Pixel scale: 1 world-unit = 7 px. */
-const PX_PER_WU = 7;
-/** Hero's fixed screen X (world scrolls past). */
-const HERO_X_PX = 72;
+/** Pixel scale: 1 world-unit = 8 px. */
+const PX_PER_WU = 8;
+/** Hero's fixed screen X — left edge of the hitbox in pixels.
+ *  Positioned ~30% from the left so ~19 wu of view trail behind the hero. */
+const HERO_X_PX = 150;
 
 /** Convert a world-unit roof elevation to screen Y (from top of view). */
 function screenYForElev(elev: number): number {
@@ -636,8 +637,8 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
           boxShadow: '0 0 16px 6px rgba(248,240,200,0.25)',
         }} />
 
-        {/* Far castle silhouette */}
-        {[0, 1].map((copy) => (
+        {/* Far castle silhouette — 3 copies to fill the wider VIEW_W = 500 */}
+        {[0, 1, 2].map((copy) => (
           <div key={copy} className="absolute" style={{
             bottom: BELOW_ROOF_PX,
             left: -(farScrollPx % FAR_TILE_W) + copy * FAR_TILE_W,
@@ -703,8 +704,8 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
           />
         ))}
 
-        {/* Foreground chimneys */}
-        {[0, 1, 2].map((copy) => (
+        {/* Foreground chimneys — 4 copies to fill VIEW_W = 500 with DECOR_TILE_W = 240 */}
+        {[0, 1, 2, 3].map((copy) => (
           <div key={copy} className="absolute" style={{
             bottom: BELOW_ROOF_PX,
             left: -(decorScrollPx % DECOR_TILE_W) + copy * DECOR_TILE_W,
@@ -793,9 +794,10 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
           </div>
         )}
 
-        {/* Hero */}
+        {/* Hero — sprite shifted 3 px left so the visual right boot aligns with
+            the hitbox right edge (HERO_X_PX + HERO_HITBOX_W × PX_PER_WU ≈ 168 px). */}
         <div className="absolute" style={{
-          left: HERO_X_PX,
+          left: HERO_X_PX - 3,
           bottom: heroScreenBottom,
           transform: `translateY(${-heroYPx}px)`,
         }}>

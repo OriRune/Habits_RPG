@@ -344,21 +344,23 @@ describe('rooftopChase', () => {
   it('hasFallen is false when standing on a building', () => {
     const bs = generateCourse(seededRng());
     const mid = bs[0].x + bs[0].width / 2;
-    expect(hasFallen(bs, mid, bs[0].roofY)).toBe(false);
+    expect(hasFallen(bs, mid, bs[0].roofY, 0)).toBe(false); // vy=0: standing
   });
 
   it('hasFallen is false when airborne over a gap but above the next roof', () => {
     const bs = generateCourse(seededRng());
     const gapX = bs[0].x + bs[0].width + 0.5;
     const nextRoof = bs[1].roofY;
-    expect(hasFallen(bs, gapX, nextRoof + 1)).toBe(false); // above next roof top
+    expect(hasFallen(bs, gapX, nextRoof + 1, -5)).toBe(false); // above next roof top
   });
 
   it('hasFallen is true when over a gap and below the next roof top', () => {
     const bs = generateCourse(seededRng());
     const gapX = bs[0].x + bs[0].width + 0.5;
     const nextRoof = bs[1].roofY;
-    expect(hasFallen(bs, gapX, nextRoof - 0.5)).toBe(true); // below next roof top
+    // gapX is 0.5wu into the gap; leading edge = gapX + HERO_HITBOX_W is still short
+    // of bs[1].x (gapMin = 3 > HERO_HITBOX_W), so no ledge-catch fires.
+    expect(hasFallen(bs, gapX, nextRoof - 0.5, -5)).toBe(true); // below next roof top
   });
 
   // ── speedAt ─────────────────────────────────────────────────────────────────

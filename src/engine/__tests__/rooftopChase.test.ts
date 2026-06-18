@@ -10,6 +10,7 @@ import {
   chaseScore,
   speedAt,
   supportingBuilding,
+  touchingBuilding,
   CHASE_TARGET_DISTANCE,
   CHASER_SPAWN_DISTANCE,
   LEAD_START,
@@ -27,6 +28,7 @@ import {
   STOMP_BOUNCE_VELOCITY,
   HERO_HITBOX_W,
   LANDING_SUPPORT_FRAC,
+  LEDGE_CATCH_TOL,
   BASE_SPEED,
   MAX_SPEED,
   type ChaseState,
@@ -590,5 +592,119 @@ describe('ChaseState — defeatedPropIds', () => {
     const fallen: ChaseState = { ...withIds, done: true, justFell: true };
     // stepChase returns early for done states, but we can verify the field is typed correctly
     expect(fallen.defeatedPropIds).toEqual([42, 7]);
+  });
+});
+
+// ── touchingBuilding — leading-edge detection ─────────────────────────────────
+
+describe('touchingBuilding', () => {
+  const makeBuilding = (x: number, w: number): Building => ({
+    id: 0, x, width: w, roofY: 0, props: [],
+  });
+
+  it('returns building when leading edge is just inside its left edge', () => {
+    const b = makeBuilding(20, 15); // spans 20..35
+    // leading edge = heroLeftX + HERO_HITBOX_W = 20 + ε
+    const heroLeftX = 20 + 0.01 - HERO_HITBOX_W;
+    expect(touchingBuilding([b], heroLeftX)).toBe(b);
+  });
+
+  it('returns building when leading edge is in the middle of it', () => {
+    const b = makeBuilding(20, 15);
+    const heroLeftX = 27 - HERO_HITBOX_W; // leading edge at 27
+    expect(touchingBuilding([b], heroLeftX)).toBe(b);
+  });
+
+  it('returns null when leading edge is exactly at left edge (no positive overlap)', () => {
+    const b = makeBuilding(20, 15);
+    const heroLeftX = 20 - HERO_HITBOX_W; // leading edge exactly at 20
+    expect(touchingBuilding([b], heroLeftX)).toBeNull();
+  });
+
+  it('returns null when leading edge is past the building right edge', () => {
+    const b = makeBuilding(20, 15); // spans 20..35
+    const heroLeftX = 35 + 0.01 - HERO_HITBOX_W; // leading edge at 35.01
+    expect(touchingBuilding([b], heroLeftX)).toBeNull();
+  });
+
+  it('returns null when hero is entirely before the building', () => {
+    const b = makeBuilding(30, 10);
+    expect(touchingBuilding([b], 5)).toBeNull(); // leading edge at 5+HW, well left of 30
+  });
+});
+
+// ── hasFallen / ledge-catch integration via stepChase ─────────────────────────
+//
+// These tests inject controlled hero positions into stepChase and verify that the
+// ledge-catch fires (or doesn't) correctly.  We use a two-building course so the
+// gap and second roof are predictable.
+
+describe('stepChase — ledge-catch landing', () => {
+  /** Build a minimal course: first building 0..20, gap 3 wu, second building 23..50. */
+  function makeMinimalCourse(): Building[] {
+    return [
+      { id: 0, x: 0,  width: 20, roofY: 0, props: [] },
+      { id: 1, x: 23, width: 27, roofY: 0, props: [] },
+    ];
+  }
+
+  /** Base state over the gap, descending toward the second roof. */
+  function lipState(overlapWu: number, yAbove: number, vy = -5): ChaseState {
+    // heroLeftX = 23 - HERO_HITBOX_W + overlapWu  (leading edge is `overlapWu` wu into building)
+    const heroLeftX = 23 - HERO_HITBOX_W + overlapWu;
+    const base = fresh();
+    return {
+      ...base,
+      buildings: makeMinimalCourse(),
+      distance:  heroLeftX,
+      heroY:     yAbove,     // above the roofY (0) by yAbove
+      heroVy:    vy,
+      heroRoofY: 0,
+      prevHeroY: yAbove + 0.1,
+    };
+  }
+
+  it('lands when leading edge is on the roof lip and hero is descending above roofY', () => {
+    // Leading edge 0.5wu into the second building, hero 1wu above roofY (within catch tol)
+    const s0 = lipState(0.5, 1.0);
+    const s1 = stepChase(s0, NO_INPUT, DT);
+    expect(s1.done).toBe(false); // not a fall
+    // Hero should be snapped to roofY (0) within a tick or two
+    expect(s1.heroY).toBeGreaterThanOrEqual(0);
+  });
+
+  it('does NOT fall when descending onto lip (within LEDGE_CATCH_TOL)', () => {
+    // Hero 1.5wu below roofY but leading edge is on the roof — should catch
+    const s0 = lipState(0.3, -1.5); // heroY = -1.5 (within 2.0 tol)
+    const s1 = stepChase(s0, NO_INPUT, DT);
+    expect(s1.justFell).toBe(false);
+    expect(s1.done).toBe(false);
+  });
+
+  it('DOES fall when descending but below LEDGE_CATCH_TOL (genuine short jump)', () => {
+    // Leading edge has NOT yet reached the building (overlapWu negative → no touch)
+    // and hero has dropped well below roofY
+    const heroLeftX = 23 - HERO_HITBOX_W - 0.5; // leading edge 0.5wu short of building
+    const base = fresh();
+    const s0: ChaseState = {
+      ...base,
+      buildings: makeMinimalCourse(),
+      distance:  heroLeftX,
+      heroY:     -3,   // 3wu below baseline — clearly below next roofY
+      heroVy:    -8,
+      heroRoofY: 0,
+      prevHeroY: 0,
+    };
+    const s1 = stepChase(s0, NO_INPUT, DT);
+    expect(s1.done).toBe(true);
+    expect(s1.justFell).toBe(true);
+  });
+
+  it('DOES fall when leading edge is on the roof but hero is far below LEDGE_CATCH_TOL', () => {
+    // Leading edge is on the building, but hero has plunged too deep to catch
+    const s0 = lipState(0.3, -(LEDGE_CATCH_TOL + 1.0)); // too far below
+    const s1 = stepChase(s0, NO_INPUT, DT);
+    expect(s1.done).toBe(true);
+    expect(s1.justFell).toBe(true);
   });
 });

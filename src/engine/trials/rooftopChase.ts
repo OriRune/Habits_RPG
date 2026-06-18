@@ -116,11 +116,11 @@ export const NEAR_MISS_LEAD_THRESHOLD = 12;
  * at its maximum (LEAD_MAX). Scales linearly: at 0 lead the chaser is at the
  * hero's foot position; at LEAD_MAX it is this many wu behind.
  *
- * At 16 wu and PX_PER_WU = 7: the chaser is ~112 px behind the hero's screen
- * position (HERO_X_PX = 72), placing it ~40 px off the left edge of the view
- * when lead is full, and right at the hero when lead reaches 0.
+ * At 28 wu and PX_PER_WU = 8: the chaser starts ~19 wu off-screen left when
+ * lead is full (HERO_X_PX = 150, behind-view ≈ 19 wu) and visibly closes in
+ * as lead drains, rather than spawning right on top of the hero.
  */
-export const CHASER_MAX_GAP = 16;
+export const CHASER_MAX_GAP = 28;
 
 /** Upward vy given to hero after a stomp (world-units / sec). */
 export const STOMP_BOUNCE_VELOCITY = 14;
@@ -334,6 +334,23 @@ export function supportingBuilding(buildings: Building[], heroLeftX: number): Bu
 }
 
 /**
+ * The building whose span the hero's **leading edge** (`heroLeftX + HERO_HITBOX_W`) is
+ * inside, or null. Any positive leading-edge overlap counts (no minimum threshold).
+ *
+ * Used only for the descending ledge-catch in `hasFallen` / landing snapping.
+ * Jump and slide gating continue to use `supportingBuilding` (≥25% body overlap).
+ *
+ * @param heroLeftX  Hero's left hitbox edge (= `state.distance`).
+ */
+export function touchingBuilding(buildings: Building[], heroLeftX: number): Building | null {
+  const leadingEdge = heroLeftX + HERO_HITBOX_W;
+  for (const b of buildings) {
+    if (leadingEdge > b.x && leadingEdge <= b.x + b.width) return b;
+  }
+  return null;
+}
+
+/**
  * True when the hero is over a gap (not on any building) AND has fallen below the top of the
  * next building ahead — meaning they failed to clear it and the run should end.
  *
@@ -342,18 +359,35 @@ export function supportingBuilding(buildings: Building[], heroLeftX: number): Bu
  * is compared against the roof they are about to land on, not one they already passed.
  *
  * Special cases:
- * - If supported on a building: false (not in a gap).
+ * - If supported on a building (≥25% overlap): false.
+ * - Ledge-catch: leading edge is inside a roof, hero descending, within LEDGE_CATCH_TOL: false.
  * - If airborne over a gap but still above the next roof top: false (still in the arc).
  * - No next building ahead: false (beyond the course end; finish handles that).
  *
  * @param heroLeftX  Hero's left hitbox edge (= `state.distance`).
+ * @param heroVy     Hero's current vertical velocity (wu/sec; positive = rising).
  */
-export function hasFallen(buildings: Building[], heroLeftX: number, heroY: number): boolean {
-  if (supportingBuilding(buildings, heroLeftX) !== null) return false; // supported on a roof
-  // Look ahead from the front edge of the hitbox for the next building.
+export function hasFallen(
+  buildings: Building[],
+  heroLeftX: number,
+  heroY: number,
+  heroVy: number,
+): boolean {
+  // 1. Fully supported (≥25% overlap) — not fallen.
+  if (supportingBuilding(buildings, heroLeftX) !== null) return false;
+  // 2. Ledge-catch / fall-through: leading edge has entered the next roof.
+  //    Once the leading edge is inside a building, nextBuilding returns null (that
+  //    building is behind the probe), so we handle all outcomes here explicitly.
+  const touched = touchingBuilding(buildings, heroLeftX);
+  if (touched !== null) {
+    if (heroVy > 0) return false;                               // rising — still airborne
+    if (heroY >= touched.roofY - LEDGE_CATCH_TOL) return false; // descending within catch
+    return heroY < touched.roofY;                               // too deep — fell
+  }
+  // 3. Standard look-ahead fall check (leading edge not yet on any building).
   const next = nextBuilding(buildings, heroLeftX + HERO_HITBOX_W);
-  if (next === null) return false; // past the end — let the win/finish logic handle it
-  return heroY < next.roofY; // fell below the target roof's top
+  if (next === null) return false; // past the end — win/finish logic handles it
+  return heroY < next.roofY;
 }
 
 // ── Lead / chaser ──────────────────────────────────────────────────────────────
@@ -511,10 +545,17 @@ export const HERO_HITBOX_W = 2.2;
 
 /**
  * Fraction of the hero hitbox that must overlap a rooftop to count as supported.
- * 0.25 × HERO_HITBOX_W = 0.55 wu — forgiving on landing edges so the player
- * does not register as "fallen" when visually clipping the leading corner of a roof.
+ * 0.25 × HERO_HITBOX_W = 0.55 wu — governs grounded/jump/slide gating.
  */
 export const LANDING_SUPPORT_FRAC = 0.25;
+
+/**
+ * How far below a roof surface (world-units) a descending hero whose leading edge
+ * has entered that roof still counts as "catching the ledge" rather than falling.
+ * Prevents a fall from registering when the sprite is visually on the lip.
+ * 2.0 wu ≈ 16 px at PX_PER_WU = 8, covering typical descent speed at BASE_SPEED.
+ */
+export const LEDGE_CATCH_TOL = 2.0;
 
 /** One-frame input snapshot passed to stepChase per RAF tick. */
 export interface ChaseInput {
@@ -729,14 +770,21 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
   const rawY  = state.heroY + newVy * dtSec;
 
   // ── 5. Find building underfoot after distance advance ───────────────────────
-  // supportingBuilding uses ≥25 % hitbox overlap for forgiving edge landings.
-  // footX (center) is kept for the chaser-position helper — fine there.
-  const footX       = newDist + HERO_HITBOX_W / 2;
-  const underfoot   = supportingBuilding(state.buildings as Building[], newDist);
-  const currentRoofY = underfoot ? underfoot.roofY : 0;
+  // supportingBuilding (≥25% body overlap) governs grounded/jump/slide gating.
+  // touchingBuilding (leading-edge inside a building) enables the ledge-catch.
+  // footX (center) is kept solely for the chaser-position helper.
+  const footX      = newDist + HERO_HITBOX_W / 2;
+  const underfoot  = supportingBuilding(state.buildings as Building[], newDist);
+  const touchedFwd = touchingBuilding(state.buildings as Building[], newDist);
+  // Ledge-catch: hero's leading edge is over a roof, hero is descending, and still
+  // within LEDGE_CATCH_TOL of that surface — treat as "about to land" not "fallen."
+  const lipCatch  = !underfoot && touchedFwd !== null && newVy <= 0
+                    && rawY >= touchedFwd.roofY - LEDGE_CATCH_TOL;
+  const landingRoof  = underfoot ?? (lipCatch ? touchedFwd : null);
+  const currentRoofY = landingRoof ? landingRoof.roofY : 0;
 
   // ── 6. Fall check ───────────────────────────────────────────────────────────
-  if (hasFallen(state.buildings as Building[], newDist, rawY)) {
+  if (hasFallen(state.buildings as Building[], newDist, rawY, newVy)) {
     return {
       ...state,
       heroY: rawY,
@@ -780,7 +828,9 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
   let finalVy    = newVy;
   let justLanded = false;
 
-  if (underfoot && newY <= currentRoofY) {
+  // Land when: (a) normally supported (≥25% overlap), or (b) ledge-catch (leading edge
+  // on next roof while descending within LEDGE_CATCH_TOL). Both paths set landingRoof.
+  if (landingRoof && newY <= currentRoofY) {
     const wasAbove = state.prevHeroY > currentRoofY;
     if (wasAbove) {
       justLanded = true;
