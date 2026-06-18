@@ -333,3 +333,39 @@ export interface MonsterCombatStats {
   /** Stats this monster resists (damage × 0.6). */
   resistTo?: StatId[];
 }
+
+// ---------------------------------------------------------------------------
+// Phase 5 — In-run boon type
+// ---------------------------------------------------------------------------
+
+/**
+ * A permanent power-up for the current run only.  Boons are stored as key
+ * strings on run state (`activeBoons: string[]`); their effects are resolved by
+ * the pure reducers in `src/content/boons.ts` — no closures, fully serialisable.
+ * Keys must match entries in `BOONS` in that file.
+ */
+export interface CrawlBoon {
+  key: string;
+  name: string;
+  desc: string;
+  /** Glyph / emoji fallback; PNG art can be wired via minigameArt later. */
+  icon: string;
+  /** Which crawler this boon can appear in. */
+  game: 'mine' | 'forest' | 'both';
+  /** ×weapon damage (strike/act melee branch). */
+  meleeMult?: number;
+  /** Flat contact-damage reduction. */
+  defenseBonus?: number;
+  /** Move speed boost: moveIntervalMs = base / moveMult. */
+  moveMult?: number;
+  /** Dash-cooldown multiplier (≤1 = faster): dashCooldownMs = base * dashCdMult. */
+  dashCdMult?: number;
+  /** ×ore/chop/gather drop quantity. */
+  yieldMult?: number;
+  /** Forest sight radius (+N tiles). */
+  sightBonus?: number;
+  /** Charged swing needs N fewer hold-intervals (loop-side). */
+  chargeReduce?: number;
+  /** Flat +max HP on pickup; also instantly heals that amount. */
+  maxHpBonus?: number;
+}

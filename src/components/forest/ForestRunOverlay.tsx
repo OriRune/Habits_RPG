@@ -19,6 +19,7 @@ import { bandForStage, type ForestBandId } from '@/engine/crawlBiomes';
 import { getSpell } from '@/engine/spells';
 import type { Reward } from '@/engine/challenges';
 import { FOREST_NODES, FOREST_BEASTS, SHRINE_EVENTS } from '@/content/forest';
+import { BOONS } from '@/content/boons';
 import { forestThicketTree, forestFloorTile, forestNodeSprite } from '@/lib/minigameArt';
 import { getMaterial } from '@/engine/materials';
 import { Button } from '@/components/ui/Button';
@@ -46,6 +47,7 @@ const TILE_BG: Record<ForestTile['kind'], [number, number, number]> = {
   treeline: [26,  58,  38],
   node:     [52,  48,  29],
   shrine:   [88,  72,  38],
+  boon:     [120, 90,  10],  // gold hue
 };
 
 /** Blend TILE_BG base colour toward the band's accent hue for visual differentiation. */
@@ -186,6 +188,7 @@ export function ForestRunOverlay() {
   const forest = useGameStore((s) => s.forest);
   const endForest = useGameStore((s) => s.endForest);
   const forestAdvance = useGameStore((s) => s.forestAdvance);
+  const chooseForestBoon = useGameStore((s) => s.chooseForestBoon);
   const beginForestBanking = useGameStore((s) => s.beginForestBanking);
   const remotePlayers = useCoopStore((s) => s.remotePlayers);
   const coopSession = useCoopStore((s) => s.session);
@@ -353,6 +356,16 @@ export function ForestRunOverlay() {
               ⚔ Guardian
             </span>
           )}
+          {forest.activeBoons?.map((key) => {
+            const boon = BOONS[key];
+            if (!boon) return null;
+            return (
+              <span key={key} title={boon.desc}
+                className="ml-1 rounded px-1 py-0.5 text-[10px] font-bold text-emerald-300 bg-emerald-900/40 border border-emerald-600/50">
+                {boon.icon} {boon.name}
+              </span>
+            );
+          })}
         </span>
         <div className="flex flex-col items-end gap-1">
           <Gauge icon={<Heart className="h-3.5 w-3.5 text-stat-HP" />} value={forest.hp} max={forest.maxHp} fill="#2e8a5e" />
@@ -537,6 +550,8 @@ export function ForestRunOverlay() {
                     <Trees className="h-6 w-6 text-emerald-300" style={{ filter: 'drop-shadow(0 0 4px rgba(72,202,140,0.7))' }} />
                   ) : tile.kind === 'entrance' ? (
                     <span className="text-[16px] text-gold-bright">◇</span>
+                  ) : tile.kind === 'boon' ? (
+                    <span className="text-[22px] leading-none" style={{ filter: 'drop-shadow(0 0 6px rgba(255,200,0,0.9))' }}>🎁</span>
                   ) : null
                 )}
 
@@ -838,6 +853,30 @@ export function ForestRunOverlay() {
                 }}
               />
             ))}
+          </div>
+        )}
+
+        {/* Boon choice panel (pauses the run while the player picks) */}
+        {forest.status === 'choosing' && forest.pendingBoonChoice && (
+          <div className="pointer-events-auto absolute inset-0 z-40 flex flex-col items-center justify-center gap-4 rounded-md bg-black/85 p-4">
+            <p className="font-display text-lg font-bold text-gold-bright">Choose a Boon</p>
+            <div className="flex gap-3">
+              {forest.pendingBoonChoice.map((key) => {
+                const boon = BOONS[key];
+                if (!boon) return null;
+                return (
+                  <button
+                    key={key}
+                    onClick={() => chooseForestBoon(key)}
+                    className="flex flex-col items-center gap-1.5 rounded-md border border-gold-deep/60 bg-parchment-300/20 p-3 text-center hover:bg-parchment-300/40 transition-colors w-28"
+                  >
+                    <span className="text-3xl leading-none">{boon.icon}</span>
+                    <span className="font-display text-sm font-bold text-gold-bright">{boon.name}</span>
+                    <span className="text-[11px] text-parchment-300 leading-tight">{boon.desc}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
 

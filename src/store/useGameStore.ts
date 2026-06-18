@@ -80,13 +80,18 @@ import {
   damageMonsterById,
   descend,
   castSpell as minecastSpellFn,
+  applyBoonChoice as applyMineBoonChoice,
   MINE_ENERGY_COST,
   MINE_DEATH_KEEP,
 } from '@/engine/mining';
 import { dungeonStamina, type RNG } from '@/engine/crawl';
+import { rollBoonChoices } from '@/content/boons';
+import { MINE_MONSTERS } from '@/content/mining';
+import { FOREST_BEASTS } from '@/content/forest';
 import { mulberry32, floorSeed } from '@/engine/rng';
 import {
   type ForestState,
+  applyBoonChoice as applyForestBoonChoice,
   type ForestTile,
   generateForest,
   forestSnapshot,
@@ -501,6 +506,8 @@ export interface GameState {
   mineDescend: () => void;
   /** Cast a known spell by key (costs MP). */
   mineCast: (spellKey: string) => void;
+  /** Pick a boon from the pending 3-card choice (mine). */
+  chooseMineBoon: (key: string) => void;
   /** Pause the run and show the banking summary screen. */
   beginBanking: () => void;
   /** Commit the haul into the economy and close the run (death or confirmed banking). */
@@ -546,6 +553,8 @@ export interface GameState {
   coopApplyForestAttack: (beastId: string, dmg: number) => void;
   /** Co-op guest per-tick: advance only own body (regen + contact damage). */
   coopForestClientTick: (nowMs: number) => void;
+  /** Pick a boon from the pending 3-card choice (forest). */
+  chooseForestBoon: (key: string) => void;
   /** Commit the haul and close the run — full on confirmed banking, halved on death. */
   endForest: () => void;
 
@@ -1958,9 +1967,28 @@ export const useGameStore = create<GameState>()(
         }),
 
       mineMove: (dir) =>
-        set((s) =>
-          s.mining && s.mining.status === 'active' ? { mining: tryMove(s.mining, dir) } : s,
-        ),
+        set((s) => {
+          if (!s.mining || s.mining.status !== 'active') return s;
+          const mining = tryMove(s.mining, dir);
+          // Boon cache pickup: walking onto a 'boon' tile triggers the choice panel.
+          if (mining !== s.mining) {
+            const { r, c } = mining.player;
+            if (mining.tiles[r]?.[c]?.kind === 'boon') {
+              const tiles = mining.tiles.map((row) => row.slice());
+              tiles[r][c] = { kind: 'floor' };
+              const choices = rollBoonChoices('mine', mining.activeBoons, mineRng);
+              return {
+                mining: {
+                  ...mining,
+                  tiles,
+                  pendingBoonChoice: choices,
+                  status: 'choosing' as const,
+                },
+              };
+            }
+          }
+          return mining !== s.mining ? { mining } : s;
+        }),
 
       mineStrike: () =>
         set((s) =>
@@ -2030,6 +2058,20 @@ export const useGameStore = create<GameState>()(
               const sl = byId.get(m.id)!;
               return { ...m, r: sl.r, c: sl.c, hp: sl.hp, readyAtMs: sl.readyAtMs };
             });
+          // Phase 5: detect guardian kill on the host side so this guest can trigger its
+          // own boon choice.  A guardian is gone when its id was present locally and is
+          // absent from the host's monster list.
+          const hostMonsterIds = new Set(slice.monsters.map((m) => m.id));
+          const guardianJustKilled =
+            mining.status === 'active' &&
+            !mining.pendingBoonChoice &&
+            mining.monsters.some(
+              (m) => MINE_MONSTERS[m.key]?.isGuardian && !hostMonsterIds.has(m.id),
+            );
+          if (guardianJustKilled) {
+            const choices = rollBoonChoices('mine', mining.activeBoons, mineRng);
+            return { mining: { ...mining, monsters: merged, pendingBoonChoice: choices, status: 'choosing' as const } };
+          }
           return { mining: { ...mining, monsters: merged } };
         }),
 
@@ -2072,6 +2114,13 @@ export const useGameStore = create<GameState>()(
           const mining = minecastSpellFn(s.mining, spellKey, Date.now(), mineRng);
           if (mining === s.mining) return s;
           return { mining };
+        }),
+
+      chooseMineBoon: (key: string) =>
+        set((s) => {
+          if (!s.mining || s.mining.status !== 'choosing') return s;
+          const mining = applyMineBoonChoice(s.mining, key);
+          return mining !== s.mining ? { mining } : s;
         }),
 
       beginBanking: () =>
@@ -2163,9 +2212,28 @@ export const useGameStore = create<GameState>()(
         }),
 
       forestMove: (dir) =>
-        set((s) =>
-          s.forest && s.forest.status === 'active' ? { forest: forestTryMove(s.forest, dir) } : s,
-        ),
+        set((s) => {
+          if (!s.forest || s.forest.status !== 'active') return s;
+          const forest = forestTryMove(s.forest, dir);
+          // Boon cache pickup: walking onto a 'boon' tile triggers the choice panel.
+          if (forest !== s.forest) {
+            const { r, c } = forest.player;
+            if (forest.tiles[r]?.[c]?.kind === 'boon') {
+              const tiles = forest.tiles.map((row) => row.slice());
+              tiles[r][c] = { kind: 'trail' };
+              const choices = rollBoonChoices('forest', forest.activeBoons, forestRng);
+              return {
+                forest: {
+                  ...forest,
+                  tiles,
+                  pendingBoonChoice: choices,
+                  status: 'choosing' as const,
+                },
+              };
+            }
+          }
+          return forest !== s.forest ? { forest } : s;
+        }),
 
       forestAct: () =>
         set((s) =>
@@ -2231,6 +2299,13 @@ export const useGameStore = create<GameState>()(
           return { forest };
         }),
 
+      chooseForestBoon: (key: string) =>
+        set((s) => {
+          if (!s.forest || s.forest.status !== 'choosing') return s;
+          const forest = applyForestBoonChoice(s.forest, key);
+          return forest !== s.forest ? { forest } : s;
+        }),
+
       // --- Co-op Forest (mirrors the mine's coop actions) ---
       coopApplyForestWorld: (slice) =>
         set((s) => {
@@ -2270,6 +2345,18 @@ export const useGameStore = create<GameState>()(
                 asleep: sl.asleep ?? b.asleep,
               };
             });
+          // Phase 5: detect guardian kill on the host side so this guest can trigger boon.
+          const hostBeastIds = new Set(slice.monsters.map((m) => m.id));
+          const guardianJustKilled =
+            forest.status === 'active' &&
+            !forest.pendingBoonChoice &&
+            forest.beasts.some(
+              (b) => FOREST_BEASTS[b.key]?.isGuardian && !hostBeastIds.has(b.id),
+            );
+          if (guardianJustKilled) {
+            const choices = rollBoonChoices('forest', forest.activeBoons, forestRng);
+            return { forest: { ...forest, beasts: merged, pendingBoonChoice: choices, status: 'choosing' as const } };
+          }
           return { forest: { ...forest, beasts: merged } };
         }),
 
@@ -2486,7 +2573,7 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 18,
+      version: 19,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -2523,6 +2610,9 @@ export const useGameStore = create<GameState>()(
       // v18: Mine death penalty + run scoring — new scalar fields `bestMineScore`/`bestForestScore`
       //      default to 0 via merge; MineState and ForestState gained `score` but active runs are
       //      cleared below (mining: null, forest: null) so no migration of run-level `score` needed.
+      // v19: In-run boons — MineState/ForestState gained `activeBoons`/`pendingBoonChoice`/
+      //      `status:'choosing'`, but active runs are cleared (mining/forest → null) so no
+      //      run-level migration needed; no new top-level persisted fields.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {

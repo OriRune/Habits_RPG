@@ -22,6 +22,15 @@ import { attackRoll, spellDamageRoll, spellHealAmount } from './combat';
 import { getSpell, SCHOOL_STAT } from './spells';
 import type { WeaponDef } from './weapons';
 import { MINE_ORES, MINE_MONSTERS, MINE_GUARDIAN_FLOORS, type MineOreDef } from '@/content/mining';
+import {
+  BOONS,
+  boonMeleeMult,
+  boonDefenseBonus,
+  boonYieldMult,
+  boonMoveMult,
+  boonDashCdMult,
+  rollBoonChoices,
+} from '@/content/boons';
 import { bandForFloor } from './crawlBiomes';
 import {
   type Dir,
@@ -90,7 +99,7 @@ const SPELL_CD_MS = 500;
 // Tile types
 // ---------------------------------------------------------------------------
 
-export type MineTileKind = 'floor' | 'rock' | 'ore' | 'bedrock' | 'shaft' | 'entrance';
+export type MineTileKind = 'floor' | 'rock' | 'ore' | 'bedrock' | 'shaft' | 'entrance' | 'boon';
 
 export interface MineTile {
   kind: MineTileKind;
@@ -143,6 +152,9 @@ export interface MineSnapshot {
   pickaxePower: number;
   /** Agility level — drives dash cooldown and move speed. */
   agLevel: number;
+  /** Active boon keys carried from the previous floor. Optional so callers that
+   *  construct a snapshot literal without boons (e.g. beginMining) don't break. */
+  activeBoons?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -181,12 +193,17 @@ export interface MineState {
   // Loot
   haul: Reward;
   // Status
-  status: 'active' | 'ended' | 'banking';
+  status: 'active' | 'ended' | 'banking' | 'choosing';
   lastHitAtMs: number;
   deepest: number;
   killsThisFloor: number;
   /** Accumulated run score: +10×floor per kill, +100×floor on each descent. */
   score: number;
+  // Phase 5: in-run boons
+  /** Keys of boons active for this run (empty at floor 1; carried across floors via snapshot). */
+  activeBoons: string[];
+  /** Keys of the 3 offered boon choices; null when no choice is pending. */
+  pendingBoonChoice: string[] | null;
   // Spell effects
   runes: CrawlRune[];
   ringOfFire: CrawlRingOfFire | null;
@@ -215,7 +232,9 @@ export function tileAt(state: MineState, r: number, c: number): MineTile | undef
 }
 
 export function isWalkable(tile: MineTile | undefined): boolean {
-  return !!tile && (tile.kind === 'floor' || tile.kind === 'entrance' || tile.kind === 'shaft');
+  return !!tile && (
+    tile.kind === 'floor' || tile.kind === 'entrance' || tile.kind === 'shaft' || tile.kind === 'boon'
+  );
 }
 
 export function monsterAt(state: MineState, r: number, c: number): MineMonster | undefined {
@@ -314,6 +333,9 @@ function weightedOre(floor: number, rng: RNG): MineOreDef {
  * ore clusters, energy gems, and monsters on the open floor.
  */
 export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): MineState {
+  // Carry boons forward from the snapshot (absent on the very first call from beginMining).
+  const activeBoons: string[] = snapshot.activeBoons ?? [];
+
   const band = Math.floor((floor - 1) / MINE_SCALE_BAND);
   const rows = Math.min(MINE_MAX_ROWS, MINE_BASE_ROWS + band * MINE_SCALE_PER_BAND);
   const cols = Math.min(MINE_MAX_COLS, MINE_BASE_COLS + band * MINE_SCALE_PER_BAND);
@@ -566,6 +588,27 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
     }
   }
 
+  // --- Step 10: boon cache (~1-in-3 chance on non-guardian floors) ---
+  // Placed on a floor cell far from the entrance and BFS-reachable.
+  if (!guardianKey && rng() < 0.34) {
+    const boonCands: [number, number][] = [];
+    for (let r = 1; r < rows - 1; r++) {
+      for (let c = 1; c < cols - 1; c++) {
+        if (
+          floor_[r][c].kind === 'floor' &&
+          manhattan({ r, c }, { r: startR, c: startC }) > 5 &&
+          reachable.has(`${r},${c}`)
+        ) {
+          boonCands.push([r, c]);
+        }
+      }
+    }
+    if (boonCands.length > 0) {
+      const [br, bc] = boonCands[Math.floor(rng() * boonCands.length)];
+      floor_[br][bc] = { kind: 'boon' };
+    }
+  }
+
   return {
     floor,
     rows, cols,
@@ -599,11 +642,14 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
     playerStatuses: [],
     lastSpellMs: -SPELL_CD_MS,
     nextRuneId: 1,
-    // Phase 1: dash + speed derived from AG
+    // Phase 1: dash + speed derived from AG; Phase 5: boon multipliers applied immediately
     lastDashMs: -DASH_BASE_CD_MS,
-    dashCooldownMs: dashCooldown(snapshot.agLevel),
-    moveIntervalMs: moveInterval(snapshot.agLevel),
+    dashCooldownMs: Math.round(dashCooldown(snapshot.agLevel) * boonDashCdMult(activeBoons)),
+    moveIntervalMs: Math.round(moveInterval(snapshot.agLevel) / boonMoveMult(activeBoons)),
     agLevel: snapshot.agLevel,
+    // Phase 5: boons
+    activeBoons,
+    pendingBoonChoice: null,
   };
 }
 
@@ -624,6 +670,7 @@ export function mineSnapshot(state: MineState): MineSnapshot {
     knownSpells: state.knownSpells,
     pickaxePower: state.pickaxePower,
     agLevel: state.agLevel,
+    activeBoons: state.activeBoons,
   };
 }
 
@@ -713,13 +760,19 @@ function killMonster(state: MineState, mon: MineMonster, rng: RNG): MineState {
     const pick = pool[Math.floor(rng() * pool.length)];
     drop = pick.kind === 'gold' ? { gold: qty } : { materials: { [pick.material]: qty } };
   }
-  return {
+  const afterKill: MineState = {
     ...state,
     monsters: state.monsters.filter((m) => m.id !== mon.id),
     haul: mergeReward(state.haul, drop),
     killsThisFloor: state.killsThisFloor + 1,
     score: state.score + 10 * state.floor + (isGuardian ? GUARDIAN_SCORE_BONUS : 0),
   };
+  // Guardian kill: offer a boon choice (pauses the run via 'choosing' status).
+  if (isGuardian) {
+    const choices = rollBoonChoices('mine', afterKill.activeBoons, rng);
+    return { ...afterKill, pendingBoonChoice: choices, status: 'choosing' };
+  }
+  return afterKill;
 }
 
 /**
@@ -750,8 +803,9 @@ export function strike(state: MineState, rng: RNG, nowMs = 0, charged = false): 
     if (state.sta < 1) return state; // need at least 1 sta
     const full = state.sta >= staCost;
     const basePower = state.weapon.attackStat === 'DX' ? state.rangedPower : state.meleePower;
-    // Charged swing multiplies attack power.
-    const power = charged ? basePower * CHARGE_DAMAGE_MULT : basePower;
+    // Charged swing and Iron Arm boon multiply attack power.
+    const boonMult = boonMeleeMult(state.activeBoons);
+    const power = charged ? basePower * CHARGE_DAMAGE_MULT * boonMult : basePower * boonMult;
     const { dealt } = attackRoll(
       power,
       state.weapon.bonus,
@@ -794,7 +848,23 @@ export function strike(state: MineState, rng: RNG, nowMs = 0, charged = false): 
   const oreBroke = dur <= 0 && tile.kind === 'ore';
 
   if (dur <= 0) {
-    if (tile.kind === 'ore' && tile.oreKey) haul = mergeReward(haul, oreYield(tile.oreKey, rng));
+    if (tile.kind === 'ore' && tile.oreKey) {
+      const yieldResult = oreYield(tile.oreKey, rng);
+      // Vein Sense boon: double ore quantity.
+      const yMult = boonYieldMult(state.activeBoons);
+      if (yMult !== 1) {
+        const scaled: typeof yieldResult = {};
+        if (yieldResult.gold) scaled.gold = Math.round(yieldResult.gold * yMult);
+        if (yieldResult.materials) {
+          scaled.materials = Object.fromEntries(
+            Object.entries(yieldResult.materials).map(([k, v]) => [k, Math.round((v ?? 0) * yMult)]),
+          );
+        }
+        haul = mergeReward(haul, scaled);
+      } else {
+        haul = mergeReward(haul, yieldResult);
+      }
+    }
     tiles[r][c] = { kind: 'floor' };
   } else {
     tiles[r][c] = { ...tile, durability: dur };
@@ -1140,7 +1210,7 @@ export function stepMonsters(
       const def = MINE_MONSTERS[toucher.key];
       const raw = def?.touchDamage ?? 1;
       const bless = activeStatus(s.playerStatuses, 'bless', nowMs);
-      const dealt = Math.max(1, raw - s.defense - (bless ? bless.magnitude : 0));
+      const dealt = Math.max(1, raw - s.defense - (bless ? bless.magnitude : 0) - boonDefenseBonus(s.activeBoons));
       hp = Math.max(0, hp - dealt);
       lastHitAtMs = nowMs;
       changed = true;
@@ -1222,7 +1292,7 @@ export function coopClientStep(state: MineState, nowMs: number): MineState {
     if (toucher) {
       const raw = MINE_MONSTERS[toucher.key]?.touchDamage ?? 1;
       const bless = activeStatus(s.playerStatuses, 'bless', nowMs);
-      const dealt = Math.max(1, raw - s.defense - (bless ? bless.magnitude : 0));
+      const dealt = Math.max(1, raw - s.defense - (bless ? bless.magnitude : 0) - boonDefenseBonus(s.activeBoons));
       hp = Math.max(0, hp - dealt);
       lastHitAtMs = nowMs;
     }
@@ -1252,5 +1322,35 @@ export function damageMonsterById(
   return {
     ...state,
     monsters: state.monsters.map((m) => (m.id === monsterId ? { ...m, hp: newHp } : m)),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5: boon choice resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the player's boon pick: appends the chosen key to `activeBoons`,
+ * clears `pendingBoonChoice`, restores `status:'active'`, and immediately
+ * recomputes `moveIntervalMs`/`dashCooldownMs` so the speed boon is felt on
+ * the current floor (not only after the next descent).
+ * No-ops if no choice is pending or the key is not in the offered set.
+ */
+export function applyBoonChoice(state: MineState, key: string): MineState {
+  if (state.status !== 'choosing') return state;
+  if (!state.pendingBoonChoice?.includes(key)) return state;
+  const boon = BOONS[key];
+  if (!boon) return state;
+  const activeBoons = [...state.activeBoons, key];
+  const hpBonus = boon.maxHpBonus ?? 0;
+  return {
+    ...state,
+    activeBoons,
+    pendingBoonChoice: null,
+    status: 'active',
+    moveIntervalMs: Math.round(moveInterval(state.agLevel) / boonMoveMult(activeBoons)),
+    dashCooldownMs: Math.round(dashCooldown(state.agLevel) * boonDashCdMult(activeBoons)),
+    maxHp: state.maxHp + hpBonus,
+    hp: Math.min(state.maxHp + hpBonus, state.hp + hpBonus),
   };
 }

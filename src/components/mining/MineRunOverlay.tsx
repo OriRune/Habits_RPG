@@ -7,6 +7,7 @@ import { cameraWindow, VIEW } from '@/engine/crawl';
 import { bandForFloor, type CrawlPalette } from '@/engine/crawlBiomes';
 import { useSmoothCamera, type SmoothCameraLayout } from '@/hooks/useSmoothCamera';
 import { MINE_ORES, MINE_MONSTERS } from '@/content/mining';
+import { BOONS } from '@/content/boons';
 import { getSpell } from '@/engine/spells';
 import { mineRockSprite, mineFloorTile, mineOreSprite } from '@/lib/minigameArt';
 import { getMaterial } from '@/engine/materials';
@@ -120,6 +121,7 @@ export function MineRunOverlay() {
   const endMining = useGameStore((s) => s.endMining);
   const beginBanking = useGameStore((s) => s.beginBanking);
   const mineDescend = useGameStore((s) => s.mineDescend);
+  const chooseMineBoon = useGameStore((s) => s.chooseMineBoon);
   const remotePlayers = useCoopStore((s) => s.remotePlayers);
   const coopSession = useCoopStore((s) => s.session);
   const coopJoined = useCoopStore((s) => s.joined);
@@ -282,6 +284,16 @@ export function MineRunOverlay() {
               ⚔ Guardian
             </span>
           )}
+          {mine.activeBoons?.map((key) => {
+            const boon = BOONS[key];
+            if (!boon) return null;
+            return (
+              <span key={key} title={boon.desc}
+                className="ml-1 rounded px-1 py-0.5 text-[10px] font-bold text-emerald-300 bg-emerald-900/40 border border-emerald-600/50">
+                {boon.icon} {boon.name}
+              </span>
+            );
+          })}
         </span>
         <div className="flex flex-col items-end gap-1">
           <Gauge icon={<Heart className="h-3.5 w-3.5 text-stat-HP" />} value={mine.hp} max={mine.maxHp} fill="#2e8a5e" />
@@ -358,6 +370,8 @@ export function MineRunOverlay() {
                   : floorStyle(r, c, band.palette)
                 : tile.kind === 'ore'
                 ? { backgroundColor: '#3a2c1c', backgroundImage: ore ? `radial-gradient(circle at 55% 42%, ${ore.color}22 0%, transparent 60%)` : undefined }
+                : tile.kind === 'boon'
+                ? { backgroundColor: '#3a2a00', backgroundImage: 'radial-gradient(circle at 50% 45%, rgba(255,215,0,0.28) 0%, transparent 65%)' }
                 : { backgroundColor: '#2a1e12' };
 
             return (
@@ -390,6 +404,8 @@ export function MineRunOverlay() {
                   <ChevronsDown className="h-7 w-7 text-cyan-300" />
                 ) : tile.kind === 'entrance' ? (
                   <span className="text-[20px] text-gold-bright">◇</span>
+                ) : tile.kind === 'boon' ? (
+                  <span className="text-[22px] leading-none" style={{ filter: 'drop-shadow(0 0 6px rgba(255,200,0,0.9))' }}>🎁</span>
                 ) : null}
                 {tile.maxDurability != null && tile.durability != null && tile.durability < tile.maxDurability && (
                   <div className="absolute bottom-1 left-1 right-1 h-[3px] overflow-hidden rounded-full bg-black/60">
@@ -662,6 +678,30 @@ export function MineRunOverlay() {
             <Button variant="primary" onClick={endMining} className="mt-1 px-4 py-2 text-sm">
               Bank &amp; Leave
             </Button>
+          </div>
+        )}
+
+        {/* Boon choice panel (pauses the run while the player picks) */}
+        {mine.status === 'choosing' && mine.pendingBoonChoice && (
+          <div className="pointer-events-auto absolute inset-0 z-40 flex flex-col items-center justify-center gap-4 rounded-md bg-black/85 p-4">
+            <p className="font-display text-lg font-bold text-gold-bright">Choose a Boon</p>
+            <div className="flex gap-3">
+              {mine.pendingBoonChoice.map((key) => {
+                const boon = BOONS[key];
+                if (!boon) return null;
+                return (
+                  <button
+                    key={key}
+                    onClick={() => chooseMineBoon(key)}
+                    className="flex flex-col items-center gap-1.5 rounded-md border border-gold-deep/60 bg-parchment-300/20 p-3 text-center hover:bg-parchment-300/40 transition-colors w-28"
+                  >
+                    <span className="text-3xl leading-none">{boon.icon}</span>
+                    <span className="font-display text-sm font-bold text-gold-bright">{boon.name}</span>
+                    <span className="text-[11px] text-parchment-300 leading-tight">{boon.desc}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
 

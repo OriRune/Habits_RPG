@@ -6,6 +6,7 @@ import { useEffect, useRef } from 'react';
 import { useGameStore } from '@/store/useGameStore';
 import { canDescend, facedCell, facedMonsterId, type Dir } from '@/engine/mining';
 import { CHARGE_SWING_COUNT, DASH_BASE_CD_MS } from '@/engine/crawl';
+import { boonChargeReduce } from '@/content/boons';
 import { useCoopStore } from '@/net/coop/session';
 import { useAuthStore } from '@/net/auth';
 
@@ -127,11 +128,14 @@ export function useMiningLoop(): MiningControls {
       const isHost = inCoop && coop.session!.host_id === myId;
       const isGuest = inCoop && !isHost;
 
-      // Charge detection: if Space is still held for CHARGE_SWING_COUNT intervals, fire a charged swing.
+      // Charge detection: if Space is still held for effectiveChargeCount intervals, fire a charged swing.
+      // The Overcharge boon reduces the required hold count by 1 (minimum 1).
+      const chargeReduce = run.activeBoons ? boonChargeReduce(run.activeBoons) : 0;
+      const effectiveChargeCount = Math.max(1, CHARGE_SWING_COUNT - chargeReduce);
       if (
         spaceDownAt.current !== null &&
         !chargeConsumed.current &&
-        now - spaceDownAt.current >= CHARGE_SWING_COUNT * SWING_INTERVAL_MS &&
+        now - spaceDownAt.current >= effectiveChargeCount * SWING_INTERVAL_MS &&
         now - lastSwing >= SWING_INTERVAL_MS
       ) {
         chargeConsumed.current = true;

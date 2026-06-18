@@ -103,6 +103,9 @@ function makeState(over: Partial<MineState> = {}): MineState {
     dashCooldownMs: 2000,
     moveIntervalMs: 150,
     agLevel: 0,
+    // Phase 5 fields
+    activeBoons: [],
+    pendingBoonChoice: null,
     ...over,
   };
 }

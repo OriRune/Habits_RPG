@@ -763,6 +763,8 @@ describe('deep mine', () => {
       lastSpellMs: -1000, nextRuneId: 1,
       // Phase 1 fields
       lastDashMs: -2000, dashCooldownMs: 2000, moveIntervalMs: 150, agLevel: 0,
+      // Phase 5 fields
+      activeBoons: [], pendingBoonChoice: null,
       ...over,
     };
   }
@@ -825,8 +827,8 @@ describe('deep mine', () => {
     expect(get().deepestMineFloor).toBe(2);
   });
 
-  it('persists at version 18', () => {
-    expect(useGameStore.persist.getOptions().version).toBe(18);
+  it('persists at version 19', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(19);
   });
 });
 
@@ -865,6 +867,8 @@ describe('wild forest', () => {
       lastSpellMs: -1000, nextRuneId: 1,
       // Phase 1 fields
       lastDashMs: -2000, dashCooldownMs: 2000, moveIntervalMs: 150, agLevel: 0,
+      // Phase 5 fields
+      activeBoons: [], pendingBoonChoice: null,
       ...over,
     };
   }

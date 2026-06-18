@@ -153,7 +153,7 @@ export function useCoopSession(): void {
           type: 'world',
           t: performance.now(),
           floor: depth,
-          status: run.status,
+          status: run.status === 'choosing' ? 'active' : run.status,
           monsters: entities.map((m) => ({
             id: m.id,
             key: m.key,

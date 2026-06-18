@@ -111,6 +111,9 @@ function makeMineState(over: Partial<MineState> = {}): MineState {
     dashCooldownMs: DASH_BASE_CD_MS,
     moveIntervalMs: 150,
     agLevel: 0,
+    // Phase 5 fields
+    activeBoons: [],
+    pendingBoonChoice: null,
     ...over,
   };
 }
@@ -165,6 +168,9 @@ function makeForestState(over: Partial<ForestState> = {}): ForestState {
     dashCooldownMs: DASH_BASE_CD_MS,
     moveIntervalMs: 150,
     agLevel: 0,
+    // Phase 5 fields
+    activeBoons: [],
+    pendingBoonChoice: null,
     ...over,
   };
 }
