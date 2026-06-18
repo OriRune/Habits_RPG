@@ -11,8 +11,10 @@ import {
   movePlayer,
   playerAttack,
   playerCastSpell,
+  holdOverwatch,
   endPlayerTurn,
   generateSkirmish,
+  isTacticsLoadoutSpell,
   tacticsReward,
   TACTICS_SIZE_RADIUS,
   TACTICS_GRANTED_SPELLS,
@@ -22,6 +24,7 @@ import {
   type HexBattleState,
   type PlayerUnit,
   type EnemyUnit,
+  type TacticsObjective,
   type Tile,
 } from '../hexBattle';
 import { hexBoard, hexKey, hexDistance, type Hex } from '../hex';
@@ -64,7 +67,7 @@ function setTile(tiles: Record<string, Tile>, h: Hex, over: Partial<Tile>): void
 function makePlayer(hex: Hex, over: Partial<PlayerUnit> = {}): PlayerUnit {
   return {
     hex, hp: 100, maxHp: 100, mp: 30, maxMp: 30, sta: 20, maxSta: 20,
-    movesLeft: 4, hasActed: false, ag: 8,
+    movesLeft: 4, hasActed: false, overwatch: false, ag: 8,
     meleePower: 10, rangedPower: 8, damageSpell: 6, supportSpell: 6, illusionPower: 0,
     defense: 0, ward: 0, dodge: 0, statuses: [], ...over,
   };
@@ -88,7 +91,8 @@ function makeState(over: Partial<HexBattleState> = {}): HexBattleState {
     enemies: over.enemies ?? [],
     turn: 'player', selected: null, reachable: [], targetable: [], effects: [],
     log: [], status: 'active', tier: 5, knownSpells: ['sparks', 'mend', 'dazzle'],
-    weapon: SWORD, seq: 100, threatHexes: [], intentPlan: [], ...over,
+    weapon: SWORD, seq: 100, threatHexes: [], intentPlan: [],
+    objective: null, turnCount: 1, ...over,
   };
 }
 
@@ -481,5 +485,216 @@ describe('generateSkirmish', () => {
         if (b) expect(tile.elevation - b.elevation).toBeLessThanOrEqual(OCCLUSION_RISE);
       }
     }
+  });
+});
+
+// --- Phase E: spell loadout -----------------------------------------------------------------------
+describe('isTacticsLoadoutSpell', () => {
+  it('excludes the three always-granted positional spells', () => {
+    for (const key of TACTICS_GRANTED_SPELLS) {
+      expect(isTacticsLoadoutSpell(key)).toBe(false);
+    }
+  });
+
+  it('accepts standard damage/support spells', () => {
+    // 'sparks' is a standard damage spell with no mechanic override.
+    expect(isTacticsLoadoutSpell('sparks')).toBe(true);
+  });
+
+  it('rejects unknown spell keys', () => {
+    expect(isTacticsLoadoutSpell('not_a_real_spell')).toBe(false);
+  });
+});
+
+describe('generateSkirmish spell loadout', () => {
+  it('always includes the three granted spells regardless of loadout', () => {
+    const s = generateSkirmish(fighter(), 8, 5, [], { rng: seeded(1) });
+    for (const key of TACTICS_GRANTED_SPELLS) {
+      expect(s.knownSpells).toContain(key);
+    }
+  });
+
+  it('limits knownSpells to loadout ∪ granted when a subset is passed', () => {
+    // Pass only 'sparks' as the loadout; the match should have sparks + the 3 granted spells.
+    const s = generateSkirmish(fighter(), 8, 5, ['sparks'], { rng: seeded(2) });
+    expect(s.knownSpells).toContain('sparks');
+    for (const key of TACTICS_GRANTED_SPELLS) {
+      expect(s.knownSpells).toContain(key);
+    }
+    // 'mend' was not in the loadout, so it must not appear.
+    expect(s.knownSpells).not.toContain('mend');
+  });
+
+  it('empty loadout produces exactly the three granted spells', () => {
+    const s = generateSkirmish(fighter(), 8, 5, [], { rng: seeded(3) });
+    const expected = [...TACTICS_GRANTED_SPELLS].sort();
+    expect([...s.knownSpells].sort()).toEqual(expected);
+  });
+});
+
+// --- Phase F: overwatch Hold action ---------------------------------------------------------------
+describe('holdOverwatch', () => {
+  it('sets player.overwatch and ends the player turn', () => {
+    const enemy = makeEnemy(1, { q: 0, r: -3 }); // far away, won't trigger reaction
+    const s0 = makeState({ enemies: [enemy] });
+    const s1 = holdOverwatch(s0, seeded(42));
+    expect(s1.player.overwatch).toBe(false); // expired after enemy phase, player's turn again
+    // Turn should have been handed back to the player.
+    expect(s1.turn).toBe('player');
+    expect(s1.player.hasActed).toBe(false);
+    // Log should contain the overwatch message.
+    expect(s1.log.some((l) => l.toLowerCase().includes('overwatch'))).toBe(true);
+  });
+
+  it('is rejected when the player has already acted', () => {
+    const s0 = makeState({ player: makePlayer({ q: 0, r: 0 }, { hasActed: true }) });
+    const s1 = holdOverwatch(s0);
+    expect(s1).toBe(s0); // no-op — reference equality
+  });
+
+  it('fires a reaction shot when an enemy steps into melee range', () => {
+    // Player at center with a melee weapon; enemy starts adjacent so enemyAct
+    // will try to attack from its current position — that keeps it adjacent, triggering overwatch.
+    const enemy = makeEnemy(1, { q: 0, r: 1 }, { hp: 200, maxHp: 200 }); // high HP so it survives
+    const s0 = makeState({ enemies: [enemy] });
+    const s1 = holdOverwatch(s0, seeded(1));
+    // The reaction log line should mention the enemy name.
+    expect(s1.log.some((l) => l.includes('Foe1'))).toBe(true);
+    // Overwatch should be cleared (was consumed).
+    expect(s1.player.overwatch).toBe(false);
+    // Enemy should have taken some damage.
+    const enemy1 = s1.enemies.find((e) => e.id === 1);
+    expect(enemy1).toBeDefined();
+    if (enemy1) expect(enemy1.hp).toBeLessThan(200);
+  });
+
+  it('disarms the overwatch stance when no enemy enters range', () => {
+    // Enemy on the far side of the board (r = -3) won't reach melee range in one move.
+    const enemy = makeEnemy(1, { q: 0, r: -3 }, { hp: 50, maxHp: 50 });
+    const s0 = makeState({ enemies: [enemy] });
+    const s1 = holdOverwatch(s0, seeded(7));
+    expect(s1.player.overwatch).toBe(false); // expired at start of next player turn
+  });
+});
+
+// --- Phase G: secondary objectives ---------------------------------------------------------------
+describe('objective: beacon', () => {
+  function beaconState(streak: number, enemyOnBeacon: boolean): HexBattleState {
+    const beaconHex: Hex = { q: 0, r: 0 };
+    const objective: TacticsObjective = {
+      kind: 'beacon', label: 'Hold the Beacon', desc: '', target: 5, progress: streak,
+      beaconHex, complete: false, failed: false,
+    };
+    const enemy = makeEnemy(1, enemyOnBeacon ? beaconHex : { q: 0, r: -3 }, { hp: 200, maxHp: 200 });
+    return makeState({ enemies: [enemy], objective });
+  }
+
+  it('increments streak when beacon tile is clear', () => {
+    const s = beaconState(2, false /* enemy not on beacon */);
+    const s1 = endPlayerTurn(s, seeded(1));
+    expect(s1.objective?.progress).toBe(3);
+    expect(s1.objective?.complete).toBe(false);
+  });
+
+  it('resets streak when an enemy occupies the beacon tile', () => {
+    const s = beaconState(3, true /* enemy ON beacon */);
+    const s1 = endPlayerTurn(s, seeded(1));
+    expect(s1.objective?.progress).toBe(0);
+  });
+
+  it('marks complete when streak reaches target', () => {
+    const s = beaconState(4, false); // one more tick → progress=5=target
+    const s1 = endPlayerTurn(s, seeded(1));
+    expect(s1.objective?.complete).toBe(true);
+  });
+});
+
+describe('objective: swift', () => {
+  it('is complete when the match is won within the turn budget', () => {
+    const objective: TacticsObjective = {
+      kind: 'swift', label: 'Swift Strike', desc: '', target: 3, progress: 0,
+      complete: false, failed: false,
+    };
+    // Kill the enemy directly to trigger checkOutcome with turnCount=1.
+    const enemy = makeEnemy(1, { q: 1, r: 0 }, { hp: 1 });
+    const s0 = makeState({ enemies: [enemy], objective, turnCount: 1 });
+    const s1 = playerAttack(s0, { q: 1, r: 0 }, seeded(1));
+    expect(s1.status).toBe('won');
+    expect(s1.objective?.complete).toBe(true);
+  });
+
+  it('is NOT complete when the match is won after the turn budget expires', () => {
+    const objective: TacticsObjective = {
+      kind: 'swift', label: 'Swift Strike', desc: '', target: 2, progress: 0,
+      complete: false, failed: false,
+    };
+    const enemy = makeEnemy(1, { q: 1, r: 0 }, { hp: 1 });
+    // turnCount = 3 > target of 2
+    const s0 = makeState({ enemies: [enemy], objective, turnCount: 3 });
+    const s1 = playerAttack(s0, { q: 1, r: 0 }, seeded(1));
+    expect(s1.status).toBe('won');
+    expect(s1.objective?.complete).toBe(false);
+  });
+});
+
+describe('objective: flawless', () => {
+  it('fails when player HP drops below the threshold during the enemy phase', () => {
+    const objective: TacticsObjective = {
+      kind: 'flawless', label: 'Unscathed', desc: '', target: 50, progress: 100,
+      complete: false, failed: false,
+    };
+    // Enemy adjacent, strong enough to hurt the player (100 HP; any damage is the test).
+    const enemy = makeEnemy(1, { q: 0, r: 1 }, { hp: 200, maxHp: 200, attack: 50 });
+    const player = makePlayer({ q: 0, r: 0 }, { hp: 60, maxHp: 100 }); // 60 HP (> 50%)
+    const s0 = makeState({ enemies: [enemy], objective, player });
+    const s1 = endPlayerTurn(s0, seeded(1));
+    // Player took ≥10 damage → HP < 50% threshold → failed.
+    if (s1.player.hp < 50) {
+      expect(s1.objective?.failed).toBe(true);
+    }
+    // If for some reason the enemy missed (dodge), the test still passes — we just confirm
+    // the failed flag is set iff HP actually dropped below threshold.
+    if (s1.player.hp >= 50) {
+      expect(s1.objective?.failed).toBe(false);
+    }
+  });
+});
+
+describe('tacticsReward with objective', () => {
+  it('awards +60% gold when the objective is complete', () => {
+    const baseGold = Math.round(40 * (1 + 5 * 0.15)); // tier 5 base
+    const objective: TacticsObjective = {
+      kind: 'swift', label: '', desc: '', target: 3, progress: 0, complete: true, failed: false,
+    };
+    const s = makeState({
+      status: 'won', tier: 5, objective,
+      enemies: [], player: makePlayer({ q: 0, r: 0 }),
+    });
+    const reward = tacticsReward(s);
+    expect(reward.gold).toBe(Math.round(baseGold * 1.6));
+    expect(reward.items).toContain('healing_potion');
+  });
+
+  it('does not award bonus when objective is incomplete', () => {
+    const baseGold = Math.round(40 * (1 + 5 * 0.15));
+    const objective: TacticsObjective = {
+      kind: 'swift', label: '', desc: '', target: 3, progress: 0, complete: false, failed: false,
+    };
+    const s = makeState({
+      status: 'won', tier: 5, objective,
+      enemies: [], player: makePlayer({ q: 0, r: 0 }),
+    });
+    const reward = tacticsReward(s);
+    expect(reward.gold).toBe(baseGold);
+  });
+
+  it('pays standard reward when no objective exists', () => {
+    const baseGold = Math.round(40 * (1 + 5 * 0.15));
+    const s = makeState({
+      status: 'won', tier: 5, objective: null,
+      enemies: [], player: makePlayer({ q: 0, r: 0 }),
+    });
+    const reward = tacticsReward(s);
+    expect(reward.gold).toBe(baseGold);
   });
 });

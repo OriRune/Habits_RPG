@@ -137,6 +137,7 @@ import {
   playerAttack as tacticsAttackFn,
   playerCastSpell as tacticsCastFn,
   endPlayerTurn as tacticsEndTurnFn,
+  holdOverwatch as tacticsHoldFn,
   tacticsReward,
   TACTICS_ENERGY_COST,
   TACTICS_UNLOCK_LEVEL,
@@ -581,8 +582,9 @@ export interface GameState {
   endArena: () => void;
 
   // Hex Tactics (turn-based hex skirmish; see src/engine/hexBattle.ts).
-  /** Start a skirmish: gate on level/energy, charge energy, snapshot the fighter vs scaled foes. */
-  beginTactics: () => void;
+  /** Start a skirmish: gate on level/energy, charge energy, snapshot the fighter vs scaled foes.
+   *  `loadout` is the optional pre-match spell selection (max 3). Omitting it uses all known spells. */
+  beginTactics: (loadout?: string[]) => void;
   /** Select the active action (move / attack / spell) and refresh movement & target highlights. */
   tacticsSelect: (action: TacticsAction) => void;
   /** Move the player to a highlighted reachable tile. */
@@ -593,6 +595,9 @@ export interface GameState {
   tacticsCast: (spellKey: string, target: Hex | null) => void;
   /** End the player's turn — runs the enemy phase, then restores the player. */
   tacticsEndTurn: () => void;
+  /** Arm an overwatch stance and end the player's turn. A one-shot reaction fires on the first
+   *  enemy that steps into weapon range during the enemy phase; unused stances expire next turn. */
+  tacticsHold: () => void;
   /** Commit the reward and close the skirmish (gold + stat XP on a win, effort trickle either way). */
   endTactics: () => void;
 
@@ -2481,13 +2486,13 @@ export const useGameStore = create<GameState>()(
 
       endArena: () => set((s) => (s.arena ? commitArena(s, s.arena) : s)),
 
-      beginTactics: () =>
+      beginTactics: (loadout?: string[]) =>
         set((s) => {
           const free = s.settings.unlimitedEnergy;
           if (s.tactics || s.character.level < TACTICS_UNLOCK_LEVEL) return s;
           if (!free && s.character.energy < TACTICS_ENERGY_COST) return s;
           const tier = Math.max(TACTICS_UNLOCK_LEVEL, Math.min(MAX_LEVEL, s.character.level));
-          const tactics = generateSkirmish(fighterFor(s), s.character.statLevels.AG, tier, s.knownSpells, {
+          const tactics = generateSkirmish(fighterFor(s), s.character.statLevels.AG, tier, loadout ?? s.knownSpells, {
             radius: TACTICS_SIZE_RADIUS[s.settings.tacticsSize],
             rng: Math.random,
           });
@@ -2528,6 +2533,13 @@ export const useGameStore = create<GameState>()(
         set((s) => {
           if (!s.tactics || s.tactics.status !== 'active') return s;
           const tactics = tacticsEndTurnFn(s.tactics, Math.random);
+          return tactics === s.tactics ? s : { tactics };
+        }),
+
+      tacticsHold: () =>
+        set((s) => {
+          if (!s.tactics || s.tactics.status !== 'active') return s;
+          const tactics = tacticsHoldFn(s.tactics, Math.random);
           return tactics === s.tactics ? s : { tactics };
         }),
 
@@ -2573,7 +2585,7 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 19,
+      version: 20,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -2613,6 +2625,9 @@ export const useGameStore = create<GameState>()(
       // v19: In-run boons — MineState/ForestState gained `activeBoons`/`pendingBoonChoice`/
       //      `status:'choosing'`, but active runs are cleared (mining/forest → null) so no
       //      run-level migration needed; no new top-level persisted fields.
+      // v20: Tactics Tier 2 — HexBattleState gained `objective`/`turnCount`/`overwatch` and
+      //      PlayerUnit gained `overwatch`; active skirmish cleared (tactics → null) so no
+      //      run-level migration needed.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {

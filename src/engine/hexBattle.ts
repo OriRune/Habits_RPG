@@ -62,6 +62,21 @@ const EFFECT_DURATION_MS = 420;
  */
 export const TACTICS_GRANTED_SPELLS = ['push', 'blink', 'cleave'] as const;
 
+/**
+ * Returns true for spells that belong in the pre-match loadout picker — i.e. standard
+ * damage/support spells the player can choose to bring (cap: 3). Excludes:
+ *   - The three always-granted positional spells (they're free on top of the loadout).
+ *   - Arena-only mechanics (rune, ring-of-fire, teleport) — already filtered in generateSkirmish.
+ *   - Any spell with a non-standard `mechanic` field (blink / push / cleave handle above).
+ */
+export function isTacticsLoadoutSpell(key: string): boolean {
+  if ((TACTICS_GRANTED_SPELLS as readonly string[]).includes(key)) return false;
+  const spell = getSpell(key);
+  if (!spell) return false;
+  // Spells with a mechanic override (blink/push/cleave/rune/etc.) are handled elsewhere.
+  return spell.mechanic === undefined;
+}
+
 // --- AG / elevation formulas (the load-bearing rules; stat levels are ~1–25) --------------------
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
@@ -112,6 +127,9 @@ export interface PlayerUnit {
   maxSta: number;
   movesLeft: number; // tiles remaining this turn
   hasActed: boolean; // one attack/spell per turn
+  /** When true, the player has Held their action to fire a one-shot reaction during the enemy phase.
+   *  Cleared automatically when the reaction fires or at the start of the next player turn. */
+  overwatch: boolean;
   ag: number; // raw Agility — drives movement & climb
   // Frozen combat snapshot (mirrors deriveCombatant fields)
   meleePower: number;
@@ -206,6 +224,32 @@ export interface AttackPreview {
   isHeal?: boolean;
 }
 
+/**
+ * Optional per-match bonus objective — appears in ~65% of skirmishes and pays extra gold when
+ * the player wins *and* meets the condition. Losing the match also voids the objective regardless.
+ *
+ * beacon  — Hold the Beacon: keep a designated centre tile enemy-free for `target` consecutive
+ *           player turns. `progress` counts the current streak; resets when an enemy stands there.
+ * swift   — Swift Strike: win within `target` turns. `complete` is set at match-end when won.
+ * flawless — Unscathed: never drop below `target`% HP. `failed` is set the moment HP falls under;
+ *           `progress` tracks the lowest HP% seen (for display).
+ */
+export type TacticsObjectiveKind = 'beacon' | 'swift' | 'flawless';
+
+export interface TacticsObjective {
+  kind: TacticsObjectiveKind;
+  label: string;
+  desc: string;
+  /** Numeric threshold: beacon=streak needed (5), swift=turn budget, flawless=HP% floor (50). */
+  target: number;
+  /** Running tracker: beacon=current streak, swift=unused, flawless=lowest HP% seen (starts 100). */
+  progress: number;
+  /** Beacon only: the designated tile that must stay clear. */
+  beaconHex?: Hex;
+  complete: boolean;
+  failed: boolean;
+}
+
 export interface HexBattleState {
   radius: number;
   tiles: Record<string, Tile>;
@@ -228,6 +272,10 @@ export interface HexBattleState {
   threatHexes: Hex[];
   /** Predicted intent for each living enemy this upcoming enemy turn (for UI telegraph). */
   intentPlan: EnemyIntent[];
+  /** Optional bonus challenge for this skirmish (null ~35% of the time). */
+  objective: TacticsObjective | null;
+  /** Number of player turns completed (starts at 1 for the player's first turn). */
+  turnCount: number;
 }
 
 // --- Small helpers ------------------------------------------------------------------------------
@@ -525,12 +573,13 @@ export function movePlayer(state: HexBattleState, to: Hex): HexBattleState {
   return s;
 }
 
-/** Resolve the player's weapon attack against a targeted enemy. */
-export function playerAttack(state: HexBattleState, target: Hex, rng: RNG = Math.random): HexBattleState {
-  if (state.turn !== 'player' || state.status !== 'active' || state.player.hasActed) return state;
-  if (!computeTargetable(state, { kind: 'attack' }).some((h) => hexEquals(h, target))) return state;
-  const s = clone(state);
-  const enemy = enemyAt(s, target)!;
+/**
+ * Core strike resolution: compute damage, drain stamina, push effects and log onto `s`.
+ * Mutates `s` directly (caller holds the clone). Does NOT set `hasActed` or call
+ * `finishPlayerAction` — those are the caller's responsibility so this can be reused for
+ * both normal attacks and overwatch reaction shots.
+ */
+function resolvePlayerStrike(s: HexBattleState, enemy: EnemyUnit, rng: RNG): void {
   const pz = elevationAt(s, s.player.hex);
   const dz = pz - elevationAt(s, enemy.hex);
   const ranged = !!s.weapon.ranged;
@@ -554,9 +603,49 @@ export function playerAttack(state: HexBattleState, target: Hex, rng: RNG = Math
   const tag = weak ? ' — weak to it!' : resist ? ' — resisted' : '';
   const hz = dz > 0 ? ' (high ground)' : dz < 0 ? ' (uphill)' : '';
   s.log.push(`You hit ${enemy.name} for ${dealt}${tag}${hz}${full ? '' : ' (exhausted)'}${enemy.guardBonus > 0 ? ' (guarding)' : ''}.`);
+}
+
+/** Resolve the player's weapon attack against a targeted enemy. */
+export function playerAttack(state: HexBattleState, target: Hex, rng: RNG = Math.random): HexBattleState {
+  if (state.turn !== 'player' || state.status !== 'active' || state.player.hasActed) return state;
+  if (!computeTargetable(state, { kind: 'attack' }).some((h) => hexEquals(h, target))) return state;
+  const s = clone(state);
+  const enemy = enemyAt(s, target)!;
+  resolvePlayerStrike(s, enemy, rng);
   s.player.hasActed = true;
   finishPlayerAction(s);
   return s;
+}
+
+/**
+ * Returns true if the enemy at `enemyHex` is within the player's weapon reach from their current
+ * position, accounting for height bonus and line-of-sight (ranged weapons only). This bypasses the
+ * `hasActed` gate so it can be used during the enemy phase for overwatch reactions.
+ */
+function inAttackReach(s: HexBattleState, enemyHex: Hex): boolean {
+  const p = s.player.hex;
+  const pz = elevationAt(s, p);
+  if (s.weapon.ranged) {
+    const range = s.weapon.range ?? 1;
+    const dz = pz - elevationAt(s, enemyHex);
+    return hexDistance(p, enemyHex) <= range + heightRangeBonus(dz) && hasLineOfSight(s, p, enemyHex);
+  }
+  return hexDistance(p, enemyHex) === 1;
+}
+
+/**
+ * Hold action: arm a one-shot overwatch reaction and end the player's turn.
+ * If an enemy moves into weapon reach during the enemy phase, the reaction fires automatically —
+ * one shot only, then the stance clears. Move-then-Hold is allowed; attack-then-Hold is not.
+ * An unused stance expires at the start of the next player turn.
+ */
+export function holdOverwatch(state: HexBattleState, rng: RNG = Math.random): HexBattleState {
+  if (state.turn !== 'player' || state.status !== 'active' || state.player.hasActed) return state;
+  const s = clone(state);
+  s.player.overwatch = true;
+  s.player.hasActed = true;
+  s.log.push('You take an overwatch stance, ready to fire on the first enemy that enters range.');
+  return endPlayerTurn(s, rng);
 }
 
 /** Resolve a spell cast. `target` is required for damage/illusion spells, ignored for support. */
@@ -723,9 +812,33 @@ export function endPlayerTurn(state: HexBattleState, rng: RNG = Math.random): He
     return s;
   }
 
+  // --- Objective evaluations (after the enemy phase, before handing control back) ---------------
+  if (s.objective && !s.objective.complete && !s.objective.failed) {
+    const obj = s.objective;
+    if (obj.kind === 'beacon' && obj.beaconHex) {
+      const enemyOnBeacon = s.enemies.some((e) => hexEquals(e.hex, obj.beaconHex!));
+      if (enemyOnBeacon) {
+        obj.progress = 0; // streak broken
+      } else {
+        obj.progress++;
+        if (obj.progress >= obj.target) obj.complete = true;
+      }
+    } else if (obj.kind === 'flawless') {
+      const pct = (s.player.hp / s.player.maxHp) * 100;
+      if (pct < obj.target) {
+        obj.failed = true;
+      } else {
+        obj.progress = Math.min(obj.progress, pct);
+      }
+    }
+    // swift is finalised in checkOutcome when the match ends, not per-turn.
+  }
+
+  s.turnCount++;
   s.turn = 'player';
   s.player.movesLeft = moveTilesFor(s.player.ag);
   s.player.hasActed = false;
+  s.player.overwatch = false; // expire any unused stance (reaction never fired)
   s.selected = null;
   recomputeHighlights(s);
   // Compute intent/threat for the upcoming turn so the UI can telegraph enemy plans.
@@ -913,6 +1026,16 @@ function enemyTurn(s: HexBattleState, rng: RNG): void {
     enemyAct(s, enemy, rng, push);
     checkOutcome(s);
     if (s.status !== 'active') return;
+
+    // Overwatch reaction: fires once on the first enemy that ends its move in the player's
+    // attack reach. The stance clears after the shot regardless of whether it kills.
+    if (s.player.overwatch && enemy.hp > 0 && inAttackReach(s, enemy.hex)) {
+      s.log.push(`Overwatch! You snap a reaction shot at ${enemy.name}.`);
+      resolvePlayerStrike(s, enemy, rng);
+      s.player.overwatch = false;
+      checkOutcome(s);
+      if (s.status !== 'active') return;
+    }
   }
 }
 
@@ -1007,6 +1130,19 @@ function checkOutcome(s: HexBattleState): void {
   s.enemies = s.enemies.filter((e) => e.hp > 0);
   if (s.enemies.length === 0) {
     s.status = 'won';
+    // Finalise objectives that can only be evaluated at match end.
+    if (s.objective && !s.objective.failed) {
+      const obj = s.objective;
+      if (obj.kind === 'swift') {
+        obj.complete = s.turnCount <= obj.target;
+        if (obj.complete) s.log.push(`Swift Strike complete — won in ${s.turnCount} turn${s.turnCount === 1 ? '' : 's'}!`);
+      } else if (obj.kind === 'flawless') {
+        obj.complete = !obj.failed;
+        if (obj.complete) s.log.push('Unscathed! HP never dropped below 50%.');
+      } else if (obj.kind === 'beacon' && obj.complete) {
+        s.log.push('Beacon held! Bonus gold awarded.');
+      }
+    }
   } else if (s.player.hp <= 0) {
     s.player.hp = 0;
     s.status = 'lost';
@@ -1153,6 +1289,7 @@ export function generateSkirmish(
     maxSta: c.maxSta,
     movesLeft: moveTilesFor(ag),
     hasActed: false,
+    overwatch: false,
     ag,
     meleePower: c.meleePower,
     rangedPower: c.rangedPower,
@@ -1165,6 +1302,12 @@ export function generateSkirmish(
     statuses: [],
   };
 
+  // --- Optional secondary objective (~65% of matches) -------------------------------------------
+  const objective: TacticsObjective | null = rng() < 0.65
+    ? rollObjective(tiles, board, playerSpawn, enemySpawns, enemies.length, radius, rng)
+    : null;
+  const objectiveMsg = objective ? ` Bonus objective: ${objective.label}.` : '';
+
   const s: HexBattleState = {
     radius,
     tiles,
@@ -1175,7 +1318,7 @@ export function generateSkirmish(
     reachable: [],
     targetable: [],
     effects: [],
-    log: [`A skirmish begins — ${enemies.length} foes stand against you.`],
+    log: [`A skirmish begins — ${enemies.length} foes stand against you.${objectiveMsg}`],
     status: 'active',
     tier,
     // Arena-only mechanics (runes, ring-of-fire, old teleport) aren't modelled on the tactics grid.
@@ -1189,10 +1332,70 @@ export function generateSkirmish(
     seq,
     threatHexes: [],
     intentPlan: [],
+    objective,
+    turnCount: 1,
   };
   s.threatHexes = computeEnemyThreat(s);
   s.intentPlan = planEnemyIntents(s);
   return s;
+}
+
+/**
+ * Pick and initialise one random secondary objective. Returns null if no suitable beacon
+ * tile can be found (very rare on dense boards) — caller falls back to no objective.
+ */
+function rollObjective(
+  tiles: Record<string, Tile>,
+  board: Hex[],
+  playerSpawn: Hex,
+  enemySpawns: Hex[],
+  enemyCount: number,
+  radius: number,
+  rng: RNG,
+): TacticsObjective {
+  const center: Hex = { q: 0, r: 0 };
+  const kind = rng() < 0.33 ? 'beacon' : rng() < 0.5 ? 'swift' : 'flawless';
+
+  if (kind === 'beacon') {
+    // Pick the standable floor tile closest to the board centre that isn't a spawn.
+    const spawnKeys = new Set([hexKey(playerSpawn), ...enemySpawns.map(hexKey)]);
+    const candidate = board
+      .filter((h) => {
+        const t = tiles[hexKey(h)];
+        return t?.terrain === 'floor' && !spawnKeys.has(hexKey(h));
+      })
+      .sort((a, b) => hexDistance(a, center) - hexDistance(b, center))[0];
+
+    // Fall back to swift when the board is too sparse for a beacon tile.
+    if (!candidate) {
+      return {
+        kind: 'swift', label: 'Swift Strike',
+        desc: `Defeat all enemies within ${enemyCount + radius} turns.`,
+        target: enemyCount + radius, progress: 0, complete: false, failed: false,
+      };
+    }
+    return {
+      kind: 'beacon', label: 'Hold the Beacon',
+      desc: 'Keep the marked tile clear of enemies for 5 consecutive turns.',
+      target: 5, progress: 0, beaconHex: { ...candidate }, complete: false, failed: false,
+    };
+  }
+
+  if (kind === 'swift') {
+    const budget = enemyCount + radius;
+    return {
+      kind: 'swift', label: 'Swift Strike',
+      desc: `Defeat all enemies within ${budget} turns.`,
+      target: budget, progress: 0, complete: false, failed: false,
+    };
+  }
+
+  // flawless
+  return {
+    kind: 'flawless', label: 'Unscathed',
+    desc: 'Win without dropping below 50% HP.',
+    target: 50, progress: 100, complete: false, failed: false,
+  };
 }
 
 function elevationOf(tiles: Record<string, Tile>, h: Hex): number {
@@ -1309,5 +1512,10 @@ export function tacticsReward(state: HexBattleState): Reward {
   const gold = Math.round(40 * (1 + state.tier * 0.15));
   const reward: Reward = { gold };
   if (state.tier >= 8) reward.items = ['healing_potion'];
+  // Completed secondary objective adds +60% gold and guarantees a healing potion.
+  if (state.objective?.complete) {
+    reward.gold = Math.round(gold * 1.6);
+    reward.items = ['healing_potion'];
+  }
   return reward;
 }

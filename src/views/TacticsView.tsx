@@ -1,6 +1,8 @@
-import { Grid3x3, Zap, Mountain } from 'lucide-react';
+import { useState } from 'react';
+import { Grid3x3, Zap, Mountain, Sparkles } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
-import { TACTICS_ENERGY_COST, TACTICS_UNLOCK_LEVEL, type TacticsSize } from '@/engine/hexBattle';
+import { TACTICS_ENERGY_COST, TACTICS_UNLOCK_LEVEL, TACTICS_GRANTED_SPELLS, isTacticsLoadoutSpell, type TacticsSize } from '@/engine/hexBattle';
+import { getSpell } from '@/engine/spells';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
@@ -13,6 +15,8 @@ const SIZE_OPTIONS: { id: TacticsSize; label: string; tiles: number }[] = [
   { id: 'large', label: 'Large', tiles: 127 },
 ];
 
+const LOADOUT_CAP = 3;
+
 /** Entrance screen for Hex Tactics (the live skirmish renders in TacticsOverlay). */
 export function TacticsView() {
   const energy = useGameStore((s) => s.character.energy);
@@ -22,6 +26,21 @@ export function TacticsView() {
   const tacticsSize = useGameStore((s) => s.settings.tacticsSize);
   const updateSettings = useGameStore((s) => s.updateSettings);
   const beginTactics = useGameStore((s) => s.beginTactics);
+  const allKnownSpells = useGameStore((s) => s.knownSpells);
+
+  // Spells the player can choose to bring (excludes the 3 always-granted positional spells).
+  const eligibleSpells = allKnownSpells.filter(isTacticsLoadoutSpell);
+
+  // Default the loadout to the first LOADOUT_CAP eligible spells.
+  const [loadout, setLoadout] = useState<string[]>(() => eligibleSpells.slice(0, LOADOUT_CAP));
+
+  function toggleSpell(key: string) {
+    setLoadout((prev) => {
+      if (prev.includes(key)) return prev.filter((k) => k !== key);
+      if (prev.length >= LOADOUT_CAP) return prev; // cap reached — ignore
+      return [...prev, key];
+    });
+  }
 
   const unlocked = level >= TACTICS_UNLOCK_LEVEL;
   const canEnter = unlocked && energy >= TACTICS_ENERGY_COST;
@@ -72,6 +91,71 @@ export function TacticsView() {
           </div>
         </div>
 
+        {/* Spell loadout picker */}
+        <div className="rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3">
+          <div className="mb-2 flex items-center gap-1.5 font-display text-sm text-ink">
+            <Sparkles className="h-3.5 w-3.5 text-stat-WI" />
+            Bring spells{eligibleSpells.length > 0 ? ` (${loadout.length}/${LOADOUT_CAP})` : ''}
+          </div>
+          {/* Always-available positional spells */}
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {(TACTICS_GRANTED_SPELLS as readonly string[]).map((key) => {
+              const spell = getSpell(key);
+              return (
+                <span
+                  key={key}
+                  title="Always available — not counted in your loadout"
+                  className="flex items-center gap-1 rounded border border-gold-deep/20 bg-parchment-300/40 px-2 py-0.5 font-display text-xs text-ink-muted"
+                >
+                  <span className="text-[9px] uppercase tracking-wide opacity-60">core</span>
+                  {spell?.name ?? key}
+                </span>
+              );
+            })}
+          </div>
+          {eligibleSpells.length === 0 ? (
+            <p className="text-xs text-ink-muted">
+              You'll bring the core Push / Blink / Cleave. Discover more spells to expand your loadout.
+            </p>
+          ) : (
+            <>
+              <div className="flex flex-wrap gap-1.5">
+                {eligibleSpells.map((key) => {
+                  const spell = getSpell(key);
+                  const chosen = loadout.includes(key);
+                  const atCap = !chosen && loadout.length >= LOADOUT_CAP;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => toggleSpell(key)}
+                      disabled={atCap}
+                      title={spell ? `${spell.name} — ${spell.mpCost} MP` : key}
+                      className={cn(
+                        'flex items-center gap-1 rounded border px-2 py-0.5 font-display text-xs font-bold transition-colors',
+                        chosen
+                          ? 'border-stat-WI bg-stat-WI/20 text-stat-WI'
+                          : atCap
+                            ? 'border-gold-deep/20 bg-parchment-300/30 text-ink-muted/50 cursor-not-allowed'
+                            : 'border-gold-deep/30 bg-parchment-300/40 text-ink-muted hover:bg-parchment-300/70',
+                      )}
+                    >
+                      {spell?.name ?? key}
+                      {spell && (
+                        <span className="text-[9px] font-normal opacity-70">{spell.mpCost}MP</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-1.5 text-[11px] text-ink-muted">
+                Select up to {LOADOUT_CAP} spells to bring into the match.
+                The core positional spells are always free.
+              </p>
+            </>
+          )}
+        </div>
+
         <div className="rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3">
           <div className="flex items-center gap-2 text-sm text-ink">
             <Mountain className="h-4 w-4 text-stat-AG" />
@@ -103,7 +187,11 @@ export function TacticsView() {
           </div>
         </div>
 
-        <Button onClick={() => { void sfxResume(); beginTactics(); }} disabled={!canEnter} className="w-full py-2.5">
+        <Button
+          onClick={() => { void sfxResume(); beginTactics(eligibleSpells.length > 0 ? loadout : undefined); }}
+          disabled={!canEnter}
+          className="w-full py-2.5"
+        >
           {!unlocked
             ? `Unlocks at Level ${TACTICS_UNLOCK_LEVEL}`
             : canEnter
