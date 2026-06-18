@@ -58,14 +58,15 @@ import {
 } from '@/engine/challenges';
 import { type WeeklyReport, buildWeeklyReport, weeklyRotation } from '@/engine/weekly';
 import {
-  type MerchantOffer,
   resolveTreasure,
   merchantOffers,
   mergeReward,
   scaleReward,
   DUNGEON_ENERGY_COST,
 } from '@/engine/dungeon';
-import { type FloorMap, generateFloorMap } from '@/engine/dungeonMap';
+import { generateFloorMap } from '@/engine/dungeonMap';
+import { type DungeonRun } from '@/engine/dungeonTypes';
+export { type DungeonRun } from '@/engine/dungeonTypes';
 import {
   type MineState,
   type MineTile,
@@ -146,7 +147,6 @@ import type { Hex } from '@/engine/hex';
 import type { Dir as GridDir, Cell as GridCell } from '@/engine/grid';
 import { biomeForDepth, getBiome, bossFor } from '@/engine/biomes';
 import {
-  type EncounterRunState,
   getEncounter,
   startEncounter,
   chooseEncounter,
@@ -210,49 +210,7 @@ export interface CustomChallengeDraft {
   durationDays: number;
 }
 
-/** An in-progress Dungeon Expedition (brief §7.2) — an endless descent through floors.
- *  Persisted so a run resumes on reload. */
-export interface DungeonRun {
-  /** Current floor number (1-based); drives biome + difficulty scaling. */
-  depth: number;
-  biomeKey: string;
-  /** The current floor's branching room map. */
-  map: FloorMap;
-  /** The room currently being resolved, or null when choosing the next path / at floor start. */
-  nodeId: string | null;
-  /** Node ids the player may enter next (the branching choice); empty while inside a room. */
-  choices: string[];
-  /** Ordered ids of rooms entered this floor (for the map UI). */
-  path: string[];
-  hp: number;
-  maxHp: number;
-  /** Mana + Stamina, persisted across rooms; restored to full at each checkpoint. */
-  mp: number;
-  maxMp: number;
-  sta: number;
-  maxSta: number;
-  /** Loot locked in at the last checkpoint — safe even if you fall. */
-  bankedReward: Reward;
-  /** Loot gathered on the current floor — partly forfeit if you fall mid-floor. */
-  floorReward: Reward;
-  /** Active branching text encounter (encounter rooms). */
-  encounter: EncounterRunState | null;
-  /** Loot revealed in a treasure room, shown before continuing. */
-  roomLoot: Reward | null;
-  /** Active combat for a combat/boss room (reuses the combat engine). */
-  battle: BattleState | null;
-  /** True between floors: the player chooses to Bank & Leave or Descend Deeper. */
-  atCheckpoint: boolean;
-  status: 'active' | 'ended';
-  /** True when the run ended by banking (vs. ended by defeat). */
-  cleared: boolean;
-  /** Run-only relic keys (boons + curses), applied to dungeon fights like gear. */
-  relics: string[];
-  /** Three boon keys offered to the player (floor clear / shrine / elite); null when none pending. */
-  pendingBoon: string[] | null;
-  /** Wares offered in a merchant room (null outside one). */
-  merchant: MerchantOffer[] | null;
-}
+// DungeonRun interface lives in src/engine/dungeonTypes.ts (imported above).
 
 /** Share of the current floor's loot kept when you fall mid-floor (the rest is forfeit). */
 const FLOOR_LOSS_KEEP = 0.25;
@@ -318,6 +276,10 @@ export interface GameSettings {
   customPalette: PaletteColors | null;
   /** Arena difficulty pace. 'auto' eases low levels and quickens high ones; otherwise fixed. */
   arenaSpeed: ArenaSpeed;
+  /** Persisted left-click slot binding for the Arena board (defaults to 'melee'). */
+  arenaBindLeft: string;
+  /** Persisted right-click slot binding for the Arena board (defaults to 'ranged'). */
+  arenaBindRight: string;
   /** Board size for a Hex Tactics skirmish (small 37 / medium 61 / large 127 tiles). */
   tacticsSize: TacticsSize;
   /** Skip the once-per-day gate on Skill Trials so they can be replayed immediately. */
@@ -336,6 +298,8 @@ function freshSettings(): GameSettings {
     paletteId: 'default',
     customPalette: null,
     arenaSpeed: 'auto',
+    arenaBindLeft: 'melee',
+    arenaBindRight: 'ranged',
     tacticsSize: 'small',
     repeatMinigames: false,
     darkMode: false,
@@ -2665,6 +2629,16 @@ export const useGameStore = create<GameState>()(
         return {
           ...current,
           ...p,
+          // If a rehydrate fires while a transient run is live in memory (e.g. from
+          // a cloud-save CAS-conflict re-pull), preserve the in-progress run rather
+          // than overwriting it with a stale snapshot from storage.  At startup all
+          // transient fields are null in `current`, so this is a no-op on first load.
+          battle:  current.battle  ?? p.battle  ?? null,
+          dungeon: current.dungeon ?? p.dungeon ?? null,
+          mining:  current.mining  ?? p.mining  ?? null,
+          forest:  current.forest  ?? p.forest  ?? null,
+          arena:   current.arena   ?? p.arena   ?? null,
+          tactics: current.tactics ?? p.tactics ?? null,
           character: withCharacterDefaults(p.character),
           settings: { ...current.settings, ...(p.settings ?? {}) },
           trialsClearedOn: { ...emptyTrialsClearedOn(), ...(p.trialsClearedOn ?? {}) },

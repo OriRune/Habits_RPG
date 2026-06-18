@@ -23,6 +23,9 @@ export interface SpiritGroveRound {
   omen: string;
   choices: { label: string; clue?: string }[];
   correctIndex: number;
+  difficulty: 'easy' | 'medium' | 'hard';
+  /** Shown after selection during the feedback pause. */
+  explanation?: string;
 }
 
 export interface CourtExchange {
@@ -32,9 +35,21 @@ export interface CourtExchange {
 }
 
 // ── Spirit Grove ───────────────────────────────────────────────────────────────
+//
+// Pool of 15 rounds: 5 easy, 5 medium, 5 hard.
+// The trial draws 1 easy + 2 medium + 2 hard per session, presented in that
+// order so difficulty ramps across the five rounds.
+//
+// Easy:   omen maps almost directly to the correct blessing; clues clinch it.
+// Medium: omen requires one inference step; one distractor looks plausible.
+// Hard:   omen is genuinely ambiguous; two or three choices seem reasonable.
 
 export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
+
+  // ── EASY ────────────────────────────────────────────────────────────────────
+
   {
+    difficulty: 'easy',
     omen: 'The bark of the elder tree has split, and sap weeps upward like tears.',
     choices: [
       { label: 'Blessing of Mending', clue: 'Seals wounds and cracks.' },
@@ -43,18 +58,10 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
       { label: 'Blessing of Fire', clue: 'Purges the old to make way for new.' },
     ],
     correctIndex: 0,
+    explanation: 'Sap weeping from a split — the tree is wounded. The spirits call for Mending, not growth or purging.',
   },
   {
-    omen: 'A raven circles the grove seven times, then lands facing west.',
-    choices: [
-      { label: 'Blessing of Foresight', clue: 'Sees what lies ahead.' },
-      { label: 'Blessing of Passage', clue: 'Eases transitions and endings.' },
-      { label: 'Blessing of the Storm', clue: 'Calls change through force.' },
-      { label: 'Blessing of Iron Will', clue: 'Hardens the spirit against doubt.' },
-    ],
-    correctIndex: 1,
-  },
-  {
+    difficulty: 'easy',
     omen: 'The stream runs backwards for three heartbeats, then resumes.',
     choices: [
       { label: 'Blessing of Time', clue: 'Grants patience and perspective.' },
@@ -63,18 +70,10 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
       { label: 'Blessing of Speed', clue: 'Quickens the slow.' },
     ],
     correctIndex: 1,
+    explanation: 'The stream reversed itself — something disturbed its natural course. Balance restores harmony to what is upset.',
   },
   {
-    omen: 'Three fireflies form a perfect triangle, hold it for a long breath, then scatter.',
-    choices: [
-      { label: 'Blessing of Union', clue: 'Binds separate things into one purpose.' },
-      { label: 'Blessing of Dispersal', clue: 'Spreads what is concentrated.' },
-      { label: 'Blessing of Light', clue: 'Illuminates and reveals hidden truths.' },
-      { label: 'Blessing of the Wanderer', clue: 'Guides the lost to new paths.' },
-    ],
-    correctIndex: 0,
-  },
-  {
+    difficulty: 'easy',
     omen: 'Frost appears on the leaves in midsummer, then melts at your touch.',
     choices: [
       { label: 'Blessing of Warmth', clue: 'Counters the cold and comforts.' },
@@ -83,21 +82,163 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
       { label: 'Blessing of Clarity', clue: 'Sharpens the clouded mind.' },
     ],
     correctIndex: 0,
+    explanation: 'Cold where it has no place, and it yields to your touch. Warmth counters the cold directly.',
   },
   {
+    difficulty: 'easy',
+    omen: 'A fallen oak now bridges the stream, and fox, deer, and beetle all use it to cross.',
+    choices: [
+      { label: 'Blessing of Purpose', clue: 'Reveals the use hidden in every form.' },
+      { label: 'Blessing of Shelter', clue: 'Guards the vulnerable from harm.' },
+      { label: 'Blessing of Unity', clue: 'Draws many into one bond.' },
+      { label: 'Blessing of Passage', clue: 'Eases transitions and endings.' },
+    ],
+    correctIndex: 0,
+    explanation: 'The tree does not gather them — they simply use its shape. What has ended has found its purpose, not a shared bond or final crossing.',
+  },
+  {
+    difficulty: 'easy',
+    omen: 'Frost on a spider\'s web at dawn makes every thread glow — the whole pattern revealed at once.',
+    choices: [
+      { label: 'Blessing of Clarity', clue: 'Shows what was always there, sharpened into sight.' },
+      { label: 'Blessing of Revelation', clue: 'Draws hidden truths into the open.' },
+      { label: 'Blessing of Preservation', clue: 'Holds things exactly as they are.' },
+      { label: 'Blessing of Warding', clue: 'Protects against what would intrude.' },
+    ],
+    correctIndex: 0,
+    explanation: 'The web was always there — the frost only made its threads visible. Clarity sharpens what exists; Revelation implies something was concealed.',
+  },
+
+  // ── MEDIUM ──────────────────────────────────────────────────────────────────
+
+  {
+    difficulty: 'medium',
+    omen: 'A raven circles the grove seven times, then lands facing west.',
+    choices: [
+      { label: 'Blessing of Foresight', clue: 'Sees what lies ahead.' },
+      { label: 'Blessing of Passage', clue: 'Eases transitions and endings.' },
+      { label: 'Blessing of the Storm', clue: 'Calls change through force.' },
+      { label: 'Blessing of Iron Will', clue: 'Hardens the spirit against doubt.' },
+    ],
+    correctIndex: 1,
+    explanation: 'Seven circuits, then facing west — completion and the direction long held to mark endings. Foresight would mean the raven sees ahead, not that it marks a close.',
+  },
+  {
+    difficulty: 'medium',
+    omen: 'Three fireflies form a perfect triangle, hold it for a long breath, then scatter.',
+    choices: [
+      { label: 'Blessing of Union', clue: 'Binds separate things into one purpose.' },
+      { label: 'Blessing of Dispersal', clue: 'Spreads what is concentrated.' },
+      { label: 'Blessing of Light', clue: 'Illuminates and reveals hidden truths.' },
+      { label: 'Blessing of the Wanderer', clue: 'Guides the lost to new paths.' },
+    ],
+    correctIndex: 0,
+    explanation: 'Three things formed a shape together and held it — the scattering came after. The blessing is the act of union, not the dispersal that follows.',
+  },
+  {
+    difficulty: 'medium',
     omen: 'An acorn cracks open and a fully-grown sapling springs out in moments.',
     choices: [
-      { label: 'Blessing of Patience', clue: 'The gift of waiting.' },
+      { label: 'Blessing of Patience', clue: 'The gift of waiting for the right moment.' },
       { label: 'Blessing of Potential', clue: 'Brings latent power to the surface.' },
-      { label: 'Blessing of the Harvest', clue: 'Rewards long labour.' },
+      { label: 'Blessing of the Harvest', clue: 'Rewards long labour with its due.' },
       { label: 'Blessing of Haste', clue: 'Compresses time and effort.' },
     ],
     correctIndex: 1,
+    explanation: 'The sapling was always inside the acorn — it needed only a moment to emerge. Potential brings latent power to the surface; Haste compresses time, which is not the same thing.',
+  },
+  {
+    difficulty: 'medium',
+    omen: 'A wolf pup stands at the tree line in silence, watching the storm, and does not step into the open field.',
+    choices: [
+      { label: 'Blessing of Wisdom', clue: 'Knows the edge of one\'s own readiness.' },
+      { label: 'Blessing of Caution', clue: 'Tempers boldness with restraint.' },
+      { label: 'Blessing of Fear', clue: 'Heeds the body\'s warning of danger.' },
+      { label: 'Blessing of Foresight', clue: 'Reads what the storm will bring.' },
+    ],
+    correctIndex: 0,
+    explanation: 'The pup does not seem frightened — it is still, not shrinking. Wisdom recognises the limit of one\'s current strength. Caution reacts to perceived danger; this pup simply knows where it stands.',
+  },
+  {
+    difficulty: 'medium',
+    omen: 'A single candle left burning in an empty hall keeps the darkness at bay all night.',
+    choices: [
+      { label: 'Blessing of Vigilance', clue: 'Holds watch when all others have gone.' },
+      { label: 'Blessing of Perseverance', clue: 'Continues without faltering, however long it takes.' },
+      { label: 'Blessing of Defiance', clue: 'Stands firm against what presses in.' },
+      { label: 'Blessing of Endurance', clue: 'Weathers what is sustained and heavy.' },
+    ],
+    correctIndex: 0,
+    explanation: 'The candle does not push back and it does not struggle — it simply stays lit, watching. Vigilance holds the watch; Perseverance and Endurance imply contest, but darkness is merely the candle\'s natural companion.',
+  },
+
+  // ── HARD ────────────────────────────────────────────────────────────────────
+
+  {
+    difficulty: 'hard',
+    omen: 'The shadow of the great oak falls toward the sun at noon.',
+    choices: [
+      { label: 'Blessing of Defiance', clue: 'Acts against the expected order by choice.' },
+      { label: 'Blessing of Inversion', clue: 'Reverses what the natural order dictates.' },
+      { label: 'Blessing of Will', clue: 'Holds its shape against all pressure.' },
+      { label: 'Blessing of the Omen', clue: 'Carries a sign that demands to be read.' },
+    ],
+    correctIndex: 0,
+    explanation: 'Shadows always fall away from the sun — this one does not. It is not a mistake of the light; it is deliberate opposition to nature\'s rule. Defiance acts against the order by choice. Inversion merely reverses — it does not choose.',
+  },
+  {
+    difficulty: 'hard',
+    omen: 'Smoke rises from a cold, unlit hearth — no embers, no flame, only the scent of old wood.',
+    choices: [
+      { label: 'Blessing of Memory', clue: 'Carries the trace of what once was.' },
+      { label: 'Blessing of Haunting', clue: 'Holds a place between what was and what is.' },
+      { label: 'Blessing of Return', clue: 'Draws what is absent back to where it belonged.' },
+      { label: 'Blessing of Longing', clue: 'Reaches across time toward something absent.' },
+    ],
+    correctIndex: 0,
+    explanation: 'The fire is gone, but its mark remains in the smoke. Memory carries the trace of what once was — it does not summon anything back, nor does it grieve. The smoke does not call anyone home; it only remembers.',
+  },
+  {
+    difficulty: 'hard',
+    omen: 'A river bends sharply around the base of a mountain rather than cutting through it.',
+    choices: [
+      { label: 'Blessing of Prudence', clue: 'Takes the path that avoids what cannot be overcome.' },
+      { label: 'Blessing of Wisdom', clue: 'Knows the true limit of its own strength.' },
+      { label: 'Blessing of Patience', clue: 'Waits for what will not yield to soften in time.' },
+      { label: 'Blessing of Perseverance', clue: 'Keeps moving long after the easy paths are gone.' },
+    ],
+    correctIndex: 0,
+    explanation: 'The river does not wait, and it does not grind the mountain down — it bends. Prudence is the act of choosing the better path. Wisdom would be knowing the mountain cannot be cut; Prudence is going around it.',
+  },
+  {
+    difficulty: 'hard',
+    omen: 'A bird continues its call in a forest where all its kind have already flown south for winter.',
+    choices: [
+      { label: 'Blessing of Faithfulness', clue: 'Keeps faith with what was, even when all else has left.' },
+      { label: 'Blessing of Grief', clue: 'Sings what cannot be taken back.' },
+      { label: 'Blessing of Solitude', clue: 'Finds strength in standing alone with what is.' },
+      { label: 'Blessing of Folly', clue: 'Continues past the point of usefulness.' },
+    ],
+    correctIndex: 0,
+    explanation: 'The bird is not lost — it calls because it has always called. It stays not because it cannot leave but because it will not. Faithfulness, not grief or folly — those would imply the bird knows something is wrong.',
+  },
+  {
+    difficulty: 'hard',
+    omen: 'At the moment of the first snowfall, every remaining leaf on every tree falls at once.',
+    choices: [
+      { label: 'Blessing of Release', clue: 'Lets go of what has been held past its time.' },
+      { label: 'Blessing of Surrender', clue: 'Yields to what cannot be refused.' },
+      { label: 'Blessing of Endings', clue: 'Marks the close of what has run its full course.' },
+      { label: 'Blessing of Accord', clue: 'Brings separate things into alignment.' },
+    ],
+    correctIndex: 0,
+    explanation: 'The leaves did not fall from wind or rot — they waited for the snow, then let go together. Release is a choice, even when it is the right one. Surrender implies defeat; Endings is what follows the act, not the act itself.',
   },
 ];
 
-// The trial picks 3 rounds at random from this pool each day.
-export const SPIRIT_GROVE_ROUND_COUNT = 3;
+// Each session draws 1 easy + 2 medium + 2 hard from the pool above.
+// Five rounds give all three star tiers: 4–5 correct → 3★, 2–3 → 2★, 0–1 → 1★.
+export const SPIRIT_GROVE_ROUND_COUNT = 5;
 
 // ── Royal Court ────────────────────────────────────────────────────────────────
 

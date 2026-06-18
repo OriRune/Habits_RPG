@@ -65,6 +65,15 @@ export default {
         display: ['Cinzel', 'Georgia', 'serif'],
         serif: ['"EB Garamond"', 'Georgia', 'serif'],
       },
+      keyframes: {
+        'fade-in': {
+          '0%': { opacity: '0', transform: 'translateY(4px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+      },
+      animation: {
+        'fade-in': 'fade-in 0.18s ease-out both',
+      },
       boxShadow: {
         // Double gold frame + drop shadow for panels/frames (gold trim follows the palette)
         gold: '0 0 0 2px rgb(var(--c-gold-deep)), 0 0 0 4px rgb(var(--c-gold)), 0 6px 16px rgba(0,0,0,0.55)',

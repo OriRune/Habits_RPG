@@ -77,6 +77,22 @@ export function useArenaLoop(): ArenaControlsApi {
       if (e.key === ' ' || e.key === 'Enter') {
         actQueued.current = true;
         e.preventDefault();
+        return;
+      }
+      // Digit keys 1–9: quick-fire spells (in knownSpells order) then items.
+      if (e.key >= '1' && e.key <= '9') {
+        e.preventDefault();
+        const store = useGameStore.getState();
+        const run = store.arena;
+        if (!run || run.status !== 'active') return;
+        const idx = parseInt(e.key) - 1;
+        const itemKeys = Object.entries(run.inventory).filter(([, n]) => n > 0).map(([k]) => k);
+        if (idx < run.knownSpells.length) {
+          store.arenaCast(run.knownSpells[idx], performance.now());
+        } else {
+          const itemIdx = idx - run.knownSpells.length;
+          if (itemIdx < itemKeys.length) store.arenaUseItem(itemKeys[itemIdx], performance.now());
+        }
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
@@ -138,8 +154,13 @@ export function useArenaLoop(): ArenaControlsApi {
     },
     release: (dir) => heldDirs.current.delete(dir),
     act: (dir) => {
-      actQueued.current = true;
-      if (dir) useGameStore.getState().arenaAct(performance.now(), dir);
+      if (dir) {
+        // Fire immediately with the given direction — do NOT also queue or the loop fires it again
+        // dir-less on the next tick, which would double-attack and drain stamina twice.
+        useGameStore.getState().arenaAct(performance.now(), dir);
+      } else {
+        actQueued.current = true;
+      }
     },
     melee: (dir) => useGameStore.getState().arenaMelee(performance.now(), dir),
     ranged: (dir) => useGameStore.getState().arenaRanged(performance.now(), dir),

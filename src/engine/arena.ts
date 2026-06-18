@@ -213,6 +213,10 @@ export interface ArenaState {
   // Per-stat usage tallies (incremented by player actions for usage-based XP)
   statUsage: Partial<Record<StatId, number>>;
 
+  // Run-level stats (for the outcome summary)
+  damageDealt: number;
+  startedAtMs: number;
+
   // Clocks
   lastTickMs: number;
   lastHitAtMs: number;
@@ -513,6 +517,8 @@ export function createArena(
     speed,
     invincible: opts.invincible ?? false,
     statUsage: {},
+    damageDealt: 0,
+    startedAtMs: startMs,
     lastTickMs: startMs,
     lastHitAtMs: -Infinity,
     lastDodgedAtMs: -Infinity,
@@ -590,6 +596,7 @@ function enemyAt(s: ArenaState, h: Cell): EnemyRef | null {
 }
 
 function hurtEnemy(s: ArenaState, ref: EnemyRef, dmg: number, now: number, rng: RNG): void {
+  s.damageDealt += dmg;
   if (ref.kind === 'boss') {
     s.bossHp -= dmg;
     if (s.bossHp <= 0) resolveBossDown(s, now, rng);
@@ -706,6 +713,17 @@ function clampRuneTarget(s: ArenaState, desired: Cell | undefined, rng: RNG): Ce
   const opts = neighbors(s.player.pos).filter((n) => inBoard(n, s.radius) && !isBlocked(s, n));
   if (opts.length === 0) return null;
   return opts[Math.floor(rng() * opts.length)];
+}
+
+/**
+ * Preview where a rune will land for a desired cell without randomness.
+ * Returns null if the resolved cell is blocked or out of board (random fallback skipped — UI can
+ * show nothing in that case rather than an unpredictable highlight).
+ */
+export function previewRuneTarget(s: ArenaState, desired: Cell): Cell | null {
+  const clamped = distance(desired, s.player.pos) <= 1 ? desired : step(s.player.pos, stepToward(s.player.pos, desired));
+  if (inBoard(clamped, s.radius) && !isBlocked(s, clamped)) return clamped;
+  return null;
 }
 
 /** Cast a known spell. Optional dir pre-sets facing; optional target is used for rune placement. */

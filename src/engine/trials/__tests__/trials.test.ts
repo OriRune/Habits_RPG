@@ -38,8 +38,8 @@ import {
   MAX_JUMPS,
   SLIDE_MS,
 } from '../rooftopChase';
-import { armoryScore, armoryAccuracy, ARMORY_LOCKS, SWEET_ZONE_START } from '../armoryBreak';
-import { marchStep, marchScore, generateTerrain, MARCH_TILES } from '../longMarch';
+import { armoryScore, armoryAccuracy, ARMORY_LOCKS, SWEET_ZONE_START, SWEET_ZONE_END, SWEET_ZONE_WIDTH } from '../armoryBreak';
+import { marchStep, marchScore, marchStartStamina, generateTerrain, MARCH_TILES, MARCH_START_STA, MARCH_MAX_DISTANCE } from '../longMarch';
 import { generateSequence, libraryScore, LIBRARY_MAX_ROUNDS, GLYPHS } from '../ancientLibrary';
 
 // ── Deterministic RNG helpers ──────────────────────────────────────────────────
@@ -517,8 +517,10 @@ describe('rooftopChase', () => {
 // ── Armory Break ───────────────────────────────────────────────────────────────
 
 describe('armoryBreak', () => {
-  it('armoryAccuracy is 1 at release = 1.0', () => {
-    expect(armoryAccuracy(1.0)).toBeCloseTo(1, 5);
+  const centre = SWEET_ZONE_START + SWEET_ZONE_WIDTH / 2;
+
+  it('armoryAccuracy is 1 at zone centre', () => {
+    expect(armoryAccuracy(centre)).toBeCloseTo(1, 5);
   });
 
   it('armoryAccuracy is 0 below the zone', () => {
@@ -526,8 +528,18 @@ describe('armoryBreak', () => {
     expect(armoryAccuracy(0)).toBe(0);
   });
 
+  it('armoryAccuracy is 0 above the zone (overshoot = miss)', () => {
+    expect(armoryAccuracy(SWEET_ZONE_END + 0.01)).toBe(0);
+    expect(armoryAccuracy(1.0)).toBe(0);
+  });
+
+  it('armoryAccuracy is 0 at zone edges', () => {
+    expect(armoryAccuracy(SWEET_ZONE_START)).toBeCloseTo(0, 5);
+    expect(armoryAccuracy(SWEET_ZONE_END)).toBeCloseTo(0, 5);
+  });
+
   it('armoryAccuracy is between 0 and 1 inside the zone', () => {
-    const acc = armoryAccuracy(SWEET_ZONE_START + 0.05);
+    const acc = armoryAccuracy(centre - SWEET_ZONE_WIDTH * 0.2);
     expect(acc).toBeGreaterThan(0);
     expect(acc).toBeLessThan(1);
   });
@@ -587,16 +599,50 @@ describe('longMarch', () => {
     expect(result.distanceDelta).toBe(0);
   });
 
-  it('marchScore: full completion = 1', () => {
-    expect(marchScore(MARCH_TILES)).toBe(1);
+  it('rest gives +6 stamina on spring (not full restore)', () => {
+    const result = marchStep({ kind: 'spring', label: 'Mountain Spring', emoji: '✨' }, 'rest');
+    expect(result.staminaDelta).toBe(6);
+    expect(result.distanceDelta).toBe(0);
   });
 
-  it('marchScore: half = 0.5', () => {
-    expect(marchScore(MARCH_TILES / 2)).toBeCloseTo(0.5, 5);
+  it('walk on spring gives positive stamina', () => {
+    const result = marchStep({ kind: 'spring', label: 'Mountain Spring', emoji: '✨' }, 'walk');
+    expect(result.staminaDelta).toBeGreaterThan(0);
+    expect(result.distanceDelta).toBe(1);
+  });
+
+  it('push on spring gives positive stamina', () => {
+    const result = marchStep({ kind: 'spring', label: 'Mountain Spring', emoji: '✨' }, 'push');
+    expect(result.staminaDelta).toBeGreaterThan(0);
+    expect(result.distanceDelta).toBe(2);
+  });
+
+  it('marchScore: full completion + max distance = 1', () => {
+    expect(marchScore(MARCH_TILES, MARCH_MAX_DISTANCE)).toBe(1);
+  });
+
+  it('marchScore: full completion + zero distance = 0.70', () => {
+    expect(marchScore(MARCH_TILES, 0)).toBeCloseTo(0.7, 5);
+  });
+
+  it('marchScore: half tiles + half distance = 0.5', () => {
+    expect(marchScore(MARCH_TILES / 2, MARCH_MAX_DISTANCE / 2)).toBeCloseTo(0.5, 5);
   });
 
   it('marchScore: capped at 1', () => {
-    expect(marchScore(MARCH_TILES + 5)).toBe(1);
+    expect(marchScore(MARCH_TILES + 5, MARCH_MAX_DISTANCE + 10)).toBe(1);
+  });
+
+  it('marchStartStamina: EN 0 returns base', () => {
+    expect(marchStartStamina(0)).toBe(MARCH_START_STA);
+  });
+
+  it('marchStartStamina: EN 3 returns base + 1', () => {
+    expect(marchStartStamina(3)).toBe(MARCH_START_STA + 1);
+  });
+
+  it('marchStartStamina: high EN caps at base + 6', () => {
+    expect(marchStartStamina(100)).toBe(MARCH_START_STA + 6);
   });
 });
 

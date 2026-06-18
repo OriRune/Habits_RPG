@@ -134,6 +134,29 @@ export function TacticsOverlay() {
   // Audio: synthesised combat SFX + adaptive tension drone.
   useTacticsAudio(tactics, soundEnabled);
 
+  // Retreat needs confirmation to prevent misclicks during a winning match.
+  const [confirmRetreat, setConfirmRetreat] = useState(false);
+
+  // Warn the browser before navigating away mid-match so the player doesn't lose their run.
+  useEffect(() => {
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      if (tactics?.status === 'active') { e.preventDefault(); return ''; }
+    }
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [tactics?.status]);
+
+  // Flash the objective banner on the very first turn so it doesn't go unnoticed.
+  const [showObjectiveIntro, setShowObjectiveIntro] = useState(false);
+  useEffect(() => {
+    if (tactics?.objective && tactics.turnCount === 1 && tactics.status === 'active') {
+      setShowObjectiveIntro(true);
+      const t = window.setTimeout(() => setShowObjectiveIntro(false), 3500);
+      return () => clearTimeout(t);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tactics?.objective?.kind, tactics?.turnCount]);
+
   const [live, setLive] = useState<TacticalEffect[]>([]);
   const [animating, setAnimating] = useState(false);
   const lastBatch = useRef<TacticalEffect[] | null>(null);
@@ -317,6 +340,11 @@ export function TacticsOverlay() {
               <Footprints className="h-3.5 w-3.5 text-stat-AG" /> {tactics.player.movesLeft}
             </span>
           )}
+          {isPlayerTurn && tactics.player.hasActed && (
+            <span className="rounded border border-stat-AG/40 bg-stat-AG/10 px-1.5 py-0.5 font-display text-[9px] text-stat-AG/70">
+              ✓ Acted
+            </span>
+          )}
           {/* Overlay toggles */}
           <button
             type="button"
@@ -364,6 +392,13 @@ export function TacticsOverlay() {
         </div>
       </div>
 
+      {/* Objective intro flash — full-width highlight on the very first turn */}
+      {showObjectiveIntro && tactics.objective && (
+        <div className="border-b border-emerald-700/50 bg-emerald-900/30 px-4 py-2 text-center font-display text-xs text-emerald-300 animate-pulse">
+          🎯 Bonus objective: <span className="font-bold">{tactics.objective.label}</span> — {tactics.objective.desc}
+          <span className="ml-2 text-emerald-400/80">(+60% gold · healing potion)</span>
+        </div>
+      )}
       {/* Objective banner */}
       {tactics.objective && <ObjectiveBanner objective={tactics.objective} turnCount={tactics.turnCount} />}
 
@@ -605,7 +640,7 @@ export function TacticsOverlay() {
                 active={sel?.kind === 'spell' && sel.spellKey === key}
                 disabled={locked || tactics.player.hasActed || tooCostly}
                 onClick={() => { setHoveredHex(null); onPickSpell(key); }}
-                title={`${spell.name} — ${spell.mpCost} MP`}
+                title={`${spell.name} (${spell.mpCost} MP) — ${spell.description}`}
               >
                 {(SPELL_FX[key]?.glyph ?? '✨')} {spell.name}
                 <span className="ml-1 text-[10px] text-blue-300">{spell.mpCost}</span>
@@ -623,14 +658,22 @@ export function TacticsOverlay() {
           <ActionButton accent disabled={locked} onClick={tacticsEndTurn}>
             End turn <ChevronRight className="h-4 w-4" />
           </ActionButton>
-          <button
-            type="button"
-            onClick={endTactics}
-            className="ml-1 flex items-center gap-1 rounded-md px-2 py-1.5 font-display text-[11px] text-parchment-300/70 hover:text-ember-bright"
-            title="Retreat — forfeit the skirmish"
-          >
-            <LogOut className="h-3.5 w-3.5" /> Retreat
-          </button>
+          {confirmRetreat ? (
+            <span className="ml-1 flex items-center gap-1 rounded-md border border-ember-deep/60 bg-ember-deep/20 px-2 py-1.5 font-display text-[11px] text-ember-bright">
+              Forfeit?
+              <button type="button" onClick={endTactics} className="underline hover:text-white">Yes</button>
+              <button type="button" onClick={() => setConfirmRetreat(false)} className="underline hover:text-parchment-200">No</button>
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirmRetreat(true)}
+              className="ml-1 flex items-center gap-1 rounded-md px-2 py-1.5 font-display text-[11px] text-parchment-300/70 hover:text-ember-bright"
+              title="Retreat — forfeit the skirmish and collect partial rewards"
+            >
+              <LogOut className="h-3.5 w-3.5" /> Retreat
+            </button>
+          )}
         </div>
 
         {/* Context / preview area — hover preview takes priority, then last log lines */}
@@ -695,11 +738,12 @@ function UnitSprite({
   onClick?: () => void;
 }) {
   const pct = Math.max(0, Math.min(100, (hp / maxHp) * 100));
+  const tooltipText = archetypeBlurb ? `${name ?? ''}\n${archetypeBlurb}` : (name ?? undefined);
   return (
     <div
       className={cn('absolute z-20 flex flex-col items-center', onClick ? 'cursor-pointer' : 'pointer-events-none')}
       style={{ left: 0, top: 0, transform: `translate(${x}px, ${y}px) translate(-50%, -78%)`, transition: 'transform 200ms ease-out' }}
-      title={name}
+      title={tooltipText}
       onClick={onClick}
     >
       {/* Intent badge — shows planned action icon + archetype name (Phase C) */}
@@ -736,6 +780,7 @@ function UnitSprite({
             filter: archetypeColor
               ? `drop-shadow(0 0 ${Math.round(5 * scale)}px ${archetypeColor}88) drop-shadow(0 2px 2px rgba(0,0,0,0.7))`
               : 'drop-shadow(0 2px 2px rgba(0,0,0,0.7))',
+            animation: !friendly ? 'tactics-idle-pulse 2.8s ease-in-out infinite' : undefined,
           }}
         >
           {glyph}

@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { Grid3x3, Zap, Mountain, Sparkles } from 'lucide-react';
+import { Grid3x3, Zap, Mountain, Sparkles, Gift } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
-import { TACTICS_ENERGY_COST, TACTICS_UNLOCK_LEVEL, TACTICS_GRANTED_SPELLS, isTacticsLoadoutSpell, type TacticsSize } from '@/engine/hexBattle';
+import { TACTICS_ENERGY_COST, TACTICS_UNLOCK_LEVEL, TACTICS_GRANTED_SPELLS, STA_REGEN_PER_TURN, isTacticsLoadoutSpell, type TacticsSize } from '@/engine/hexBattle';
 import { getSpell } from '@/engine/spells';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
@@ -178,12 +178,24 @@ export function TacticsView() {
           <span className="text-sm text-ink-muted">You have {energy} ⚡</span>
         </div>
 
-        <div className="rounded-md border border-gold-deep/30 bg-parchment-300/40 p-3 text-sm">
+        <div className="rounded-md border border-gold-deep/30 bg-parchment-300/40 p-3 text-sm space-y-1.5">
           <div className="flex items-center justify-between">
             <span className="font-display text-ink">Highest tier won</span>
             <span className="font-display font-bold text-gold-deep">
               {deepestTacticsTier > 0 ? `Tier ${deepestTacticsTier}` : '—'}
             </span>
+          </div>
+          <div className="flex items-center justify-between text-ink-muted">
+            <span className="flex items-center gap-1">
+              <Zap className="h-3.5 w-3.5 text-amber-400" /> Stamina recovers
+            </span>
+            <span className="font-display font-bold text-amber-400">+{STA_REGEN_PER_TURN} / turn</span>
+          </div>
+          <div className="flex items-center justify-between text-ink-muted">
+            <span className="flex items-center gap-1">
+              <Gift className="h-3.5 w-3.5 text-emerald-400" /> Bonus objective (~65%)
+            </span>
+            <span className="font-display font-bold text-emerald-400">+60% gold · potion</span>
           </div>
         </div>
 

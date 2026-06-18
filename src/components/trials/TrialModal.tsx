@@ -4,6 +4,7 @@
 import { useState, useCallback } from 'react';
 import { useGameStore } from '@/store/useGameStore';
 import { getTrial, scoreToStars, trialReward, type TrialId } from '@/engine/trials/trials';
+import { marchStartStamina, MARCH_START_STA } from '@/engine/trials/longMarch';
 import { resume as sfxResume } from '@/lib/sfx';
 import { getStat } from '@/engine/stats';
 import { Button } from '@/components/ui/Button';
@@ -26,7 +27,7 @@ type Stage = 'intro' | 'playing' | 'result';
 const TRIAL_DESCRIPTIONS: Record<TrialId, string> = {
   lockpicking: 'A pick sits inside the keyhole. Rotate it left and right to search for the sweet spot, then hold "Turn Lock" to apply torque. The cylinder will turn as far as the pick allows — if you\'re in the right spot it opens, otherwise it jams and the pick bends. Hold against a jam too long and the pick snaps. Three locks of rising difficulty; you have six picks — use them wisely.',
   rooftop_chase: 'Leap roof to roof across a medieval town — miss a gap and it\'s a long way down. Jump (Space / ↑) to bound over chimney stacks and guards, double-jump midair to correct your arc, and land on a guard\'s head for a stomp. When a banner is strung across the path, Slide (↓ / S) to duck under it. A beast picks up your trail after a while — once it appears, Dash (Shift / D) for a speed burst that throws it off. Run as far as you can.',
-  armory_break: 'Hold the Charge button to power up the needle, then release it when it enters the golden zone at the top. You have three locks to crack — nail the timing on each.',
+  armory_break: 'Hold the Charge button to power up the needle, then release it when it enters the golden zone. The needle passes through the zone — release too early or too late and you miss. Three locks of rising difficulty; aim for the centre of the zone for maximum accuracy.',
   long_march: 'Choose your pace for each terrain tile: Rest to recover stamina, Walk for steady progress, or Push for distance at great cost. Running out of stamina ends the march early.',
   spirit_grove: 'Read the omen carefully, then choose the blessing the spirits are truly offering. Each round a different omen appears — your wisdom is what separates the correct blessing from the false ones.',
   royal_court: 'Navigate the social landscape of court by choosing how you respond to each speaker. The favour meter rises and falls with your choices — read the room and earn the queen\'s respect.',
@@ -46,12 +47,12 @@ function Stars({ count }: { count: 1 | 2 | 3 }) {
   );
 }
 
-function GameComponent({ trialId, onFinish }: { trialId: TrialId; onFinish: (s: number) => void }) {
+function GameComponent({ trialId, onFinish, enLevel }: { trialId: TrialId; onFinish: (s: number) => void; enLevel: number }) {
   switch (trialId) {
     case 'lockpicking': return <Lockpicking onFinish={onFinish} />;
     case 'rooftop_chase': return <RooftopChase onFinish={onFinish} />;
     case 'armory_break': return <ArmoryBreak onFinish={onFinish} />;
-    case 'long_march': return <LongMarch onFinish={onFinish} />;
+    case 'long_march': return <LongMarch enLevel={enLevel} onFinish={onFinish} />;
     case 'spirit_grove': return <SpiritGrove onFinish={onFinish} />;
     case 'royal_court': return <RoyalCourt onFinish={onFinish} />;
     case 'ancient_library': return <AncientLibrary onFinish={onFinish} />;
@@ -63,19 +64,25 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
   const def = getTrial(trialId);
   const stat = getStat(def.stat);
   const level = useGameStore((s) => s.character.level);
+  const enLevel = useGameStore((s) => s.character.statLevels?.EN ?? 0);
+  const bestTrialScore = useGameStore((s) => s.bestTrialScore);
   const completeTrial = useGameStore((s) => s.completeTrial);
+
+  const prevBest = bestTrialScore[trialId] ?? 0;
 
   const [stage, setStage] = useState<Stage>('intro');
   const [score, setScore] = useState(0);
   const [claimed, setClaimed] = useState(false);
+  const [isNewBest, setIsNewBest] = useState(false);
 
   const handleFinish = useCallback((s: number) => {
+    completeTrial(trialId, s);
     setScore(s);
+    setIsNewBest(s > prevBest);
     setStage('result');
-  }, []);
+  }, [completeTrial, trialId, prevBest]);
 
   const handleClaim = () => {
-    completeTrial(trialId, score);
     setClaimed(true);
   };
 
@@ -110,6 +117,18 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
               <div className="rounded-md border border-gold-deep/30 texture-parchment p-5 space-y-3">
                 <p className="font-display text-sm font-bold text-ink">{def.name}</p>
                 <p className="text-sm text-ink leading-relaxed">{TRIAL_DESCRIPTIONS[trialId]}</p>
+                {trialId === 'long_march' && (() => {
+                  const startSta = marchStartStamina(enLevel);
+                  const bonus = startSta - MARCH_START_STA;
+                  return (
+                    <div className="rounded border border-emerald-600/30 bg-emerald-50/20 px-3 py-2 text-xs font-display text-ink-muted">
+                      <span className="font-bold text-emerald-700">Endurance Lv.{enLevel}</span>
+                      {bonus > 0
+                        ? ` — grants +${bonus} starting stamina (${startSta} total).`
+                        : ' — reach Lv. 3 to gain bonus starting stamina.'}
+                    </div>
+                  );
+                })()}
                 <div className="flex items-center gap-2 pt-1">
                   <div className="h-2 flex-1 rounded-full border border-gold-deep/20 bg-parchment-300/50" />
                   <span className="text-xs font-display text-ink-muted">Daily free attempt — stat XP + gold reward</span>
@@ -132,7 +151,7 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
 
           {stage === 'playing' && (
             <div className="space-y-4">
-              <GameComponent trialId={trialId} onFinish={handleFinish} />
+              <GameComponent trialId={trialId} onFinish={handleFinish} enLevel={enLevel} />
             </div>
           )}
 
@@ -146,6 +165,11 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
                   <p className="text-sm text-ink-muted">
                     Score: <strong className="text-ink">{Math.round(score * 100)}%</strong>
                   </p>
+                  {isNewBest && (
+                    <p className="text-xs font-display font-bold text-gold-deep animate-pulse">
+                      ✨ New personal best!
+                    </p>
+                  )}
                 </div>
 
                 <div className="rounded-md border border-gold-deep/20 bg-parchment-100/60 p-3 space-y-1">
@@ -169,7 +193,7 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
 
               {!claimed ? (
                 <Button onClick={handleClaim} className="w-full py-3">
-                  Claim Reward
+                  Continue
                 </Button>
               ) : (
                 <Button variant="secondary" onClick={onClose} className="w-full py-3">

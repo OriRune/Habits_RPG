@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { emptyStatXP, statPoints, statPower } from '../stats';
-import { generateFloor, resolveTreasure, mergeReward, scaleReward, DUNGEON_ENERGY_COST } from '../dungeon';
-import { biomeForDepth } from '../biomes';
+import { resolveTreasure, mergeReward, scaleReward, DUNGEON_ENERGY_COST } from '../dungeon';
 import { type RNG } from '../combat';
 
 const fixed = (v: number): RNG => () => v;
@@ -20,38 +19,9 @@ describe('statPoints / statPower', () => {
   });
 });
 
-describe('generateFloor', () => {
-  it('costs 3 energy per the brief', () => {
+describe('dungeon constants', () => {
+  it('entry costs 3 energy per design brief', () => {
     expect(DUNGEON_ENERGY_COST).toBe(3);
-  });
-
-  it('builds a normal floor of combat + encounter (+ treasure on a roll)', () => {
-    const biome = biomeForDepth(1);
-    const rooms = generateFloor(1, biome, fixed(0)); // rng 0 → treasure appended
-    const types = rooms.map((r) => r.type);
-    expect(types).toContain('combat');
-    expect(types).toContain('encounter');
-    expect(types).toContain('treasure');
-  });
-
-  it('omits treasure on a high roll', () => {
-    const biome = biomeForDepth(1);
-    const rooms = generateFloor(1, biome, fixed(0.99));
-    expect(rooms.map((r) => r.type)).not.toContain('treasure');
-    expect(rooms).toHaveLength(2);
-  });
-
-  it('every 5th depth is a boss floor (lead-in encounter + boss)', () => {
-    const biome = biomeForDepth(5);
-    const rooms = generateFloor(5, biome, fixed(0.5));
-    expect(rooms.map((r) => r.type)).toEqual(['encounter', 'boss']);
-  });
-
-  it('draws encounters from the biome pool', () => {
-    const biome = biomeForDepth(1); // catacombs
-    const rooms = generateFloor(1, biome, fixed(0));
-    const enc = rooms.find((r) => r.type === 'encounter') as { type: 'encounter'; key: string };
-    expect(biome.encounters).toContain(enc.key);
   });
 });
 

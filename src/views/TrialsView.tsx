@@ -102,9 +102,12 @@ export function TrialsView() {
               {/* Blurb */}
               <p className="text-[11px] text-ink-muted leading-snug mb-2">{trial.blurb}</p>
 
-              {/* Best score stars */}
+              {/* Best score stars + percentage */}
               {bestStars > 0 ? (
-                <StarRow count={bestStars as 1 | 2 | 3} />
+                <div className="flex items-center gap-2">
+                  <StarRow count={bestStars as 1 | 2 | 3} />
+                  <span className="text-[10px] text-ink-muted font-display">{Math.round(best * 100)}%</span>
+                </div>
               ) : (
                 <div className="text-[10px] text-ink-muted/60 font-display">No record yet</div>
               )}

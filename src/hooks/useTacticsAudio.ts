@@ -42,15 +42,17 @@ export function useTacticsAudio(
   // ── Stateful refs for edge-detection across renders ──────────────────────
 
   /** Highest effect id we've already fired a cue for. */
-  const prevEffectSeq    = useRef(-1);
+  const prevEffectSeq      = useRef(-1);
   /** Enemy count from the previous render (to detect deaths). */
-  const prevEnemyCount   = useRef<number | null>(null);
+  const prevEnemyCount     = useRef<number | null>(null);
   /** Previous battle status to detect victory/defeat transitions. */
-  const prevStatus       = useRef<HexBattleStatus | null>(null);
+  const prevStatus         = useRef<HexBattleStatus | null>(null);
   /** Previous turn to detect player→enemy and enemy→player transitions. */
-  const prevTurn         = useRef<Turn | null>(null);
+  const prevTurn           = useRef<Turn | null>(null);
   /** Enemy count at battle start — used to normalise drone intensity. */
-  const startingEnemies  = useRef(0);
+  const startingEnemies    = useRef(0);
+  /** Whether the objective was already complete last render (edge-detect completion). */
+  const prevObjComplete    = useRef(false);
 
   // ── Main audio effect — fires whenever tactics state changes ─────────────
   useEffect(() => {
@@ -94,6 +96,11 @@ export function useTacticsAudio(
       sfx.play('turnEnd');
     }
     prevTurn.current = tactics.turn;
+
+    // ── Secondary objective completed ─────────────────────────────────────
+    const objNowComplete = tactics.objective?.complete ?? false;
+    if (!prevObjComplete.current && objNowComplete) sfx.play('victory');
+    prevObjComplete.current = objNowComplete;
 
     // ── Outcome ───────────────────────────────────────────────────────────
     if (prevStatus.current === 'active' && tactics.status !== 'active') {

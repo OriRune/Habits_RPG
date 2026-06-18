@@ -303,6 +303,13 @@ body {
   100% { opacity: 0;   transform: translate(-50%, -280%) scale(0.9); }
 }
 
+/* Live unit — gentle opacity pulse so alive units feel present; dead units are removed
+   from the array entirely, so this fires only on living enemies and the player. */
+@keyframes tactics-idle-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.72; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   [style*='tactics-'] { animation-duration: 1ms !important; }
 }

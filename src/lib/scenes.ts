@@ -20,6 +20,9 @@ const SCENES: Record<string, SceneLook> = {
   'room:rest': { glyph: '🏕️', color: '#2e8a5e', caption: 'A quiet alcove' },
   'room:boss': { glyph: '☠️', color: '#8a2f6a', caption: 'A boss bars the way' },
   'room:encounter': { glyph: '📜', color: '#7a5a2e', caption: 'A choice to make' },
+  'room:shrine': { glyph: '✨', color: '#6b3fa0', caption: 'A shrine in the dark' },
+  'room:merchant': { glyph: '🪙', color: '#8a6a1a', caption: 'A wandering merchant' },
+  'room:elite': { glyph: '🔥', color: '#b23b2e', caption: 'A powerful guardian' },
   'dungeon:entrance': { glyph: '🚪', color: '#4a3320', caption: 'The dungeon mouth' },
   'dungeon:checkpoint': { glyph: '🏕️', color: '#2e8a5e', caption: 'A safe respite' },
   // Biomes (regions)

@@ -20,6 +20,11 @@
 // Adding cues: extend SfxCue and add a matching entry to _CUES.
 
 export type SfxCue =
+  // ── Spirit Grove ───────────────────────────────────
+  /** Soft ascending shimmer — correct blessing chosen. */
+  | 'groveCorrect'
+  /** Quiet descending thud — wrong blessing chosen. */
+  | 'groveWrong'
   // ── Rooftop Chase ──────────────────────────────────
   | 'jump'
   | 'doubleJump'
@@ -56,7 +61,16 @@ export type SfxCue =
   /** Rising triumphant fanfare — battle won. */
   | 'victory'
   /** Descending somber tones — battle lost. */
-  | 'defeat';
+  | 'defeat'
+  // ── Armory Break ──────────────────────────────────
+  /** Rising mechanical tension — charge building while held. */
+  | 'armoryCharge'
+  /** Metal snap/crack — lock breaks on a good release. */
+  | 'armoryLockCrack'
+  /** Dull thud — lock attempt missed. */
+  | 'armoryLockMiss'
+  /** Short triumphant fanfare — all locks cracked. */
+  | 'armoryFinish';
 
 // ── Module-level singletons ────────────────────────────────────────────────────
 
@@ -182,6 +196,21 @@ function _noise(
 // ── Cue definitions ────────────────────────────────────────────────────────────
 
 const _CUES: Record<SfxCue, (ctx: AudioContext) => void> = {
+
+  // ── Spirit Grove ──────────────────────────────────────────────────────────
+
+  /** Two gently rising sine tones — soft, nature-calm correct answer chime. */
+  groveCorrect(ctx) {
+    _osc(ctx, 'sine', 440, 660, 0.45, 0.18, 0.020);
+    _osc(ctx, 'sine', 880, 1100, 0.38, 0.08, 0.025);
+  },
+
+  /** Low, brief descending triangle — quiet acknowledgment of a wrong guess. */
+  groveWrong(ctx) {
+    _osc(ctx, 'triangle', 260, 140, 0.30, 0.16, 0.015);
+  },
+
+  // ── Rooftop Chase ──────────────────────────────────────────────────────────
 
   /** Short rising blip — leap off a rooftop. */
   jump(ctx) {
@@ -427,6 +456,46 @@ const _CUES: Record<SfxCue, (ctx: AudioContext) => void> = {
       gain.connect(_masterGain!);
       osc.start(t0);
       osc.stop(t0 + 0.62);
+    });
+  },
+
+  // ── Armory Break ──────────────────────────────────────────────────────────
+
+  /** Rising mechanical tension — one-shot played when the player starts charging. */
+  armoryCharge(ctx) {
+    _noise(ctx, 120, 700, 0.90, 0.22, 'bandpass', 2.8);
+    _osc(ctx, 'sawtooth', 55, 180, 0.90, 0.14, 0.05);
+  },
+
+  /** Metal snap — satisfying crack when the lock breaks (good or OK release). */
+  armoryLockCrack(ctx) {
+    _osc(ctx, 'square', 260, 80, 0.20, 0.40, 0.004);
+    _noise(ctx, 800, 180, 0.15, 0.28, 'bandpass', 2.0);
+    _osc(ctx, 'sine', 520, 160, 0.28, 0.18, 0.003);
+  },
+
+  /** Dull thud — failed lock attempt (released outside the zone). */
+  armoryLockMiss(ctx) {
+    _osc(ctx, 'triangle', 110, 42, 0.22, 0.35, 0.005);
+    _noise(ctx, 180, 52, 0.15, 0.16, 'lowpass', 0.8);
+  },
+
+  /** Short triumphant fanfare — all three locks cracked. */
+  armoryFinish(ctx) {
+    const t = ctx.currentTime;
+    [330, 415, 523, 880].forEach((freq, i) => {
+      const t0 = t + i * 0.07;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.linearRampToValueAtTime(0.30, t0 + 0.010);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
+      osc.connect(gain);
+      gain.connect(_masterGain!);
+      osc.start(t0);
+      osc.stop(t0 + 0.28);
     });
   },
 };

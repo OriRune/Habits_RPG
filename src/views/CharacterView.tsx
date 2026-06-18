@@ -11,6 +11,7 @@ import { GearSection } from '@/components/inventory/GearSection';
 import { Panel } from '@/components/ui/Panel';
 import { Sprite } from '@/components/ui/Sprite';
 import { SectionTitle } from '@/components/ui/Divider';
+import { Trophy } from 'lucide-react';
 
 // All discoverable classes (unique names from the chart) for the Codex.
 const ALL_CLASSES = Array.from(
@@ -20,6 +21,14 @@ const ALL_CLASSES = Array.from(
 export function CharacterView() {
   const character = useGameStore((s) => s.character);
   const codex = useGameStore((s) => s.codex);
+  const deepestMineFloor = useGameStore((s) => s.deepestMineFloor);
+  const bestMineScore = useGameStore((s) => s.bestMineScore);
+  const deepestForestStage = useGameStore((s) => s.deepestForestStage);
+  const bestForestScore = useGameStore((s) => s.bestForestScore);
+  const deepestArenaTier = useGameStore((s) => s.deepestArenaTier);
+  const deepestTacticsTier = useGameStore((s) => s.deepestTacticsTier);
+
+  const hasAnyRecord = deepestMineFloor > 0 || deepestForestStage > 0 || deepestArenaTier > 0 || deepestTacticsTier > 0;
 
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
@@ -44,6 +53,48 @@ export function CharacterView() {
           ))}
         </div>
       </Panel>
+
+      {/* Minigame Records */}
+      {hasAnyRecord && (
+        <Panel tone="parchment" className="p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <Trophy className="h-4 w-4 text-gold-deep" />
+            <SectionTitle className="flex-1">Records</SectionTitle>
+          </div>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+            {deepestMineFloor > 0 && (
+              <>
+                <span className="text-ink-muted">Deep Mine</span>
+                <span className="text-right font-display font-bold text-ink">
+                  Floor {deepestMineFloor}
+                  {bestMineScore > 0 && <span className="ml-1.5 font-normal text-ink-muted text-xs">({bestMineScore.toLocaleString()} pts)</span>}
+                </span>
+              </>
+            )}
+            {deepestForestStage > 0 && (
+              <>
+                <span className="text-ink-muted">Wild Forest</span>
+                <span className="text-right font-display font-bold text-ink">
+                  Stage {deepestForestStage}
+                  {bestForestScore > 0 && <span className="ml-1.5 font-normal text-ink-muted text-xs">({bestForestScore.toLocaleString()} pts)</span>}
+                </span>
+              </>
+            )}
+            {deepestArenaTier > 0 && (
+              <>
+                <span className="text-ink-muted">Arena</span>
+                <span className="text-right font-display font-bold text-ink">Tier {deepestArenaTier}</span>
+              </>
+            )}
+            {deepestTacticsTier > 0 && (
+              <>
+                <span className="text-ink-muted">Hex Tactics</span>
+                <span className="text-right font-display font-bold text-ink">Tier {deepestTacticsTier}</span>
+              </>
+            )}
+          </div>
+        </Panel>
+      )}
 
       {/* Class Codex */}
       <Panel tone="parchment" className="p-4">

@@ -55,6 +55,8 @@ export const OCCLUSION_RISE = 2;
 export const EFFECT_STAGGER_MS = 450;
 /** Default per-action animation length. */
 const EFFECT_DURATION_MS = 420;
+/** Stamina restored to the player at the start of each new turn after the enemy phase. */
+export const STA_REGEN_PER_TURN = 2;
 /**
  * Positional spells that are always available in Tactics regardless of the player's
  * inventory. They form the core of the positioning system (FF Tactics pattern: baseline
@@ -839,6 +841,7 @@ export function endPlayerTurn(state: HexBattleState, rng: RNG = Math.random): He
   s.player.movesLeft = moveTilesFor(s.player.ag);
   s.player.hasActed = false;
   s.player.overwatch = false; // expire any unused stance (reaction never fired)
+  s.player.sta = Math.min(s.player.maxSta, s.player.sta + STA_REGEN_PER_TURN);
   s.selected = null;
   recomputeHighlights(s);
   // Compute intent/threat for the upcoming turn so the UI can telegraph enemy plans.
