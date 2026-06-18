@@ -89,6 +89,8 @@ function rockStyle(r: number, c: number, palette: CrawlPalette): React.CSSProper
 }
 
 type LootPop = { key: string; r: number; c: number; at: number; text: string; color: string };
+/** One-shot impact / dash-ring VFX burst rendered inside the world container. */
+type VfxPop = { key: string; r: number; c: number; at: number; anim: string; size: number; color: string };
 
 function OreIcon({ oreKey, color }: { oreKey: string; color: string }) {
   if (oreKey === 'gold_vein') return <Coins className="h-6 w-6" style={{ color }} />;
@@ -143,7 +145,7 @@ export function MineRunOverlay() {
     baseR0: 0, baseC0: 0, playerR: 0, playerC: 0, rows: 33, cols: 33,
     movers: [], snapKey: 0,
   });
-  useSmoothCamera(worldRef, playerRef, moverRefs, layoutRef, { CELL, VIEW });
+  const { shake } = useSmoothCamera(worldRef, playerRef, moverRefs, layoutRef, { CELL, VIEW });
 
   // Moving flag — true for ~250 ms after any player step
   const [moving, setMoving] = useState(false);
@@ -152,12 +154,19 @@ export function MineRunOverlay() {
 
   const [pops, setPops] = useState<Array<{ key: string; r: number; c: number; at: number }>>([]);
   const [lootPops, setLootPops] = useState<LootPop[]>([]);
+  // Phase 6: combat number floaters, one-shot VFX bursts, vignette + descent wipe
+  const [dmgPops, setDmgPops] = useState<LootPop[]>([]);
+  const [vfxPops, setVfxPops] = useState<VfxPop[]>([]);
+  const [hitAt, setHitAt] = useState(0);
+  const [wipeAt, setWipeAt] = useState(0);
+  const floorMountRef = useRef(false);
   const prevRef = useRef<{
     tiles: MineTile[][];
     monsters: MineMonster[];
     haul: { gold?: number; materials?: Record<string, number> };
     sta: number;
     hp: number;
+    lastDashMs: number;
   } | null>(null);
 
   useEffect(() => {
@@ -174,7 +183,7 @@ export function MineRunOverlay() {
     prevPosRef.current = { r: pos.r, c: pos.c };
 
     const prev = prevRef.current;
-    prevRef.current = { tiles: mine.tiles, monsters: mine.monsters, haul: mine.haul, sta: mine.sta, hp: mine.hp };
+    prevRef.current = { tiles: mine.tiles, monsters: mine.monsters, haul: mine.haul, sta: mine.sta, hp: mine.hp, lastDashMs: mine.lastDashMs };
     if (!prev) return;
     const now = Date.now();
     const newPops: Array<{ key: string; r: number; c: number; at: number }> = [];
@@ -228,7 +237,90 @@ export function MineRunOverlay() {
         setTimeout(() => setLootPops((ps) => ps.filter((p) => Date.now() - p.at < 1400)), 1450);
       }
     }
-  }, [mine]);
+
+    // --- Phase 6: Combat damage floaters + screen shake ---
+    const newDmgPops: LootPop[] = [];
+    const newVfxPops: VfxPop[] = [];
+
+    // Monster HP diffs — emit a damage number and flash the entity element.
+    const monsterSnap = new Map(prev.monsters.map((m) => [m.id, m]));
+    for (const m of mine.monsters) {
+      const was = monsterSnap.get(m.id);
+      if (was && m.hp < was.hp) {
+        const dmg = was.hp - m.hp;
+        const isHeavy = dmg >= was.maxHp * 0.35;
+        newDmgPops.push({
+          key: `dmg-${m.id}-${now}`,
+          r: m.r, c: m.c, at: now,
+          text: `-${Math.round(dmg)}`,
+          color: isHeavy ? '#fbbf24' : '#f87171',
+        });
+        // Flash the entity element directly — avoids a re-render.
+        const el = moverRefs.current.get(m.id);
+        if (el) {
+          el.classList.add('crawler-hit-flash');
+          setTimeout(() => el.classList.remove('crawler-hit-flash'), 220);
+        }
+        if (isHeavy) shake(5, 220);
+      }
+    }
+
+    // Player took damage → red floater + vignette + shake.
+    if (mine.hp < prev.hp) {
+      const dmg = prev.hp - mine.hp;
+      newDmgPops.push({
+        key: `pdmg-${now}`,
+        r: mine.player.r, c: mine.player.c, at: now,
+        text: `-${Math.round(dmg)}`,
+        color: '#f87171',
+      });
+      setHitAt(now);
+      shake(8, 300);
+      if (playerRef.current) {
+        playerRef.current.classList.add('crawler-hit-flash');
+        setTimeout(() => playerRef.current?.classList.remove('crawler-hit-flash'), 220);
+      }
+    }
+
+    // Player healed.
+    if (mine.hp > prev.hp && prev.hp > 0) {
+      const heal = mine.hp - prev.hp;
+      newDmgPops.push({
+        key: `heal-${now}`,
+        r: mine.player.r, c: mine.player.c, at: now,
+        text: `+${Math.round(heal)}`,
+        color: '#34d399',
+      });
+    }
+
+    // Dash fired → light shake + expanding ring.
+    if (mine.lastDashMs !== prev.lastDashMs && mine.lastDashMs > 0) {
+      shake(4, 180);
+      newVfxPops.push({
+        key: `dash-${now}`,
+        r: mine.player.r, c: mine.player.c, at: now,
+        anim: 'arena-cast 0.4s ease-out forwards',
+        size: Math.round(CELL * 1.1),
+        color: 'rgba(100,200,255,0.75)',
+      });
+    }
+
+    if (newDmgPops.length > 0) {
+      setDmgPops((ps) => [...ps.filter((p) => now - p.at < 850), ...newDmgPops]);
+      setTimeout(() => setDmgPops((ps) => ps.filter((p) => Date.now() - p.at < 850)), 900);
+    }
+    if (newVfxPops.length > 0) {
+      setVfxPops((ps) => [...ps.filter((p) => now - p.at < 500), ...newVfxPops]);
+      setTimeout(() => setVfxPops((ps) => ps.filter((p) => Date.now() - p.at < 500)), 550);
+    }
+  }, [mine]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Phase 6: floor-change wipe (skip first mount).
+  useEffect(() => {
+    if (!floorMountRef.current) { floorMountRef.current = true; return; }
+    setWipeAt(Date.now());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mine?.floor]);
 
   if (!mine) return null;
 
@@ -521,6 +613,51 @@ export function MineRunOverlay() {
           );
         })}
 
+        {/* Combat damage / heal numbers (Phase 6) */}
+        {dmgPops.map((p) => {
+          const vj = p.c - baseC0;
+          const vi = p.r - baseR0;
+          if (vi < 0 || vi >= RENDER_VIEW || vj < 0 || vj >= RENDER_VIEW) return null;
+          return (
+            <div
+              key={p.key}
+              className="pointer-events-none absolute z-30 whitespace-nowrap font-display font-bold"
+              style={{
+                left: vj * CELL + CELL / 2,
+                top: vi * CELL + CELL / 2,
+                fontSize: p.color === '#fbbf24' ? 15 : 13,
+                color: p.color,
+                textShadow: '0 0 6px rgba(0,0,0,1), 0 1px 3px rgba(0,0,0,0.9)',
+                animation: 'tactics-floater 0.85s ease-out forwards',
+              }}
+            >
+              {p.text}
+            </div>
+          );
+        })}
+
+        {/* One-shot VFX bursts: impact flashes + dash rings (Phase 6) */}
+        {vfxPops.map((p) => {
+          const vj = p.c - baseC0;
+          const vi = p.r - baseR0;
+          if (vi < 0 || vi >= RENDER_VIEW || vj < 0 || vj >= RENDER_VIEW) return null;
+          return (
+            <div
+              key={p.key}
+              className="pointer-events-none absolute z-25"
+              style={{
+                width: p.size,
+                height: p.size,
+                left: vj * CELL + CELL / 2,
+                top: vi * CELL + CELL / 2,
+                borderRadius: '50%',
+                border: `2px solid ${p.color}`,
+                animation: p.anim,
+              }}
+            />
+          );
+        })}
+
         {/* Monsters — rAF drives position */}
         {mine.monsters.map((m) => {
           const vj = m.c - baseC0;
@@ -603,6 +740,27 @@ export function MineRunOverlay() {
         </div>
 
         </div>{/* end world container */}
+
+        {/* Player-struck vignette (Phase 6) */}
+        {hitAt > 0 && (
+          <div
+            key={hitAt}
+            className="pointer-events-none absolute inset-0 z-[60]"
+            style={{ animation: 'arena-hit 0.45s ease-out forwards' }}
+          />
+        )}
+
+        {/* Descent wipe — band-tinted flash on floor change (Phase 6) */}
+        {wipeAt > 0 && (
+          <div
+            key={wipeAt}
+            className="pointer-events-none absolute inset-0 z-[55]"
+            style={{
+              backgroundColor: band.palette.accent,
+              animation: 'crawl-wipe 0.5s ease-out forwards',
+            }}
+          />
+        )}
 
         {/* Ambient mine atmosphere — viewport-fixed */}
         {mine.status === 'active' && (

@@ -142,6 +142,8 @@ function floorStyle(kind: ForestTile['kind'], r: number, c: number, bandId: Fore
 }
 
 type LootPop = { key: string; r: number; c: number; at: number; text: string; color: string };
+/** One-shot impact / dash-ring VFX burst rendered inside the world container. */
+type VfxPop = { key: string; r: number; c: number; at: number; anim: string; size: number; color: string };
 
 function Gauge({ icon, value, max, fill }: { icon: React.ReactNode; value: number; max: number; fill: string }) {
   const pct = max > 0 ? Math.max(0, Math.min(100, Math.round((value / max) * 100))) : 0;
@@ -209,7 +211,7 @@ export function ForestRunOverlay() {
     baseR0: 0, baseC0: 0, playerR: 0, playerC: 0, rows: 33, cols: 33,
     movers: [], snapKey: 0,
   });
-  useSmoothCamera(worldRef, playerRef, moverRefs, layoutRef, { CELL, VIEW });
+  const { shake } = useSmoothCamera(worldRef, playerRef, moverRefs, layoutRef, { CELL, VIEW });
 
   // Moving flag — true for ~250 ms after any player step
   const [moving, setMoving] = useState(false);
@@ -218,11 +220,19 @@ export function ForestRunOverlay() {
 
   const [pops, setPops] = useState<Array<{ key: string; r: number; c: number; at: number }>>([]);
   const [lootPops, setLootPops] = useState<LootPop[]>([]);
+  // Phase 6: combat number floaters, one-shot VFX bursts, vignette + descent wipe
+  const [dmgPops, setDmgPops] = useState<LootPop[]>([]);
+  const [vfxPops, setVfxPops] = useState<VfxPop[]>([]);
+  const [hitAt, setHitAt] = useState(0);
+  const [wipeAt, setWipeAt] = useState(0);
+  const stageMountRef = useRef(false);
   const prevRef = useRef<{
     tiles: ForestTile[][];
     beasts: ForestBeast[];
     haul: { gold?: number; materials?: Record<string, number> };
     sta: number;
+    hp: number;
+    lastDashMs: number;
   } | null>(null);
 
   useEffect(() => {
@@ -239,7 +249,7 @@ export function ForestRunOverlay() {
     prevPosRef.current = { r: pos.r, c: pos.c };
 
     const prev = prevRef.current;
-    prevRef.current = { tiles: forest.tiles, beasts: forest.beasts, haul: forest.haul, sta: forest.sta };
+    prevRef.current = { tiles: forest.tiles, beasts: forest.beasts, haul: forest.haul, sta: forest.sta, hp: forest.hp, lastDashMs: forest.lastDashMs };
     if (!prev) return;
     const now = Date.now();
     const newPops: Array<{ key: string; r: number; c: number; at: number }> = [];
@@ -292,7 +302,90 @@ export function ForestRunOverlay() {
         setTimeout(() => setLootPops((ps) => ps.filter((p) => Date.now() - p.at < 900)), 950);
       }
     }
-  }, [forest]);
+
+    // --- Phase 6: Combat damage floaters + screen shake ---
+    const newDmgPops: LootPop[] = [];
+    const newVfxPops: VfxPop[] = [];
+
+    // Beast HP diffs — emit a damage number and flash the entity element.
+    const beastSnap = new Map(prev.beasts.map((b) => [b.id, b]));
+    for (const b of forest.beasts) {
+      const was = beastSnap.get(b.id);
+      if (was && b.hp < was.hp) {
+        const dmg = was.hp - b.hp;
+        const isHeavy = dmg >= was.maxHp * 0.35;
+        newDmgPops.push({
+          key: `dmg-${b.id}-${now}`,
+          r: b.r, c: b.c, at: now,
+          text: `-${Math.round(dmg)}`,
+          color: isHeavy ? '#fbbf24' : '#f87171',
+        });
+        // Flash the entity element directly — avoids a re-render.
+        const el = moverRefs.current.get(b.id);
+        if (el) {
+          el.classList.add('crawler-hit-flash');
+          setTimeout(() => el.classList.remove('crawler-hit-flash'), 220);
+        }
+        if (isHeavy) shake(5, 220);
+      }
+    }
+
+    // Player took damage → red floater + vignette + shake.
+    if (forest.hp < prev.hp) {
+      const dmg = prev.hp - forest.hp;
+      newDmgPops.push({
+        key: `pdmg-${now}`,
+        r: forest.player.r, c: forest.player.c, at: now,
+        text: `-${Math.round(dmg)}`,
+        color: '#f87171',
+      });
+      setHitAt(now);
+      shake(8, 300);
+      if (playerRef.current) {
+        playerRef.current.classList.add('crawler-hit-flash');
+        setTimeout(() => playerRef.current?.classList.remove('crawler-hit-flash'), 220);
+      }
+    }
+
+    // Player healed.
+    if (forest.hp > prev.hp && prev.hp > 0) {
+      const heal = forest.hp - prev.hp;
+      newDmgPops.push({
+        key: `heal-${now}`,
+        r: forest.player.r, c: forest.player.c, at: now,
+        text: `+${Math.round(heal)}`,
+        color: '#34d399',
+      });
+    }
+
+    // Dash fired → light shake + expanding ring.
+    if (forest.lastDashMs !== prev.lastDashMs && forest.lastDashMs > 0) {
+      shake(4, 180);
+      newVfxPops.push({
+        key: `dash-${now}`,
+        r: forest.player.r, c: forest.player.c, at: now,
+        anim: 'arena-cast 0.4s ease-out forwards',
+        size: Math.round(CELL * 1.1),
+        color: 'rgba(140,230,120,0.75)',
+      });
+    }
+
+    if (newDmgPops.length > 0) {
+      setDmgPops((ps) => [...ps.filter((p) => now - p.at < 850), ...newDmgPops]);
+      setTimeout(() => setDmgPops((ps) => ps.filter((p) => Date.now() - p.at < 850)), 900);
+    }
+    if (newVfxPops.length > 0) {
+      setVfxPops((ps) => [...ps.filter((p) => now - p.at < 500), ...newVfxPops]);
+      setTimeout(() => setVfxPops((ps) => ps.filter((p) => Date.now() - p.at < 500)), 550);
+    }
+  }, [forest]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Phase 6: stage-change wipe (skip first mount).
+  useEffect(() => {
+    if (!stageMountRef.current) { stageMountRef.current = true; return; }
+    setWipeAt(Date.now());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forest?.stage]);
 
   if (!forest) return null;
 
@@ -688,6 +781,47 @@ export function ForestRunOverlay() {
           );
         })}
 
+        {/* Combat damage / heal numbers (Phase 6) */}
+        {dmgPops.map((p) => {
+          if (!inView(p.r, p.c)) return null;
+          return (
+            <div
+              key={p.key}
+              className="pointer-events-none absolute z-30 whitespace-nowrap font-display font-bold"
+              style={{
+                left: vc(p.c) * CELL + CELL / 2,
+                top: vr(p.r) * CELL + CELL / 2,
+                fontSize: p.color === '#fbbf24' ? 15 : 13,
+                color: p.color,
+                textShadow: '0 0 6px rgba(0,0,0,1), 0 1px 3px rgba(0,0,0,0.9)',
+                animation: 'tactics-floater 0.85s ease-out forwards',
+              }}
+            >
+              {p.text}
+            </div>
+          );
+        })}
+
+        {/* One-shot VFX bursts: impact flashes + dash rings (Phase 6) */}
+        {vfxPops.map((p) => {
+          if (!inView(p.r, p.c)) return null;
+          return (
+            <div
+              key={p.key}
+              className="pointer-events-none absolute z-25"
+              style={{
+                width: p.size,
+                height: p.size,
+                left: vc(p.c) * CELL + CELL / 2,
+                top: vr(p.r) * CELL + CELL / 2,
+                borderRadius: '50%',
+                border: `2px solid ${p.color}`,
+                animation: p.anim,
+              }}
+            />
+          );
+        })}
+
         {/* Beasts — rAF drives position; no CSS transition needed */}
         {forest.beasts.map((b) => {
           if (!isVisible(forest, b.r, b.c)) return null;
@@ -779,6 +913,27 @@ export function ForestRunOverlay() {
         </div>
 
         </div>{/* end world container */}
+
+        {/* Player-struck vignette (Phase 6) */}
+        {hitAt > 0 && (
+          <div
+            key={hitAt}
+            className="pointer-events-none absolute inset-0 z-[60]"
+            style={{ animation: 'arena-hit 0.45s ease-out forwards' }}
+          />
+        )}
+
+        {/* Stage-advance wipe — band-tinted flash on depth change (Phase 6) */}
+        {wipeAt > 0 && (
+          <div
+            key={wipeAt}
+            className="pointer-events-none absolute inset-0 z-[55]"
+            style={{
+              backgroundColor: band.palette.accent,
+              animation: 'crawl-wipe 0.5s ease-out forwards',
+            }}
+          />
+        )}
 
         {/* Forest ambient atmosphere — viewport-fixed, doesn't scroll */}
         {!dead && forest.status === 'active' && (

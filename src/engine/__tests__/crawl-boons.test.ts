@@ -36,7 +36,6 @@ import {
   advance,
   sightRadiusFor,
   applyBoonChoice as applyForestBoonChoice,
-  FOREST_WINDUP_MS,
   type ForestState,
   type ForestSnapshot,
   type ForestTile,

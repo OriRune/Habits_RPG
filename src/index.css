@@ -307,6 +307,33 @@ body {
   [style*='tactics-'] { animation-duration: 1ms !important; }
 }
 
+/* ── Phase 6 — Crawler visual juice ────────────────────────────────────────── */
+
+/* Per-entity hit flash: quick brightness flare + red glow on the entity wrapper. */
+@keyframes crawler-hit {
+  0%,20% { filter: brightness(3) drop-shadow(0 0 8px rgba(239,68,68,0.95)); }
+  60%    { filter: brightness(1.6) drop-shadow(0 0 4px rgba(239,68,68,0.50)); }
+  100%   { filter: none; }
+}
+.crawler-hit-flash {
+  animation: crawler-hit 0.22s ease-out forwards;
+}
+
+/* Floor/stage descent transition: a fast colour-tinted flash. The overlay
+   sets background-color to the band's accent hue via inline style. */
+@keyframes crawl-wipe {
+  0%    { opacity: 0.55; transform: scale(1.015); }
+  30%   { opacity: 0.55; }
+  100%  { opacity: 0;    transform: scale(1); }
+}
+
+/* Reduced-motion guards for Phase 6 effects. */
+@media (prefers-reduced-motion: reduce) {
+  .crawler-hit-flash                    { animation-duration: 1ms !important; }
+  [style*='crawl-wipe'],
+  [style*='arena-hit']                  { animation-duration: 1ms !important; }
+}
+
 /* Lockpicking — pick-snap violent jolt */
 @keyframes lock-break {
   0%   { transform: translate(0, 0) rotate(0deg); }

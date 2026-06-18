@@ -369,3 +369,34 @@ export interface CrawlBoon {
   /** Flat +max HP on pickup; also instantly heals that amount. */
   maxHpBonus?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Phase 6 — Screen-shake helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Pure, deterministic shake-offset helper.
+ *
+ * Returns the (sx, sy) CSS-pixel offset to add to the world-container translate
+ * for one rAF frame of camera shake.  randX / randY must be in [0, 1] — callers
+ * pass `Math.random()` each frame; tests pass fixed values for assertions.
+ *
+ * Decay model: quadratic ease-out so the shake front-loads the energy and
+ * settles smoothly.  Y-axis is damped to 60 % of X so the camera feels natural
+ * (heavy horizontal bias).
+ */
+export function shakeOffset(
+  mag: number,
+  elapsed: number,
+  dur: number,
+  randX: number,
+  randY: number,
+): { sx: number; sy: number } {
+  if (mag <= 0 || dur <= 0 || elapsed >= dur) return { sx: 0, sy: 0 };
+  const k = 1 - elapsed / dur;        // linear falloff 1 → 0
+  const amp = mag * k * k;             // quadratic ease-out
+  return {
+    sx: (randX * 2 - 1) * amp,
+    sy: (randY * 2 - 1) * amp * 0.6,
+  };
+}
