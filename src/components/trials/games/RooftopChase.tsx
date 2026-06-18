@@ -212,11 +212,14 @@ function HeroSprite({
   );
 }
 
-function ChaserSprite({ danger }: { danger: boolean }) {
+function ChaserSprite({ danger, airborne = false }: { danger: boolean; airborne?: boolean }) {
   const eyeGlow  = danger ? '0 0 8px #ff2200' : '0 0 4px #cc4400';
   const eyeColor = danger ? '#ff3300'         : '#cc5500';
+  // When airborne (leaping a gap) pause the run cycle and tilt forward.
+  const bodyAnim = airborne ? undefined : 'rooftop-chaser 0.28s linear infinite';
+  const bodyTransform = airborne ? 'rotate(-18deg)' : undefined;
   return (
-    <div style={{ width: 38, height: 30, position: 'relative', animation: 'rooftop-chaser 0.28s linear infinite' }}>
+    <div style={{ width: 38, height: 30, position: 'relative', animation: bodyAnim, transform: bodyTransform, transformOrigin: 'bottom center' }}>
       <div style={{
         position: 'absolute', bottom: 10, left: 0, width: 30, height: 16,
         background: 'linear-gradient(90deg, #100808, #1e1010)',
@@ -506,8 +509,10 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
 
   const skyBottom = `hsl(${220 - speedFrac * 40}, 55%, ${20 - speedFrac * 6}%)`;
 
-  const chaserXPx    = HERO_X_PX - 50 - (1 - leadFrac) * 28;
-  const chaserDanger = leadFrac < 0.3;
+  // Real world-space chaser position (computed in stepChase from lead and hero X).
+  const chaserXPx         = (state.chaserX - distance) * PX_PER_WU + HERO_X_PX;
+  const chaserScreenBottom = BELOW_ROOF_PX + state.chaserY * PX_PER_WU;
+  const chaserDanger      = leadFrac < 0.3;
 
   const spawnPct = Math.min(1, distance / CHASER_SPAWN_DISTANCE);
 
@@ -706,13 +711,13 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
           />
         ))}
 
-        {/* Chaser */}
+        {/* Chaser — positioned from real world coordinates (chaserX/Y in ChaseState) */}
         {state.chaserActive && (
           <div className="absolute" style={{
             left: Math.max(-42, chaserXPx),
-            bottom: BELOW_ROOF_PX,
+            bottom: chaserScreenBottom,
           }}>
-            <ChaserSprite danger={chaserDanger} />
+            <ChaserSprite danger={chaserDanger} airborne={state.chaserAirborne} />
           </div>
         )}
 

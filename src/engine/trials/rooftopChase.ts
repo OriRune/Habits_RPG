@@ -73,6 +73,17 @@ export const STOMP_LEAD_GAIN = 4;
 /** Lead gained from a single dash burst. */
 export const DASH_LEAD_GAIN = 16;
 
+/**
+ * Maximum world-unit distance between the chaser and the hero when lead is
+ * at its maximum (LEAD_MAX). Scales linearly: at 0 lead the chaser is at the
+ * hero's foot position; at LEAD_MAX it is this many wu behind.
+ *
+ * At 16 wu and PX_PER_WU = 7: the chaser is ~112 px behind the hero's screen
+ * position (HERO_X_PX = 72), placing it ~40 px off the left edge of the view
+ * when lead is full, and right at the hero when lead reaches 0.
+ */
+export const CHASER_MAX_GAP = 16;
+
 /** Upward vy given to hero after a stomp (world-units / sec). */
 export const STOMP_BOUNCE_VELOCITY = 14;
 
@@ -305,6 +316,67 @@ export function updateLead(
   return Math.max(0, Math.min(LEAD_MAX, next));
 }
 
+// ── Chaser world position ──────────────────────────────────────────────────────
+
+/**
+ * Compute the chaser's absolute world position from the hero's foot X and the
+ * current lead value.
+ *
+ * The chaser is always `(lead / LEAD_MAX) × CHASER_MAX_GAP` world-units behind
+ * the hero — fully derived from existing state (no new physics or failure modes).
+ *
+ * Y is snapped to the roof elevation under the chaser's X, or a parabolic leap
+ * arc when the chaser is crossing a gap between buildings.
+ *
+ * @returns { x, y, airborne }
+ */
+export function chaserWorldPos(
+  heroFootX: number,
+  lead: number,
+  buildings: readonly Building[],
+): { x: number; y: number; airborne: boolean } {
+  const gap = (Math.max(0, lead) / LEAD_MAX) * CHASER_MAX_GAP;
+  const cx = heroFootX - gap;
+
+  // On a roof — snap to its elevation.
+  const underfoot = buildingAt(buildings as Building[], cx);
+  if (underfoot) {
+    return { x: cx, y: underfoot.roofY, airborne: false };
+  }
+
+  // Over a gap — find the last building to the left and first to the right.
+  let prevRight = -Infinity;
+  let prevRoofY = 0;
+  let nextLeft  = Infinity;
+  let nextRoofY = 0;
+
+  for (const b of buildings) {
+    const bRight = b.x + b.width;
+    if (bRight <= cx && bRight > prevRight) {
+      prevRight = bRight;
+      prevRoofY = b.roofY;
+    }
+    if (b.x > cx && b.x < nextLeft) {
+      nextLeft  = b.x;
+      nextRoofY = b.roofY;
+    }
+  }
+
+  if (!isFinite(prevRight) || !isFinite(nextLeft)) {
+    // Edge case: no buildings on one side (before/after the course).
+    return { x: cx, y: 0, airborne: true };
+  }
+
+  const gapWidth = nextLeft - prevRight;
+  const t = gapWidth > 0 ? Math.max(0, Math.min(1, (cx - prevRight) / gapWidth)) : 0;
+  // Parabolic arc: linear elevation lerp + a sine peak for the jump apex.
+  // Arc height scales with gap width so wider gaps produce more dramatic leaps.
+  const arcHeight = Math.max(2, gapWidth * 0.35);
+  const y = prevRoofY + (nextRoofY - prevRoofY) * t + Math.sin(Math.PI * t) * arcHeight;
+
+  return { x: cx, y, airborne: true };
+}
+
 // ── Collision resolution ───────────────────────────────────────────────────────
 
 /**
@@ -414,6 +486,12 @@ export interface ChaseState {
   // ── Chaser ─────────────────────────────────────────────────────────────────
   lead: number;
   chaserActive: boolean;
+  /** Chaser's absolute world-x (valid once chaserActive; 0 before spawn). */
+  chaserX: number;
+  /** Chaser's elevation above baseline: roof Y when grounded, arc height when leaping a gap. */
+  chaserY: number;
+  /** True while the chaser is in mid-air over a gap (for a leap animation in the renderer). */
+  chaserAirborne: boolean;
 
   // ── Collision tracking ─────────────────────────────────────────────────────
   /** Prop ID currently overlapping the hero (to fire the contact event only once per prop). */
@@ -456,6 +534,9 @@ export function initChase(rng: () => number): ChaseState {
     stompFlashMs: 0,
     lead: LEAD_START,
     chaserActive: false,
+    chaserX: 0,
+    chaserY: 0,
+    chaserAirborne: false,
     activeContactId: null,
     stompedPropId: null,
     justLanded: false,
@@ -567,6 +648,9 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
       stompedPropId,
       lead: state.lead,
       chaserActive: state.chaserActive,
+      chaserX: state.chaserX,
+      chaserY: state.chaserY,
+      chaserAirborne: state.chaserAirborne,
       activeContactId: state.activeContactId,
       justLanded: false,
       justStomped: false,
@@ -651,6 +735,12 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
   const chaserActive = newDist >= CHASER_SPAWN_DISTANCE;
   const newLead      = updateLead(state.lead, dtSec, chaserActive, leadEvent);
 
+  // ── 9a. Compute chaser world position ──────────────────────────────────────
+  // footX is the hero's foot centre; derived above in step 5.
+  const chaserPos = chaserActive
+    ? chaserWorldPos(footX, Math.max(0, newLead), state.buildings)
+    : { x: 0, y: 0, airborne: false };
+
   // ── 10. Terminal conditions ─────────────────────────────────────────────────
   const done = newLead <= 0 || newDist >= CHASE_TARGET_DISTANCE;
 
@@ -669,6 +759,9 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
     stompFlashMs,
     lead:           Math.max(0, newLead),
     chaserActive,
+    chaserX:        chaserPos.x,
+    chaserY:        chaserPos.y,
+    chaserAirborne: chaserPos.airborne,
     activeContactId,
     stompedPropId,
     justLanded,
