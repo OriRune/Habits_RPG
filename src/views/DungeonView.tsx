@@ -381,6 +381,14 @@ function EncounterRoom({
     );
   }
   const node = def.nodes[enc.nodeId];
+  if (!node) {
+    return (
+      <Panel tone="parchment" className="space-y-3 p-5">
+        <div className="text-sm text-ink-muted">The passage is quiet.</div>
+        <Button onClick={onAdvance} className="w-full py-2.5">Continue Deeper →</Button>
+      </Panel>
+    );
+  }
 
   return (
     <Panel tone="parchment" className="space-y-3 p-5">

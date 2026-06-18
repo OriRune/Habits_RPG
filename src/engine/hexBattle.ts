@@ -55,6 +55,8 @@ export const OCCLUSION_RISE = 2;
 export const EFFECT_STAGGER_MS = 450;
 /** Default per-action animation length. */
 const EFFECT_DURATION_MS = 420;
+/** Duration of the CSS slide animation when an enemy moves to a new tile. Must be ≤ EFFECT_STAGGER_MS. */
+export const MOVE_ANIM_MS = 300;
 /** Stamina restored to the player at the start of each new turn after the enemy phase. */
 export const STA_REGEN_PER_TURN = 2;
 /**
@@ -143,6 +145,17 @@ export interface PlayerUnit {
   ward: number;
   dodge: number;
   statuses: UnitStatus[];
+  /** Hero ID: 'p0' for single-player, or the Supabase user ID in co-op. */
+  id?: string;
+  /** Display name shown next to the hero sprite in co-op (undefined = "You" in log messages). */
+  name?: string;
+  /** Per-hero spell loadout for co-op. When set, takes precedence over `state.knownSpells`. */
+  knownSpells?: string[];
+  /** Per-hero weapon snapshot for co-op. When set, takes precedence over `state.weapon`. */
+  weapon?: WeaponDef;
+  /** Multi-hero turn sequencing: set to true once this hero calls endPlayerTurn this round.
+   *  Cleared at the start of each new player turn along with hasActed/overwatch. */
+  endedTurn?: boolean;
 }
 
 export interface EnemyUnit {
@@ -153,6 +166,13 @@ export interface EnemyUnit {
   /** AI movement/behavior archetype — drives the per-archetype scoring in bestMoveFor(). */
   aiArchetype: AIArchetype;
   hex: Hex;
+  /**
+   * The tile this enemy occupied at the start of the most recent enemy phase.
+   * The overlay holds the sprite here until the 'move' effect fires, producing a
+   * visible one-at-a-time slide instead of all enemies snapping to their final
+   * positions simultaneously. Optional so old persisted saves don't crash.
+   */
+  prevHex?: Hex;
   hp: number;
   maxHp: number;
   attack: number;
@@ -192,6 +212,8 @@ export interface TacticalEffect {
   label?: string;
   /** Color class for 'floater' effects. */
   color?: 'dmg-player' | 'dmg-enemy' | 'heal' | 'status';
+  /** For 'move' effects: the enemy whose sprite should slide from `from` to `to`. */
+  enemyId?: number;
 }
 
 export type HexBattleStatus = 'active' | 'won' | 'lost';
@@ -255,6 +277,8 @@ export interface TacticsObjective {
 export interface HexBattleState {
   radius: number;
   tiles: Record<string, Tile>;
+  /** The active/local hero. In single-player this is the sole hero; in co-op it is the hero
+   *  controlled by this client. Always kept in sync with the matching entry in `players[]`. */
   player: PlayerUnit;
   enemies: EnemyUnit[];
   turn: Turn;
@@ -267,7 +291,9 @@ export interface HexBattleState {
   log: string[];
   status: HexBattleStatus;
   tier: number;
+  /** Spell loadout for the active hero (state-level for backward compat; co-op uses player.knownSpells). */
   knownSpells: string[];
+  /** Weapon for the active hero (state-level for backward compat; co-op uses player.weapon). */
   weapon: WeaponDef;
   seq: number;
   /** All board tiles the player could be attacked from on the enemy's next turn (danger zone). */
@@ -278,6 +304,11 @@ export interface HexBattleState {
   objective: TacticsObjective | null;
   /** Number of player turns completed (starts at 1 for the player's first turn). */
   turnCount: number;
+  /** Full hero roster (1 in single-player, N in co-op). Populated by generateSkirmish.
+   *  Engine functions fall back to [player] when this is absent for backward compat. */
+  players?: PlayerUnit[];
+  /** ID of the hero controlled by this client (matches player.id). */
+  activeHeroId?: string;
 }
 
 // --- Small helpers ------------------------------------------------------------------------------
@@ -296,10 +327,28 @@ function coverAt(s: HexBattleState, h: Hex): number {
 /** Hex keys occupied by a living unit, excluding the one currently at `exclude`. */
 function occupiedKeys(s: HexBattleState, exclude?: Hex): Set<string> {
   const set = new Set<string>();
-  if (s.player.hp > 0) set.add(hexKey(s.player.hex));
+  const heroes = (s.players && s.players.length > 0) ? s.players : [s.player];
+  for (const p of heroes) if (p.hp > 0) set.add(hexKey(p.hex));
   for (const e of s.enemies) if (e.hp > 0) set.add(hexKey(e.hex));
   if (exclude) set.delete(hexKey(exclude));
   return set;
+}
+
+/** All living heroes. Falls back to [s.player] when players[] is absent (single-player / old tests). */
+export function livingHeroes(s: HexBattleState): PlayerUnit[] {
+  const all = (s.players && s.players.length > 0) ? s.players : [s.player];
+  return all.filter((p) => p.hp > 0);
+}
+
+/** The living hero nearest to `from` by hex distance. Falls back to s.player when unambiguous. */
+export function nearestHero(s: HexBattleState, from: Hex): PlayerUnit {
+  const alive = livingHeroes(s);
+  if (alive.length === 0) return s.player;
+  if (alive.length === 1) return alive[0];
+  return alive.reduce(
+    (best, h) => (hexDistance(from, h.hex) < hexDistance(from, best.hex) ? h : best),
+    alive[0],
+  );
 }
 
 export function enemyAt(s: HexBattleState, h: Hex): EnemyUnit | undefined {
@@ -330,14 +379,26 @@ function applyUnitStatus(list: UnitStatus[], status: UnitStatus): void {
   }
 }
 
+function cloneUnit(p: PlayerUnit): PlayerUnit {
+  return { ...p, hex: { ...p.hex }, statuses: p.statuses.map((st) => ({ ...st })) };
+}
+
 function clone(s: HexBattleState): HexBattleState {
+  // Deep-copy the players array (if present) and alias player to the active entry so that
+  // mutations to s.player.* also propagate to s.players[i].* (same object reference).
+  let players: PlayerUnit[] | undefined;
+  let player: PlayerUnit;
+  if (s.players && s.players.length > 0) {
+    players = s.players.map(cloneUnit);
+    player = players.find((p) => p.id === s.activeHeroId) ?? players[0];
+  } else {
+    players = undefined;
+    player = cloneUnit(s.player);
+  }
   return {
     ...s,
-    player: {
-      ...s.player,
-      hex: { ...s.player.hex },
-      statuses: s.player.statuses.map((st) => ({ ...st })),
-    },
+    player,
+    players,
     enemies: s.enemies.map((e) => ({ ...e, hex: { ...e.hex }, statuses: e.statuses.map((st) => ({ ...st })) })),
     effects: [],
     reachable: [...s.reachable],
@@ -352,8 +413,8 @@ function clone(s: HexBattleState): HexBattleState {
 /** Returns a pusher that stamps effects with an increasing stagger so they cascade visually. */
 function effectPusher(s: HexBattleState) {
   let clock = 0;
-  return (kind: string, from: Hex, to: Hex, dur = EFFECT_DURATION_MS) => {
-    s.effects.push({ id: s.seq++, kind, from: { ...from }, to: { ...to }, startedAtMs: clock, durationMs: dur });
+  return (kind: string, from: Hex, to: Hex, dur = EFFECT_DURATION_MS, enemyId?: number) => {
+    s.effects.push({ id: s.seq++, kind, from: { ...from }, to: { ...to }, startedAtMs: clock, durationMs: dur, enemyId });
     clock += EFFECT_STAGGER_MS;
   };
 }
@@ -425,10 +486,12 @@ export function computeTargetable(s: HexBattleState, action: SelectedAction): He
   const p = s.player.hex;
   const pz = elevationAt(s, p);
   const living = s.enemies.filter((e) => e.hp > 0);
+  // Use per-hero weapon if set (co-op), else fall back to the state-level weapon.
+  const weapon = s.player.weapon ?? s.weapon;
 
   if (action.kind === 'attack') {
-    if (s.weapon.ranged) {
-      const range = s.weapon.range ?? 1;
+    if (weapon.ranged) {
+      const range = weapon.range ?? 1;
       return living
         .filter((e) => {
           const dz = pz - elevationAt(s, e.hex);
@@ -476,16 +539,17 @@ export function previewPlayerAttack(state: HexBattleState, target: Hex): AttackP
   const enemy = enemyAt(state, target);
   if (!enemy) return null;
   const p = state.player;
+  const weapon = p.weapon ?? state.weapon;
   const pz = elevationAt(state, p.hex);
   const dz = pz - elevationAt(state, enemy.hex);
   const hMult = heightDamageMult(dz);
-  const ranged = !!state.weapon.ranged;
+  const ranged = !!weapon.ranged;
   const basePower = (ranged ? p.rangedPower : p.meleePower) * hMult * weakenFactor(p);
   const coverBonus = coverAt(state, enemy.hex);
   const mitigation = enemy.defense + coverBonus + enemy.guardBonus;
-  const base = basePower + state.weapon.bonus;
-  const weak = enemy.weakTo.includes(state.weapon.attackStat);
-  const resist = enemy.resistTo.includes(state.weapon.attackStat);
+  const base = basePower + weapon.bonus;
+  const weak = enemy.weakTo.includes(weapon.attackStat);
+  const resist = enemy.resistTo.includes(weapon.attackStat);
   const weakMult = weak ? 1.25 : resist ? 0.6 : 1;
   const minDmg = Math.max(1, Math.round(base * 0.85 * weakMult) - mitigation);
   return {
@@ -500,6 +564,7 @@ export function previewPlayerAttack(state: HexBattleState, target: Hex): AttackP
 export function previewSpell(state: HexBattleState, key: string, target: Hex | null): AttackPreview | null {
   if (state.player.hasActed || state.turn !== 'player' || state.status !== 'active') return null;
   const spell = getSpell(key);
+  // Check per-hero MP; the key is provided by the caller so we skip knownSpells check here.
   if (!spell || state.player.mp < spell.mpCost) return null;
 
   // Positional mechanics don't produce a numeric preview — overlay shows a text hint instead.
@@ -580,18 +645,21 @@ export function movePlayer(state: HexBattleState, to: Hex): HexBattleState {
  * Mutates `s` directly (caller holds the clone). Does NOT set `hasActed` or call
  * `finishPlayerAction` — those are the caller's responsibility so this can be reused for
  * both normal attacks and overwatch reaction shots.
+ *
+ * `hero` is the acting hero unit (s.player in single-player; the relevant hero in co-op).
  */
-function resolvePlayerStrike(s: HexBattleState, enemy: EnemyUnit, rng: RNG): void {
-  const pz = elevationAt(s, s.player.hex);
+function resolvePlayerStrike(s: HexBattleState, hero: PlayerUnit, enemy: EnemyUnit, rng: RNG): void {
+  const weapon = hero.weapon ?? s.weapon;
+  const pz = elevationAt(s, hero.hex);
   const dz = pz - elevationAt(s, enemy.hex);
-  const ranged = !!s.weapon.ranged;
-  const rawPower = (ranged ? s.player.rangedPower : s.player.meleePower) * heightDamageMult(dz) * weakenFactor(s.player);
-  const full = s.player.sta >= s.weapon.staminaCost;
-  s.player.sta = Math.max(0, s.player.sta - s.weapon.staminaCost);
+  const ranged = !!weapon.ranged;
+  const rawPower = (ranged ? hero.rangedPower : hero.meleePower) * heightDamageMult(dz) * weakenFactor(hero);
+  const full = hero.sta >= weapon.staminaCost;
+  hero.sta = Math.max(0, hero.sta - weapon.staminaCost);
   const { dealt, weak, resist } = attackRoll(
     rawPower,
-    s.weapon.bonus,
-    s.weapon.attackStat,
+    weapon.bonus,
+    weapon.attackStat,
     enemy.weakTo,
     enemy.resistTo,
     full,
@@ -600,11 +668,13 @@ function resolvePlayerStrike(s: HexBattleState, enemy: EnemyUnit, rng: RNG): voi
   );
   enemy.hp -= dealt;
   const push = effectPusher(s);
-  push(ranged ? 'arrow' : 'melee', s.player.hex, enemy.hex);
+  push(ranged ? 'arrow' : 'melee', hero.hex, enemy.hex);
   s.effects.push({ id: s.seq++, kind: 'floater', from: enemy.hex, to: enemy.hex, startedAtMs: EFFECT_STAGGER_MS + 60, durationMs: 900, label: String(dealt), color: 'dmg-enemy' });
   const tag = weak ? ' — weak to it!' : resist ? ' — resisted' : '';
   const hz = dz > 0 ? ' (high ground)' : dz < 0 ? ' (uphill)' : '';
-  s.log.push(`You hit ${enemy.name} for ${dealt}${tag}${hz}${full ? '' : ' (exhausted)'}${enemy.guardBonus > 0 ? ' (guarding)' : ''}.`);
+  const hitterName = hero.name ?? 'You';
+  const hitVerb = hero.name ? 'hits' : 'hit';
+  s.log.push(`${hitterName} ${hitVerb} ${enemy.name} for ${dealt}${tag}${hz}${full ? '' : ' (exhausted)'}${enemy.guardBonus > 0 ? ' (guarding)' : ''}.`);
 }
 
 /** Resolve the player's weapon attack against a targeted enemy. */
@@ -613,22 +683,23 @@ export function playerAttack(state: HexBattleState, target: Hex, rng: RNG = Math
   if (!computeTargetable(state, { kind: 'attack' }).some((h) => hexEquals(h, target))) return state;
   const s = clone(state);
   const enemy = enemyAt(s, target)!;
-  resolvePlayerStrike(s, enemy, rng);
+  resolvePlayerStrike(s, s.player, enemy, rng);
   s.player.hasActed = true;
   finishPlayerAction(s);
   return s;
 }
 
 /**
- * Returns true if the enemy at `enemyHex` is within the player's weapon reach from their current
- * position, accounting for height bonus and line-of-sight (ranged weapons only). This bypasses the
- * `hasActed` gate so it can be used during the enemy phase for overwatch reactions.
+ * Returns true if `enemyHex` is within `hero`'s weapon reach from their current position,
+ * accounting for height bonus and line-of-sight (ranged weapons only). Bypasses `hasActed`
+ * so it can be used during the enemy phase for overwatch reactions.
  */
-function inAttackReach(s: HexBattleState, enemyHex: Hex): boolean {
-  const p = s.player.hex;
+function inAttackReachFor(s: HexBattleState, hero: PlayerUnit, enemyHex: Hex): boolean {
+  const weapon = hero.weapon ?? s.weapon;
+  const p = hero.hex;
   const pz = elevationAt(s, p);
-  if (s.weapon.ranged) {
-    const range = s.weapon.range ?? 1;
+  if (weapon.ranged) {
+    const range = weapon.range ?? 1;
     const dz = pz - elevationAt(s, enemyHex);
     return hexDistance(p, enemyHex) <= range + heightRangeBonus(dz) && hasLineOfSight(s, p, enemyHex);
   }
@@ -640,27 +711,39 @@ function inAttackReach(s: HexBattleState, enemyHex: Hex): boolean {
  * If an enemy moves into weapon reach during the enemy phase, the reaction fires automatically —
  * one shot only, then the stance clears. Move-then-Hold is allowed; attack-then-Hold is not.
  * An unused stance expires at the start of the next player turn.
+ *
+ * `heroId` is optional and identifies the acting hero in a co-op session. Omitted → s.player.
  */
-export function holdOverwatch(state: HexBattleState, rng: RNG = Math.random): HexBattleState {
-  if (state.turn !== 'player' || state.status !== 'active' || state.player.hasActed) return state;
+export function holdOverwatch(state: HexBattleState, rng: RNG = Math.random, heroId?: string): HexBattleState {
+  // Guard check before cloning (preserve reference equality on no-op).
+  const heroToCheck = heroId ? (state.players?.find((p) => p.id === heroId) ?? state.player) : state.player;
+  if (state.turn !== 'player' || state.status !== 'active' || heroToCheck.hasActed) return state;
   const s = clone(state);
-  s.player.overwatch = true;
-  s.player.hasActed = true;
-  s.log.push('You take an overwatch stance, ready to fire on the first enemy that enters range.');
-  return endPlayerTurn(s, rng);
+  const hero = heroId ? (s.players?.find((p) => p.id === heroId) ?? s.player) : s.player;
+  hero.overwatch = true;
+  hero.hasActed = true;
+  const label = hero.name ?? 'You';
+  const verb = hero.name ? 'takes' : 'take';
+  s.log.push(`${label} ${verb} an overwatch stance, ready to fire on the first enemy that enters range.`);
+  return endPlayerTurn(s, rng, heroId);
 }
 
-/** Resolve a spell cast. `target` is required for damage/illusion spells, ignored for support. */
+/** Resolve a spell cast. `target` is required for damage/illusion spells, ignored for support.
+ *  `heroId` is optional and identifies the acting hero in a co-op session. Omitted → s.player. */
 export function playerCastSpell(
   state: HexBattleState,
   spellKey: string,
   target: Hex | null,
   rng: RNG = Math.random,
+  heroId?: string,
 ): HexBattleState {
-  if (state.turn !== 'player' || state.status !== 'active' || state.player.hasActed) return state;
-  if (!state.knownSpells.includes(spellKey)) return state;
+  // Guard check before cloning (preserve reference equality on no-op).
+  const heroToCheck = heroId ? (state.players?.find((p) => p.id === heroId) ?? state.player) : state.player;
+  if (state.turn !== 'player' || state.status !== 'active' || heroToCheck.hasActed) return state;
+  const heroSpells = heroToCheck.knownSpells ?? state.knownSpells;
+  if (!heroSpells.includes(spellKey)) return state;
   const spell = getSpell(spellKey);
-  if (!spell || state.player.mp < spell.mpCost) return state;
+  if (!spell || heroToCheck.mp < spell.mpCost) return state;
 
   // Cleave and blink are self-targeting (no enemy hex needed); push targets an enemy like illusion.
   const needsTarget = spell.school !== 'support' && spell.mechanic !== 'cleave';
@@ -673,43 +756,48 @@ export function playerCastSpell(
   }
 
   const s = clone(state);
-  s.player.mp -= spell.mpCost;
+  // After cloning, find the acting hero in the cloned state.
+  const hero = heroId ? (s.players?.find((p) => p.id === heroId) ?? s.player) : s.player;
+  const heroWeapon = hero.weapon ?? s.weapon;
+  hero.mp -= spell.mpCost;
   const schoolStat = SCHOOL_STAT[spell.school];
   const push = effectPusher(s);
 
   // --- Tactics positional mechanics (handled before school branching) ---
   if (spell.mechanic === 'blink') {
-    push(`spell:${spell.key}`, s.player.hex, target!);
-    s.player.hex = { ...target! };
-    s.player.movesLeft = 0;
-    s.log.push(`You blink to a nearby position.`);
-    s.player.hasActed = true;
+    push(`spell:${spell.key}`, hero.hex, target!);
+    hero.hex = { ...target! };
+    hero.movesLeft = 0;
+    const blinkLabel = hero.name ?? 'You';
+    const blinkVerb = hero.name ? 'blinks' : 'blink';
+    s.log.push(`${blinkLabel} ${blinkVerb} to a nearby position.`);
+    hero.hasActed = true;
     finishPlayerAction(s);
     return s;
   }
   if (spell.mechanic === 'cleave') {
-    const adjacent = s.enemies.filter((e) => e.hp > 0 && hexDistance(s.player.hex, e.hex) === 1);
+    const adjacent = s.enemies.filter((e) => e.hp > 0 && hexDistance(hero.hex, e.hex) === 1);
     if (adjacent.length === 0) {
       s.log.push(`Cleave — no adjacent targets.`);
     } else {
       for (const e of adjacent) {
-        const rawPower = s.player.meleePower * weakenFactor(s.player);
-        const { dealt, weak } = attackRoll(rawPower, spell.power, s.weapon.attackStat, e.weakTo, e.resistTo, true, e.defense + coverAt(s, e.hex), rng);
+        const rawPower = hero.meleePower * weakenFactor(hero);
+        const { dealt, weak } = attackRoll(rawPower, spell.power, heroWeapon.attackStat, e.weakTo, e.resistTo, true, e.defense + coverAt(s, e.hex), rng);
         e.hp -= dealt;
-        push('melee', s.player.hex, e.hex);
+        push('melee', hero.hex, e.hex);
         s.effects.push({ id: s.seq++, kind: 'floater', from: e.hex, to: e.hex, startedAtMs: EFFECT_STAGGER_MS + 60, durationMs: 900, label: String(dealt), color: 'dmg-enemy' });
         s.log.push(`Cleave hits ${e.name} for ${dealt}${weak ? ' (weak!)' : ''}.`);
       }
     }
-    s.player.hasActed = true;
+    hero.hasActed = true;
     finishPlayerAction(s);
     return s;
   }
   if (spell.mechanic === 'push') {
     const enemy = enemyAt(s, target!);
     if (!enemy) return state;
-    const dir = computePushDir(s.player.hex, enemy.hex);
-    push(`spell:${spell.key}`, s.player.hex, enemy.hex);
+    const dir = computePushDir(hero.hex, enemy.hex);
+    push(`spell:${spell.key}`, hero.hex, enemy.hex);
     const landing = applyPush(s, enemy, dir, 2);
     const landTerrain = tileAt(s, landing)?.terrain;
     if (landTerrain === 'hazard') {
@@ -720,15 +808,15 @@ export function playerCastSpell(
     } else {
       s.log.push(`${spell.name} flings ${enemy.name} back!`);
     }
-    s.player.hasActed = true;
+    hero.hasActed = true;
     finishPlayerAction(s);
     return s;
   }
 
   if (spell.school === 'damage') {
     const enemy = enemyAt(s, target!)!;
-    const dz = elevationAt(s, s.player.hex) - elevationAt(s, enemy.hex);
-    const power = s.player.damageSpell * heightDamageMult(dz) * weakenFactor(s.player);
+    const dz = elevationAt(s, hero.hex) - elevationAt(s, enemy.hex);
+    const power = hero.damageSpell * heightDamageMult(dz) * weakenFactor(hero);
     const { dealt, weak, resist } = spellDamageRoll(
       spell.power,
       power,
@@ -740,35 +828,35 @@ export function playerCastSpell(
     );
     enemy.hp -= dealt;
     if (spell.status) applyUnitStatus(enemy.statuses, { ...spell.status });
-    push(`spell:${spell.key}`, s.player.hex, enemy.hex);
+    push(`spell:${spell.key}`, hero.hex, enemy.hex);
     s.effects.push({ id: s.seq++, kind: 'floater', from: enemy.hex, to: enemy.hex, startedAtMs: EFFECT_STAGGER_MS + 60, durationMs: 900, label: String(dealt), color: 'dmg-enemy' });
     const tag = weak ? ' — super effective!' : resist ? ' — resisted' : '';
     s.log.push(`${spell.name} sears ${enemy.name} for ${dealt}${tag}.`);
   } else if (spell.school === 'support') {
     if (spell.power > 0) {
-      const heal = spellHealAmount(spell.power, s.player.supportSpell);
-      const gained = Math.min(heal, s.player.maxHp - s.player.hp);
-      s.player.hp += gained;
-      s.effects.push({ id: s.seq++, kind: 'floater', from: s.player.hex, to: s.player.hex, startedAtMs: EFFECT_STAGGER_MS + 60, durationMs: 900, label: `+${gained}`, color: 'heal' });
+      const heal = spellHealAmount(spell.power, hero.supportSpell);
+      const gained = Math.min(heal, hero.maxHp - hero.hp);
+      hero.hp += gained;
+      s.effects.push({ id: s.seq++, kind: 'floater', from: hero.hex, to: hero.hex, startedAtMs: EFFECT_STAGGER_MS + 60, durationMs: 900, label: `+${gained}`, color: 'heal' });
       s.log.push(`${spell.name} restores ${gained} HP.`);
     }
     if (spell.status) {
-      applyUnitStatus(s.player.statuses, { ...spell.status });
-      s.log.push(`${spell.name} wraps you in a protective ward.`);
+      applyUnitStatus(hero.statuses, { ...spell.status });
+      s.log.push(`${spell.name} wraps ${hero.name ? hero.name : 'you'} in a protective ward.`);
     }
-    push(`spell:${spell.key}`, s.player.hex, s.player.hex);
+    push(`spell:${spell.key}`, hero.hex, hero.hex);
   } else {
     // illusion — debuff a foe, duration boosted by Charisma (mirrors combat.ts)
     const enemy = enemyAt(s, target!)!;
     if (spell.status) {
-      const boosted = { ...spell.status, turns: spell.status.turns + Math.floor(s.player.illusionPower / 8) };
+      const boosted = { ...spell.status, turns: spell.status.turns + Math.floor(hero.illusionPower / 8) };
       applyUnitStatus(enemy.statuses, boosted);
     }
-    push(`spell:${spell.key}`, s.player.hex, enemy.hex);
+    push(`spell:${spell.key}`, hero.hex, enemy.hex);
     s.log.push(`${spell.name} bewilders ${enemy.name}.`);
   }
 
-  s.player.hasActed = true;
+  hero.hasActed = true;
   finishPlayerAction(s);
   return s;
 }
@@ -784,12 +872,25 @@ function finishPlayerAction(s: HexBattleState): void {
   }
 }
 
-/** End the player's turn: tick the player's effects, run the enemy phase, then restore the player. */
-export function endPlayerTurn(state: HexBattleState, rng: RNG = Math.random): HexBattleState {
+/**
+ * End one hero's turn. In single-player (or when all heroes have ended), immediately runs the
+ * enemy phase and restores all heroes. In co-op with multiple living heroes, marks the hero
+ * as done and returns early — the enemy phase waits until all remaining heroes have ended.
+ *
+ * `heroId` identifies the acting hero in a co-op session. Omitted → s.player.
+ */
+export function endPlayerTurn(state: HexBattleState, rng: RNG = Math.random, heroId?: string): HexBattleState {
   if (state.turn !== 'player' || state.status !== 'active') return state;
-  const s = clone(state);
+  // Guard: don't re-end the same hero's turn (idempotent, reference-equal no-op).
+  const heroToCheck = heroId ? (state.players?.find((p) => p.id === heroId) ?? state.player) : state.player;
+  if (heroToCheck.endedTurn) return state;
 
-  applyDoTAndDecay(s, s.player, 'You', true);
+  const s = clone(state);
+  const hero = heroId ? (s.players?.find((p) => p.id === heroId) ?? s.player) : s.player;
+  hero.endedTurn = true;
+
+  // Apply DoT / hazard to this hero for their turn.
+  applyDoTAndDecay(s, hero, hero.name ?? 'You', !hero.name);
   checkOutcome(s);
   if (s.status !== 'active') {
     s.reachable = [];
@@ -797,6 +898,16 @@ export function endPlayerTurn(state: HexBattleState, rng: RNG = Math.random): He
     return s;
   }
 
+  // Multi-hero: if other living heroes haven't ended yet, hold the enemy phase.
+  const multiHero = s.players && s.players.length > 1;
+  if (multiHero && livingHeroes(s).some((p) => !p.endedTurn)) {
+    // Clear this hero's highlights only; the board stays interactive for the other hero.
+    s.reachable = [];
+    s.targetable = [];
+    return s;
+  }
+
+  // All heroes done (or single-player) — run the enemy phase.
   s.turn = 'enemy';
   enemyTurn(s, rng);
   if (s.status !== 'active') {
@@ -805,7 +916,7 @@ export function endPlayerTurn(state: HexBattleState, rng: RNG = Math.random): He
     return s;
   }
 
-  // End of enemy phase: hazard/DoT ticks for the foes, then restore the player.
+  // End-of-phase DoT ticks for enemies.
   for (const e of s.enemies) applyDoTAndDecay(s, e, e.name, false);
   checkOutcome(s);
   if (s.status !== 'active') {
@@ -826,22 +937,32 @@ export function endPlayerTurn(state: HexBattleState, rng: RNG = Math.random): He
         if (obj.progress >= obj.target) obj.complete = true;
       }
     } else if (obj.kind === 'flawless') {
-      const pct = (s.player.hp / s.player.maxHp) * 100;
-      if (pct < obj.target) {
-        obj.failed = true;
-      } else {
-        obj.progress = Math.min(obj.progress, pct);
+      // Fail if ANY living hero dropped below the HP% threshold.
+      for (const h of livingHeroes(s)) {
+        const pct = (h.hp / h.maxHp) * 100;
+        if (pct < obj.target) {
+          obj.failed = true;
+          break;
+        } else {
+          obj.progress = Math.min(obj.progress, pct);
+        }
       }
     }
     // swift is finalised in checkOutcome when the match ends, not per-turn.
   }
 
+  // Restore ALL heroes: fresh movement, action, stamina regen, clear endedTurn.
+  const allHeroes = (s.players && s.players.length > 0) ? s.players : [s.player];
+  for (const h of allHeroes) {
+    h.movesLeft = moveTilesFor(h.ag);
+    h.hasActed = false;
+    h.overwatch = false; // expire any unused stance
+    h.endedTurn = false;
+    h.sta = Math.min(h.maxSta, h.sta + STA_REGEN_PER_TURN);
+  }
+
   s.turnCount++;
   s.turn = 'player';
-  s.player.movesLeft = moveTilesFor(s.player.ag);
-  s.player.hasActed = false;
-  s.player.overwatch = false; // expire any unused stance (reaction never fired)
-  s.player.sta = Math.min(s.player.maxSta, s.player.sta + STA_REGEN_PER_TURN);
   s.selected = null;
   recomputeHighlights(s);
   // Compute intent/threat for the upcoming turn so the UI can telegraph enemy plans.
@@ -955,14 +1076,16 @@ function archetypeFor(templateId: string): AIArchetype {
 function computeFlankBonus(s: HexBattleState, self: EnemyUnit, candidate: Hex): number {
   const others = s.enemies.filter((e) => e.hp > 0 && e.id !== self.id);
   if (others.length === 0) return 0;
-  const dq = s.player.hex.q - candidate.q;
-  const dr = s.player.hex.r - candidate.r;
+  // Each enemy independently flanks its nearest hero.
+  const targetHex = nearestHero(s, candidate).hex;
+  const dq = targetHex.q - candidate.q;
+  const dr = targetHex.r - candidate.r;
   const len = Math.sqrt(dq * dq + dr * dr);
   if (len === 0) return 0;
   let avgQ = 0, avgR = 0;
   for (const o of others) {
-    const ox = s.player.hex.q - o.hex.q;
-    const oy = s.player.hex.r - o.hex.r;
+    const ox = targetHex.q - o.hex.q;
+    const oy = targetHex.r - o.hex.r;
     const ol = Math.sqrt(ox * ox + oy * oy);
     if (ol > 0) { avgQ += ox / ol; avgR += oy / ol; }
   }
@@ -973,7 +1096,9 @@ function computeFlankBonus(s: HexBattleState, self: EnemyUnit, candidate: Hex): 
 }
 
 function scoreMoveTile(s: HexBattleState, enemy: EnemyUnit, candidate: Hex, arch: AIArchetype): number {
-  const dist = hexDistance(candidate, s.player.hex);
+  // Each enemy scores against its nearest hero from the candidate position.
+  const targetHex = nearestHero(s, candidate).hex;
+  const dist = hexDistance(candidate, targetHex);
   const elevGain = elevationAt(s, candidate) - elevationAt(s, enemy.hex);
   const terrain = tileAt(s, candidate)?.terrain;
   if (terrain === 'hazard') return -1000;
@@ -1026,33 +1151,40 @@ function enemyTurn(s: HexBattleState, rng: RNG): void {
       s.log.push(`${enemy.name} is frozen and cannot act.`);
       continue;
     }
+    // Snapshot position before this enemy acts so the overlay can hold the sprite here
+    // until the 'move' effect fires, producing a sequential slide animation per enemy.
+    enemy.prevHex = { ...enemy.hex };
     enemyAct(s, enemy, rng, push);
     checkOutcome(s);
     if (s.status !== 'active') return;
 
-    // Overwatch reaction: fires once on the first enemy that ends its move in the player's
-    // attack reach. The stance clears after the shot regardless of whether it kills.
-    if (s.player.overwatch && enemy.hp > 0 && inAttackReach(s, enemy.hex)) {
-      s.log.push(`Overwatch! You snap a reaction shot at ${enemy.name}.`);
-      resolvePlayerStrike(s, enemy, rng);
-      s.player.overwatch = false;
+    // Overwatch reactions: any living hero with overwatch armed fires once against the first
+    // enemy that ends its move within weapon reach. Stance clears after the shot.
+    for (const hero of livingHeroes(s)) {
+      if (!hero.overwatch || !inAttackReachFor(s, hero, enemy.hex)) continue;
+      const heroVerb = hero.name ? `${hero.name} snaps` : 'You snap';
+      s.log.push(`Overwatch! ${heroVerb} a reaction shot at ${enemy.name}.`);
+      resolvePlayerStrike(s, hero, enemy, rng);
+      hero.overwatch = false;
       checkOutcome(s);
       if (s.status !== 'active') return;
     }
   }
 }
 
-/** Range at which `enemy` can strike the player, accounting for height (ranged foes only). */
-function enemyEffectiveRange(s: HexBattleState, enemy: EnemyUnit): number {
+/** Range at which `enemy` can strike its nearest hero, accounting for height (ranged foes only). */
+function enemyEffectiveRange(s: HexBattleState, enemy: EnemyUnit, target?: PlayerUnit): number {
   if (enemy.range <= 1) return 1;
-  const dz = elevationAt(s, enemy.hex) - elevationAt(s, s.player.hex);
+  const t = target ?? nearestHero(s, enemy.hex);
+  const dz = elevationAt(s, enemy.hex) - elevationAt(s, t.hex);
   return enemy.range + heightRangeBonus(dz);
 }
 
 function enemyInRange(s: HexBattleState, enemy: EnemyUnit): boolean {
-  const dist = hexDistance(enemy.hex, s.player.hex);
-  if (dist > enemyEffectiveRange(s, enemy)) return false;
-  return enemy.range <= 1 || hasLineOfSight(s, enemy.hex, s.player.hex);
+  const target = nearestHero(s, enemy.hex);
+  const dist = hexDistance(enemy.hex, target.hex);
+  if (dist > enemyEffectiveRange(s, enemy, target)) return false;
+  return enemy.range <= 1 || hasLineOfSight(s, enemy.hex, target.hex);
 }
 
 function enemyAct(s: HexBattleState, enemy: EnemyUnit, rng: RNG, push: ReturnType<typeof effectPusher>): void {
@@ -1065,6 +1197,9 @@ function enemyAct(s: HexBattleState, enemy: EnemyUnit, rng: RNG, push: ReturnTyp
   }
   const bestHex = bestMoveFor(s, enemy);
   if (!hexEquals(bestHex, enemy.hex)) {
+    // Emit a 'move' effect before mutating hex — the overlay will hold the sprite at
+    // prevHex until this effect fires, then slide it to bestHex (staggered per-enemy).
+    push('move', enemy.hex, bestHex, MOVE_ANIM_MS, enemy.id);
     enemy.hex = { ...bestHex };
   } else {
     s.log.push(`${enemy.name} holds its ground.`);
@@ -1073,22 +1208,26 @@ function enemyAct(s: HexBattleState, enemy: EnemyUnit, rng: RNG, push: ReturnTyp
 }
 
 function enemyAttack(s: HexBattleState, enemy: EnemyUnit, rng: RNG, push: ReturnType<typeof effectPusher>): void {
-  push(enemy.range > 1 ? 'arrow' : 'melee', enemy.hex, s.player.hex);
+  // Each enemy independently targets its nearest living hero.
+  const target = nearestHero(s, enemy.hex);
+  push(enemy.range > 1 ? 'arrow' : 'melee', enemy.hex, target.hex);
   if (hasStatus(enemy, 'blind') && rng() < 0.4) {
     s.log.push(`${enemy.name} is blinded and misses!`);
     return;
   }
-  if (rng() < s.player.dodge) {
-    s.log.push(`You dodge ${enemy.name}'s attack!`);
+  const dodgeLabel = target.name ?? 'You';
+  const dodgeVerb = target.name ? 'dodges' : 'dodge';
+  if (rng() < target.dodge) {
+    s.log.push(`${dodgeLabel} ${dodgeVerb} ${enemy.name}'s attack!`);
     return;
   }
 
   const move = pickMove(enemy.moveset, rng);
   const kind = move?.kind ?? 'attack';
-  const dz = elevationAt(s, enemy.hex) - elevationAt(s, s.player.hex);
+  const dz = elevationAt(s, enemy.hex) - elevationAt(s, target.hex);
   const hMult = heightDamageMult(dz);
-  const mit = (enemy.attackSchool === 'magic' ? s.player.ward : s.player.defense) + coverAt(s, s.player.hex);
-  const bless = blessFlat(s.player);
+  const mit = (enemy.attackSchool === 'magic' ? target.ward : target.defense) + coverAt(s, target.hex);
+  const bless = blessFlat(target);
 
   if (kind === 'guard') {
     enemy.guardBonus = move?.bonus ?? 4;
@@ -1107,25 +1246,26 @@ function enemyAttack(s: HexBattleState, enemy: EnemyUnit, rng: RNG, push: Return
     totalDealt += Math.round(dmg);
   }
 
-  s.player.hp -= totalDealt;
-  s.effects.push({ id: s.seq++, kind: 'floater', from: s.player.hex, to: s.player.hex, startedAtMs: EFFECT_STAGGER_MS + 60, durationMs: 900, label: `-${totalDealt}`, color: 'dmg-player' });
+  target.hp -= totalDealt;
+  s.effects.push({ id: s.seq++, kind: 'floater', from: target.hex, to: target.hex, startedAtMs: EFFECT_STAGGER_MS + 60, durationMs: 900, label: `-${totalDealt}`, color: 'dmg-player' });
 
+  const targetLabel = target.name ?? 'you';
   if (kind === 'drain') {
     const healed = Math.round(totalDealt * (move?.drainRatio ?? 0.5));
     enemy.hp = Math.min(enemy.maxHp, enemy.hp + healed);
-    s.log.push(`${enemy.name} ${move?.label ?? 'drains your life'} for ${totalDealt}${healed > 0 ? `, healing ${healed}` : ''}.`);
+    s.log.push(`${enemy.name} ${move?.label ?? `drains ${targetLabel}'s life`} for ${totalDealt}${healed > 0 ? `, healing ${healed}` : ''}.`);
   } else if (kind === 'inflict') {
     if (move?.inflictKey) {
-      applyUnitStatus(s.player.statuses, { key: move.inflictKey as StatusKey, turns: move.inflictTurns ?? 2, magnitude: move.inflictMag ?? 1 });
-      s.effects.push({ id: s.seq++, kind: 'floater', from: s.player.hex, to: s.player.hex, startedAtMs: EFFECT_STAGGER_MS * 2, durationMs: 800, label: move.inflictKey, color: 'status' });
+      applyUnitStatus(target.statuses, { key: move.inflictKey as StatusKey, turns: move.inflictTurns ?? 2, magnitude: move.inflictMag ?? 1 });
+      s.effects.push({ id: s.seq++, kind: 'floater', from: target.hex, to: target.hex, startedAtMs: EFFECT_STAGGER_MS * 2, durationMs: 800, label: move.inflictKey, color: 'status' });
     }
-    s.log.push(`${enemy.name} ${move?.label ?? 'strikes you'} for ${totalDealt}.`);
+    s.log.push(`${enemy.name} ${move?.label ?? `strikes ${targetLabel}`} for ${totalDealt}.`);
   } else if (kind === 'heavy') {
     s.log.push(`${enemy.name} ${move?.label ?? 'lands a heavy blow'} for ${totalDealt}!`);
   } else if (kind === 'multi' && hits > 1) {
     s.log.push(`${enemy.name} ${move?.label ?? 'attacks rapidly'} for ${totalDealt} (${hits} hits).`);
   } else {
-    s.log.push(`${enemy.name} hits you for ${totalDealt}.`);
+    s.log.push(`${enemy.name} hits ${targetLabel} for ${totalDealt}.`);
   }
 }
 
@@ -1146,16 +1286,23 @@ function checkOutcome(s: HexBattleState): void {
         s.log.push('Beacon held! Bonus gold awarded.');
       }
     }
-  } else if (s.player.hp <= 0) {
-    s.player.hp = 0;
-    s.status = 'lost';
+  } else {
+    const alive = livingHeroes(s);
+    if (alive.length === 0) {
+      // All heroes are down — defeat.
+      s.player.hp = 0;
+      s.status = 'lost';
+    } else if (s.player.hp <= 0) {
+      // Active-hero pointer fell in co-op; redirect to the nearest living ally.
+      s.player = alive[0];
+      if (alive[0].id !== undefined) s.activeHeroId = alive[0].id;
+    }
   }
 }
 
 // --- Enemy intent + threat zone (pure, used for UI telegraph and danger overlay) ----------------
 
 export function planEnemyIntents(state: HexBattleState): EnemyIntent[] {
-  const pz = elevationAt(state, state.player.hex);
   return state.enemies
     .filter((e) => e.hp > 0)
     .map((enemy) => {
@@ -1163,10 +1310,13 @@ export function planEnemyIntents(state: HexBattleState): EnemyIntent[] {
         return { enemyId: enemy.id, moveTo: enemy.hex, willAttack: false, attackLabel: 'frozen in place', attackIcon: '❄️' };
       }
       const moveTo = bestMoveFor(state, enemy);
+      // Each enemy independently targets its nearest living hero.
+      const target = nearestHero(state, moveTo);
       const ez = elevationAt(state, moveTo);
+      const pz = elevationAt(state, target.hex);
       const effRange = enemy.range <= 1 ? 1 : enemy.range + heightRangeBonus(ez - pz);
-      const willAttack = hexDistance(moveTo, state.player.hex) <= effRange &&
-        (enemy.range <= 1 || hasLineOfSight(state, moveTo, state.player.hex));
+      const willAttack = hexDistance(moveTo, target.hex) <= effRange &&
+        (enemy.range <= 1 || hasLineOfSight(state, moveTo, target.hex));
       const move = enemy.moveset ? mostLikelyMove(enemy.moveset) : null;
       return {
         enemyId: enemy.id,
@@ -1201,10 +1351,21 @@ export function computeEnemyThreat(state: HexBattleState): Hex[] {
 }
 
 // --- Generation ---------------------------------------------------------------------------------
+export interface HeroOpts {
+  fighter: Fighter;
+  ag: number;
+  knownSpells: string[];
+  id: string;
+  name?: string;
+}
+
 export interface GenerateOpts {
   radius?: number;
   enemyCount?: number;
   rng?: RNG;
+  /** Co-op hero roster. When provided, overrides the `fighter` / `ag` / `knownSpells` arguments
+   *  and generates spawn tiles for all heroes. Enemy count is scaled by hero count. */
+  heroes?: HeroOpts[];
 }
 
 /** Glyph shown on each terrain kind (consumed by the overlay). */
@@ -1216,7 +1377,26 @@ export const TERRAIN_ICONS: Record<TerrainKind, string> = {
   blocked: '🪨',
 };
 
-/** Build a single self-contained skirmish: a layered board + the player vs scaled foes. */
+/**
+ * Candidate hero spawn positions along the near (bottom) edge, ordered by preference.
+ * Generated for a given radius so each stays on the axial board
+ * (`max(|q|, |r|, |-q-r|) <= radius`).
+ */
+function heroSpawnCandidates(radius: number): Hex[] {
+  const candidates: Hex[] = [
+    { q: 0,  r: radius },      // center-bottom (always valid)
+    { q: -1, r: radius },      // left of center (valid when radius >= 1)
+    { q: 0,  r: radius - 1 }, // one row up from center
+    { q: -1, r: radius - 1 }, // up-left
+    { q: -2, r: radius },      // further left (valid when radius >= 2)
+    { q: 1,  r: radius - 1 }, // up-right (max(1, r-1, r-2) — valid for radius >= 2)
+  ];
+  return candidates.filter(
+    (h) => Math.max(Math.abs(h.q), Math.abs(h.r), Math.abs(-h.q - h.r)) <= radius,
+  );
+}
+
+/** Build a single self-contained skirmish: a layered board + the hero(es) vs scaled foes. */
 export function generateSkirmish(
   fighter: Fighter,
   ag: number,
@@ -1225,31 +1405,48 @@ export function generateSkirmish(
   opts: GenerateOpts = {},
 ): HexBattleState {
   const rng = opts.rng ?? Math.random;
-  const radius = opts.radius ?? TACTICS_BOARD_RADIUS;
-  const board = hexBoard(radius);
-  const playerSpawn: Hex = { q: 0, r: radius };
 
-  // Bigger boards spawn more foes so they don't feel sparse (still scaled by character tier).
+  // Build the hero roster: use opts.heroes if provided (co-op), otherwise a single hero.
+  const heroes: HeroOpts[] = opts.heroes ?? [{ fighter, ag, knownSpells, id: 'p0' }];
+  const heroCount = heroes.length;
+
+  // Expand board radius for co-op so it isn't cramped.
+  const baseRadius = opts.radius ?? TACTICS_BOARD_RADIUS;
+  const radius = heroCount > 1 ? Math.max(baseRadius, baseRadius + (heroCount - 1)) : baseRadius;
+  const board = hexBoard(radius);
+
+  // Assign hero spawn positions near the bottom edge (each must be distinct and on-board).
+  const spawnCandidates = heroSpawnCandidates(radius);
+  const heroSpawns: Hex[] = heroes.map((_, i) => spawnCandidates[Math.min(i, spawnCandidates.length - 1)]);
+
+  // Enemy count scales with tier, board size, AND number of heroes.
   const sizeBonus = radius - 3 + Math.floor((radius - 3) / 2); // r3→0, r4→1, r6→4
-  const enemyCount = clamp(opts.enemyCount ?? 2 + Math.floor(tier / 5) + sizeBonus, 2, 8);
+  const heroScale = heroCount > 1 ? heroCount : 1;
+  const enemyCount = clamp(
+    opts.enemyCount ?? Math.round((2 + Math.floor(tier / 5) + sizeBonus) * heroScale),
+    2,
+    8 * heroScale,
+  );
   const enemyPool = Object.keys(ENEMIES);
+
+  // Use the first hero's spawn as the BFS origin for connectivity/tile generation.
+  const primarySpawn = heroSpawns[0];
 
   // Retry generation until the board is connected and we can place every unit.
   let tiles: Record<string, Tile> = {};
   let enemySpawns: Hex[] = [];
   for (let attempt = 0; attempt < 12; attempt++) {
-    tiles = genTiles(board, playerSpawn, rng, attempt >= 6 /* drop walls on late attempts */);
-    enemySpawns = pickEnemySpawns(tiles, board, playerSpawn, radius, enemyCount);
-    if (enemySpawns.length === enemyCount && spawnsConnected(tiles, playerSpawn, enemySpawns)) break;
+    tiles = genTiles(board, primarySpawn, rng, attempt >= 6 /* drop walls on late attempts */);
+    enemySpawns = pickEnemySpawns(tiles, board, primarySpawn, radius, enemyCount);
+    if (enemySpawns.length === enemyCount && spawnsConnected(tiles, primarySpawn, enemySpawns)) break;
   }
-  // Force spawn tiles to be plain, standable floor.
-  for (const h of [playerSpawn, ...enemySpawns]) {
-    tiles[hexKey(h)] = { hex: h, elevation: hexEquals(h, playerSpawn) ? 0 : Math.min(1, elevationOf(tiles, h)), terrain: 'floor' };
+  // Force all spawn tiles to be plain, standable floor.
+  for (const h of [...heroSpawns, ...enemySpawns]) {
+    tiles[hexKey(h)] = { hex: h, elevation: 0, terrain: 'floor' };
   }
   // Lower any tile that would tower over the tiles behind it (keeps the iso view readable).
   clampOcclusion(tiles, board);
 
-  const { c, weapon } = fighter;
   const scale = 1 + (tier - 1) * 0.07;
   let seq = 1;
   const enemies: EnemyUnit[] = enemySpawns.map((hex) => {
@@ -1265,6 +1462,7 @@ export function generateSkirmish(
       icon: unitIcon,
       aiArchetype: archetypeFor(tmpl.id),
       hex: { ...hex },
+      prevHex: { ...hex },
       hp,
       maxHp: hp,
       attack: Math.max(1, Math.round(tmpl.attack * scale)),
@@ -1282,56 +1480,80 @@ export function generateSkirmish(
     } satisfies EnemyUnit;
   });
 
-  const player: PlayerUnit = {
-    hex: { ...playerSpawn },
-    hp: c.maxHp,
-    maxHp: c.maxHp,
-    mp: c.maxMp,
-    maxMp: c.maxMp,
-    sta: c.maxSta,
-    maxSta: c.maxSta,
-    movesLeft: moveTilesFor(ag),
-    hasActed: false,
-    overwatch: false,
-    ag,
-    meleePower: c.meleePower,
-    rangedPower: c.rangedPower,
-    damageSpell: c.damageSpell,
-    supportSpell: c.supportSpell,
-    illusionPower: c.illusionPower,
-    defense: c.defense,
-    ward: c.ward,
-    dodge: c.dodge,
-    statuses: [],
+  // Build player unit(s) — one per hero in the roster.
+  const buildHeroUnit = (h: HeroOpts, spawnHex: Hex): PlayerUnit => {
+    const { c, weapon: w } = h.fighter;
+    const heroSpells = [...new Set([...TACTICS_GRANTED_SPELLS, ...h.knownSpells])].filter((k) => {
+      const m = getSpell(k)?.mechanic;
+      return !m || m === 'blink' || m === 'push' || m === 'cleave';
+    });
+    return {
+      id: h.id,
+      name: h.name,
+      hex: { ...spawnHex },
+      hp: c.maxHp,
+      maxHp: c.maxHp,
+      mp: c.maxMp,
+      maxMp: c.maxMp,
+      sta: c.maxSta,
+      maxSta: c.maxSta,
+      movesLeft: moveTilesFor(h.ag),
+      hasActed: false,
+      overwatch: false,
+      ag: h.ag,
+      meleePower: c.meleePower,
+      rangedPower: c.rangedPower,
+      damageSpell: c.damageSpell,
+      supportSpell: c.supportSpell,
+      illusionPower: c.illusionPower,
+      defense: c.defense,
+      ward: c.ward,
+      dodge: c.dodge,
+      statuses: [],
+      knownSpells: heroSpells,
+      weapon: w,
+    };
   };
+
+  const players: PlayerUnit[] = heroes.map((h, i) => buildHeroUnit(h, heroSpawns[i]));
+  // s.player always points to the active (first) hero so existing single-player code paths
+  // continue to work. clone() will maintain this alias by reference.
+  const activeHeroId = players[0].id;
+  const player = players[0];
 
   // --- Optional secondary objective (~65% of matches) -------------------------------------------
   const objective: TacticsObjective | null = rng() < 0.65
-    ? rollObjective(tiles, board, playerSpawn, enemySpawns, enemies.length, radius, rng)
+    ? rollObjective(tiles, board, primarySpawn, enemySpawns, enemies.length, radius, rng)
     : null;
   const objectiveMsg = objective ? ` Bonus objective: ${objective.label}.` : '';
+  const heroCountMsg = heroCount > 1 ? `${heroCount} heroes face ` : '';
+
+  // State-level knownSpells/weapon stay for backward compatibility (solo, persisted saves).
+  // They are set from the first/active hero so the overlay still works before
+  // the per-hero fields are read.
+  const firstHeroSpells = players[0].knownSpells ?? [];
+  const firstHeroWeapon = players[0].weapon ?? heroes[0].fighter.weapon;
 
   const s: HexBattleState = {
     radius,
     tiles,
     player,
+    players: heroCount > 1 ? players : undefined,
+    activeHeroId: heroCount > 1 ? activeHeroId : undefined,
     enemies,
     turn: 'player',
     selected: null,
     reachable: [],
     targetable: [],
     effects: [],
-    log: [`A skirmish begins — ${enemies.length} foes stand against you.${objectiveMsg}`],
+    log: [`A skirmish begins — ${heroCountMsg}${enemies.length} foe${enemies.length === 1 ? '' : 's'}.${objectiveMsg}`],
     status: 'active',
     tier,
     // Arena-only mechanics (runes, ring-of-fire, old teleport) aren't modelled on the tactics grid.
     // The new positional mechanics (blink, push, cleave) ARE always available — they form the
     // core of the positioning system regardless of what spellbooks the player has found.
-    knownSpells: [...new Set([...TACTICS_GRANTED_SPELLS, ...knownSpells])].filter((k) => {
-      const m = getSpell(k)?.mechanic;
-      return !m || m === 'blink' || m === 'push' || m === 'cleave';
-    }),
-    weapon,
+    knownSpells: firstHeroSpells,
+    weapon: firstHeroWeapon,
     seq,
     threatHexes: [],
     intentPlan: [],
@@ -1399,10 +1621,6 @@ function rollObjective(
     desc: 'Win without dropping below 50% HP.',
     target: 50, progress: 100, complete: false, failed: false,
   };
-}
-
-function elevationOf(tiles: Record<string, Tile>, h: Hex): number {
-  return tiles[hexKey(h)]?.elevation ?? 0;
 }
 
 /**

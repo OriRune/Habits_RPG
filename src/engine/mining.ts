@@ -221,6 +221,8 @@ export interface MineState {
   moveIntervalMs: number;
   /** Agility level snapshot — preserved across floors. */
   agLevel: number;
+  /** Position of the descent shaft on the current floor — for the HUD directional indicator. */
+  shaftPos: { r: number; c: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -650,6 +652,7 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
     // Phase 5: boons
     activeBoons,
     pendingBoonChoice: null,
+    shaftPos: { r: shaftR, c: shaftC },
   };
 }
 

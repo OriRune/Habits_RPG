@@ -5,6 +5,7 @@ import { useState, useCallback } from 'react';
 import { useGameStore } from '@/store/useGameStore';
 import { getTrial, scoreToStars, trialReward, type TrialId } from '@/engine/trials/trials';
 import { marchStartStamina, MARCH_START_STA } from '@/engine/trials/longMarch';
+import { lockTolerance, PICK_BUDGET, NUM_LOCKS } from '@/engine/trials/lockpicking';
 import { resume as sfxResume } from '@/lib/sfx';
 import { getStat } from '@/engine/stats';
 import { Button } from '@/components/ui/Button';
@@ -13,7 +14,7 @@ import { RooftopChase } from './games/RooftopChase';
 import { ArmoryBreak } from './games/ArmoryBreak';
 import { LongMarch } from './games/LongMarch';
 import { SpiritGrove } from './games/SpiritGrove';
-import { RoyalCourt } from './games/RoyalCourt';
+import { RoyalCourt, type CourtChoiceRecord } from './games/RoyalCourt';
 import { AncientLibrary } from './games/AncientLibrary';
 import { LastStand } from './games/LastStand';
 
@@ -47,24 +48,33 @@ function Stars({ count }: { count: 1 | 2 | 3 }) {
   );
 }
 
-function GameComponent({ trialId, onFinish, enLevel }: { trialId: TrialId; onFinish: (s: number) => void; enLevel: number }) {
+function GameComponent({
+  trialId,
+  onFinish,
+  enLevel,
+}: {
+  trialId: TrialId;
+  onFinish: (s: number, history?: CourtChoiceRecord[]) => void;
+  enLevel: number;
+}) {
   switch (trialId) {
-    case 'lockpicking': return <Lockpicking onFinish={onFinish} />;
-    case 'rooftop_chase': return <RooftopChase onFinish={onFinish} />;
-    case 'armory_break': return <ArmoryBreak onFinish={onFinish} />;
-    case 'long_march': return <LongMarch enLevel={enLevel} onFinish={onFinish} />;
-    case 'spirit_grove': return <SpiritGrove onFinish={onFinish} />;
-    case 'royal_court': return <RoyalCourt onFinish={onFinish} />;
+    case 'lockpicking':     return <Lockpicking onFinish={onFinish} />;
+    case 'rooftop_chase':   return <RooftopChase onFinish={onFinish} />;
+    case 'armory_break':    return <ArmoryBreak onFinish={onFinish} />;
+    case 'long_march':      return <LongMarch enLevel={enLevel} onFinish={onFinish} />;
+    case 'spirit_grove':    return <SpiritGrove onFinish={onFinish} />;
+    case 'royal_court':     return <RoyalCourt onFinish={onFinish} />;
     case 'ancient_library': return <AncientLibrary onFinish={onFinish} />;
-    case 'last_stand': return <LastStand onFinish={onFinish} />;
+    case 'last_stand':      return <LastStand onFinish={onFinish} />;
   }
 }
 
 export function TrialModal({ trialId, onClose }: TrialModalProps) {
   const def = getTrial(trialId);
   const stat = getStat(def.stat);
-  const level = useGameStore((s) => s.character.level);
+  const level   = useGameStore((s) => s.character.level);
   const enLevel = useGameStore((s) => s.character.statLevels?.EN ?? 0);
+  const dxLevel = useGameStore((s) => s.character.statLevels?.DX ?? 0);
   const bestTrialScore = useGameStore((s) => s.bestTrialScore);
   const completeTrial = useGameStore((s) => s.completeTrial);
 
@@ -74,11 +84,14 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
   const [score, setScore] = useState(0);
   const [claimed, setClaimed] = useState(false);
   const [isNewBest, setIsNewBest] = useState(false);
+  const [confirmingClose, setConfirmingClose] = useState(false);
+  const [courtHistory, setCourtHistory] = useState<CourtChoiceRecord[]>([]);
 
-  const handleFinish = useCallback((s: number) => {
+  const handleFinish = useCallback((s: number, history?: CourtChoiceRecord[]) => {
     completeTrial(trialId, s);
     setScore(s);
     setIsNewBest(s > prevBest);
+    if (history && history.length > 0) setCourtHistory(history);
     setStage('result');
   }, [completeTrial, trialId, prevBest]);
 
@@ -100,13 +113,31 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
             <div className="text-xs font-display" style={{ color: stat.color }}>{stat.name} Trial</div>
           </div>
         </div>
-        <button
-          onClick={onClose}
-          className="rounded p-1 text-parchment-300 hover:text-parchment-100"
-          aria-label="Close"
-        >
-          ✕
-        </button>
+        {confirmingClose ? (
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-display text-parchment-300">Abandon run?</span>
+            <button
+              onClick={onClose}
+              className="rounded px-2 py-0.5 text-xs font-display text-red-400 hover:text-red-300 border border-red-400/40 hover:border-red-300/60"
+            >
+              Yes
+            </button>
+            <button
+              onClick={() => setConfirmingClose(false)}
+              className="rounded px-2 py-0.5 text-xs font-display text-parchment-300 hover:text-parchment-100 border border-parchment-400/30 hover:border-parchment-300/50"
+            >
+              No
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => stage === 'playing' ? setConfirmingClose(true) : onClose()}
+            className="rounded p-1 text-parchment-300 hover:text-parchment-100"
+            aria-label="Close"
+          >
+            ✕
+          </button>
+        )}
       </div>
 
       {/* Body — rooftop chase uses a wider container to accommodate VIEW_W = 500 */}
@@ -129,11 +160,34 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
                     </div>
                   );
                 })()}
+                {trialId === 'lockpicking' && (() => {
+                  const { toleranceDeg, openToleranceDeg } = lockTolerance(NUM_LOCKS - 1, level, dxLevel);
+                  const dxBonus = dxLevel > 0;
+                  return (
+                    <div className="rounded border border-amber-600/30 bg-amber-50/20 px-3 py-2 text-xs font-display text-ink-muted">
+                      <span className="font-bold text-amber-700">Dexterity Lv.{dxLevel}</span>
+                      {dxBonus
+                        ? ` — widens the Adept lock's turn zone to ${toleranceDeg.toFixed(1)}° (open zone ${openToleranceDeg.toFixed(1)}°).`
+                        : ' — raising DX widens the sweet-spot zones for all locks.'}
+                    </div>
+                  );
+                })()}
                 <div className="flex items-center gap-2 pt-1">
                   <div className="h-2 flex-1 rounded-full border border-gold-deep/20 bg-parchment-300/50" />
                   <span className="text-xs font-display text-ink-muted">Daily free attempt — stat XP + gold reward</span>
                   <div className="h-2 flex-1 rounded-full border border-gold-deep/20 bg-parchment-300/50" />
                 </div>
+                {prevBest > 0 && (
+                  <div className="flex items-center gap-2 border-t border-gold-deep/20 pt-2">
+                    <span className="text-xs text-ink-muted font-display">Best:</span>
+                    <div className="flex gap-0.5 text-sm">
+                      {Array.from({ length: 3 }, (_, i) => (
+                        <span key={i} className={i < scoreToStars(prevBest) ? 'text-gold-bright' : 'text-parchment-400/40'}>★</span>
+                      ))}
+                    </div>
+                    <span className="text-xs font-bold text-ink">{Math.round(prevBest * 100)}%</span>
+                  </div>
+                )}
               </div>
               <Button
                 onClick={() => {
@@ -188,7 +242,37 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
                       </span>
                     </div>
                   ))}
+                  {/* Picks saved — derived from score using the linear formula score = 0.5 + 0.5 * picks / budget */}
+                  {trialId === 'lockpicking' && score >= 0.5 && (() => {
+                    const saved = Math.round((score - 0.5) * 2 * PICK_BUDGET);
+                    return (
+                      <div className="flex items-center justify-between text-sm text-ink border-t border-gold-deep/20 pt-1 mt-1">
+                        <span>Picks saved</span>
+                        <span className="font-bold text-amber-700">{saved} / {PICK_BUDGET} 🗝️</span>
+                      </div>
+                    );
+                  })()}
                 </div>
+
+                {/* Per-exchange recap — only rendered after a Royal Court run */}
+                {courtHistory.length > 0 && (
+                  <div className="rounded-md border border-gold-deep/20 bg-parchment-100/60 p-3 space-y-2">
+                    <p className="font-display text-xs font-bold text-ink-muted uppercase tracking-wider">Exchange Recap</p>
+                    {courtHistory.map((record, i) => (
+                      <div key={i} className="space-y-0.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-display font-semibold text-ink-muted truncate">{record.npc}</span>
+                          <span className={`shrink-0 text-[11px] font-bold ${
+                            record.favorDelta > 0 ? 'text-emerald-700' : record.favorDelta < 0 ? 'text-rose-600' : 'text-ink-muted'
+                          }`}>
+                            {record.favorDelta > 0 ? `+${record.favorDelta}` : record.favorDelta === 0 ? '±0' : record.favorDelta}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-ink-muted italic leading-snug line-clamp-2">{record.label}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {!claimed ? (

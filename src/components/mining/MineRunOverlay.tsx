@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Heart, Zap, Coins, ChevronsDown, LogOut, Gem, Sparkles } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { useMiningLoop } from '@/hooks/useMiningLoop';
-import { canDescend, facedCell, type MineTile, type MineMonster } from '@/engine/mining';
+import { canDescend, facedCell, MINE_DEATH_KEEP, type MineTile, type MineMonster } from '@/engine/mining';
 import { cameraWindow, VIEW } from '@/engine/crawl';
 import { bandForFloor, type CrawlPalette } from '@/engine/crawlBiomes';
 import { useSmoothCamera, type SmoothCameraLayout } from '@/hooks/useSmoothCamera';
@@ -146,6 +146,21 @@ export function MineRunOverlay() {
     movers: [], snapKey: 0,
   });
   const { shake } = useSmoothCamera(worldRef, playerRef, moverRefs, layoutRef, { CELL, VIEW });
+
+  // Charge progress indicator — read from the hook's ref every rAF frame.
+  const [chargeSwings, setChargeSwings] = useState(0);
+  const [chargeActive, setChargeActive] = useState(false);
+  useEffect(() => {
+    const ref = controls.chargeRef;
+    let rafId: number;
+    const tick = () => {
+      setChargeActive(ref.current.active);
+      setChargeSwings(ref.current.swings);
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Moving flag — true for ~250 ms after any player step
   const [moving, setMoving] = useState(false);
@@ -333,6 +348,22 @@ export function MineRunOverlay() {
   const { r0, c0 } = cameraWindow(mine.player, mine.rows, mine.cols);
   const baseR0 = Math.max(0, r0 - MARGIN);
   const baseC0 = Math.max(0, c0 - MARGIN);
+
+  // Shaft directional indicator — show an arrow when the shaft is off-screen.
+  const shaftDir = (() => {
+    const sp = mine.shaftPos;
+    if (!sp) return null;
+    const inViewport = sp.r >= r0 && sp.r < r0 + VIEW && sp.c >= c0 && sp.c < c0 + VIEW;
+    if (inViewport) return null;
+    const dr = sp.r - mine.player.r;
+    const dc = sp.c - mine.player.c;
+    if (Math.abs(dr) > Math.abs(dc) * 1.5) return dr > 0 ? '↓' : '↑';
+    if (Math.abs(dc) > Math.abs(dr) * 1.5) return dc > 0 ? '→' : '←';
+    if (dr > 0 && dc > 0) return '↘';
+    if (dr > 0 && dc < 0) return '↙';
+    if (dr < 0 && dc > 0) return '↗';
+    return '↖';
+  })();
 
   const inView = (mr: number, mc: number) => {
     const vi = mr - baseR0;

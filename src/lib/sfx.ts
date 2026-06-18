@@ -20,6 +20,11 @@
 // Adding cues: extend SfxCue and add a matching entry to _CUES.
 
 export type SfxCue =
+  // ── Ancient Library ────────────────────────────────
+  /** Two-note ascending chime — a round of glyphs memorised correctly. */
+  | 'libraryCorrect'
+  /** Short descending buzz — wrong glyph tapped. */
+  | 'libraryWrong'
   // ── Spirit Grove ───────────────────────────────────
   /** Soft ascending shimmer — correct blessing chosen. */
   | 'groveCorrect'
@@ -70,7 +75,44 @@ export type SfxCue =
   /** Dull thud — lock attempt missed. */
   | 'armoryLockMiss'
   /** Short triumphant fanfare — all locks cracked. */
-  | 'armoryFinish';
+  | 'armoryFinish'
+  // ── Long March ────────────────────────────────────
+  /** Soft exhale — Rest on a non-spring tile. */
+  | 'marchRest'
+  /** Light footstep — Walk on a non-spring tile. */
+  | 'marchWalk'
+  /** Heavy crunch — Push on a non-spring tile. */
+  | 'marchPush'
+  /** Bright water chime — any pace on a Mountain Spring tile. */
+  | 'marchSpring'
+  /** Somber descending tone — run ends from exhaustion. */
+  | 'marchCollapse'
+  /** Ascending fanfare — all 16 tiles completed. */
+  | 'marchComplete'
+  // ── Arena ──────────────────────────────────────────
+  /** Quick sidestep whoosh — successful dodge. */
+  | 'arenaDodge'
+  /** Deep roar swell — boss phase transition. */
+  | 'arenaBossPhase'
+  // ── Royal Court ────────────────────────────────────
+  /** Gentle ascending chime — a positive response earns favour. */
+  | 'courtFavor'
+  /** Soft descending tone — a poor response loses favour. */
+  | 'courtDisfavor'
+  /** Regal four-note arpeggio — court session complete. */
+  | 'courtComplete'
+  /** Short die-clatter noise burst — Charisma gambit roll starting. */
+  | 'courtRoll'
+  // ── Last Stand ────────────────────────────────────────────────────────
+  /** Sharp metallic ring — shield parry lands cleanly. */
+  | 'lastStandBlock'
+  // ── Lockpicking ───────────────────────────────────────────────────────
+  /** Short metallic scrape — pick dragging against tumblers while jammed. */
+  | 'lockScrape'
+  /** Satisfying cylinder click — lock opens. */
+  | 'lockClick'
+  /** Sharp metallic snap — pick breaks under sustained torque. */
+  | 'lockSnap';
 
 // ── Module-level singletons ────────────────────────────────────────────────────
 
@@ -498,6 +540,171 @@ const _CUES: Record<SfxCue, (ctx: AudioContext) => void> = {
       osc.stop(t0 + 0.28);
     });
   },
+
+  // ── Long March ────────────────────────────────────────────────────────────
+
+  /** Soft exhale — Rest on a non-spring tile. Low filtered-noise decay. */
+  marchRest(ctx) {
+    _noise(ctx, 300, 110, 0.25, 0.13, 'lowpass', 0.6);
+    _osc(ctx, 'sine', 130, 82, 0.22, 0.07, 0.018);
+  },
+
+  /** Muffled footstep — Walk on a non-spring tile. */
+  marchWalk(ctx) {
+    _osc(ctx, 'triangle', 88, 36, 0.13, 0.28, 0.005);
+    _noise(ctx, 200, 75, 0.08, 0.11, 'bandpass', 0.9);
+  },
+
+  /** Heavier crunch — Push on a non-spring tile. */
+  marchPush(ctx) {
+    _osc(ctx, 'triangle', 68, 26, 0.19, 0.36, 0.004);
+    _noise(ctx, 360, 88, 0.15, 0.22, 'bandpass', 1.5);
+  },
+
+  /** Bright water droplet chime — any pace on a Mountain Spring tile. */
+  marchSpring(ctx) {
+    _osc(ctx, 'sine', 880, 1320, 0.24, 0.18, 0.010);
+    _osc(ctx, 'sine', 1320, 1980, 0.18, 0.10, 0.012);
+    _noise(ctx, 2200, 4400, 0.14, 0.10, 'highpass', 2.2);
+  },
+
+  /** Somber descending tone — run ends from exhaustion. */
+  marchCollapse(ctx) {
+    _osc(ctx, 'sawtooth', 230, 46, 0.50, 0.26, 0.030);
+    _noise(ctx, 380, 55, 0.44, 0.11, 'lowpass', 0.7);
+  },
+
+  /** Ascending arpeggio fanfare — all 16 tiles completed. */
+  marchComplete(ctx) {
+    const t = ctx.currentTime;
+    [330, 415, 523, 659, 880].forEach((freq, i) => {
+      const t0 = t + i * 0.08;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.linearRampToValueAtTime(0.28, t0 + 0.010);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.24);
+      osc.connect(gain);
+      gain.connect(_masterGain!);
+      osc.start(t0);
+      osc.stop(t0 + 0.30);
+    });
+  },
+
+  // ── Arena ──────────────────────────────────────────────────────────────────
+
+  /** Quick sidestep whoosh — player successfully evades an attack. */
+  arenaDodge(ctx) {
+    _noise(ctx, 700, 3200, 0.12, 0.22, 'bandpass', 3.2);
+    _osc(ctx, 'sine', 460, 760, 0.10, 0.16, 0.005);
+  },
+
+  /** Deep roar swell — boss enters a new phase. */
+  arenaBossPhase(ctx) {
+    _osc(ctx, 'sawtooth', 82, 40,  0.60, 0.32, 0.022);
+    _osc(ctx, 'sawtooth', 138, 70, 0.52, 0.20, 0.030);
+    _noise(ctx, 220, 58, 0.48, 0.22, 'lowpass', 0.5);
+    _osc(ctx, 'sine', 1100, 580,   0.38, 0.12, 0.010);
+  },
+
+  // ── Royal Court ──────────────────────────────────────────────────────────
+
+  /** Two ascending sine tones — a regal chime for earning favour. */
+  courtFavor(ctx) {
+    _osc(ctx, 'sine', 523, 784, 0.35, 0.16, 0.015);
+    _osc(ctx, 'sine', 1047, 1568, 0.28, 0.07, 0.018);
+  },
+
+  /** Soft descending triangle — quiet acknowledgment of a misstep. */
+  courtDisfavor(ctx) {
+    _osc(ctx, 'triangle', 330, 196, 0.28, 0.14, 0.012);
+    _noise(ctx, 200, 80, 0.18, 0.05, 'lowpass', 0.6);
+  },
+
+  /** Regal four-note ascending arpeggio — audience concluded. */
+  courtComplete(ctx) {
+    const t = ctx.currentTime;
+    [330, 415, 523, 659].forEach((freq, i) => {
+      const t0 = t + i * 0.10;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.linearRampToValueAtTime(0.26, t0 + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.28);
+      osc.connect(gain);
+      gain.connect(_masterGain!);
+      osc.start(t0);
+      osc.stop(t0 + 0.34);
+    });
+    // Sustained final note fades over 0.7 s.
+    const t0 = t + 4 * 0.10;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = 659;
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.linearRampToValueAtTime(0.20, t0 + 0.018);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.70);
+    osc.connect(gain);
+    gain.connect(_masterGain!);
+    osc.start(t0);
+    osc.stop(t0 + 0.76);
+  },
+
+  /** Short die-clatter — three filtered noise bursts, slightly offset, like a die tumbling to rest. */
+  courtRoll(ctx) {
+    _noise(ctx, 2200, 400, 0.08, 0.22, 'bandpass', 4.0);
+    _noise(ctx, 1800, 300, 0.07, 0.18, 'bandpass', 4.0);
+    _noise(ctx, 1400, 200, 0.06, 0.14, 'bandpass', 4.0);
+  },
+
+  // ── Ancient Library ──────────────────────────────────────────────────────
+
+  /** Soft two-note ascending chime — round complete. */
+  libraryCorrect(ctx) {
+    _osc(ctx, 'sine', 659, 880, 0.30, 0.16, 0.010);
+    _osc(ctx, 'sine', 880, 1320, 0.22, 0.08, 0.012);
+  },
+
+  /** Short descending buzz — wrong glyph tapped. */
+  libraryWrong(ctx) {
+    _osc(ctx, 'triangle', 280, 130, 0.28, 0.20, 0.012);
+    _noise(ctx, 240, 80, 0.20, 0.10, 'lowpass', 0.7);
+  },
+
+  // ── Last Stand ────────────────────────────────────────────────────────────
+
+  /** Sharp metallic shield-parry clang — triangle ring + sine harmonic + bandpass noise burst. */
+  lastStandBlock(ctx) {
+    _osc(ctx, 'triangle', 980, 420, 0.22, 0.42, 0.003);
+    _osc(ctx, 'sine', 1560, 680, 0.16, 0.22, 0.004);
+    _noise(ctx, 2800, 700, 0.14, 0.24, 'bandpass', 2.8);
+  },
+
+  // ── Lockpicking ──────────────────────────────────────────────────────
+
+  /** Short high-frequency scrape — pick grinding against tumblers while jammed. */
+  lockScrape(ctx) {
+    _noise(ctx, 2200, 700, 0.10, 0.12, 'bandpass', 4.0);
+    _osc(ctx, 'triangle', 220, 100, 0.08, 0.06, 0.004);
+  },
+
+  /** Satisfying mechanical click — cylinder turns and the lock opens. */
+  lockClick(ctx) {
+    _osc(ctx, 'triangle', 380, 160, 0.11, 0.38, 0.003);
+    _noise(ctx, 1400, 300, 0.08, 0.22, 'bandpass', 2.2);
+    _osc(ctx, 'sine', 760, 340, 0.14, 0.14, 0.002);
+  },
+
+  /** Sharp metallic crack — pick snaps under too much torque. */
+  lockSnap(ctx) {
+    _osc(ctx, 'square', 520, 110, 0.07, 0.48, 0.002);
+    _noise(ctx, 2600, 420, 0.06, 0.28, 'bandpass', 2.6);
+  },
 };
 
 // ── Public API ─────────────────────────────────────────────────────────────────
@@ -526,6 +733,17 @@ export function play(cue: SfxCue): void {
   const ctx = getCtx();
   if (ctx.state === 'suspended') return;
   _CUES[cue]?.(ctx);
+}
+
+/**
+ * Play a synthesized tone at an arbitrary frequency.
+ * Used by Ancient Library to play per-glyph notes without requiring a named cue per frequency.
+ */
+export function playNote(freq: number, durationMs = 200): void {
+  if (_muted) return;
+  const ctx = getCtx();
+  if (ctx.state === 'suspended') return;
+  _osc(ctx, 'sine', freq, freq * 0.94, durationMs / 1000, 0.18, 0.008);
 }
 
 /**

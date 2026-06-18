@@ -2,6 +2,7 @@
 // Navigate MARCH_TILES terrain tiles by choosing a pace for each tile.
 
 import { useState } from 'react';
+import { play as sfxPlay } from '@/lib/sfx';
 import {
   generateTerrain,
   marchStep,
@@ -67,12 +68,19 @@ export function LongMarch({ enLevel, onFinish }: LongMarchProps) {
       setDone(true);
       onFinish(marchScore(newTile, newDist));
     }
+
+    // Fire one SFX cue per step. End-state and spring take priority over pace.
+    if (finished && exhausted)       sfxPlay('marchCollapse');
+    else if (finished)               sfxPlay('marchComplete');
+    else if (tile.kind === 'spring') sfxPlay('marchSpring');
+    else if (pace === 'rest')        sfxPlay('marchRest');
+    else if (pace === 'walk')        sfxPlay('marchWalk');
+    else                             sfxPlay('marchPush');
   };
 
   const tile = terrain[tileIndex];
   const staminaPct = (stamina / startStamina) * 100;
   const isCritical = staminaPct <= 25;
-  const nextTile = terrain[tileIndex + 1];
 
   return (
     <div className="flex flex-col items-center gap-4 px-2">
@@ -88,6 +96,35 @@ export function LongMarch({ enLevel, onFinish }: LongMarchProps) {
             style={{ width: `${(tileIndex / MARCH_TILES) * 100}%` }}
           />
         </div>
+      </div>
+
+      {/* Terrain strip — completed tiles + current + next tile revealed; future = dots */}
+      <div className="w-full max-w-xs flex gap-0.5 overflow-x-auto">
+        {terrain.map((t, i) => {
+          const isCompleted = i < tileIndex;
+          const isCurrent = i === tileIndex && !done;
+          const isNext = i === tileIndex + 1 && !done;
+          return (
+            <div
+              key={i}
+              className={`flex-1 flex items-center justify-center h-5 rounded-sm text-[10px] leading-none ${
+                isCurrent
+                  ? 'ring-1 ring-gold-bright/70 bg-gold-bright/10'
+                  : ''
+              }`}
+            >
+              {isCompleted ? (
+                <span className="opacity-55">{t.emoji}</span>
+              ) : isCurrent ? (
+                <span>{t.emoji}</span>
+              ) : isNext ? (
+                <span className="opacity-40">{t.emoji}</span>
+              ) : (
+                <span className="text-ink-muted/40">·</span>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {/* Stamina bar */}
@@ -118,15 +155,6 @@ export function LongMarch({ enLevel, onFinish }: LongMarchProps) {
         >
           <div className="text-2xl">{tile.emoji}</div>
           <div className="font-display text-sm font-bold text-ink">{tile.label}</div>
-        </div>
-      )}
-
-      {/* Next tile preview */}
-      {!done && nextTile && (
-        <div className="flex items-center gap-2 text-xs text-ink-muted">
-          <span className="opacity-50">Next:</span>
-          <span className="opacity-60">{nextTile.emoji}</span>
-          <span className="opacity-50">{nextTile.label}</span>
         </div>
       )}
 

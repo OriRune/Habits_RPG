@@ -28,10 +28,12 @@ export interface ForestControlsApi {
   release: (dir: Dir) => void;
   /** Queue a single act (slash / gather). */
   act: () => void;
-  /** Queue a dash in the currently-faced direction. */
+  /** Queue a dash. Fires in the currently-held direction, or facing if nothing is held. */
   dash: () => void;
   /** Cast a spell by key (from ability bar buttons). */
   castSpell: (key: string) => void;
+  /** Charge progress 0–1; updated every rAF frame. Read imperatively in the overlay. */
+  chargeProgressRef: { readonly current: number };
 }
 
 /** Drives an active Wild Forest run. Mount once inside the run overlay. */
@@ -44,6 +46,8 @@ export function useForestLoop(): ForestControlsApi {
   // Charge tracking: timestamp when Space was first pressed (reset on each new press).
   const spaceDownAt = useRef<number | null>(null);
   const chargeConsumed = useRef(false);
+  // Exposed to the overlay so it can render a charge bar without React re-renders.
+  const chargeProgressRef = useRef(0);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -109,10 +113,16 @@ export function useForestLoop(): ForestControlsApi {
         spellQueue.current = null;
       }
 
-      // Dash — fires once on Shift press in the current facing direction.
+      // Dash — fires in the currently held direction, falling back to facing.
       if (dashQueued.current) {
         dashQueued.current = false;
-        const dir = lastDir.current ?? run.player.facing;
+        const heldDir =
+          lastDir.current && held.current.has(lastDir.current)
+            ? lastDir.current
+            : held.current.size > 0
+              ? [...held.current][0]
+              : null;
+        const dir = heldDir ?? run.player.facing;
         const cd = run.dashCooldownMs ?? DASH_BASE_CD_MS;
         const lastDash = run.lastDashMs ?? -cd;
         if (now - lastDash >= cd) {
@@ -158,6 +168,13 @@ export function useForestLoop(): ForestControlsApi {
           }
         }
       }
+
+      // Update charge progress ref each frame so the overlay can animate a charge bar.
+      const chargeDuration = effectiveChargeCount * ACT_INTERVAL_MS;
+      chargeProgressRef.current =
+        spaceDownAt.current !== null && !chargeConsumed.current
+          ? Math.min(1, (now - spaceDownAt.current) / chargeDuration)
+          : 0;
 
       if (actQueued.current && now - lastAct >= ACT_INTERVAL_MS) {
         actQueued.current = false;
@@ -242,5 +259,6 @@ export function useForestLoop(): ForestControlsApi {
     castSpell: (key) => {
       spellQueue.current = key;
     },
+    chargeProgressRef,
   };
 }

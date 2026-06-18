@@ -165,6 +165,12 @@ export const FOREST_BEASTS: Record<string, ForestBeastDef> = {
     defense: 5, resistTo: ['DX'], weakTo: ['ST'],
     isGuardian: true, guardianStage: 8,
   },
+  // --- Stage 3 elite (ramps difficulty before the first guardian fight at Stage 4) ---
+  alpha_boar: {
+    key: 'alpha_boar', name: 'Alpha Boar', glyph: '🐗', color: '#5a3010',
+    stageMin: 3, hp: 22, touchDamage: 8, moveCadenceMs: 480, aggroRadius: 4, bounty: [6, 12],
+    weakTo: ['ST'],
+  },
   // --- Band-gate guardians (placed once per run; excluded from random pool) ---
   grove_sentinel: {
     key: 'grove_sentinel', name: 'Grove Sentinel', glyph: '🦁', color: '#5a8a3a',

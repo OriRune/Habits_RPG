@@ -298,6 +298,20 @@ export function isVisible(state: ForestState, r: number, c: number): boolean {
   return withinSight(r - state.player.r, c - state.player.c, sightRadiusFor(state));
 }
 
+export type PendingActKind = 'advance' | 'attack' | 'shrine' | 'harvest' | 'chop' | 'none';
+
+/** Returns what the next Act press will do — used by the overlay for a context hint label. */
+export function pendingActKind(state: ForestState): PendingActKind {
+  if (canAdvance(state)) return 'advance';
+  const { r, c } = facedCell(state);
+  if (beastAt(state, r, c)) return 'attack';
+  if (isOnShrine(state)) return 'shrine';
+  const tile = tileAt(state, r, c);
+  if (tile?.kind === 'node') return 'harvest';
+  if (tile?.kind === 'tree') return 'chop';
+  return 'none';
+}
+
 /** Re-light the fog: mark every tile within the current sight radius as seen. */
 export function reveal(state: ForestState): ForestState {
   const rad = sightRadiusFor(state);

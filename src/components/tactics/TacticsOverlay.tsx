@@ -17,7 +17,7 @@ import {
 } from '@/engine/hexBattle';
 import { hexKey, hexDistance, type Hex } from '@/engine/hex';
 import { getSpell, SCHOOL_STAT, type StatusKey } from '@/engine/spells';
-import { MAX_ELEVATION, SPELL_RANGE, climbFor, heightRangeBonus, hasLineOfSight } from '@/engine/hexBattle';
+import { MAX_ELEVATION, SPELL_RANGE, STA_REGEN_PER_TURN, MOVE_ANIM_MS, climbFor, heightRangeBonus, hasLineOfSight } from '@/engine/hexBattle';
 import type { StatId } from '@/engine/stats';
 import { base, topCenter, hexCorners, isoBounds, colHeight, type Pt } from './iso';
 import { Button } from '@/components/ui/Button';
@@ -73,7 +73,7 @@ const darken = (c: [number, number, number], f: number): string =>
   `rgb(${Math.round(c[0] * f)},${Math.round(c[1] * f)},${Math.round(c[2] * f)})`;
 const ptsAt = (corners: Pt[], cx: number, cy: number) => corners.map((p) => `${cx + p.x},${cy + p.y}`).join(' ');
 
-function Gauge({ icon, value, max, fill }: { icon: React.ReactNode; value: number; max: number; fill: string }) {
+function Gauge({ icon, value, max, fill, note }: { icon: React.ReactNode; value: number; max: number; fill: string; note?: string }) {
   const pct = max > 0 ? Math.max(0, Math.min(100, Math.round((value / max) * 100))) : 0;
   return (
     <div className="flex items-center gap-1.5">
@@ -83,6 +83,7 @@ function Gauge({ icon, value, max, fill }: { icon: React.ReactNode; value: numbe
       </div>
       <span className="font-display text-[11px] tabular-nums text-parchment-300">
         {Math.max(0, Math.round(value))}/{Math.round(max)}
+        {note && <span className="ml-1 text-[9px] opacity-60">{note}</span>}
       </span>
     </div>
   );
@@ -161,6 +162,11 @@ export function TacticsOverlay() {
   const [animating, setAnimating] = useState(false);
   const lastBatch = useRef<TacticalEffect[] | null>(null);
 
+  // Tracks which enemy ids have already had their 'move' effect fire this batch.
+  // While an enemy's id is absent, the overlay renders it at prevHex so the sprite
+  // holds still until the staggered timer fires and slides it to its final tile.
+  const [movedIds, setMovedIds] = useState<Set<number>>(new Set());
+
   const boardWrapRef = useRef<HTMLDivElement>(null);
   const [vp, setVp] = useState({ w: 0, h: 0 });
   useEffect(() => {
@@ -179,6 +185,8 @@ export function TacticsOverlay() {
     const fx = effects ?? [];
     if (fx.length === 0 || lastBatch.current === fx) return;
     lastBatch.current = fx;
+    // Reset which enemies have "moved" at the start of each new animation batch.
+    setMovedIds(new Set());
     const timers: number[] = [];
     let maxEnd = 0;
     for (const e of fx) {
@@ -186,6 +194,12 @@ export function TacticsOverlay() {
       maxEnd = Math.max(maxEnd, end);
       timers.push(window.setTimeout(() => setLive((l) => [...l, e]), e.startedAtMs));
       timers.push(window.setTimeout(() => setLive((l) => l.filter((x) => x.id !== e.id)), end));
+      // When a 'move' effect fires, mark that enemy as having completed its slide so the
+      // sprite flips from prevHex → hex and the CSS transition plays.
+      if (e.kind === 'move' && e.enemyId !== undefined) {
+        const eid = e.enemyId;
+        timers.push(window.setTimeout(() => setMovedIds((s) => new Set(s).add(eid)), e.startedAtMs));
+      }
     }
     setAnimating(true);
     timers.push(window.setTimeout(() => setAnimating(false), maxEnd + 40));
@@ -302,21 +316,41 @@ export function TacticsOverlay() {
     return null;
   })();
 
+  // Build a lookup of pending 'move' effects by enemy id for the stagger animation.
+  const moveFxByEnemyId = new Map<number, TacticalEffect>();
+  for (const e of (tactics.effects ?? [])) {
+    if (e.kind === 'move' && e.enemyId !== undefined) moveFxByEnemyId.set(e.enemyId, e);
+  }
+
   const unitsByDepth = [
     {
-      key: 'player', hex: tactics.player.hex, glyph: '🧝',
+      key: 'player', hex: tactics.player.hex, displayHex: tactics.player.hex, glyph: '🧝',
       hp: tactics.player.hp, maxHp: tactics.player.maxHp, statuses: tactics.player.statuses,
       friendly: true, name: 'You' as string | undefined, enemyId: undefined as number | undefined,
       aiArchetype: undefined as AIArchetype | undefined,
       weakTo: [] as StatId[], resistTo: [] as StatId[],
+      slideMs: 200,
     },
-    ...tactics.enemies.map((e) => ({
-      key: `e${e.id}`, hex: e.hex, glyph: e.icon,
-      hp: e.hp, maxHp: e.maxHp, statuses: e.statuses, friendly: false, name: e.name as string | undefined,
-      enemyId: e.id,
-      aiArchetype: e.aiArchetype,
-      weakTo: e.weakTo, resistTo: e.resistTo,
-    })),
+    ...tactics.enemies.map((e) => {
+      // hasPendingMove: a 'move' effect exists for this enemy and hasn't fired yet.
+      //   → render at prevHex with no transition (instant snap, prevents "jump back").
+      // hasJustMoved: the effect fired this batch (id is in movedIds).
+      //   → render at hex with MOVE_ANIM_MS transition → CSS slides prev→final.
+      const hasPendingMove = moveFxByEnemyId.has(e.id) && !movedIds.has(e.id);
+      const hasJustMoved   = moveFxByEnemyId.has(e.id) && movedIds.has(e.id);
+      return {
+        key: `e${e.id}`,
+        hex: e.hex,
+        displayHex: hasPendingMove ? (e.prevHex ?? e.hex) : e.hex,
+        glyph: e.icon,
+        hp: e.hp, maxHp: e.maxHp, statuses: e.statuses,
+        friendly: false, name: e.name as string | undefined,
+        enemyId: e.id,
+        aiArchetype: e.aiArchetype,
+        weakTo: e.weakTo, resistTo: e.resistTo,
+        slideMs: hasPendingMove ? 0 : hasJustMoved ? MOVE_ANIM_MS : 200,
+      };
+    }),
   ].sort((a, b) => groundY(a.hex) - groundY(b.hex));
 
   // Log: show the last 4 entries, newest last
@@ -388,7 +422,7 @@ export function TacticsOverlay() {
           )}
           <Gauge icon={<Heart className="h-3.5 w-3.5 text-red-400" />} value={tactics.player.hp} max={tactics.player.maxHp} fill="#ef4444" />
           <Gauge icon={<Sparkles className="h-3.5 w-3.5 text-blue-400" />} value={tactics.player.mp} max={tactics.player.maxMp} fill="#3b82f6" />
-          <Gauge icon={<Zap className="h-3.5 w-3.5 text-amber-400" />} value={tactics.player.sta} max={tactics.player.maxSta} fill="#f59e0b" />
+          <Gauge icon={<Zap className="h-3.5 w-3.5 text-amber-400" />} value={tactics.player.sta} max={tactics.player.maxSta} fill="#f59e0b" note={`+${STA_REGEN_PER_TURN}/t`} />
         </div>
       </div>
 
@@ -501,12 +535,14 @@ export function TacticsOverlay() {
                       {TERRAIN_ICONS[tile.terrain]}
                     </text>
                   )}
-                  {/* Elevation badge for high ground (when targeting) */}
+                  {/* Elevation badge for high ground (when targeting) — positioned above the sprite
+                      area (y pushed higher) so it doesn't overlap unit glyphs or HP bars. */}
                   {tile.elevation > 0 && (highlight === 'target' || (sel?.kind === 'move' && reachable.has(key))) && (
                     <text
-                      x={t.x + size * 0.52} y={t.y - size * 0.35}
+                      x={t.x + size * 0.52} y={t.y - size * 0.62}
                       textAnchor="middle" dominantBaseline="central"
-                      fontSize={size * 0.38} fill="rgba(250,204,21,0.9)"
+                      fontSize={size * 0.38} fill="rgba(250,204,21,0.95)"
+                      stroke="rgba(0,0,0,0.7)" strokeWidth={size * 0.06} paintOrder="stroke"
                       style={{ pointerEvents: 'none', fontWeight: 'bold' }}
                     >
                       {'▲'.repeat(tile.elevation)}
@@ -563,7 +599,9 @@ export function TacticsOverlay() {
 
           {/* Units (DOM overlay) */}
           {unitsByDepth.map((u) => {
-            const c = top(u.hex);
+            // Use displayHex (may equal prevHex) so enemies appear to move one at a time
+            // during the enemy phase rather than all sliding simultaneously.
+            const c = top(u.displayHex);
             const intent = u.enemyId !== undefined ? intentByEnemyId.get(u.enemyId) : undefined;
             const archetypeColor = u.aiArchetype ? ARCHETYPE_INFO[u.aiArchetype].color : undefined;
             const archetypeBlurb = u.aiArchetype ? `${ARCHETYPE_INFO[u.aiArchetype].label} — ${ARCHETYPE_INFO[u.aiArchetype].blurb}` : undefined;
@@ -585,6 +623,7 @@ export function TacticsOverlay() {
                 friendly={u.friendly}
                 name={u.name}
                 scale={size / 30}
+                slideMs={u.slideMs}
                 intent={showIntents ? intent : undefined}
                 archetypeColor={archetypeColor}
                 archetypeBlurb={archetypeBlurb}
@@ -724,10 +763,17 @@ export function TacticsOverlay() {
 
 function UnitSprite({
   x, y, glyph, hp, maxHp, statuses, friendly, name, scale = 1,
+  slideMs = 200,
   intent, archetypeColor, archetypeBlurb, weakResist, onClick,
 }: {
   x: number; y: number; glyph: string; hp: number; maxHp: number; statuses: UnitStatus[];
   friendly?: boolean; name?: string; scale?: number;
+  /**
+   * CSS transition duration for the position transform (ms).
+   * 0 = instant snap (used when holding a unit at prevHex before its stagger fires).
+   * MOVE_ANIM_MS = smooth slide after stagger timer fires.
+   */
+  slideMs?: number;
   intent?: EnemyIntent;
   /** Archetype ring color (hex string); absent for the player. */
   archetypeColor?: string;
@@ -742,7 +788,7 @@ function UnitSprite({
   return (
     <div
       className={cn('absolute z-20 flex flex-col items-center', onClick ? 'cursor-pointer' : 'pointer-events-none')}
-      style={{ left: 0, top: 0, transform: `translate(${x}px, ${y}px) translate(-50%, -78%)`, transition: 'transform 200ms ease-out' }}
+      style={{ left: 0, top: 0, transform: `translate(${x}px, ${y}px) translate(-50%, -78%)`, transition: slideMs > 0 ? `transform ${slideMs}ms ease-out` : 'none' }}
       title={tooltipText}
       onClick={onClick}
     >

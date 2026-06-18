@@ -698,3 +698,162 @@ describe('tacticsReward with objective', () => {
     expect(reward.gold).toBe(baseGold);
   });
 });
+
+// ── Multi-hero (co-op) engine tests ─────────────────────────────────────────────────────────────
+
+import {
+  livingHeroes,
+  nearestHero,
+  type HeroOpts,
+} from '../hexBattle';
+
+/** Minimal Fighter for generateSkirmish tests. */
+function heroFighter(): Fighter {
+  return fighter({ maxHp: 80, meleePower: 8, defense: 2, dodge: 0 });
+}
+
+describe('multi-hero: generateSkirmish with 2 heroes', () => {
+  const hero0: HeroOpts = { fighter: heroFighter(), ag: 8, knownSpells: [], id: 'p0', name: 'Alice' };
+  const hero1: HeroOpts = { fighter: heroFighter(), ag: 8, knownSpells: [], id: 'p1', name: 'Bob' };
+
+  it('populates players[] with 2 distinct heroes on separate hexes', () => {
+    const s = generateSkirmish(hero0.fighter, hero0.ag, 1, [], {
+      rng: seeded(42), heroes: [hero0, hero1],
+    });
+    expect(s.players).toHaveLength(2);
+    expect(s.players![0].id).toBe('p0');
+    expect(s.players![1].id).toBe('p1');
+    // Heroes must not occupy the same tile.
+    const k0 = hexKey(s.players![0].hex);
+    const k1 = hexKey(s.players![1].hex);
+    expect(k0).not.toBe(k1);
+  });
+
+  it('sets activeHeroId and s.player points to the first hero', () => {
+    const s = generateSkirmish(hero0.fighter, hero0.ag, 1, [], {
+      rng: seeded(7), heroes: [hero0, hero1],
+    });
+    expect(s.activeHeroId).toBe('p0');
+    expect(s.player).toBe(s.players![0]); // exact reference equality (alias)
+  });
+
+  it('scales enemy count upward compared to a solo skirmish at the same tier', () => {
+    const solo = generateSkirmish(hero0.fighter, hero0.ag, 1, [], { rng: seeded(3) });
+    const duo  = generateSkirmish(hero0.fighter, hero0.ag, 1, [], {
+      rng: seeded(3), heroes: [hero0, hero1],
+    });
+    // Duo should have at least as many enemies as solo (scaled by hero count).
+    expect(duo.enemies.length).toBeGreaterThanOrEqual(solo.enemies.length);
+  });
+
+  it('1-hero roster behaves identically to the legacy single-fighter path', () => {
+    const f = heroFighter();
+    const single = generateSkirmish(f, 8, 3, [], { rng: seeded(99) });
+    const singleViaRoster = generateSkirmish(f, 8, 3, [], {
+      rng: seeded(99), heroes: [{ fighter: f, ag: 8, knownSpells: [], id: 'p0' }],
+    });
+    // Both have no players[] (undefined — 1-hero roster is treated as solo).
+    expect(single.players).toBeUndefined();
+    expect(singleViaRoster.players).toBeUndefined();
+    // Same enemy count.
+    expect(single.enemies.length).toBe(singleViaRoster.enemies.length);
+  });
+});
+
+describe('multi-hero: livingHeroes and nearestHero helpers', () => {
+  it('livingHeroes falls back to [s.player] when no players[] exists', () => {
+    const s = makeState({ player: makePlayer({ q: 0, r: 0 }) });
+    expect(livingHeroes(s)).toHaveLength(1);
+    expect(livingHeroes(s)[0]).toBe(s.player);
+  });
+
+  it('livingHeroes filters dead heroes from players[]', () => {
+    const p0 = makePlayer({ q: 0, r: 0 }, { id: 'p0', hp: 50 });
+    const p1 = makePlayer({ q: 1, r: 0 }, { id: 'p1', hp: 0 }); // dead
+    const s = makeState({ player: p0, players: [p0, p1], activeHeroId: 'p0' });
+    const alive = livingHeroes(s);
+    expect(alive).toHaveLength(1);
+    expect(alive[0].id).toBe('p0');
+  });
+
+  it('nearestHero returns the closest living hero to a given hex', () => {
+    const p0 = makePlayer({ q: 0, r: 0 }, { id: 'p0' }); // distance 2 from q:2,r:0
+    const p1 = makePlayer({ q: 1, r: 0 }, { id: 'p1' }); // distance 1 from q:2,r:0
+    const s = makeState({ player: p0, players: [p0, p1], activeHeroId: 'p0' });
+    const nearest = nearestHero(s, { q: 2, r: 0 });
+    expect(nearest.id).toBe('p1');
+  });
+
+  it('nearestHero ignores dead heroes', () => {
+    const p0 = makePlayer({ q: 0, r: 0 }, { id: 'p0' }); // closer
+    const p1 = makePlayer({ q: 2, r: 0 }, { id: 'p1', hp: 0 }); // dead — farther but irrelevant
+    const s = makeState({ player: p0, players: [p0, p1], activeHeroId: 'p0' });
+    const nearest = nearestHero(s, { q: 2, r: 0 });
+    expect(nearest.id).toBe('p0'); // only living option
+  });
+});
+
+describe('multi-hero: turn sequencing — enemy phase waits for all heroes', () => {
+  /**
+   * Build a 2-hero state. Includes one unkillable enemy far away (moveTiles:1, melee) so
+   * checkOutcome never fires 'won' prematurely — without enemies the battle ends immediately.
+   */
+  function dualHeroState(): HexBattleState {
+    const p0 = makePlayer({ q: 0, r: 2 }, { id: 'p0', movesLeft: 0, hasActed: true });
+    const p1 = makePlayer({ q: 1, r: 1 }, { id: 'p1', movesLeft: 0, hasActed: true });
+    // Enemy at the far edge (distance ≥ 4) with moveTiles:1, range:1 — can't reach heroes in one turn.
+    const distant = makeEnemy(1, { q: 0, r: -2 }, { hp: 9999, maxHp: 9999, attack: 1, moveTiles: 1, range: 1 });
+    return makeState({ player: p0, players: [p0, p1], activeHeroId: 'p0', enemies: [distant] });
+  }
+
+  it('after hero p0 ends turn, turn stays "player" (p1 still needs to go)', () => {
+    const s0 = dualHeroState();
+    const s1 = endPlayerTurn(s0, HALF, 'p0');
+    // p0 ended but p1 has not → still player phase.
+    expect(s1.turn).toBe('player');
+  });
+
+  it('after both heroes end turn, the turn advances', () => {
+    const s0 = dualHeroState();
+    const s1 = endPlayerTurn(s0, HALF, 'p0');
+    const s2 = endPlayerTurn(s1, HALF, 'p1');
+    // Both ended → enemy phase ran (no enemies, so goes back to player) → turn count bumped.
+    expect(s2.turnCount).toBe(2);
+  });
+
+  it('both heroes have their movesLeft and hasActed reset after a full round', () => {
+    const s0 = dualHeroState();
+    const s1 = endPlayerTurn(s0, HALF, 'p0');
+    const s2 = endPlayerTurn(s1, HALF, 'p1');
+    for (const p of s2.players!) {
+      expect(p.hasActed).toBe(false);
+      expect(p.movesLeft).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('multi-hero: loss condition — only when ALL heroes are down', () => {
+  it('battle continues when one of two heroes dies', () => {
+    const p0 = makePlayer({ q: 0, r: 0 }, { id: 'p0', hp: 50 });
+    const p1 = makePlayer({ q: 1, r: 0 }, { id: 'p1', hp: 1, dodge: 0 });
+    // Enemy adjacent to p1 with lethal damage.
+    const enemy = makeEnemy(1, { q: 1, r: 1 }, { attack: 200, range: 1 });
+    const s0 = makeState({ player: p0, players: [p0, p1], activeHeroId: 'p0', enemies: [enemy] });
+    const s1 = endPlayerTurn(s0, HIGH, 'p0');
+    const s2 = endPlayerTurn(s1, HIGH, 'p1');
+    // p1 died from the enemy attack but p0 is still alive — should NOT be lost.
+    expect(s2.status).toBe('active');
+  });
+
+  it('status = lost only when every hero is dead', () => {
+    const p0 = makePlayer({ q: 0, r: 0 }, { id: 'p0', hp: 1, dodge: 0 });
+    const p1 = makePlayer({ q: 1, r: 0 }, { id: 'p1', hp: 1, dodge: 0 });
+    // Two enemies, each adjacent and lethal.
+    const e0 = makeEnemy(1, { q: 0, r: 1 }, { attack: 200, range: 1 });
+    const e1 = makeEnemy(2, { q: 1, r: 1 }, { attack: 200, range: 1 });
+    const s0 = makeState({ player: p0, players: [p0, p1], activeHeroId: 'p0', enemies: [e0, e1] });
+    const s1 = endPlayerTurn(s0, HIGH, 'p0');
+    const s2 = endPlayerTurn(s1, HIGH, 'p1');
+    expect(s2.status).toBe('lost');
+  });
+});

@@ -136,6 +136,18 @@ body {
   100% { opacity: 0;    transform: scale(2.1); }
 }
 
+/* Boon cache tile: pulsing golden glow to distinguish it from rune tiles. */
+@keyframes mine-boon-pulse {
+  0%, 100% { box-shadow: 0 0 6px 2px rgba(255,200,0,0.35), inset 0 0 8px rgba(255,200,0,0.12); }
+  50%       { box-shadow: 0 0 18px 6px rgba(255,200,0,0.70), inset 0 0 16px rgba(255,200,0,0.28); }
+}
+
+/* Shaft tile: slow breathing glow to signal "exit here". */
+@keyframes mine-shaft-pulse {
+  0%, 100% { opacity: 0.7; transform: scale(0.85); }
+  50%       { opacity: 1;   transform: scale(1.05); }
+}
+
 @keyframes loot-float {
   0%   { opacity: 0; transform: translateX(-50%) translateY(0) scale(0.85); }
   15%  { opacity: 1; transform: translateX(-50%) translateY(-6px) scale(1.05); }
@@ -155,6 +167,20 @@ body {
 @keyframes forest-shaft-pulse {
   0%, 100% { opacity: 0.35; }
   50%       { opacity: 1; }
+}
+
+/* Forest: boon card deal-in (staggered per card). */
+@keyframes boon-deal-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.92); }
+  to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+
+/* Forest: guardian arrival flash — fades in, holds briefly, fades out. */
+@keyframes forest-guardian-alert {
+  0%   { opacity: 0; }
+  12%  { opacity: 1; }
+  65%  { opacity: 1; }
+  100% { opacity: 0; }
 }
 
 /* Mine: fine dust particles slowly falling. */
@@ -227,6 +253,22 @@ body {
 @keyframes arena-cast {
   0%   { opacity: 0.85; transform: translate(-50%, -50%) scale(0.5); }
   100% { opacity: 0;    transform: translate(-50%, -50%) scale(1.6); }
+}
+
+/* Arena: boss death — flash bright white then collapse and fade out. */
+@keyframes arena-boss-die {
+  0%   { transform: scale(1);    filter: brightness(1)   saturate(1); opacity: 1; }
+  18%  { transform: scale(1.55); filter: brightness(4)   saturate(0); opacity: 1; }
+  45%  { transform: scale(1.25); filter: brightness(2)   saturate(0); opacity: 0.8; }
+  100% { transform: scale(0.4);  filter: brightness(0.3) saturate(0); opacity: 0; }
+}
+
+/* Arena: boss phase transition — swell with a color shift then return to normal. */
+@keyframes arena-boss-phase {
+  0%   { transform: scale(1);   filter: brightness(1); }
+  22%  { transform: scale(1.4); filter: brightness(3.5) saturate(2) hue-rotate(160deg); }
+  55%  { transform: scale(1.1); filter: brightness(1.8); }
+  100% { transform: scale(1);   filter: brightness(1); }
 }
 
 /* ── Hex Tactics effects ──────────────────────────────────────────────────
@@ -338,7 +380,9 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .crawler-hit-flash                    { animation-duration: 1ms !important; }
   [style*='crawl-wipe'],
-  [style*='arena-hit']                  { animation-duration: 1ms !important; }
+  [style*='arena-hit'],
+  [style*='arena-boss-die'],
+  [style*='arena-boss-phase']           { animation-duration: 1ms !important; }
 }
 
 /* Lockpicking — pick-snap violent jolt */
@@ -366,6 +410,20 @@ body {
   20%  { opacity: 1; transform: translate(-50%, -50%) scale(1.2); }
   60%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
   100% { opacity: 0; transform: translate(-50%, -50%) scale(0.9) translateY(-8px); }
+}
+
+/* Lockpicking — hint text pops in when it changes (applied via key= remount) */
+@keyframes hint-pop {
+  0%   { opacity: 0.4; transform: scale(0.82); }
+  55%  { transform: scale(1.07); }
+  100% { opacity: 1;   transform: scale(1); }
+}
+
+/* Lockpicking — brief gold-green glow burst on the plate when a lock opens */
+@keyframes lock-plate-open {
+  0%   { box-shadow: 0 4px 16px rgba(0,0,0,0.7), inset 0 1px 2px rgba(255,200,80,0.12); }
+  28%  { box-shadow: 0 4px 16px rgba(0,0,0,0.7), inset 0 1px 2px rgba(255,200,80,0.12), 0 0 44px 18px rgba(74,222,128,0.45); }
+  100% { box-shadow: 0 4px 16px rgba(0,0,0,0.7), inset 0 1px 2px rgba(255,200,80,0.12); }
 }
 
 /* ── Rooftop Chase ────────────────────────────────────────────────────────── */

@@ -2,7 +2,7 @@
 // to fire the store's discrete mining actions (move / strike / cast / monster tick) based on a
 // requestAnimationFrame clock and which keys/buttons are held. All rules live in the pure
 // engine (src/engine/mining.ts); this is purely the "when".
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type MutableRefObject } from 'react';
 import { useGameStore } from '@/store/useGameStore';
 import { canDescend, facedCell, facedMonsterId, type Dir } from '@/engine/mining';
 import { CHARGE_SWING_COUNT, DASH_BASE_CD_MS } from '@/engine/crawl';
@@ -33,6 +33,8 @@ export interface MiningControls {
   dash: () => void;
   /** Cast a spell by key (from ability bar buttons). */
   castSpell: (key: string) => void;
+  /** Live charge progress for the overlay's charge-pip indicator. Read-only ref, updated every rAF frame. */
+  chargeRef: MutableRefObject<{ active: boolean; swings: number; max: number }>;
 }
 
 /** Drives an active Deep Mine run. Mount once inside the run overlay. */
@@ -45,6 +47,8 @@ export function useMiningLoop(): MiningControls {
   // Charge tracking: timestamp when Space was first pressed (reset on each new press).
   const spaceDownAt = useRef<number | null>(null);
   const chargeConsumed = useRef(false);
+  // Exposed to the overlay for the charge-progress indicator.
+  const chargeProgressRef = useRef<{ active: boolean; swings: number; max: number }>({ active: false, swings: 0, max: 2 });
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -102,7 +106,10 @@ export function useMiningLoop(): MiningControls {
       raf = requestAnimationFrame(loop);
       const store = useGameStore.getState();
       const run = store.mining;
-      if (!run || run.status !== 'active' || document.hidden) return;
+      if (!run || run.status !== 'active' || document.hidden) {
+        chargeProgressRef.current = { active: false, swings: 0, max: 2 };
+        return;
+      }
 
       // Spell cast (instant, gated by spell's own SPELL_CD_MS in the engine)
       if (spellQueue.current) {
@@ -132,6 +139,18 @@ export function useMiningLoop(): MiningControls {
       // The Overcharge boon reduces the required hold count by 1 (minimum 1).
       const chargeReduce = run.activeBoons ? boonChargeReduce(run.activeBoons) : 0;
       const effectiveChargeCount = Math.max(1, CHARGE_SWING_COUNT - chargeReduce);
+
+      // Update charge-progress ref for the overlay indicator.
+      {
+        const chargeActive = spaceDownAt.current !== null && !chargeConsumed.current;
+        chargeProgressRef.current = {
+          active: chargeActive,
+          swings: chargeActive
+            ? Math.min(effectiveChargeCount, Math.floor((now - (spaceDownAt.current ?? now)) / SWING_INTERVAL_MS))
+            : 0,
+          max: effectiveChargeCount,
+        };
+      }
       if (
         spaceDownAt.current !== null &&
         !chargeConsumed.current &&
@@ -240,5 +259,6 @@ export function useMiningLoop(): MiningControls {
     castSpell: (key) => {
       spellQueue.current = key;
     },
+    chargeRef: chargeProgressRef,
   };
 }

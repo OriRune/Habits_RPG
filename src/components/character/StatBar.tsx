@@ -7,14 +7,17 @@ interface StatBarProps {
   level: number;
   /** Lifetime XP invested in this stat — steers where future level-up points go. */
   xp: number;
+  /** Optional extra context shown after the stat's base description in the hover tooltip. */
+  hint?: string;
 }
 
-export function StatBar({ stat, level, xp }: StatBarProps) {
+export function StatBar({ stat, level, xp, hint }: StatBarProps) {
   const meta = getStat(stat);
   const pct = Math.max(4, Math.round((level / STAT_CAP) * 100));
+  const tooltip = hint ? `${meta.represents} — ${hint}` : meta.represents;
   return (
     <div className="flex items-center gap-3">
-      <div className="w-10 shrink-0 font-display text-xs font-semibold text-ink-muted">{meta.short}</div>
+      <div className="w-10 shrink-0 font-display text-xs font-semibold text-ink-muted" title={tooltip}>{meta.short}</div>
       <div className="h-3.5 flex-1 overflow-hidden rounded-full border border-gold-deep/50 bg-wood-900">
         <div
           className="h-full rounded-full transition-all"

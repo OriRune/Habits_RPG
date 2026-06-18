@@ -10,6 +10,9 @@ export const PICK_MIN_DEG = 0;
 export const PICK_MAX_DEG = 180;
 export const CYLINDER_OPEN_DEG = 90;
 
+/** Lock difficulty labels — index matches lock order. */
+export const LOCK_LABELS = ['Novice', 'Apprentice', 'Adept'] as const;
+
 /** Base tolerance (°) per lock — the half-width of the "turn zone". Narrows each lock. */
 export const BASE_TOLERANCE_DEG = [22, 16, 11] as const;
 /** Must be within this many degrees of the sweet spot for the cylinder to reach 90° (open). */
@@ -20,6 +23,10 @@ export const LEVEL_TOLERANCE_BONUS = 0.6;
 /** Open-tolerance gets a smaller share of the level bonus. */
 export const LEVEL_OPEN_TOLERANCE_BONUS = 0.2;
 
+/** Added to tolerance (°) per DX stat level — trains the relevant stat. */
+export const LEVEL_DX_TOLERANCE_BONUS = 0.3;
+export const LEVEL_DX_OPEN_BONUS = 0.1;
+
 /** Speed at which the cylinder rotates (°/sec). */
 export const CYLINDER_TURN_SPEED = 180;
 /** Speed at which the cylinder springs back to 0 when torque is released (°/sec). */
@@ -29,10 +36,15 @@ export const CYLINDER_RETURN_SPEED = 240;
 export const PICK_KEY_SPEED = 90;
 
 /**
- * How long (seconds) sustained torque-against-jam breaks the pick.
- * At max distance from sweet spot → BREAK_TIME_MIN; at edge of tolerance → BREAK_TIME_MAX.
+ * Minimum seconds before a sustained jam snaps the pick, per lock difficulty.
+ * Harder locks get a slightly longer floor so players can react before snapping.
  */
-export const BREAK_TIME_MIN = 0.55;
+export const BREAK_TIME_MIN_PER_LOCK = [0.55, 0.65, 0.80] as const;
+
+/**
+ * Maximum seconds before snap — at the sweet spot edge (almost turning).
+ * Shared across all locks because the near-sweet-spot experience should feel consistent.
+ */
 export const BREAK_TIME_MAX = 3.5;
 
 /** Max shake offset (px) applied on a jam frame. */
@@ -44,20 +56,26 @@ export interface LockConfig {
   openToleranceDeg: number;
 }
 
-/** Compute per-lock tolerance values, widened by character level. */
-export function lockTolerance(lockIndex: number, level: number): { toleranceDeg: number; openToleranceDeg: number } {
-  const bonus = Math.max(0, level - 1) * LEVEL_TOLERANCE_BONUS;
+/** Compute per-lock tolerance values, widened by character level and DX stat level. */
+export function lockTolerance(
+  lockIndex: number,
+  level: number,
+  dxLevel = 0,
+): { toleranceDeg: number; openToleranceDeg: number } {
+  const bonus     = Math.max(0, level - 1) * LEVEL_TOLERANCE_BONUS;
   const openBonus = Math.max(0, level - 1) * LEVEL_OPEN_TOLERANCE_BONUS;
+  const dxBonus     = dxLevel * LEVEL_DX_TOLERANCE_BONUS;
+  const dxOpenBonus = dxLevel * LEVEL_DX_OPEN_BONUS;
   return {
-    toleranceDeg: BASE_TOLERANCE_DEG[lockIndex] + bonus,
-    openToleranceDeg: BASE_OPEN_TOLERANCE_DEG[lockIndex] + openBonus,
+    toleranceDeg:     BASE_TOLERANCE_DEG[lockIndex]      + bonus     + dxBonus,
+    openToleranceDeg: BASE_OPEN_TOLERANCE_DEG[lockIndex] + openBonus + dxOpenBonus,
   };
 }
 
 /** Generate NUM_LOCKS configs. Sweet spots randomised, always reachable. */
-export function generateLocks(rng: () => number, level: number): LockConfig[] {
+export function generateLocks(rng: () => number, level: number, dxLevel = 0): LockConfig[] {
   return Array.from({ length: NUM_LOCKS }, (_, i) => {
-    const { toleranceDeg, openToleranceDeg } = lockTolerance(i, level);
+    const { toleranceDeg, openToleranceDeg } = lockTolerance(i, level, dxLevel);
     const margin = 20; // keep sweet spot away from hard edges
     const sweetSpotDeg = margin + rng() * (PICK_MAX_DEG - 2 * margin);
     return { sweetSpotDeg, toleranceDeg, openToleranceDeg };
@@ -83,16 +101,17 @@ export function canOpen(pickDeg: number, lock: LockConfig): boolean {
 /**
  * Seconds of sustained torque-against-jam before the pick snaps.
  * Closer to the sweet spot → more time (cylinder almost turns, so less stress).
+ * Harder locks get a higher minimum so players have time to react.
  */
-export function breakTime(pickDeg: number, lock: LockConfig): number {
+export function breakTime(pickDeg: number, lock: LockConfig, lockIndex: number): number {
   const turn = allowedTurn(pickDeg, lock);
-  // turn = 0 at outer edge → fastest break; turn approaches 1 near sweet spot → slowest
-  return BREAK_TIME_MIN + turn * (BREAK_TIME_MAX - BREAK_TIME_MIN);
+  const min  = BREAK_TIME_MIN_PER_LOCK[lockIndex];
+  return min + turn * (BREAK_TIME_MAX - min);
 }
 
 /**
  * Final score (0..1).
- * All locks opened → [0.5, 1.0] based on picks remaining.
+ * All locks opened → [0.5, 1.0] linear on picks remaining.
  * Failed (out of picks mid-run) → up to 0.3 based on locks completed.
  */
 export function lockpickingScore(
@@ -101,10 +120,7 @@ export function lockpickingScore(
   budget: number = PICK_BUDGET,
 ): number {
   if (locksOpened >= NUM_LOCKS) {
-    // Success branch: efficiency bonus on top of the 0.5 base
-    const pickFraction = budget > 1 ? Math.max(0, picksRemaining - 1) / (budget - 1) : 1;
-    return 0.5 + 0.5 * pickFraction;
+    return 0.5 + 0.5 * picksRemaining / budget;
   }
-  // Failed branch: partial credit proportional to locks opened
   return 0.3 * (locksOpened / NUM_LOCKS);
 }

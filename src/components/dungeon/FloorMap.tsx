@@ -126,6 +126,7 @@ export function FloorMap({
             <div key={li} className="flex items-center justify-center gap-2.5">
               {layer.map((id) => {
                 const node = map.nodes[id];
+                if (!node) return null;
                 const meta = ROOM_ICON[node.room.type];
                 const isChoice = choices.includes(id);
                 const isVisited = visited.has(id);

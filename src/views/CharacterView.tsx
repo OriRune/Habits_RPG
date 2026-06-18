@@ -49,7 +49,13 @@ export function CharacterView() {
         </p>
         <div className="space-y-2.5">
           {STATS.map((s) => (
-            <StatBar key={s.id} stat={s.id} level={character.statLevels[s.id]} xp={character.statXp[s.id]} />
+            <StatBar
+              key={s.id}
+              stat={s.id}
+              level={character.statLevels[s.id]}
+              xp={character.statXp[s.id]}
+              hint={s.id === 'AG' ? 'Sets move range & climb height in Hex Tactics' : undefined}
+            />
           ))}
         </div>
       </Panel>

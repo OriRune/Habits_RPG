@@ -1,13 +1,27 @@
 // Ancient Library trial — KN.
 // Simon-style glyph memory: watch the sequence, then repeat it. Grows each round.
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useGameStore } from '@/store/useGameStore';
+import { toISODate } from '@/engine/date';
+import * as sfx from '@/lib/sfx';
 import {
   generateSequence,
   libraryScore,
+  buildShowSchedule,
+  seededRng,
+  dailySeed,
+  glyphShowMs,
   GLYPHS,
+  GLYPH_TONES,
+  GLYPH_COLORS,
   LIBRARY_START_LENGTH,
   LIBRARY_MAX_ROUNDS,
+  PRE_INPUT_PAUSE_MS,
+  CORRECT_FLASH_MS,
+  NEXT_ROUND_DELAY_MS,
+  WRONG_FLASH_MS,
+  TAP_FLASH_MS,
   type Glyph,
 } from '@/engine/trials/ancientLibrary';
 
@@ -18,15 +32,38 @@ interface AncientLibraryProps {
 type Phase = 'showing' | 'input' | 'wrong' | 'correct' | 'done';
 
 export function AncientLibrary({ onFinish }: AncientLibraryProps) {
-  const masterSeq = useMemo(() => generateSequence(Math.random), []);
-  const [round, setRound] = useState(0); // 0-based; length = START_LENGTH + round
+  const knLevel = useGameStore((s) => s.character.statLevels.KN);
+
+  // Daily-seeded sequence: same glyphs for all players on a given calendar day.
+  const masterSeq = useMemo(
+    () => generateSequence(seededRng(dailySeed(toISODate()))),
+    [],
+  );
+
+  const [round, setRound] = useState(0);
   const [phase, setPhase] = useState<Phase>('showing');
   const [showIndex, setShowIndex] = useState(0);
   const [playerInput, setPlayerInput] = useState<Glyph[]>([]);
   const [roundsCompleted, setRoundsCompleted] = useState(0);
+  const [retriesLeft, setRetriesLeft] = useState(1);
+  const [flashGlyph, setFlashGlyph] = useState<Glyph | null>(null);
+  const mounted = useRef(true);
+
+  // Cleanup guard — prevents setState on unmounted component.
+  // Must also set true on mount so React 18 StrictMode's remount restores the flag.
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const currentLength = LIBRARY_START_LENGTH + round;
   const sequence = masterSeq.slice(0, currentLength);
+
+  // Show schedule may include repeated positions when KN stat level is high enough
+  const showSchedule = useMemo(
+    () => buildShowSchedule(sequence.length, knLevel, Math.random),
+    [round, sequence.length, knLevel],
+  );
 
   const finish = useCallback(
     (completed: number) => {
@@ -36,72 +73,108 @@ export function AncientLibrary({ onFinish }: AncientLibraryProps) {
     [onFinish],
   );
 
-  // Show the sequence one glyph at a time
+  // Advance the show phase one glyph at a time
   useEffect(() => {
     if (phase !== 'showing') return;
-    if (showIndex >= sequence.length) {
-      setTimeout(() => setPhase('input'), 400);
-      return;
+    if (showIndex >= showSchedule.length) {
+      const t = setTimeout(() => { if (mounted.current) setPhase('input'); }, PRE_INPUT_PAUSE_MS);
+      return () => clearTimeout(t);
     }
-    const t = setTimeout(() => setShowIndex((i) => i + 1), 700);
+    const t = setTimeout(
+      () => { if (mounted.current) setShowIndex((i) => i + 1); },
+      glyphShowMs(round),
+    );
     return () => clearTimeout(t);
-  }, [phase, showIndex, sequence.length]);
+  }, [phase, showIndex, showSchedule.length, round]);
 
-  // Start a new round
-  const startRound = useCallback(
-    (r: number) => {
-      setRound(r);
-      setShowIndex(0);
-      setPlayerInput([]);
-      setPhase('showing');
-    },
-    [],
-  );
+  const activeGlyph =
+    phase === 'showing' && showIndex < showSchedule.length
+      ? sequence[showSchedule[showIndex]]
+      : null;
+
+  // Play tone on every showIndex advance, not on activeGlyph change —
+  // the latter misses consecutive duplicate glyphs (e.g. KN double-flash).
+  useEffect(() => {
+    if (activeGlyph) sfx.playNote(GLYPH_TONES[activeGlyph]);
+  }, [showIndex, phase]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const startRound = useCallback((r: number) => {
+    setRound(r);
+    setShowIndex(0);
+    setPlayerInput([]);
+    setPhase('showing');
+  }, []);
 
   const handleGlyphTap = (g: Glyph) => {
     if (phase !== 'input') return;
+
+    // Play tone and flash the button on every tap (correct or not)
+    sfx.playNote(GLYPH_TONES[g]);
+    setFlashGlyph(g);
+    setTimeout(() => { if (mounted.current) setFlashGlyph(null); }, TAP_FLASH_MS);
+
     const next = [...playerInput, g];
     const pos = next.length - 1;
 
     if (g !== sequence[pos]) {
-      // Wrong
-      setPhase('wrong');
-      setTimeout(() => finish(roundsCompleted), 1000);
+      sfx.play('libraryWrong');
+      if (retriesLeft > 0) {
+        // Consume the retry: replay the current round without ending the trial
+        setRetriesLeft(0);
+        setPhase('wrong');
+        setTimeout(() => {
+          if (!mounted.current) return;
+          setPlayerInput([]);
+          setShowIndex(0);
+          setPhase('showing');
+        }, WRONG_FLASH_MS);
+      } else {
+        setPhase('wrong');
+        setTimeout(() => { if (mounted.current) finish(roundsCompleted); }, WRONG_FLASH_MS);
+      }
       return;
     }
 
     if (next.length === sequence.length) {
-      // Round complete
       const newCompleted = roundsCompleted + 1;
       setRoundsCompleted(newCompleted);
+      sfx.play('libraryCorrect');
       setPhase('correct');
       if (round + 1 >= LIBRARY_MAX_ROUNDS) {
-        setTimeout(() => finish(newCompleted), 800);
+        setTimeout(() => { if (mounted.current) finish(newCompleted); }, CORRECT_FLASH_MS);
       } else {
-        setTimeout(() => startRound(round + 1), 900);
+        setTimeout(() => { if (mounted.current) startRound(round + 1); }, NEXT_ROUND_DELAY_MS);
       }
     } else {
       setPlayerInput(next);
     }
   };
 
-  const activeGlyph = phase === 'showing' && showIndex < sequence.length ? sequence[showIndex] : null;
-
   return (
     <div className="flex flex-col items-center gap-5 px-2">
+
+      {/* Round / length header */}
       <div className="flex items-center justify-between w-full max-w-xs text-xs font-display text-ink-muted">
         <span>Round {round + 1} of {LIBRARY_MAX_ROUNDS}</span>
-        <span>Sequence length: {currentLength}</span>
+        <span>Sequence: {currentLength}</span>
       </div>
 
       {/* Glyph display area */}
       <div className="flex h-20 w-full max-w-xs items-center justify-center rounded-md border border-gold-deep/30 bg-parchment-100/70">
         {phase === 'showing' && activeGlyph ? (
-          <span className="text-5xl animate-pulse">{activeGlyph}</span>
+          // key causes React to remount the span on each glyph advance, triggering the CSS animation
+          <span key={showIndex} className="text-5xl animate-bounce" style={{ animationDuration: '0.25s', animationIterationCount: 1 }}>
+            {activeGlyph}
+          </span>
         ) : phase === 'input' ? (
           <div className="text-sm text-ink-muted font-display">Your turn — repeat the sequence</div>
         ) : phase === 'correct' ? (
-          <span className="text-4xl">✅</span>
+          // Show the completed sequence for review during the flash window
+          <div className="flex gap-1 flex-wrap justify-center px-2">
+            {sequence.map((g, i) => (
+              <span key={i} className="text-2xl">{g}</span>
+            ))}
+          </div>
         ) : phase === 'wrong' ? (
           <span className="text-4xl">❌</span>
         ) : phase === 'done' ? (
@@ -109,7 +182,7 @@ export function AncientLibrary({ onFinish }: AncientLibraryProps) {
         ) : null}
       </div>
 
-      {/* Player input display */}
+      {/* Player input tracker */}
       {phase === 'input' && (
         <div className="flex min-h-8 gap-1">
           {playerInput.map((g, i) => (
@@ -121,36 +194,51 @@ export function AncientLibrary({ onFinish }: AncientLibraryProps) {
         </div>
       )}
 
+      {/* Retry indicator — shown during input and after a retry is consumed */}
+      {(phase === 'input' || phase === 'wrong') && (
+        <div className="flex items-center gap-1 text-xs font-display text-ink-muted">
+          <span className={retriesLeft > 0 ? 'opacity-100' : 'opacity-25'}>✦</span>
+          <span className={retriesLeft > 0 ? 'opacity-100' : 'opacity-25'}>
+            {retriesLeft > 0 ? '1 retry remaining' : 'retry used'}
+          </span>
+        </div>
+      )}
+
       {/* Glyph buttons */}
       {phase === 'input' && (
         <div className="grid grid-cols-3 gap-2 w-full max-w-xs">
-          {GLYPHS.map((g) => (
-            <button
-              key={g}
-              onClick={() => handleGlyphTap(g)}
-              className="rounded-md border border-gold-deep/40 bg-parchment-100/70 py-3 text-2xl hover:border-gold-bright hover:bg-gold-bright/10 active:scale-95 transition-transform"
-            >
-              {g}
-            </button>
-          ))}
+          {GLYPHS.map((g) => {
+            const isFlashing = flashGlyph === g;
+            return (
+              <button
+                key={g}
+                onClick={() => handleGlyphTap(g)}
+                style={{
+                  backgroundColor: isFlashing
+                    ? `${GLYPH_COLORS[g]}55`
+                    : `${GLYPH_COLORS[g]}10`,
+                  borderColor: isFlashing ? GLYPH_COLORS[g] : `${GLYPH_COLORS[g]}70`,
+                }}
+                className="rounded-md border py-3 text-2xl active:scale-95 transition-all duration-100"
+              >
+                {g}
+              </button>
+            );
+          })}
         </div>
       )}
 
-      {phase === 'showing' && (
-        <div className="flex gap-1">
-          {sequence.map((g, i) => (
-            <span key={i} className={`text-xl transition-opacity ${i < showIndex ? 'opacity-30' : i === showIndex ? 'opacity-100' : 'opacity-10'}`}>
-              {i < showIndex ? '•' : i === showIndex ? g : '○'}
-            </span>
-          ))}
-        </div>
-      )}
-
-      <p className="text-xs text-ink-muted">
+      {/* Status line */}
+      <p className="text-xs text-ink-muted text-center">
         {phase === 'showing' && 'Watch the glyphs carefully…'}
         {phase === 'input' && 'Tap the glyphs in order.'}
-        {phase === 'correct' && `Round ${round + 1} complete! Next round…`}
-        {phase === 'wrong' && 'Wrong glyph!'}
+        {phase === 'correct' && `Round ${round + 1} complete!${round + 1 < LIBRARY_MAX_ROUNDS ? ' Next round…' : ''}`}
+        {phase === 'wrong' && (retriesLeft === 0 && roundsCompleted === 0
+          ? 'Wrong glyph! Retrying…'
+          : retriesLeft === 0
+          ? `Wrong glyph! Completed ${roundsCompleted} round${roundsCompleted !== 1 ? 's' : ''}.`
+          : 'Wrong glyph! Retrying…'
+        )}
         {phase === 'done' && `Completed ${roundsCompleted} of ${LIBRARY_MAX_ROUNDS} rounds.`}
       </p>
     </div>

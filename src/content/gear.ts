@@ -90,7 +90,7 @@ export const GEAR: Record<string, GearDef> = {
     name: 'Lockpick Gloves',
     slot: 'tool',
     statBonuses: { DX: 5 },
-    description: 'Nimble fingers for traps and treasure. +5 Dexterity.',
+    description: 'Nimble fingers for traps and treasure. +5 Dexterity — widens sweet-spot zones in the Lockpicking trial.',
   },
 
   // -------------------------------------------------------------------------

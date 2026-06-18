@@ -99,6 +99,9 @@ export const MINE_ORES: Record<string, MineOreDef> = {
     floorMin: 10, weight: 0.8, durability: 5, grants: { kind: 'material', material: 'gemstone', amount: [1, 1] },
   },
   energy_gem: {
+    // weight: 0 excludes this from the weighted ore pool. It is placed by a dedicated
+    // generation step (generateMine step 7) at fixed density (1 per ENERGY_GEM_INTERVAL
+    // open floor cells). Any ore with special placement logic should use weight: 0.
     key: 'energy_gem', name: 'Energy Gem', glyph: '⚡', color: '#22d3ee',
     floorMin: 1, weight: 0, durability: 1, grants: { kind: 'stamina', amount: [11, 11] },
   },

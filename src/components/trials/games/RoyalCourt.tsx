@@ -2,55 +2,97 @@
 // Navigate social exchanges at court; choose responses that build favour with the queen.
 
 import { useState, useMemo } from 'react';
+import * as sfx from '@/lib/sfx';
 import {
   ROYAL_COURT_EXCHANGES,
   ROYAL_COURT_EXCHANGE_COUNT,
+  type CourtExchange,
 } from '@/content/trials';
 
-interface RoyalCourtProps {
-  onFinish: (score01: number) => void;
+// Time (ms) a chosen response is visible before the scene transitions.
+const ADVANCE_DELAY_MS = 700;
+// Duration (ms) of the fade-out/fade-in between exchanges.
+const TRANSITION_MS = 180;
+
+export interface CourtChoiceRecord {
+  npc: string;
+  label: string;
+  favorDelta: number;
 }
 
-function pickExchanges(exchanges: typeof ROYAL_COURT_EXCHANGES): typeof ROYAL_COURT_EXCHANGES {
-  const shuffled = [...exchanges].sort(() => Math.random() - 0.5);
-  return shuffled.slice(0, ROYAL_COURT_EXCHANGE_COUNT);
+interface RoyalCourtProps {
+  onFinish: (score01: number, history: CourtChoiceRecord[]) => void;
+}
+
+function pickExchanges(exchanges: CourtExchange[]): CourtExchange[] {
+  const arr = [...exchanges];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr.slice(0, ROYAL_COURT_EXCHANGE_COUNT);
 }
 
 export function RoyalCourt({ onFinish }: RoyalCourtProps) {
   const exchanges = useMemo(() => pickExchanges(ROYAL_COURT_EXCHANGES), []);
-  // Max possible favour = sum of best choice per exchange
+  // Max possible favour = sum of the best choice delta across all selected exchanges.
   const maxFavor = useMemo(
     () => exchanges.reduce((sum, e) => sum + Math.max(...e.choices.map((c) => c.favorDelta)), 0),
     [exchanges],
   );
 
+  if (import.meta.env.DEV && maxFavor <= 0) {
+    console.error('RoyalCourt: maxFavor is 0 or negative — every exchange needs at least one positive favorDelta (see src/content/trials.ts)');
+  }
+
   const [exchangeIndex, setExchangeIndex] = useState(0);
   const [favor, setFavor] = useState(0);
   const [selected, setSelected] = useState<number | null>(null);
   const [done, setDone] = useState(false);
+  const [transitioning, setTransitioning] = useState(false);
+  const [choiceHistory, setChoiceHistory] = useState<CourtChoiceRecord[]>([]);
 
   const exchange = exchanges[exchangeIndex];
 
   const choose = (choiceIdx: number) => {
-    if (selected !== null || done) return;
+    if (selected !== null || done || transitioning) return;
     const choice = exchange.choices[choiceIdx];
     setSelected(choiceIdx);
+
     const newFavor = Math.max(0, favor + choice.favorDelta);
     setFavor(newFavor);
 
+    const newHistory: CourtChoiceRecord[] = [
+      ...choiceHistory,
+      { npc: exchange.npc, label: choice.label, favorDelta: choice.favorDelta },
+    ];
+    setChoiceHistory(newHistory);
+
+    if (choice.favorDelta > 0) sfx.play('courtFavor');
+    else if (choice.favorDelta < 0) sfx.play('courtDisfavor');
+
+    const isLast = exchangeIndex + 1 >= exchanges.length;
     setTimeout(() => {
-      if (exchangeIndex + 1 >= exchanges.length) {
+      if (isLast) {
         setDone(true);
-        // Score = clamp(favor / maxFavor, 0, 1)
-        onFinish(Math.min(1, Math.max(0, newFavor / maxFavor)));
+        sfx.play('courtComplete');
+        onFinish(Math.min(1, Math.max(0, newFavor / maxFavor)), newHistory);
       } else {
-        setExchangeIndex(exchangeIndex + 1);
-        setSelected(null);
+        setTransitioning(true);
+        setTimeout(() => {
+          setExchangeIndex((i) => i + 1);
+          setSelected(null);
+          setTransitioning(false);
+        }, TRANSITION_MS);
       }
-    }, 900);
+    }, ADVANCE_DELAY_MS);
   };
 
   const favorPct = maxFavor > 0 ? Math.min(100, (favor / maxFavor) * 100) : 0;
+
+  // Bar shifts from rose → amber → emerald as the player crosses star thresholds.
+  const barColor =
+    favorPct >= 75 ? 'bg-emerald-500/70' : favorPct >= 40 ? 'bg-amber-400/70' : 'bg-rose-400/60';
 
   return (
     <div className="flex flex-col gap-4 px-2">
@@ -62,26 +104,35 @@ export function RoyalCourt({ onFinish }: RoyalCourtProps) {
         </div>
         <div className="h-2.5 w-full overflow-hidden rounded-full border border-gold-deep/30 bg-parchment-300/50">
           <div
-            className="h-full bg-gold-bright/70 transition-all duration-500"
+            className={`h-full transition-all duration-500 ${barColor}`}
             style={{ width: `${favorPct}%` }}
           />
         </div>
       </div>
 
-      {/* Exchange header */}
+      {/* Exchange counter */}
       <div className="text-xs font-display text-ink-muted">
         Exchange {exchangeIndex + 1} of {exchanges.length}
       </div>
 
       {!done ? (
-        <>
+        <div
+          className="space-y-3"
+          style={{
+            opacity: transitioning ? 0 : 1,
+            transition: `opacity ${TRANSITION_MS}ms ease`,
+          }}
+        >
           {/* NPC dialogue */}
           <div className="rounded-md border border-gold-deep/30 bg-parchment-100/70 p-4">
-            <div className="mb-1 font-display text-xs font-bold text-ink-muted">{exchange.npc}</div>
+            <div className="mb-1 flex items-center gap-1.5 font-display text-xs font-bold text-ink-muted">
+              {exchange.icon && <span>{exchange.icon}</span>}
+              <span>{exchange.npc}</span>
+            </div>
             <p className="text-sm italic text-ink">{exchange.dialogue}</p>
           </div>
 
-          {/* Choices */}
+          {/* Choices — delta is hidden until the result recap */}
           <div className="space-y-2">
             {exchange.choices.map((choice, idx) => {
               const isSelected = selected === idx;
@@ -105,16 +156,11 @@ export function RoyalCourt({ onFinish }: RoyalCourtProps) {
                   }`}
                 >
                   {choice.label}
-                  {isSelected && (
-                    <span className="ml-2 text-xs font-bold">
-                      {positive ? `(+${choice.favorDelta} favour ✓)` : negative ? `(${choice.favorDelta} favour ✗)` : '(neutral)'}
-                    </span>
-                  )}
                 </button>
               );
             })}
           </div>
-        </>
+        </div>
       ) : (
         <div className="space-y-3 text-center">
           <div className="text-3xl">{favorPct >= 75 ? '👑✨' : favorPct >= 40 ? '👑' : '🎭'}</div>

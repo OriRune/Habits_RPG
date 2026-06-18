@@ -7,18 +7,20 @@ import {
   facedCell,
   isVisible,
   sightRadiusFor,
+  pendingActKind,
   splitHaul,
   FOREST_DEATH_KEEP,
   FOREST_WINDUP_MS,
   type ForestTile,
   type ForestBeast,
+  type PendingActKind,
 } from '@/engine/forest';
 import { cameraWindow, VIEW } from '@/engine/crawl';
 import { useSmoothCamera, type SmoothCameraLayout } from '@/hooks/useSmoothCamera';
 import { bandForStage, type ForestBandId } from '@/engine/crawlBiomes';
 import { getSpell } from '@/engine/spells';
 import type { Reward } from '@/engine/challenges';
-import { FOREST_NODES, FOREST_BEASTS, SHRINE_EVENTS } from '@/content/forest';
+import { FOREST_NODES, FOREST_BEASTS, SHRINE_EVENTS, type ShrineEventKind } from '@/content/forest';
 import { BOONS } from '@/content/boons';
 import { forestThicketTree, forestFloorTile, forestNodeSprite } from '@/lib/minigameArt';
 import { getMaterial } from '@/engine/materials';
@@ -30,6 +32,7 @@ import { useCoopStore } from '@/net/coop/session';
 import { useAuthStore } from '@/net/auth';
 import { usePartyStore } from '@/hooks/useParty';
 import { CoopToasts } from '@/components/minigame/CoopToasts';
+import * as sfx from '@/lib/sfx';
 
 const CELL = 52; // px per tile
 const BOARD_PX = VIEW * CELL; // 572px
@@ -48,6 +51,27 @@ const TILE_BG: Record<ForestTile['kind'], [number, number, number]> = {
   node:     [52,  48,  29],
   shrine:   [88,  72,  38],
   boon:     [120, 90,  10],  // gold hue
+};
+
+/** Per-shrine-kind border glow so Cache / Blessing / Den are visually distinct before activation. */
+const SHRINE_KIND_BORDER: Record<ShrineEventKind, string> = {
+  cache:    `inset 0 0 0 2px rgba(255,210,80,0.70), inset 0 0 12px rgba(255,190,40,0.40)`,
+  blessing: `inset 0 0 0 2px rgba(100,220,150,0.70), inset 0 0 12px rgba(60,200,120,0.35)`,
+  den:      `inset 0 0 0 2px rgba(220,80,80,0.75),  inset 0 0 12px rgba(200,40,40,0.35)`,
+};
+const SHRINE_KIND_GLOW: Record<ShrineEventKind, string> = {
+  cache:    'drop-shadow(0 0 6px rgba(255,200,60,0.9))',
+  blessing: 'drop-shadow(0 0 7px rgba(80,220,140,0.9))',
+  den:      'drop-shadow(0 0 7px rgba(220,80,80,0.9))',
+};
+
+/** Act context hint labels rendered in the HUD while a run is active. */
+const ACT_HINTS: Partial<Record<PendingActKind, { text: string; color: string }>> = {
+  advance: { text: '▼ push deeper', color: '#34d399' },
+  attack:  { text: '⚔ attack',      color: '#f87171' },
+  shrine:  { text: '✦ activate shrine', color: '#fbbf24' },
+  harvest: { text: '✿ harvest',     color: '#86efac' },
+  chop:    { text: '🪓 chop',        color: '#d97706' },
 };
 
 /** Blend TILE_BG base colour toward the band's accent hue for visual differentiation. */
@@ -226,6 +250,11 @@ export function ForestRunOverlay() {
   const [hitAt, setHitAt] = useState(0);
   const [wipeAt, setWipeAt] = useState(0);
   const stageMountRef = useRef(false);
+  // Charge bar — updated imperatively each rAF frame to avoid 60fps React re-renders.
+  const chargeBarRef = useRef<HTMLDivElement>(null);
+  // Guardian arrival alert (timestamp; 0 = none active).
+  const [guardianAlert, setGuardianAlert] = useState(0);
+  const prevGuardianStageRef = useRef<number | null>(null);
   const prevRef = useRef<{
     tiles: ForestTile[][];
     beasts: ForestBeast[];
