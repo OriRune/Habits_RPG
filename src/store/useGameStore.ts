@@ -73,6 +73,7 @@ import {
   generateMine,
   mineSnapshot,
   tryMove,
+  tryDash as mineTryDash,
   strike,
   stepMonsters,
   coopClientStep,
@@ -89,6 +90,7 @@ import {
   generateForest,
   forestSnapshot,
   tryMove as forestTryMove,
+  tryDash as forestTryDash,
   act as forestActFn,
   castSpell as forestCastSpellFn,
   stepBeasts,
@@ -466,6 +468,10 @@ export interface GameState {
   mineMove: (dir: Dir) => void;
   /** Swing the pick at the faced cell (dig rock/ore or hit a monster). */
   mineStrike: () => void;
+  /** Charged heavy swing — higher damage, staggers monsters, clears rock faster. */
+  mineStrikeCharged: () => void;
+  /** Dash in `dir` (AG-gated cooldown; grants brief i-frame). */
+  mineDash: (dir: Dir, nowMs: number) => void;
   /** Advance monsters on the loop's clock; commits the haul if the miner falls. */
   /** `coPlayers` (co-op) lets monsters target the nearest of all players. */
   mineTick: (nowMs: number, coPlayers?: ReadonlyArray<{ r: number; c: number }>) => void;
@@ -499,6 +505,10 @@ export interface GameState {
   forestMove: (dir: Dir) => void;
   /** Act on the faced cell (slash a beast or gather a node). */
   forestAct: () => void;
+  /** Charged heavy act — higher damage, staggers beasts, chops trees faster. */
+  forestActCharged: () => void;
+  /** Dash in `dir` in the forest (AG-gated cooldown; grants brief i-frame + re-lights fog). */
+  forestDash: (dir: Dir, nowMs: number) => void;
   /** Advance beasts on the loop's clock; flips the run to 'ended' if the forager falls. */
   /** `coPlayers` (co-op) lets beasts target the nearest of all players. */
   forestTick: (nowMs: number, coPlayers?: ReadonlyArray<{ r: number; c: number }>) => void;
@@ -724,8 +734,22 @@ function commitArena(state: GameState, run: ArenaState): GameState {
     arena: null,
     deepestArenaTier: won ? Math.max(state.deepestArenaTier, run.tier) : state.deepestArenaTier,
   };
-  const trickle = Math.round((4 + run.tier) * (0.4 + 0.6 * damageProgress(run)));
-  applyReward(next, { ...arenaReward(run), statXp: { ST: trickle, DX: trickle, EN: trickle } });
+  // Distribute XP across whichever stats the player actually used in this run.
+  // Budget scales with tier and how much of the boss was worn down (same as before).
+  const budget = Math.round((4 + run.tier) * (0.4 + 0.6 * damageProgress(run)));
+  const usage = run.statUsage;
+  const totalUsage = (Object.values(usage) as number[]).reduce((sum, n) => sum + n, 0);
+  let statXp: Partial<Record<StatId, number>>;
+  if (totalUsage > 0) {
+    statXp = {};
+    for (const [stat, count] of Object.entries(usage) as [StatId, number][]) {
+      if (count > 0) statXp[stat] = Math.max(1, Math.round((count / totalUsage) * budget));
+    }
+  } else {
+    // Fallback: player entered but dealt no actions — still reward ST as default
+    statXp = { ST: budget };
+  }
+  applyReward(next, { ...arenaReward(run), statXp });
   checkLevelUp(next);
   return next;
 }
@@ -1859,6 +1883,9 @@ export const useGameStore = create<GameState>()(
           const toolKey = equipment.tool;
           const toolGear = toolKey ? getGear(toolKey) : undefined;
           const pickaxePower = toolGear?.mining?.power ?? 0;
+          // AG level for dash cooldown + move speed (gear bonuses included via fighter)
+          const agBonus = (gearBonuses(stateWithGear).statBonuses.AG ?? 0);
+          const agLevel = s.character.statLevels.AG + agBonus;
 
           const mining = generateMine(
             1,
@@ -1876,6 +1903,7 @@ export const useGameStore = create<GameState>()(
               weapon: fighter.weapon,
               knownSpells: s.knownSpells,
               pickaxePower,
+              agLevel,
             },
             // Floor 1 from the per-floor seed (co-op) so every client matches; solo
             // falls back to the live mineRng (Math.random).
@@ -1900,6 +1928,20 @@ export const useGameStore = create<GameState>()(
       mineStrike: () =>
         set((s) =>
           s.mining && s.mining.status === 'active' ? { mining: strike(s.mining, mineRng) } : s,
+        ),
+
+      mineStrikeCharged: () =>
+        set((s) =>
+          s.mining && s.mining.status === 'active'
+            ? { mining: strike(s.mining, mineRng, Date.now(), true) }
+            : s,
+        ),
+
+      mineDash: (dir, nowMs) =>
+        set((s) =>
+          s.mining && s.mining.status === 'active'
+            ? { mining: mineTryDash(s.mining, dir, nowMs) }
+            : s,
         ),
 
       mineTick: (nowMs, coPlayers) =>
@@ -2039,6 +2081,9 @@ export const useGameStore = create<GameState>()(
           const toolKey = equipment.tool;
           const toolGear = toolKey ? getGear(toolKey) : undefined;
           const chopPower = toolGear?.chopping?.power ?? 0;
+          // AG level for dash cooldown + move speed
+          const agBonusF = (gearBonuses(stateWithGear).statBonuses.AG ?? 0);
+          const agLevelF = s.character.statLevels.AG + agBonusF;
 
           const forest = generateForest(
             1,
@@ -2056,6 +2101,7 @@ export const useGameStore = create<GameState>()(
               weapon: fighter.weapon,
               knownSpells: s.knownSpells,
               chopPower,
+              agLevel: agLevelF,
             },
             // Stage 1 from the per-stage seed (co-op parity); solo uses live forestRng.
             seed !== undefined ? mulberry32(floorSeed(seed, 1)) : forestRng,
@@ -2079,6 +2125,20 @@ export const useGameStore = create<GameState>()(
       forestAct: () =>
         set((s) =>
           s.forest && s.forest.status === 'active' ? { forest: forestActFn(s.forest, forestRng) } : s,
+        ),
+
+      forestActCharged: () =>
+        set((s) =>
+          s.forest && s.forest.status === 'active'
+            ? { forest: forestActFn(s.forest, forestRng, Date.now(), true) }
+            : s,
+        ),
+
+      forestDash: (dir, nowMs) =>
+        set((s) =>
+          s.forest && s.forest.status === 'active'
+            ? { forest: forestTryDash(s.forest, dir, nowMs) }
+            : s,
         ),
 
       forestTick: (nowMs, coPlayers) =>

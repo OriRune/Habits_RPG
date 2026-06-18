@@ -47,7 +47,7 @@ const SPELL_CD_MS = 520;
 const ITEM_CD_MS = 700;
 const IFRAME_MS = 550;
 const STA_REGEN_PER_SEC = 3;
-const MP_REGEN_PER_SEC = 1.2;
+const MP_REGEN_PER_SEC = 1.8; // raised from 1.2 so spells can interleave with attacks
 const PROJECTILE_STEP_MS = 60;
 const TURN_MS = 1100;
 const BASE_ATTACK_STA = 2;
@@ -113,9 +113,8 @@ export interface Projectile {
   id: number;
   pos: Cell;
   dir: Dir;
+  /** Pre-defense damage. Defense is applied on impact (boss: bossDefense; minions: 0). */
   dealt: number;
-  weak: boolean;
-  resist: boolean;
   nextStepAtMs: number;
 }
 
@@ -211,10 +210,18 @@ export interface ArenaState {
   speed: number;
   invincible: boolean;
 
+  // Per-stat usage tallies (incremented by player actions for usage-based XP)
+  statUsage: Partial<Record<StatId, number>>;
+
   // Clocks
   lastTickMs: number;
   lastHitAtMs: number;
+  /** Timestamp of the most recent successful dodge (for "Dodge!" UI floater). */
+  lastDodgedAtMs: number;
   cooldownUntilMs: number;
+  /** Independent cooldown clock for spells — separate from attack cooldown so casts
+   *  can interleave with melee/ranged attacks without blocking each other. */
+  spellCooldownUntilMs: number;
   itemCooldownUntilMs: number;
   bossNextActionMs: number;
   bossNextMoveMs: number;
@@ -505,9 +512,12 @@ export function createArena(
     ringNextHitMs: {},
     speed,
     invincible: opts.invincible ?? false,
+    statUsage: {},
     lastTickMs: startMs,
     lastHitAtMs: -Infinity,
+    lastDodgedAtMs: -Infinity,
     cooldownUntilMs: 0,
+    spellCooldownUntilMs: 0,
     itemCooldownUntilMs: 0,
     bossNextActionMs: startMs + BOSS_OPENING_GRACE_MS,
     bossNextMoveMs: startMs + BOSS_OPENING_GRACE_MS,
@@ -538,6 +548,7 @@ function clone(s: ArenaState): ArenaState {
     ringNextHitMs: { ...s.ringNextHitMs },
     buffs: { ...s.buffs },
     inventory: { ...s.inventory },
+    statUsage: { ...s.statUsage },
   };
 }
 
@@ -551,6 +562,9 @@ function resolveBossDown(s: ArenaState, now: number, rng: RNG): void {
   if (s.phaseIndex < s.phases.length - 1) {
     s.phaseIndex += 1;
     applyArenaPhase(s, s.phases[s.phaseIndex]);
+    // Recompute minion stats from the new phase so later-phase minions scale correctly.
+    s.minionHp = Math.max(1, Math.round(s.phases[s.phaseIndex].hp * MINION_HP_FRAC));
+    s.minionAttack = Math.max(1, Math.round(s.phases[s.phaseIndex].attack * MINION_ATK_FRAC));
     s.enemyStatuses = [];
     s.telegraphs = [];
     s.projectiles = [];
@@ -626,6 +640,9 @@ export function arenaMelee(state: ArenaState, now: number, rng: RNG = Math.rando
   );
   hurtEnemy(s, target, dealt, now, rng);
   s.cooldownUntilMs = now + ATTACK_CD_MS;
+  // Usage tracking for usage-based XP
+  s.statUsage.ST = (s.statUsage.ST ?? 0) + 1;
+  s.statUsage.EN = (s.statUsage.EN ?? 0) + 1;
   return s;
 }
 
@@ -638,19 +655,21 @@ export function arenaRanged(state: ArenaState, now: number, rng: RNG = Math.rand
   const staCost = s.weapon.attackStat === 'DX' ? s.weapon.staminaCost : BASE_ATTACK_STA;
   const full = s.sta >= staCost;
   s.sta = Math.max(0, s.sta - staCost);
-  const { dealt, weak, resist } = attackRoll(
-    s.rangedPower, bonus, 'DX', s.weakTo, s.resistTo, full, s.bossDefense, rng,
+  // Store pre-defense damage so the correct target's defense can be applied on impact.
+  const { dealt } = attackRoll(
+    s.rangedPower, bonus, 'DX', s.weakTo, s.resistTo, full, 0, rng,
   );
   s.projectiles.push({
     id: s.seq++,
     pos: step(s.player.pos, s.player.facing),
     dir: s.player.facing,
     dealt,
-    weak,
-    resist,
     nextStepAtMs: now + PROJECTILE_STEP_MS,
   });
   s.cooldownUntilMs = now + ATTACK_CD_MS;
+  // Usage tracking for usage-based XP
+  s.statUsage.DX = (s.statUsage.DX ?? 0) + 1;
+  s.statUsage.EN = (s.statUsage.EN ?? 0) + 1;
   return s;
 }
 
@@ -697,15 +716,25 @@ export function arenaCast(
   rng: RNG = Math.random,
   opts?: { dir?: Dir; target?: Cell },
 ): ArenaState {
-  if (state.status !== 'active' || now < state.cooldownUntilMs) return state;
+  if (state.status !== 'active' || now < state.spellCooldownUntilMs) return state;
   if (!state.knownSpells.includes(spellKey)) return state;
   const spell = getSpell(spellKey);
   if (!spell || state.mp < spell.mpCost) return state;
   const s = clone(state);
   if (opts?.dir) s.player.facing = opts.dir;
   s.mp -= spell.mpCost;
-  s.cooldownUntilMs = now + SPELL_CD_MS;
+  s.spellCooldownUntilMs = now + SPELL_CD_MS;
   const schoolStat = SCHOOL_STAT[spell.school];
+  // Usage tracking (damage/rune/ring scale with WI; support with KN; illusion with CH)
+  if (spell.school === 'damage' || spell.mechanic === 'rune-fire' || spell.mechanic === 'rune-ice'
+      || spell.mechanic === 'rune-poison' || spell.mechanic === 'ring-of-fire') {
+    s.statUsage.WI = (s.statUsage.WI ?? 0) + 1;
+  } else if (spell.school === 'support' || spell.mechanic === 'teleport') {
+    s.statUsage.KN = (s.statUsage.KN ?? 0) + 1;
+  } else {
+    // illusion school
+    s.statUsage.CH = (s.statUsage.CH ?? 0) + 1;
+  }
 
   // --- Rune placement mechanics ---
   if (spell.mechanic === 'rune-fire' || spell.mechanic === 'rune-ice' || spell.mechanic === 'rune-poison') {
@@ -808,7 +837,11 @@ function mitigatedBossHit(s: ArenaState, raw: number, school: 'physical' | 'magi
 function strikePlayer(s: ArenaState, raw: number, school: 'physical' | 'magic', now: number, rng: RNG): void {
   if (s.invincible) return;
   if (now - s.lastHitAtMs < IFRAME_MS) return;
-  if (rng() < s.dodge) return;
+  if (rng() < s.dodge) {
+    s.lastDodgedAtMs = now;
+    s.statUsage.AG = (s.statUsage.AG ?? 0) + 1;
+    return;
+  }
   const dealt = mitigatedBossHit(s, raw, school, now);
   s.hp -= dealt;
   s.lastHitAtMs = now;
@@ -822,7 +855,13 @@ function stepProjectiles(s: ArenaState, now: number, rng: RNG): void {
     while (now >= p.nextStepAtMs && !done) {
       if (isBlocked(s, p.pos) || !inBoard(p.pos, s.radius)) { done = true; break; }
       const here = enemyAt(s, p.pos);
-      if (here) { hurtEnemy(s, here, p.dealt, now, rng); done = true; break; }
+      if (here) {
+        // Apply the correct target's defense. Minions have no separate defense stat.
+        const dmg = here.kind === 'boss' ? Math.max(1, p.dealt - s.bossDefense) : p.dealt;
+        hurtEnemy(s, here, dmg, now, rng);
+        done = true;
+        break;
+      }
       p.pos = step(p.pos, p.dir);
       p.nextStepAtMs += PROJECTILE_STEP_MS;
     }
