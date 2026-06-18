@@ -2,6 +2,8 @@
 
 *Prepared as a design foundation for the next-level improvement plan.*
 
+> **Phase history note.** Commit `619acb6` ("Phase 1: dash/dodge, charged swings, and stat-scaled crawler actions") landed significant new mechanics in both the Deep Mine and the Wild Forest. Commit `cfedc4b` ("Hex Tactics Phase 2: spell mechanics, guard, threat telegraph, Rooftop Chase overhaul") targeted **Hex Tactics** (`hexBattle.ts`) and the Rooftop Chase trial — it does **not** add guard/block or new telegraphs to either crawler. This document reflects the post-Phase-1 state; everything below has been verified against current source.
+
 ---
 
 ## Table of Contents
@@ -20,15 +22,15 @@
 
 ## 1. Executive Summary
 
-The Deep Mine and Wild Forest are HabitsRPG's two real-time grid-crawler minigames. They share an engine (`src/engine/crawl.ts`) and a nearly identical control scheme: move on a tick (150 ms/step), act on a tick (240 ms/swing), fight procedurally generated enemies, gather resources, push deeper, and bank on exit.
+The Deep Mine and Wild Forest are HabitsRPG's two real-time grid-crawler minigames. They share an engine (`src/engine/crawl.ts`) and a nearly identical control scheme: move on a tick, act on a tick (mine/fight/gather), battle procedurally generated enemies, gather resources, push deeper, and bank on exit.
 
-**The technical skeleton is genuinely strong.** Deterministic seeded generation, a clean BFS flow-field AI, a host-authoritative co-op layer with per-player bodies and shared world, and a well-separated engine/hook/store/view architecture all give these games a solid foundation. They play without stutter, are instantly understandable, and are already co-op–capable.
+**Phase 1 substantially raised the skill ceiling.** Both crawlers now have a dash (Shift — skips two cells, grants i-frames, AG-scaled cooldown), a charged/heavy swing (hold Space ~480 ms — ×1.75 damage + stagger), AG-scaled movement speed, and ST-scaled mining/chop speed. All eight character stats now have a mechanical effect. These additions give players genuine moment-to-moment decisions: time the dash to dodge a windup hit, hold for a charged swing to stagger a dangerous monster, build around AG for mobility or ST for raw throughput.
 
-**The gameplay surface is thin.** Moment-to-moment combat is a single repeated action with no combos, dashes, or positioning decisions. Six of the eight character stats have either no effect or a marginal spellcasting effect that most players never engage with. The loot economy produces gold and materials (economy fuel) but no run-defining upgrades or build choices. The Mine has no death penalty, removing push-your-luck tension almost entirely. Both games lack a win condition, a score, or a mastery curve — they are resource-collection treadmills with escalating numbers but flat skill expression.
+**The technical skeleton is genuinely strong.** Deterministic seeded generation, a clean BFS flow-field AI, a host-authoritative co-op layer with per-player bodies and shared world, and a well-separated engine/hook/store/view architecture all give these games a solid foundation.
 
-The Wild Forest is the more interesting of the two, primarily because of its sleeping-beast ambush system, prey-vs-predator AI duality, death-forfeits-half-haul stakes, and the maze + fog combination. The Mine is technically simpler and feels more like a chore than a game.
+**The gameplay surface still has meaningful gaps.** Despite Phase 1 improvements, the loot economy produces gold and materials (economy fuel) but no run-defining upgrades or build choices — every run is mechanically identical to the last at the same depth. The Mine has no death penalty. Both games lack a win condition, a score, or a mastery curve beyond "go deeper." Phase 1 opened a skill ceiling; the next phase needs to widen the strategy layer.
 
-Both are ripe for deep improvement without architectural surgery — the shared engine, stat system, and co-op transport are reusable exactly as-is.
+The Wild Forest remains the more interesting game: sleeping-beast ambush, prey-vs-predator AI duality, death-forfeits-half-haul stakes, maze + fog, and shrines all combine to give individual runs texture. The Mine still feels more like a resource collection chore with combat obstacles.
 
 ---
 
@@ -36,7 +38,7 @@ Both are ripe for deep improvement without architectural surgery — the shared 
 
 **File:** `src/engine/crawl.ts`
 
-All grid geometry, pathfinding, and timing constants shared between the two minigames live here.
+All grid geometry, pathfinding, timing constants, and Phase 1 mechanics shared between the two minigames live here.
 
 ### 2.1 Camera Window
 
@@ -44,7 +46,7 @@ All grid geometry, pathfinding, and timing constants shared between the two mini
 VIEW = 11   // crawl.ts:42 — both games show an 11×11 viewport
 ```
 
-`cameraWindow(player, rows, cols)` centers the viewport on the player, clamped to grid bounds (`crawl.ts:48–57`). Effective visible area: 11×11 = 121 cells, or roughly 6 cells in each cardinal direction.
+`cameraWindow(player, rows, cols)` centers the viewport on the player, half = `floor(VIEW/2) = 5`, clamped to grid bounds (`crawl.ts:48–57`). Effective visible area: 11×11 = 121 cells, 5 cells in each cardinal direction.
 
 ### 2.2 Stamina Formula
 
@@ -52,48 +54,65 @@ VIEW = 11   // crawl.ts:42 — both games show an 11×11 viewport
 dungeonStamina(enLevel) = 50 + enLevel   // crawl.ts:67–69
 ```
 
-Deliberately larger than the Arena/battle pool (`12 + EN`). At EN=0 you have 50 stamina; at EN=10 you have 60. The large base means EN upgrades are low-leverage early.
+This overrides the base `maxSta = 12 + EN` from `combat.ts:52` with a crawler-specific pool. At EN=0 you have 50 stamina; at EN=10 you have 60.
 
 ### 2.3 BFS Flow-Field Pathfinding (Enemy AI)
-
-Three cooperative functions:
 
 | Function | Purpose |
 |----------|---------|
 | `floodField(target, rows, cols, passable)` | Single-source BFS from one player; returns distance map (`crawl.ts:81`) |
-| `floodFieldMulti(targets[], …)` | Multi-source BFS — each cell maps to nearest player. Co-op targeting (`crawl.ts:114`) |
-| `flowStep(from, field, blocked)` | Given a distance map, step toward smallest neighbor not in `blocked` (`crawl.ts:150`) |
+| `floodFieldMulti(targets[], …)` | Multi-source BFS — each cell maps to nearest player; co-op targeting (`crawl.ts:114`) |
+| `flowStep(from, field, blocked)` | Step toward smallest-distance neighbor not in `blocked` (`crawl.ts:150`) |
 
-Enemies are not baked into the field — they share the same field but each consults `blocked` (other monsters + players) to avoid stacking. Enemy AI is therefore cheap but emergent: monsters funnel through chokepoints naturally.
+Enemies share the same field but each consults `blocked` (other monsters + players) to avoid stacking. Monster AI is cheap but emergent: enemies funnel through chokepoints naturally.
 
 ### 2.4 Status Effects
 
-All statuses are real-time, ms-gated:
+All statuses are real-time, ms-gated. Active statuses: `burn | poison | freeze | bless | weaken | blind`.
 
 ```
-DOT_TICK_MS       = 1500   // crawl.ts:201 — burn/poison tick interval
-FREEZE_DURATION_MS = 3000  // crawl.ts:203
+DOT_TICK_MS        = 1500   // crawl.ts:201 — burn/poison tick interval
+FREEZE_DURATION_MS = 3000   // crawl.ts:203
 ```
 
-`applyStatus` upserts (extending expiry and raising magnitude, never stacking multiple instances — `crawl.ts:206`). Active statuses: `burn | poison | freeze | bless | weaken | blind`.
+`applyStatus` upserts (extending expiry and raising magnitude, never stacking multiple instances — `crawl.ts:206`).
 
 ### 2.5 Regen Intervals
 
 ```
-STA_REGEN_MS  = 1200   // crawl.ts:263 — +1 stamina per tick
-MP_REGEN_MS   = 2000   // crawl.ts:265 — +1 mana per tick
-RING_HIT_CD_MS =  600  // crawl.ts:267 — ring-of-fire hit interval
-RING_DURATION_MS = 8000 // crawl.ts:269
+STA_REGEN_MS     = 1200   // crawl.ts:263 — +1 stamina per tick
+MP_REGEN_MS      = 2000   // crawl.ts:265 — +1 mana per tick
+RING_HIT_CD_MS   =  600   // crawl.ts:267 — ring-of-fire hit interval
+RING_DURATION_MS = 8000   // crawl.ts:269
 ```
 
-### 2.6 Damage Modifiers
+### 2.6 Phase 1: Dash, Charged Swing, and Stat-Scaled Timing
+
+All Phase 1 constants are exported from `crawl.ts` so both crawlers share identical behavior:
+
+```
+DASH_BASE_CD_MS    = 2000   // crawl.ts:296 — base dash cooldown at AG=0
+CHARGE_SWING_COUNT =    2   // crawl.ts:298 — hold Space this many intervals to charge
+CHARGE_DAMAGE_MULT = 1.75   // crawl.ts:300 — damage multiplier for charged swing
+STAGGER_MS         =  500   // crawl.ts:302 — freeze duration applied on charged hit
+```
+
+**AG-scaled functions:**
+```
+dashCooldown(agLevel)  = max(800, 2000 − agLevel×40)   // crawl.ts:308–310
+moveInterval(agLevel)  = max(100, 150 − agLevel×2)      // crawl.ts:316–318
+```
+
+At AG=0 the dash cooldown is 2 s and movement is 150 ms/cell. At AG=25 (stat cap) the cooldown floors at 800 ms and movement reaches 100 ms/cell. Both values are baked into run state at entry and do not change mid-run.
+
+### 2.7 Damage Modifiers
 
 From `src/engine/combat.ts`:
-- `weakTo` stat: ×1.25 damage taken (`combat.ts:267`)
-- `resistTo` stat: ×0.6 damage taken (`combat.ts:268`)
-- Exhausted (insufficient stamina): ×0.5 damage dealt (`combat.ts:269`)
+- `weakTo` stat: ×1.25 damage taken (`crawl.ts:328–335`)
+- `resistTo` stat: ×0.6 damage taken
+- Exhausted (insufficient stamina): ×0.5 damage dealt (`combat.ts:267–269`)
 
-Base damage roll: `base = power + weaponBonus`, then `variance = base × (0.85 + rng × 0.3)` = ±15% (`combat.ts:244–252`), then weak/resist/exhausted modifiers, then `max(1, round(dmg) - defense)`.
+Base damage roll: `base = power + weaponBonus`; variance = `base × (0.85 + rng × 0.3)` = ±15% (`combat.ts:244–246`); then weak/resist/exhausted modifiers; then `max(1, round(dmg) − defense)`.
 
 ---
 
@@ -108,56 +127,68 @@ Base damage roll: `base = power + weaponBonus`, then `variance = base × (0.85 +
 
 ### 3.1 Entry and Session Setup
 
-**Energy cost:** `MINE_ENERGY_COST = 2` (`mining.ts:68`). Blocked unless `energy >= 2` or `settings.unlimitedEnergy`. Energy is deducted at run start in `beginMining` (`useGameStore.ts:1887`).
+**Energy cost:** `MINE_ENERGY_COST = 2` (`mining.ts:73`). Blocked unless `energy >= 2` or `settings.unlimitedEnergy`. Energy is deducted at run start in `beginMining` (`useGameStore.ts:1915`).
 
-**Free tool:** If the player owns no mining/chopping tool, `stone_pickaxe` is granted and auto-equipped to the `tool` slot (`useGameStore.ts:1837–1846`).
+**Free tool:** If the player owns no mining tool, `stone_pickaxe` is granted and equipped to the tool slot (`useGameStore.ts:1858–1870`).
 
-**Snapshot:** Combat stats are snapshotted once at entry via `deriveCombatant` (`combat.ts:42–63`). No mid-run stat changes from the character sheet affect an active run.
+**Snapshot:** Combat stats are snapshotted once at entry via `deriveCombatant` (`combat.ts:48–62`). `agLevel` (for dash/move) is also snapshotted: `agLevel = statLevels.AG + gearAG` (`useGameStore.ts:1886–1888`). No mid-run stat changes affect an active run.
 
 ### 3.2 Controls
 
-| Action | Key(s) | Tick rate |
-|--------|---------|-----------|
-| Move | Arrows / WASD | `MOVE_INTERVAL_MS = 150 ms` |
-| Mine/Attack | Space / Enter | `SWING_INTERVAL_MS = 240 ms` |
-| Cast spell | 1–4 | `SPELL_CD_MS = 500 ms` |
+| Action | Key(s) | Timing |
+|--------|---------|--------|
+| Move | Arrows / WASD | `run.moveIntervalMs` (AG-scaled, fallback 150 ms) |
+| Mine / Attack (normal) | Space / Enter | `SWING_INTERVAL_MS = 240 ms` (`useMiningLoop.ts:20`) |
+| Mine / Attack (charged) | Hold Space ≥ 480 ms | `CHARGE_SWING_COUNT × 240 ms` |
+| Dash | Shift | AG-scaled cooldown; consumes `dashCooldownMs` |
+| Cast spell | 1–4 | `SPELL_CD_MS = 500 ms` global cooldown |
 | Touch (D-pad) | On-screen | Same cadences |
 
-Most-recently-pressed direction wins when multiple keys are held (`useMiningLoop.ts:124–132`). Held Space/Enter queues a swing but respects the 240 ms minimum.
+Most-recently-pressed direction wins when multiple keys are held. **Monster clock:** `MONSTER_TICK_MS = 120 ms` (`useMiningLoop.ts:22`).
 
-**Monster clock:** `MONSTER_TICK_MS = 120 ms` (`useMiningLoop.ts:21`), shared by all monster AI steps.
+### 3.3 Dash
 
-### 3.3 Procedural Generation
+`tryDash(state, dir, nowMs)` (`mining.ts:606–634`): cooldown-gated by `run.dashCooldownMs`. Attempts a 2-cell skip in `dir`; falls back to 1 cell if the 2nd is blocked. On success, sets `lastHitAtMs = nowMs` — granting a full i-frame window.
 
-`generateMine` (`mining.ts:277`) — a drunk-walker cavern generator:
+The dash is the primary defensive tool in the mine. Against telegraphed monster contact damage (which is not yet telegraphed in the mine — see §3.6), it serves as an escape from adjacent monsters and as a traversal accelerator.
+
+### 3.4 Charged Swing
+
+Holding Space for `CHARGE_SWING_COUNT × SWING_INTERVAL_MS` (480 ms) fires `mineStrikeCharged()` (`useMiningLoop.ts:130–155`). In `strike(state, rng, nowMs, charged=true)` (`mining.ts:672–753`):
+- Weapon attack: power × `CHARGE_DAMAGE_MULT (1.75)` + applies `frozenUntilMs = nowMs + STAGGER_MS (500)` on the hit monster (`mining.ts:704`).
+- Mining swing: `effectivePick = ceil((basePick + stBonus) × 1.75)`, potentially cracking multi-durability rocks in a single hit (`mining.ts:715–722`).
+
+### 3.5 Procedural Generation
+
+`generateMine` (`mining.ts:293`) — drunk-walker cavern generator:
 
 **Size scales with depth:**
 ```
-MINE_BASE_ROWS/COLS  = 33   // mining.ts:54–55
-MINE_SCALE_PER_BAND  =  4   // mining.ts:58
-MINE_SCALE_BAND      =  4   // mining.ts:59 — floors per size step
-MINE_MAX_ROWS/COLS   = 57   // mining.ts:60–61
-band = floor((floor - 1) / 4)
-size = min(57, 33 + band * 4)
+MINE_BASE_ROWS/COLS = 33   // mining.ts:59–60
+MINE_SCALE_PER_BAND =  4   // mining.ts:64–65
+MINE_SCALE_BAND     =  4   // mining.ts:66 — floors per size step
+MINE_MAX_ROWS/COLS  = 57   // mining.ts:61–62
+band = floor((floor − 1) / 4)
+size = min(57, 33 + band × 4)
 ```
 
-**Carving (drunk walkers):** All cells start as `bedrock`. Ten walkers carve ~45% of the interior (`targetFloor = round(interior × 0.45)`). Each walker starts from an already-open cell, ensuring connectivity (`mining.ts:305–335`).
+**Carving (drunk walkers):** 10 walkers carve ~45% of the interior; `stepsPerWalker = ceil(targetFloor × 1.3 / 10)` (`mining.ts:322–351`). Each walker opens its cell and one random adjacent cell per step, ensuring connectivity.
 
-**Shaft placement:** BFS from entrance finds the farthest reachable cell and places the descent shaft there — always a deep trek (`mining.ts:373–397`).
+**Shaft placement:** BFS from entrance finds the farthest reachable cell and places the descent shaft there (`mining.ts:389–410`).
 
 **Scaling by floor:**
 
-| Element | Floor 1–2 | Floor 3–6 | Floor 7+ |
-|---------|-----------|-----------|----------|
-| Rock durability | 1 | 2 | 3 |
-| Ore clusters | `4 + floor(f/2)` | same | same |
-| Monster count | `min(10, 2 + floor(f×0.6))` | same | same |
+| Element | Formula |
+|---------|---------|
+| Rock durability | floor ≤ 2 → 1; floor ≤ 6 → 2; else 3 |
+| Rock clusters | `5 + floor(f/2)` per floor, size 2–3 cells (`mining.ts:416–435`) |
+| Ore clusters | `min(openFloor, 4 + floor(f/2))`, vein size 1–4 (`mining.ts:438–454`) |
+| Monster count | `min(10, 2 + floor(f×0.6))` (`mining.ts:479–508`) |
+| Energy gems | `max(1, floor(remainingFloor / 80))` (`mining.ts:464–477`) |
 
-**Energy gems:** One per `ENERGY_GEM_INTERVAL = 80` open cells (`mining.ts:77, 448–461`). Restore 11 stamina on gather.
+### 3.6 Ore Table
 
-### 3.4 Ore Table
-
-From `src/content/mining.ts:59–88`:
+From `src/content/mining.ts`:
 
 | Ore | Floor min | Weight | Durability | Drops |
 |-----|-----------|--------|------------|-------|
@@ -167,15 +198,15 @@ From `src/content/mining.ts:59–88`:
 | Gold Vein | 4 | 1.5 | 3 | gold 8–20 |
 | Crystal Node | 6 | 1.2 | 4 | crystals 1–2 |
 | Gemstone Node | 10 | 0.8 | 5 | gemstone 1 |
-| Energy Gem | 1 | 0 (placed, not random) | 1 | +11 stamina |
+| Energy Gem | 1 | placed | 1 | +11 stamina |
 
-**Breaking plain rock** (`mining.ts:667–676`): always yields `stone` = `randInt(maxDur, min(3, maxDur+1))`; 20% chance of a bonus ore drop.
+**Breaking plain rock** (`mining.ts:734–744`): yields `stone = randInt(maxDur, min(3, maxDur+1))`; 20% chance of a bonus ore drop. Breaking an exhausted ore vein restores +1 stamina.
 
-**Mining speed:** `durability -= pickPower` per swing, where `pickPower` = the equipped tool's `mining.power` (gear stat, not a character stat). Default `stone_pickaxe` has `power: 1`.
+**Mining speed (Phase 1):** `stBonus = floor(meleePower / 8)` — one extra pick power per 8 ST levels. `effectivePick = basePick + stBonus` (`mining.ts:715–716`). A `stone_pickaxe` (`power: 1`) gives ST=8 → effectivePick 2 (same as next-tier tool). High-ST characters clear rock meaningfully faster than low-ST characters with identical gear.
 
-### 3.5 Monster Roster
+### 3.7 Monster Roster
 
-From `src/content/mining.ts:90–116`:
+From `src/content/mining.ts`:
 
 | Monster | Floor min | HP | Touch dmg | Move (ms) | Defense | Weak to | Resists |
 |---------|-----------|----|-----------|-----------|---------|---------|---------| 
@@ -185,45 +216,51 @@ From `src/content/mining.ts:90–116`:
 | Deep Lurker | 6 | 28 | 10 | 520 | 1 | WI | ST |
 | Stone Golem | 10 | 50 | 15 | 850 | 6 | ST | DX |
 
-**AI:** BFS flow-field chase toward the nearest player. Stops adjacent and deals contact damage once per `MINE_IFRAME_MS = 800 ms` (`mining.ts:75`): `dealt = max(1, touchDamage - defense - blessMagnitude)`.
+**AI:** BFS flow-field chase toward the nearest player. Deals contact damage once per `MINE_IFRAME_MS = 800 ms` (`mining.ts:80`) when adjacent: `dealt = max(1, touchDamage − defense − blessMagnitude)`.
 
-**Kill loot** (`mining.ts:583–597`): `quantity = max(1, round(swingsToKill / avgDur) + killsThisFloor + 1)` — consecutive kills on the same floor escalate drop quantity.
+**Note:** The mine has no windup telegraph before monster contact — monsters deal damage immediately on adjacency (subject only to the i-frame gate). The forest's windup system (§4.6) does not exist here. Players use the **dash** to escape adjacency rather than reading a telegraph.
 
-### 3.6 Combat
+**Kill loot:** computed by `killMonster` / `monsterLootPool` (`mining.ts:640–654`). The `bounty` field in the monster definition appears vestigial and is not consumed by this path.
 
-**Context-sensitive swing** (`strike`, `mining.ts:614`): facing a monster → weapon attack; facing rock/ore → mining.
+### 3.8 Combat
 
-**Weapon attack:** `power = weapon.attackStat === 'DX' ? rangedPower : meleePower`. Costs `weapon.staminaCost ?? MELEE_STA_FALLBACK (2)`. Needs at least 1 stamina to swing; below cost threshold → ×0.5 damage (exhausted).
+**Context-sensitive swing** (`strike`, `mining.ts:672`): facing a monster → weapon attack; facing rock/ore → mining.
 
-**Mining:** costs `STRIKE_STA_COST = 1` per swing (`mining.ts:71`). No stamina = no dig. Breaking an empty ore vein refills +1 stamina; energy gems restore 11.
+**Weapon attack:** `power = weapon.attackStat === 'DX' ? rangedPower : meleePower`. Costs `weapon.staminaCost ?? MELEE_STA_FALLBACK (2)`. Needs ≥1 stamina to swing; below cost threshold → ×0.5 damage (exhausted). Charged hit: ×1.75 + staggers target (`frozenUntilMs`).
 
-**Spells:** `castSpell` (`mining.ts:691`). Needs `mp >= spell.mpCost` and 500 ms global cooldown. Schools: **damage** (WI, hits nearest monster), **support** (KN, heals or applies bless), **illusion** (CH, debuffs nearest monster). Special spells: `rune-fire/ice/poison` (floor trap, 30s), `ring-of-fire` (8s AoE ring, hits adjacent monsters every 600 ms), `teleport` (3–6 Manhattan cells away).
+**Mining:** costs `STRIKE_STA_COST = 1` per swing (`mining.ts:75`). No stamina = no dig.
 
-### 3.7 Stamina & Mana Pools
+**Spells:** `castSpell` (`mining.ts:759`). Gated by `mp >= mpCost` and global `SPELL_CD_MS = 500 ms` (`mining.ts:84`). See §3.10 for spell details.
+
+### 3.9 Stamina & Mana Pools
 
 ```
-maxSta = dungeonStamina(EN) = 50 + EN       // crawl.ts:67
-maxMp  = 8 + KN × 3                         // combat.ts:51
-maxHp  = 50 + HP × 7 + charLevel × 3        // combat.ts:50
+maxSta = dungeonStamina(EN) = 50 + EN      // crawl.ts:67
+maxMp  = 8 + KN × 3                        // combat.ts:51
+maxHp  = 50 + HP × 7 + charLevel × 3       // combat.ts:50
 ```
 
 Passive regen: +1 sta every 1200 ms, +1 mp every 2000 ms.
 
-**Descend** (`mining.ts:549`): refills `+25% of maxSta` and `+25% of maxMp`. Haul and HP carry forward.
+**Descend** (`mining.ts:571–582`): generates next floor, refills `+25%` sta and `+25%` mp. Haul and HP carry forward.
 
-### 3.8 Win / Lose / Banking
+### 3.10 Spells in the Mine
 
-- **No win condition.** Endless descent with `deepestMineFloor` as the persistence record.
-- **Death** (HP ≤ 0): run ends, haul is still retrieved. **No loot penalty on death.**
-- **Bank & Leave:** voluntary exit commits full haul + stat trickle.
+Spells are drawn from `src/content/spells.ts` (15 spells total; `src/engine/spells.ts` is a types/helpers re-export). Schools: **damage** (WI-scaled), **support** (KN-scaled), **illusion** (CH-scaled). Mechanics active in the mine: `rune-fire / rune-ice / rune-poison` (floor traps, 30 s); `ring-of-fire` (8 s AoE ring, hits adjacent monsters every 600 ms, `dmg = max(2, power + damageSpell×0.5)`); `teleport` (3–6 Manhattan cells, i.e. `chaotic_blink`); damage (hits nearest monster); support (heals / applies bless). Three mechanics — `push`, `blink`, `cleave` — are Hex-Tactics-only and do not fire in the crawlers.
 
-**Stat trickle on banking** (`useGameStore.ts:664–665`):
+### 3.11 Win / Lose / Banking
+
+- **No win condition.** Endless descent; `deepestMineFloor` is the persistence record.
+- **Death** (HP ≤ 0): run ends; `commitMining` banks the **full haul**. **No loot penalty on death in the mine.**
+- **Bank & Leave:** voluntary exit via `commitMining`; same outcome as death for the haul.
+
+**Stat trickle on banking** (`useGameStore.ts:674–675`):
 ```
 trickle = 4 + 3 × deepest
 statXp += { ST: trickle, EN: trickle }
 ```
 
-**Milestone gates** (shown in `MiningView.tsx:9–15`): Floor 3 = Iron, Floor 4 = Gold, Floor 6 = Crystals, Floor 10 = Gemstone.
+**Milestone gates** (`MiningView.tsx:9–15`): Floor 3 = Iron, Floor 4 = Gold, Floor 6 = Crystals, Floor 10 = Gemstone.
 
 ---
 
@@ -238,129 +275,137 @@ statXp += { ST: trickle, EN: trickle }
 
 ### 4.1 Entry and Session Setup
 
-**Energy cost:** `FOREST_ENERGY_COST = 2` (`forest.ts:67`). Same gate as the mine.
+**Energy cost:** `FOREST_ENERGY_COST = 2` (`forest.ts:72`). Same gate as the mine.
 
-**Free tool:** If no chopping/mining tool is owned, `stone_pickaxe` is granted and equipped (`useGameStore.ts:2017–2024`).
+**Free tool:** If no chopping or mining tool is owned, `stone_pickaxe` is granted and equipped (`useGameStore.ts:2062–2071`).
 
-**Death penalty:** `FOREST_DEATH_KEEP = 0.5` (`forest.ts:69`). On death, half of every gold and material stack in the haul is lost (floored per stack).
+**Death penalty:** `FOREST_DEATH_KEEP = 0.5` (`forest.ts:74`). On death, half of every gold and material stack in the haul is lost.
+
+**AG snapshot:** `agLevel = statLevels.AG + gearAG` baked into `dashCooldownMs` / `moveIntervalMs` at entry (`useGameStore.ts:2084–2086`).
 
 ### 4.2 Controls
 
-Identical cadences to the mine:
+| Action | Key(s) | Timing |
+|--------|---------|--------|
+| Move | Arrows / WASD | `run.moveIntervalMs` (AG-scaled, fallback 150 ms) |
+| Act (attack / chop / gather / shrine) | Space / Enter | `ACT_INTERVAL_MS = 240 ms` (`useForestLoop.ts:19`) |
+| Act (charged) | Hold Space ≥ 480 ms | `CHARGE_SWING_COUNT × 240 ms` |
+| Dash | Shift | AG-scaled cooldown |
+| Cast spell | 1–4 | `SPELL_CD_MS = 500 ms` |
 
-| Action | Key(s) | Tick rate |
-|--------|---------|-----------|
-| Move | Arrows / WASD | 150 ms |
-| Act (attack / gather / chop / shrine) | Space / Enter | 240 ms |
-| Cast spell | 1–4 | 500 ms |
-
-**Act priority in the loop** (`useForestLoop.ts:99–122`): host push-deeper > co-op guest melee intent > activate shrine > gather / slash / chop.
+**Act priority in the loop** (`useForestLoop.ts:158–185`): host push-deeper → co-op guest melee intent → activate shrine → gather / slash / chop.
 
 **Beast clock:** `BEAST_TICK_MS = 120 ms`, same as the mine monster clock.
 
 ### 4.3 Procedural Generation
 
-`generateForest` (`forest.ts:378–650`) — recursive-backtracker maze (vs. the mine's drunk-walker cavern):
+`generateForest` (`forest.ts:394`) — recursive-backtracker maze:
 
 **Same size scaling as the mine:**
 ```
-FOREST_BASE_ROWS/COLS = 33   // forest.ts:53–54
-FOREST_SCALE_PER_BAND =  4   // forest.ts:57
-FOREST_SCALE_BAND     =  4   // forest.ts:58
-FOREST_MAX_ROWS/COLS  = 57   // forest.ts:55–56
+FOREST_BASE_ROWS/COLS = 33   // forest.ts:58–59
+FOREST_SCALE_PER_BAND =  4   // forest.ts:63
+FOREST_SCALE_BAND     =  4   // forest.ts:65
+FOREST_MAX_ROWS/COLS  = 57   // forest.ts:60–61
+band = floor((stage − 1) / 4);  dims = min(57, 33 + band×4)  (forced odd)
 ```
 
-**Maze carving:** All cells start as `thicket`. A DFS-based recursive backtracker carves corridors from odd-lattice cells via Fisher–Yates shuffled direction order (`carve`, `forest.ts:400–418`). The result is a perfect maze (no loops) of narrow trails — very different feel from the mine's open caverns.
+**Maze carving:** All cells start as `thicket`. A DFS recursive backtracker carves corridors from odd-lattice cells via Fisher–Yates shuffled direction order (`forest.ts:403–434`). The result is a perfect maze (no loops) of narrow trails.
 
-**Fog of war:** Fresh `seen` grid, `SIGHT_RADIUS = 3` (`forest.ts:74`) normally, `CLEARING_SIGHT_RADIUS = 4` (`forest.ts:75`) when standing in a clearing. Visibility is circular via `reveal` (`forest.ts:254–276`).
+**Thicket is permanent.** Maze walls (`thicket`) cannot be chopped. Choppable objects are separate degree-1 tree placements (§4.4). The old durability field on thicket tiles is legacy and has no effect (`forest.ts:101`).
 
-**Entrance / treeline:** `entrance` at top, `treeline` at bottom — the exit is always fixed (vs. mine's BFS-farthest shaft placement).
+**Entrance / treeline:** `entrance` at top row center; `treeline` at bottom row — the exit is fixed (vs. mine's BFS-farthest shaft).
 
 **Layout elements by stage:**
 
 | Element | Count formula | Notes |
 |---------|---------------|-------|
-| Springs | `max(1, min(3, floor(trailCount/90)))` | On dead-ends; stage ≥ 4 = ancient_spring |
-| Resource nodes | `min(deadEnds-di, 12 + 2×stage)` | Weighted by stage |
-| Clearings (loot rooms) | `min(2 + floor(stage/2), corridors)` | 3×3 pocket, 40% shrine chance |
-| Choppable trees | `min(wallCells, 14 + 3×stage)` | Routing-safe placement |
-| Wandering beasts | `min(16, 5 + stage)` | Spawn `asleep: true` |
+| Springs | `max(1, min(3, floor(trailCount/90)))` | On dead-ends; first spring at stage ≥4 is `ancient_spring` (`forest.ts:472–478`) |
+| Resource nodes | `min(deadEnds-di, 12 + 2×stage)` | Weighted by stage (`forest.ts:481`) |
+| Clearings (loot rooms) | `min(2 + floor(stage/2), corridors)` | 3×3 pocket carved; each has 2–4 nodes, 1–3 beasts, 1–2 corner trees, 40% shrine chance (`forest.ts:499–582`) |
+| Choppable trees | `min(wallCells, 14 + 3×stage)` | Routing-safe thicket-adjacent placement (`forest.ts:598`) |
+| Wandering beasts | `min(16, 5 + stage)` | Spawn `asleep: true` (`forest.ts:608–614`) |
 
-**Tree durability:** stages 1–2 = 1, stages 3–6 = 2, stage 7+ = 3.
+**Tree durability:** stage ≤2 = 1, stage ≤6 = 2, stage 7+ = 3 (`forest.ts:498`).
 
 ### 4.4 Resource Nodes
 
-From `src/content/forest.ts:68–93`:
+From `src/content/forest.ts`:
 
 | Node | Stage min | Weight | Yields |
 |------|-----------|--------|--------|
-| Wild Forage | 1 | 3 | gold 1–5 |
-| Flower Bush | 1 | 3 | herbs 1–2 |
-| Flax & Cotton | 1 | 3 | cloth_roll 1–2 |
-| Buried Crystals | 4 | 1 | crystals 1 |
-| Cool Spring | 1 | placed | stamina 12–16 |
-| Ancient Spring | 4 | placed | stamina 20–25 |
+| berry_forage | 1 | 3 | gold 1–5 |
+| flower_bush | 1 | 3 | herbs 1–2 |
+| flax_plant | 1 | 3 | cloth_roll 1–2 |
+| crystal_find | 4 | 1 | crystals 1 |
+| spring | 1 | placed | stamina 12–16 |
+| ancient_spring | 4 | placed | stamina 20–25 |
 
-**Gathering** is instantaneous and free (no stamina cost). **Chopping trees** costs `CHOP_STA_COST = 1` per swing and yields `wood` on break.
+**Gathering** is instantaneous and free (no stamina cost). **Chopping trees** costs `CHOP_STA_COST = 1` per swing (`forest.ts:85`) and yields `wood` on break.
 
-The forest is the game's primary source of **herbs, cloth, leather, game_meat, and pelt** — materials used in crafting recipes.
+**Chop speed (Phase 1):** `stBonus = floor(meleePower / 8)`, `effectiveChop = baseChop + stBonus` (`forest.ts:865–869`). Charged chop: `ceil((baseChop + stBonus) × 1.75)`. A high-ST character clears trees significantly faster.
+
+The forest is the game's primary source of herbs, cloth, leather, game_meat, and pelt — all crafting recipe ingredients.
 
 ### 4.5 Beast Roster
 
-From `src/content/forest.ts:95–138`:
+From `src/content/forest.ts`:
 
-| Beast | Stage min | HP | Touch dmg | Move (ms) | Aggro | Bounty | Flees | Weak / Resists |
-|-------|-----------|----|-----------|-----------| ------|--------|-------|----------------|
-| Forest Deer | 1 | 8 | 0 | 150 | 4 | 2–6 | ✓ | DX |
-| Wild Rabbit | 1 | 5 | 0 | 130 | 3 | 1–3 | ✓ | DX |
-| Wild Boar | 1 | 10 | 4 | 620 | 3 | 1–4 | — | ST |
-| Gray Wolf | 2 | 14 | 6 | 400 | 4 | 3–8 | — | DX |
-| Forest Spider | 3 | 12 | 5 | 350 | 3 | 2–6 | — | DX, WI |
-| Forest Bear | 5 | 30 | 14 | 520 | 3 | 9–18 | — | def 2, ST |
-| Dire Wolf | 7 | 22 | 10 | 320 | 5 | 10–20 | — | WI, resists DX |
-| Ancient Guardian | 10 | 55 | 18 | 600 | 2 | 20–35 | — | def 5, resists DX, ST |
+| Beast | Stage min | HP | Touch dmg | Move (ms) | Aggro | Bounty | Flees | Weak / Resist / Def |
+|-------|-----------|----|-----------|-----------| ------|--------|-------|---------------------|
+| forest_deer | 1 | 8 | 0 | 150 | 4 | 2–6 | ✓ | weak DX |
+| wild_rabbit | 1 | 5 | 0 | 130 | 3 | 1–3 | ✓ | weak DX |
+| wild_boar | 1 | 10 | 4 | 620 | 3 | 1–4 | — | weak ST |
+| gray_wolf | 2 | 14 | 6 | 400 | 4 | 3–8 | — | weak DX |
+| forest_spider | 3 | 12 | 5 | 350 | 3 | 2–6 | — | weak DX, WI |
+| forest_bear | 5 | 30 | 14 | 520 | 3 | 9–18 | — | def 2; weak ST |
+| dire_wolf | 7 | 22 | 10 | 320 | 5 | 10–20 | — | weak WI; resist DX |
+| ancient_guardian | 10 | 55 | 18 | 600 | 2 | 20–35 | — | def 5; weak ST; resist DX |
 
-**Two distinct AI modes:**
-- **Predators** (boar, wolf, spider, bear, dire wolf, ancient guardian): BFS flow-field chase, deal contact damage.
-- **Prey** (deer, rabbit): `flees: true`, no contact damage, flee to the *farthest* reachable cell from the nearest player (`fleeStep`, `forest.ts:349–368`). Drop premium loot (game_meat, pelt).
+Prey (deer, rabbit): `flees: true`, no contact damage, drop premium loot (game_meat, pelt). Predators: BFS flow-field chase, contact damage with windup telegraph.
 
-### 4.6 Combat & the Ambush System
+### 4.6 Combat, Dash, and the Ambush System
 
-**Sleeping beasts:** All wandering beasts spawn `asleep: true`. The wake pass (`forest.ts:1117–1129`) wakes a beast when the player enters its `aggroRadius` (Manhattan distance). This is the **ambush** — you trigger fights by approaching, not by selecting attack.
+**Sleeping beasts:** All wandering beasts spawn `asleep: true`. The wake pass wakes a beast when a player enters its `aggroRadius` (Manhattan distance) (`forest.ts:1186–1198`). This is the **ambush** — you trigger fights by approach.
 
-**Windup telegraph** (`forest.ts:1173–1221`): when a predator becomes adjacent, it sets `windupUntilMs = now + FOREST_WINDUP_MS (360 ms)`. Only after that delay — if still adjacent — does it deal contact damage. Moving away during the windup resets it.
+**Windup telegraph** (`forest.ts:1242–1290`): when a predator becomes adjacent, it sets `windupUntilMs = now + FOREST_WINDUP_MS (360 ms)`. Only after that delay — if still adjacent — does it deal contact damage (i-frame-gated at `FOREST_IFRAME_MS = 800 ms`). Moving away during the windup resets it. `dealt = max(1, touchDamage − blessedDefense − ward)`.
 
-```
-FOREST_WINDUP_MS   =  360 ms   // forest.ts:84
-FOREST_IFRAME_MS   =  800 ms   // forest.ts:72
-```
+**Dash as the defensive counter** (`tryDash`, `forest.ts:730–757`): the 360 ms windup window is exactly the skill-expression slot the dash was designed for. A player who reads the beast's adjacency, dashes away in the windup window, then returns for a charged counterattack is playing optimally. The dash grants `lastHitAtMs = nowMs` i-frames; CD is AG-scaled.
 
-**Player attack (`act`, `forest.ts:713–792`):**
-- **Ranged:** scans the faced direction up to `weapon.range` cells; hits the first beast; walls/trees/nodes block line of sight. Costs `ARROW_STA_COST = 1`.
-- **Melee:** `staCost = weapon.staminaCost ?? SLASH_STA_COST (2)`. `power = weapon.attackStat === 'DX' ? rangedPower : meleePower`.
+**Player attack (`act`, `forest.ts:773`):**
+- **Ranged:** scans the faced direction up to `weapon.range` cells; hits the first beast; walls/trees/nodes block. Costs `ARROW_STA_COST = 1` (`forest.ts:87`). Line-of-sight is checked.
+- **Melee (normal):** `staCost = weapon.staminaCost ?? SLASH_STA_COST (2)`; `power = rangedPower` if `attackStat==='DX'` else `meleePower`.
+- **Melee (charged):** ×`CHARGE_DAMAGE_MULT (1.75)` + applies `frozenUntilMs = nowMs + STAGGER_MS (500 ms)` on the target (`forest.ts:832, 854`).
 
-### 4.7 Shrines
+**Prey AI:** `fleeStep` (`forest.ts:365–384`) maximizes BFS distance from the nearest player. Prey never wind up or deal contact damage.
 
-From `src/content/forest.ts:161–177`:
+### 4.7 Fog of War
+
+`reveal()` (`forest.ts:280–292`) updates the `seen` grid each move. Visibility test: `dr² + dc² ≤ (radius + 0.5)²` (circular disc, `forest.ts:270–272`). `sightRadiusFor`: 4 in a clearing, 3 elsewhere (`forest.ts:263–267`).
+
+`SIGHT_RADIUS = 3` (`forest.ts:79`), `CLEARING_SIGHT_RADIUS = 4` (`forest.ts:80`).
+
+### 4.8 Shrines
+
+From `src/content/forest.ts`:
 
 | Shrine | Weight | Effect |
 |--------|--------|--------|
-| Hunter's Cache | 3 | gold 10–25 + game_meat 1–3 |
-| Forest Blessing | 2 | `bless` status, magnitude 4, 8 turns (~12 s) |
-| Disturbed Den | 2 | Spawns an awake forest_bear adjacent (trap!) |
-| Den of the Wild (stage 5+) | +1 | Extended ambush variant |
+| hunters_cache | 3 | gold 10–25 + game_meat 1–3 |
+| forest_blessing | 2 | `bless` status, magnitude 4, 8 turns |
+| disturbed_den | 2 (+1 at stage ≥5) | Spawns an awake `forest_bear` adjacent (trap!) |
 
-Bless enables `defense` to mitigate incoming contact damage (`forest.ts:1207`).
+Bless enables `defense` to mitigate incoming contact damage. The disturbed-den weight increases at stage 5+ (`forest.ts:1385–1396`).
 
-### 4.8 Advance, Banking, and Death
+### 4.9 Advance, Banking, and Death
 
-**Advance (push deeper):** Only when standing on the `treeline` cell. Carries HP and haul forward; refills `+25% maxSta` and `+25% maxMp` (`forest.ts:675–676`). Generates a richer next stage.
+**Advance (push deeper):** Standing on the `treeline` cell. Carries HP and haul forward; refills `+25%` sta and `+25%` mp (`forest.ts:694–707`).
 
-**Bank & Leave:** Commits full haul and fires `commitForest`.
+**Bank & Leave:** `commitForest` via `beginForestBanking` (`useGameStore.ts:2154–2159`).
 
-**Death:** Commits `splitHaul(run.haul, 0.5)` via `commitForestDeath` (`useGameStore.ts:693–710`). You keep half, lose half. The DX/EN stat trickle is still paid in full.
+**Death:** `commitForestDeath` — commits `splitHaul(run.haul, 0.5)` (`useGameStore.ts:703–720`). Half haul kept, half lost.
 
-**Stat trickle on banking** (`useGameStore.ts:682–684`):
+**Stat trickle on banking** (`useGameStore.ts:693–694`):
 ```
 trickle = 4 + 3 × deepest
 statXp += { DX: trickle, EN: trickle }
@@ -370,87 +415,99 @@ statXp += { DX: trickle, EN: trickle }
 
 ## 5. Stats Analysis — All 8 Stats Across Both Games
 
-Both games snapshot stat levels into a `Combatant` via `deriveCombatant` (`combat.ts:42–63`) at run start. The derived values:
+Both games snapshot stat levels into a `Combatant` via `deriveCombatant` (`combat.ts:48–62`) at run start. **All eight stats now have mechanical effect** in the crawlers following Phase 1 additions.
 
 ```
+maxHp        = 50 + HP×7 + charLevel×3    // combat.ts:50
+maxMp        = 8 + KN×3                   // combat.ts:51
+maxSta (crawl) = 50 + EN                  // crawl.ts:67 (overrides combat.ts:52's 12+EN)
 meleePower   = ST                          // combat.ts:53
 rangedPower  = DX                          // combat.ts:54
-dodge        = min(0.40, AG × 0.02)        // combat.ts:55  ← never consumed in crawlers
-flee         = min(0.90, 0.40 + AG × 0.03) // combat.ts:56  ← never consumed in crawlers
-maxSta       = 50 + EN                     // crawl.ts:67
-maxHp        = 50 + HP × 7 + charLevel × 3 // combat.ts:50
+dodge        = min(0.40, AG×0.02)          // combat.ts:55  ← consumed in turn-based & Arena
+flee         = min(0.90, 0.40 + AG×0.03)  // combat.ts:56  ← consumed in turn-based & Arena
 damageSpell  = WI                          // combat.ts:57
 supportSpell = KN                          // combat.ts:58
 illusionPower = CH                         // combat.ts:59
-maxMp        = 8 + KN × 3                 // combat.ts:51
 ```
+
+In the crawlers specifically, `dodge` and `flee` are **not** rolled on contact damage. Dash i-frames are the crawl-native dodge mechanic; `dodge`/`flee` are consumed in turn-based combat and the Arena.
 
 ### Full Stat Table
 
-| Stat | Derived values | Mine effect | Forest effect | Dead weight? |
-|------|---------------|-------------|---------------|--------------|
-| **ST** (Strength) | `meleePower = ST` | Melee weapon damage (non-DX weapons). Cave Slug and Stone Golem weak to ST. Kill loot quantity scales with ST (faster kills = more). ST XP trickle on banking. | Melee damage with ST weapons. Boar, Bear, Ancient Guardian weak to ST. | No |
-| **DX** (Dexterity) | `rangedPower = DX` | Damage when weapon's `attackStat === 'DX'`. Rock Biter and Cave Spider weak to DX. Stone Golem resists DX. | Damage with DX weapons. Ranged attack power. Most beasts weak to DX (deer, rabbit, wolf, spider). Dire Wolf and Ancient Guardian resist DX. DX XP trickle on forest banking. | No |
-| **AG** (Agility) | `dodge`, `flee` | **None.** Dodge/flee are computed but never read. Movement speed is fixed at 150 ms/cell regardless of AG. | **None.** Same — no dodge rolls, no flee mechanic, fixed movement speed. | **Yes — AG is entirely dead weight in both games.** |
-| **EN** (Endurance) | `maxSta = 50 + EN` | Stamina pool — more swings before exhaustion. EN XP trickle on banking. | Same. Larger pool = more chops/slashes before exhaustion. EN XP trickle on banking. | No, but low leverage (EN=10 gives only 10 extra swings) |
-| **WI** (Wisdom) | `damageSpell = WI` | Scales damage-spell output: `power + WI×1.2`. Cave Spider and Deep Lurker weak to WI (spell res applies). | Same. Spider and Dire Wolf weak to WI. Only matters if player has damage spells. | Conditional — irrelevant without spells |
-| **KN** (Knowledge) | `maxMp = 8 + KN×3`; `supportSpell = KN` | MP pool size AND heal potency: `power + KN×1.5`. Both roles matter if player uses spells. | Same — doubly important: more spells castable, and heals are stronger. | Conditional — irrelevant without spells |
-| **CH** (Charisma) | `illusionPower = CH` | Extends illusion debuff duration: `floor(CH/8)` extra ticks. Marginal. | Same marginal extension of freeze/poison debuffs. | Nearly — only matters with illusion spells, effect small |
-| **HP** | `maxHp = 50 + HP×7 + charLevel×3` | Raw survivability. HP=10 gives 120 HP vs base 50. | Same. High HP allows absorbing windup hits; HP is the primary survival stat for non-spell builds. | No — straightforward and impactful |
+| Stat | Mine effect | Forest effect | Notes |
+|------|-------------|---------------|-------|
+| **ST** | `meleePower = ST` → weapon damage (melee). Mining speed: `+1 effectivePick per 8 ST`. Cave Slug, Stone Golem weak to ST. ST XP trickle on banking. | Melee damage + chop speed (`+1 effectiveChop per 8 ST`). Boar, Bear, Ancient Guardian weak to ST. | Directly impactful for melee/mining builds |
+| **DX** | Damage with DX-type weapons. Rock Biter, Cave Spider weak to DX. Stone Golem resists DX. | Ranged attack power. Deer, Rabbit, Gray Wolf, Forest Spider weak to DX. Dire Wolf, Ancient Guardian resist DX. DX XP trickle on banking. | Primary stat for ranged/DX builds |
+| **AG** | Move cadence: `max(100, 150 − AG×2)` ms/cell. Dash cooldown: `max(800, 2000 − AG×40)` ms. | Same AG scaling for move + dash. | **Phase 1 addition.** AG=10 → 130 ms moves and 1600 ms dash CD; AG=25 → 100 ms and 800 ms. Meaningful mobility advantage. |
+| **EN** | `maxSta = 50 + EN`. More swings/digs before exhaustion. EN XP trickle on banking. | Same — more slashes/chops before exhaustion. | Low leverage early (EN=10 = +10 over base 50), but large base means stamina rarely runs dry mid-run |
+| **WI** | Scales damage-spell output: `power + WI×1.2`. Cave Spider, Deep Lurker weak to WI. | Spider, Dire Wolf weak to WI. Same spell scaling. | Conditional — only matters with damage spells in loadout |
+| **KN** | `maxMp = 8 + KN×3`. Support spell heal: `power + KN×1.5`. | Same — both MP pool and heal potency. | Conditional — doubly important with support spells; irrelevant without |
+| **CH** | Illusion spell status duration: `+floor(CH/8)` extra ticks (`combat.ts:398`). | Same marginal duration extension. | Nearly dead weight — very small effect unless heavily investing in illusion spells |
+| **HP** | `maxHp = 50 + HP×7 + charLevel×3`. HP=10 → 120 HP vs base 50. | Same. High HP absorbs windup hits. | Straightforward and impactful for all builds |
 
-### Key Finding: AG Is Wasted
+### Key Finding: AG Is Now Load-Bearing
 
-Agility is the stat earned by the **Agility habits** — real-world tasks the player completes. Yet AG has no mechanical expression in either crawler. A player who has logged dozens of agility habits gets literally zero benefit in these two minigames. This is both a design problem (habits don't translate to gameplay) and a missed creative opportunity.
+Phase 1 closed the biggest hole in the stat system. Agility now drives two tangible, always-active effects: movement speed (100–150 ms/cell range) and dash cooldown (800–2000 ms range). An AG=25 character has 33% faster movement and dashes 2.5× more frequently than AG=0. These are not marginal — they define a distinct "mobility" playstyle.
 
-### Key Finding: Move Speed Is Unmoored from Stats
+### Key Finding: Stat Specialization Now Creates Distinct Builds
 
-Movement is a flat 150 ms/cell for both player and most beasts (except prey, e.g. deer at 130 ms). There is no stat, gear, or upgrade that changes this. This is unusual for a game with a Dexterity/Agility distinction.
+- **ST melee build:** high meleePower + stat-scaled mine/chop speed. Clears rocks in fewer swings; charges through clumps.
+- **DX ranged build:** kites and sniped in the forest; most beasts are weak to DX.
+- **AG mobility build:** fastest movement + most dashes; can reliably window-dodge every windup in the forest.
+- **Spell builds (WI/KN/CH):** require spell acquisition outside the crawler; strong in groups.
 
-### Key Finding: Mining Speed Is Gear-Only
+### Remaining Gap: CH Is Thin
 
-Mining speed = `pickPower` (from the equipped tool). A `stone_pickaxe` has `power: 1`; better tools have `power: 2` or `3`. There is no stat that affects how fast you dig. A high-Strength character digs at the same pace as a Wisdom-focused mage.
+Charisma's effect — adding `floor(CH/8)` extra ticks to illusion spell durations — is nearly imperceptible in practice. CH=8 adds 1 extra tick; CH=25 adds 3. There is no CH effect outside of illusion spells. A high-Charisma player who doesn't run illusion spells gets nothing from their habits in these games.
+
+### Remaining Gap: EN Has a Low-Leverage Pool
+
+`maxSta = 50 + EN` means EN=10 gives 60 stamina — only 20% more than the base 50. Passive regen (+1 per 1200 ms) and energy gems (mines) / springs (forest) keep most players topped up. The endurance stat rarely becomes a meaningful constraint. A player with EN=0 and a player with EN=10 have nearly identical run experiences.
 
 ---
 
 ## 6. Co-op / Multiplayer Layer
 
-The multiplayer implementation (branch `feature/multiplayer`) is architecturally clean and worth preserving as-is.
+**Files:** `src/net/coop/protocol.ts` (wire format + constants) and `src/net/coop/session.ts` (lobby/discovery).
 
 ### 6.1 Transport
 
-- **Supabase Realtime Broadcast** over channel `coop:{sessionId}`, `COOP_BROADCAST_HZ = 10` (100 ms per frame) (`coop/protocol.ts:94`).
-- Session row in `coop_sessions` Supabase table: `{ id, party_id, game, seed, host_id, status }`.
-- Remote players time out after `COOP_PLAYER_TIMEOUT_MS = 5000 ms` (`protocol.ts:97`).
+- **Supabase Realtime Broadcast** over channel `coop:{sessionId}` (`protocol.ts:89–91`).
+- Session row in `coop_sessions` Supabase table: `{ id, party_id, game, seed, host_id, status: 'lobby'|'active'|'ended' }` (`session.ts:15–22`).
+- `COOP_BROADCAST_HZ = 10`, `COOP_BROADCAST_MS = 100` (`protocol.ts:94–95`).
+- `COOP_PLAYER_TIMEOUT_MS = 5000` (`protocol.ts:97`).
+- `CoopGame = 'mine' | 'forest'` — single protocol serves both crawlers.
 
 ### 6.2 Authority Split
 
 | Authority | Who | What |
 |-----------|-----|-------|
-| Host | Canonical world | Monster simulation, kill/loot resolution, world-slice broadcast |
+| Host | Canonical world | Monster simulation, kill/loot resolution, `WorldSlice` broadcast |
 | Each player | Own body | Position, HP/sta/mp, haul, spell casts |
-| Shared (deterministic) | Map | Regenerated from `mulberry32(seed)` + `floorSeed(base, floor)` — byte-identical on all clients |
-| Peer-to-peer | Tile changes | Digs/gathers propagate via `TileSlice` — no host gate needed |
+| Shared (deterministic) | Map | Regenerated from `mulberry32(seed)` — byte-identical on all clients |
+| Peer-to-peer | Tile changes | Digs/gathers propagate via `TileSlice` — no host gate |
 
 ### 6.3 Wire Messages
 
 | Message | Direction | Contents |
 |---------|-----------|----------|
-| `WorldSlice` | Host → all | Floor, status, monster positions/HP/asleep |
-| `PlayerSlice` | Each → all | Position, facing, HP, maxHp, floor |
-| `AttackIntent` | Guest → host | Monster ID + damage — host resolves kill/loot |
-| `TileSlice` | Peer → all | `{floor, r, c, tile}` — shared digs |
-| `ByeIntent` | Leaving player → all | Clean departure notification |
+| `WorldSlice` | Host → all | `floor, status, monsters: MonsterSlice[]` |
+| `MonsterSlice` | embedded | `id, key, r, c, hp, readyAtMs, asleep?` |
+| `PlayerSlice` | Each → all | `userId, username, r, c, facing, hp, maxHp, floor` |
+| `AttackIntent` | Guest → host | `userId, monsterId, dmg` — host resolves kill/loot |
+| `TileSlice` | Peer → all | `userId, floor, r, c, tile` |
+| `ByeIntent` | Leaving → all | `userId, username` |
 
 ### 6.4 Key Properties
 
-- **Shared world, separate hauls.** Each player banks their own loot independently (trust-client). A node dug by Player A disappears for Player B.
+- **Shared world, separate hauls.** Each player banks their own loot independently. A node dug by Player A disappears for Player B.
 - **Co-op uses `floodFieldMulti`** so monsters target the nearest of all players — genuine multi-player threat dynamics.
-- **Smooth remote player rendering.** Remote players are interpolated in world-pixel space via the same rAF "mover" ref system used for monsters (`MineRunOverlay.tsx:528–558`).
-- **Guest melee routing.** Guests cannot locally kill monsters — they send `AttackIntent` and the host resolves kills exactly once, preventing loot duplication.
+- **Smooth remote rendering.** Remote players are interpolated in world-pixel space via rAF.
+- **Guest melee routing.** Guests send `AttackIntent`; host resolves kills exactly once, preventing loot duplication.
 
 ### 6.5 Assessment
 
-The co-op layer is one of the genuine strengths of these minigames. It's technically sound (deterministic seeds, low bandwidth at 10 Hz, graceful timeouts), semantically correct (single source of truth for kills), and has smooth visual interpolation. A future improvement plan should build on this, not replace it.
+The co-op layer is technically sound: deterministic seeds, 10 Hz broadcast, graceful 5 s timeouts, clean authority split. It is one of the genuine strengths of both games and should be built on rather than replaced.
 
 ---
 
@@ -458,63 +515,57 @@ The co-op layer is one of the genuine strengths of these minigames. It's technic
 
 ### 7.1 What Works
 
-**Clean, readable entry point.** Both games are instantly understandable: move with arrows, press Space to act, go deeper, don't die. The controls require no tutorial.
+**Clean, readable entry point.** Both games are instantly understandable: move with arrows, Space to act, go deeper, don't die. No tutorial required.
 
-**Procedural generation keeps content fresh.** New layouts on every run. Drunk-walker caverns (mine) and recursive-backtracker mazes (forest) feel distinctly different from each other — the mine is open and exploratory; the forest is a tight labyrinth.
+**Procedural generation keeps content fresh.** Drunk-walker caverns (mine) and recursive-backtracker mazes (forest) feel distinctly different: the mine is open and exploratory; the forest is a tight labyrinth. New layouts every run.
 
-**Flow-field AI is emergent and cheap.** Monsters funnel naturally through cave architecture, create chokepoints, and crowd-route without expensive pathfinding. They *feel* smarter than they are.
+**Flow-field AI is emergent and cheap.** Monsters funnel naturally through architecture, create chokepoints, and crowd-route without expensive pathfinding.
 
-**The Forest's ambush system is the best idea in either game.** Sleeping beasts that wake on approach, combined with a short windup telegraph before striking, creates genuine moment-to-moment tension: do I push into this dark corridor knowing something might be lurking? The telegraph gives skilled players an escape window. Prey animals that flee are a charming contrast — you chase the deer while the wolf chases you.
+**The Forest's ambush system is the best idea in either game.** Sleeping beasts that wake on approach, combined with a short windup telegraph before striking, creates genuine moment-to-moment tension. The telegraph gives skilled players an escape window — and now, a dash to exploit that window. Prey animals that flee are a charming contrast.
 
-**Death stakes in the forest are meaningful.** Losing half your haul on death creates a real push-your-luck decision: do I push to the next stage or bank now? This is the most interesting strategic decision in either game.
+**Phase 1 added a real skill ceiling.** The dash-on-windup interaction in the forest is genuinely satisfying: see the beast go adjacent, dash out of the 360 ms window, turn around for a charged counterattack, and the stagger locks the beast while you land a second hit. This three-step sequence requires reading the situation, making a positional decision, and timing a hold — exactly the kind of skill expression that distinguishes expert from novice play.
 
-**Co-op is a genuine differentiator.** Playing these with a friend in shared chaos — monsters routing to the nearest of you, fighting over escape corridors, shared node depletion — elevates both games significantly.
+**Death stakes in the forest are meaningful.** Losing half your haul on death creates a real push-your-luck decision: push to the next stage or bank now?
 
-**Depth-scaled rewards.** Richer ore tiers at deeper floors, escalating monster difficulty, and the `4 + 3 × deepest` stat trickle all give players a real reason to push further.
+**Co-op is a genuine differentiator.** Monsters routing to the nearest of you, fighting over corridors, shared depletion — this elevates both games.
+
+**Depth-scaled rewards.** Richer ore tiers at deeper floors, escalating monster difficulty, and the `4 + 3 × deepest` stat trickle give players real reasons to push further.
 
 ---
 
 ### 7.2 What Doesn't Work
 
-#### Moment-to-Moment Combat Is a Single Repeated Action
-
-Both games reduce to: `move → face enemy → hold Space`. There are no combos, no block/parry, no dodge rolls, no dashes, no positioning-based attacks (flanking, backstabs, area denial). The player's attack input is binary — swing or don't swing.
-
-The mine is worse here: unlike the forest, the player faces the *same* attack input for both mining and combat (the same Space key, the same 240 ms cadence). There's no texture between "I'm mining" and "I'm fighting."
-
-The forest's windup telegraph hints at positioning depth (move away to cancel the windup), but the payoff is minimal: the only response is to step back one cell. There's no attack pattern to read, no special moves to respond to.
-
 #### The Mine Has No Death Penalty
 
-The forest risks half your haul on death. The mine risks nothing — you bank your full haul regardless of whether you fell or chose to leave. This removes the mine's only potential source of tension. There is no reason to ever voluntarily leave before dying. Death is a free bank.
-
-#### Six of Eight Stats Are Marginal or Dead
-
-AG is completely unused. WI/CH/KN only matter if you have spells (which requires separate progression, and many players run melee builds that never engage the spell system). EN provides a stamina pool that rarely runs dry mid-run due to passive regen and energy gems. The active, moment-to-moment choices reduce to: am I ST-built or DX-built?
-
-#### Mining Speed and Movement Speed Are Not Stat-Driven
-
-Two of the most intuitive things a player might expect to scale with their character do not. A high-Strength warrior mines at the same speed as a Knowledge mage. An Agility-focused character moves at 150 ms/cell, same as a tank. This breaks the fantasy of stat specialization.
+The forest risks half your haul on death. The mine risks nothing — `commitMining` banks the full haul regardless of how the run ended. This removes the mine's only potential source of tension. There is no reason to ever voluntarily leave before dying. Death is a free bank.
 
 #### The Loot Is Economy Fuel, Not Character Definition
 
-Mining yields gold and crafting materials. The forest adds herbs and leather. These feed the crafting economy — useful, but none of it changes how you *play* during a run. No run-specific upgrades, no build choices, no artifacts that make a particular run feel distinct. Every run is mechanically identical to the last at the same depth, just with different map layout.
+Mining yields gold and crafting materials. The forest adds herbs and leather. These feed the crafting economy — useful, but none of it changes how you *play during a run*. No run-specific upgrades, no build choices, no artifacts that make one run feel distinct from another. Every run is mechanically identical to the last at the same depth, just with a different map layout.
 
-Compare: in Hades, each run you pick up boons that fundamentally change your attack. In Spelunky, the items you find change how you approach every screen. In Deep Mine, you go to floor 5 today the same way you went to floor 5 last week.
+In Hades, each run you pick boons that fundamentally change your attack. In Spelunky, found items change how you approach every screen. In these crawlers, you enter with your snapshot and leave with the same snapshot + loot.
 
 #### No Win Condition, Score, or Mastery Curve
 
-Both games are endless treadmills. `deepestMineFloor` and `deepestForestStage` are the only persistence records. There is no score, no speed record, no objective beyond "go as deep as you can." Players have no way to measure improvement or set goals within a single run.
+Both games are endless treadmills. `deepestMineFloor` and `deepestForestStage` are the only persistence records. There is no score, no speed record, no objective beyond "go deeper." Players have no way to measure improvement or set goals within a single run.
 
-This matters especially because these are *habit-tracking* games — the whole point is to measure real-world progress via in-game systems. The minigames don't reinforce that philosophy internally: there's no run metric that says "you played better today than yesterday."
+This matters especially for a habit-tracking RPG — the whole philosophy is measuring real-world progress via in-game systems. The minigames don't reinforce this internally: there's no run metric that says "you played better today than yesterday."
 
 #### Fog and Clearings Are Underused in the Forest
 
-Fog of war with `SIGHT_RADIUS = 3` is a small viewport. Clearings expand it to 4 tiles. But the fog does little mechanical work beyond hiding beast positions. It doesn't create meaningful information-asymmetry decisions, doesn't interact with stealth or sound, and doesn't change as stages progress. It's ambiance more than mechanic.
+`SIGHT_RADIUS = 3` is narrow. Clearings expand it to 4. But the fog does little mechanical work beyond hiding beast positions. It doesn't create meaningful information-asymmetry decisions: beasts wake on Manhattan distance regardless of your facing, line of sight, or whether you're sneaking through a dark corridor. The fog is ambiance rather than mechanic.
+
+#### CH Is Nearly a Dead Stat
+
+Charisma's only effect — extending illusion spell durations by `floor(CH/8)` ticks — is so marginal it barely registers. CH=8 adds 1 tick; CH=25 adds 3. Without illusion spells in the loadout, CH contributes zero. A player who has logged dozens of Charisma habits gets virtually no benefit in either crawler.
+
+#### No Boss Structure
+
+Stone Golem (mine, floor 10+) and Ancient Guardian (forest, stage 10+) are the toughest regular monsters. But they spawn as part of the normal wandering enemy population — there's no boss fight structure, no arena, no escalating pattern to read. The deepest floors feel like earlier floors with harder numbers. There is no "chapter end" moment.
 
 #### Minimal Feedback and Juice
 
-The overlays render tile grids with emoji-style art and colored text values. Hit numbers appear, but there's no screen shake, no impact hold frame, no progressive camera effects as you descend deeper. The games *function* but don't *feel* kinetic. This is harder to judge from code alone, but the absence of audio events and impact frames in the overlay code suggests this is thin.
+The overlays render well-structured tile grids, but there's no screen shake, no impact hold frame, no progressive camera effects as you descend. Charged swings and dash i-frames are mechanically significant but may feel indistinguishable from normal swings to a player who hasn't read the code. The absence of distinct audio or visual feedback for charged hits, successful dodges, and stagger events means the skill ceiling isn't *felt* as clearly as it could be.
 
 ---
 
@@ -525,11 +576,10 @@ The overlays render tile grids with emoji-style art and colored text values. Hit
 | Death penalty | None (full haul kept) | Half haul lost |
 | Push-your-luck tension | Low | Moderate |
 | Escalation feel | Clear (ore tiers gate depth) | Clear (beast difficulty + fog) |
-| Regen / resource | Energy gems common; passive regen generous | Springs provide bursts; passive regen same |
-| Boss / climax | None (Stone Golem at floor 10+, but no boss structure) | None (Ancient Guardian at stage 10+, same) |
-| Pacing of a run | Flat — same loop on every floor | Slight variation from shrines and clearing rooms |
-
-The biggest asymmetry is the death penalty. The mine's penalty-free death makes risk feel meaningless. The forest's half-haul penalty makes every run feel like a tightrope walk from stage 4 onward — particularly in co-op where group deaths are more likely.
+| Skill expression (Phase 1) | Dash escape, charged mining for speed | Dash-on-telegraph, charged counterattack, AG builds |
+| Regen / resource | Energy gems; passive regen generous | Springs provide bursts; passive regen same |
+| Boss / climax | None | None |
+| Pacing of a run | Flat — same loop every floor | Slight variation from shrines and clearings |
 
 ---
 
@@ -537,28 +587,21 @@ The biggest asymmetry is the death penalty. The mine's penalty-free death makes 
 
 ### 8.1 Deep Mine
 
-#### Most Similar: SteamWorld Dig / Motherload (Dig-Deeper Loop)
+#### Most Similar: SteamWorld Dig / Motherload
 
-The mine's core loop — dig downward through procedural terrain, collect ore, go back up to bank — is the direct descendant of **Motherload** (2004) and its modern descendant **SteamWorld Dig** (2013).
-
-**What HabitsRPG does:** procedural one-way descent with banked resources, ore tiers gated by depth.
-**What SteamWorld Dig adds that HabitsRPG lacks:** upgrade-gated traversal (you need a steam upgrade to reach new biomes), town as a social hub, specific ability unlocks (drill, steam jump, lantern) that *change* how you dig. Each SteamWorld Dig run has progression milestones that unlock new *verbs*, not just numbers. The mine only scales numbers.
+The mine's core loop — dig downward, collect ore, bank — is the direct descendant of **Motherload** (2004) and **SteamWorld Dig** (2013). **What HabitsRPG does:** procedural one-way descent with ore tiers gated by depth. **What SteamWorld Dig adds that the mine lacks:** upgrade-gated traversal (you need a steam upgrade to reach new biomes), ability unlocks (drill, steam jump, lantern) that change how you dig — new *verbs*, not just numbers.
 
 #### Dome Keeper — The Return Loop
 
-**Dome Keeper** (2022) structures the dig around a surfacing timer: dig, collect ore, return to your dome before the next wave. The forced return creates rhythm and stakes.
-
-The mine has no "return" requirement — you bank whenever you feel like it, or die and bank anyway. There's no external pressure rhythm. Adding even a soft timer (a cave-in hazard, a gas build-up) would create this missing beat.
+**Dome Keeper** (2022) structures the dig around a surfacing timer. The forced return creates rhythm and stakes. The mine has no "return" requirement and no external pressure rhythm. Adding even a soft timer (gas build-up, cave-in warning) would create this missing beat.
 
 #### Spelunky — Emergent Hazard Play
 
-**Spelunky** (2012) shares procedural descent and discrete-room layouts, but its design philosophy is *emergent interaction* between its systems: enemies, traps, items, and terrain interact in ways the player can exploit or be destroyed by. A boomerang can stun an enemy into a spike trap. A shopkeeper can become an enemy.
+**Spelunky's** design philosophy is *emergent interaction* between systems: enemies, traps, items, and terrain interact in ways the player can exploit. A boomerang can stun an enemy into a spike trap. The mine's systems don't interact — monsters can't be lured into cave-ins, runes sit inertly on floors. The elements are additive, not combinatorial.
 
-The mine's systems don't interact. Monsters can't be lured into rocks. Mining debris doesn't land on enemies. Runes sit inertly on floors. The mine's elements are additive, not combinatorial.
+#### Hades — Run-and-Bank with Build Choices
 
-#### Minecraft / Terraria — Ore Tiers and Depth Gating
-
-The bronze → iron → gold → crystal → gemstone ore progression is the classic RPG ore tier ladder also used by Minecraft and Terraria. HabitsRPG borrows this cleanly. The difference is that in Terraria, better ores enable you to craft equipment that changes what you can do. In HabitsRPG, ores are crafting materials that feed an off-screen economy — they don't change the mine itself.
+**Hades** (2020) is structurally closest to both games' meta loop: enter, fight, collect, die-or-bank, repeat. What Hades does that neither crawler does: boons and items collected *during the run* modify your verbs. Every run plays differently. The crawlers' runs are structurally identical beyond map layout.
 
 ---
 
@@ -566,96 +609,97 @@ The bronze → iron → gold → crystal → gemstone ore progression is the cla
 
 #### Most Similar: Don't Starve — Foraging + Ambush Predators
 
-**Don't Starve** (2013) is the clearest design ancestor of the Wild Forest: a top-down foraging environment where resources spawn in fixed nodes, predators roam and become dangerous if you wander close, and gathering feels like navigating a dangerous ecology.
-
-**What HabitsRPG does:** foraging nodes, beast encounters on approach, prey-vs-predator duality, stage-based escalation.
-**What Don't Starve adds:** genuine resource depletion and regrowth cycles (systems thinking); hunger and sanity as parallel pressure systems that demand different foraging activities; distinct biomes with unique resources that require strategic routing; seasonal progression that changes the rules of the world.
-
-The forest's stage escalation (more beasts, bigger maps) is linear difficulty scaling. Don't Starve's seasonal model creates qualitative changes in what you need to do — summer requires different play than winter. The forest could learn from this.
+**Don't Starve's** design ancestry is clear: top-down foraging, predators dangerous on approach, prey-vs-predator duality. **What Don't Starve adds:** genuine resource depletion and regrowth cycles (systems thinking); hunger and sanity as parallel pressure systems; distinct biomes with unique resources; seasonal progression that changes the rules of the world qualitatively. The forest's stage escalation is linear difficulty scaling, not a qualitative rule change.
 
 #### Brogue / Pixel Dungeon — Fog of War Roguelikes
 
-**Brogue** (2009) and **Pixel Dungeon** (2012) are grid roguelikes with fog of war and narrow corridors. The forest's maze + sight-radius-3 fog is closest to this family.
+**Brogue** makes fog an information game: enemies have detection ranges, you can use sound/light tactically, stealth is a meaningful resource. **The forest's fog is passive** — it hides beast positions but doesn't create an information game. Beasts wake on Manhattan proximity regardless of facing or stealth.
 
-**What HabitsRPG does:** fog of war, maze corridors, ambush on approach.
-**What Brogue adds:** fog interacts with stealth (enemies have detection ranges, you can use sound/light tactically). Information is a resource. **The forest's fog is passive** — it hides things but doesn't create an information game. Beasts wake when you enter a Manhattan radius regardless of your facing or whether you're in a dark corner.
+#### Zelda LTTP — Telegraph + Real-Time Grid Combat
 
-#### Zelda Overworld — Real-Time Grid Combat with Telegraphs
+Classic **Zelda** combat is the clear reference for the forest's control scheme: facing-based attack, contact damage with telegraph, locked movement cadence. Phase 1 brought the forest closer by adding a dash that makes the telegraph a skill-expression moment. **What Zelda adds that the forest still lacks:** shield/block to reward defensive timing; knockback positioning; item-based attack variety (hookshot, bombs).
 
-Classic **Zelda** (A Link to the Past) combat is the reference for the forest's control scheme: face a direction, swing, enemies telegraph before striking. The windup system in the forest is a direct nod to Zelda's enemy tells.
+#### Crypt of the NecroDancer — Grid-Step Real-Time with Mastery
 
-**What HabitsRPG does:** facing-based attack, contact damage with telegraph, locked movement cadence.
-**What Zelda adds:** shield/block mechanic that rewards timing; knockback positioning; special items that open different attack vectors (hookshot, bombs). The forest only has the slash — there's no defensive action.
-
-#### Crypt of the NecroDancer / Pokémon Mystery Dungeon — Grid-Step Real-Time
-
-**Crypt of the NecroDancer** (2015) and **Pokémon Mystery Dungeon** both execute grid-based real-time action. NecroDancer adds rhythm as a constraint that rewards mastery; PMD adds tactical depth via turn-based floors.
-
-**What HabitsRPG does:** fixed movement cadence, monster clock, grid-snapped positions.
-**What NecroDancer adds:** mastery expression via beat-precise movement — a skilled player can chain combos, set up kills, and control enemy patterns. The forest's flat movement cadence (150 ms, fixed) provides no such mastery ceiling. Every player moves the same way at the same speed with the same attack.
-
-#### Hades (Run-and-Bank) — Pick-Ups That Change the Run
-
-**Hades** (2020) is structurally closest to both games' meta loop: enter, fight, collect, die-or-bank, repeat. What Hades does that neither crawl does: boons and items collected *during the run* modify your verbs. Every run plays differently.
-
-The forest and mine have no in-run character modification. No found gear, no mid-run upgrades, no consumables. You enter with your snapshot and leave with the same snapshot. The runs are structurally identical beyond map layout.
-
----
+**NecroDancer** uses beat-precise movement as a mastery expression layer: skilled players chain combos and control enemy patterns. Phase 1's dash + charged swing bring the forest closer to this model — there is now a sequence of moves that separates expert play. The gap has narrowed, but the forest still lacks combo chaining (a second hit that extends from the first stagger, for example).
 
 ### 8.3 Comparison Table
 
-| Game | Sharing | What HabitsRPG Lacks vs. That Title |
-|------|---------|--------------------------------------|
-| SteamWorld Dig | Dig-for-ore loop | Upgrade-gated traversal, ability unlocks, hub world |
-| Dome Keeper | Collect + return loop | Return timer / external pressure rhythm |
+| Game | Shared with HabitsRPG | Gap remaining |
+|------|----------------------|--------------|
+| SteamWorld Dig | Dig-for-ore loop | Upgrade-gated traversal, ability unlocks |
+| Dome Keeper | Collect + bank loop | Return timer / external pressure rhythm |
 | Spelunky | Procedural descent | Emergent system interactions |
-| Motherload | Ore tiers + banking | n/a (Motherload is the simpler ancestor) |
-| Don't Starve | Foraging + ambush predators | Resource depletion/regrowth, multiple pressure systems, biome variety |
-| Brogue | Fog of war maze roguelike | Stealth/detection information game, status interactions |
-| Zelda LTTP | Telegraph + real-time grid combat | Shield/block, knockback, item-based attack variety |
-| Crypt of the NecroDancer | Grid-step real-time | Mastery expression, combo potential |
-| Pokémon Mystery Dungeon | Grid crawl with enemy clock | Turn-based tactical depth, team composition |
-| Hades | Run-and-bank | In-run boons/build choices, verb modification |
-| Terraria / Minecraft | Ore tiers, crafting economy | Ore unlocks new gameplay verbs (not just materials) |
+| Don't Starve | Foraging + ambush predators | Resource depletion/regrowth, multiple pressure systems |
+| Brogue | Fog of war maze roguelike | Stealth/detection information game |
+| Zelda LTTP | Telegraph + grid combat (now with dash) | Shield/block, knockback, item variety |
+| Crypt of the NecroDancer | Grid-step with skill expression (closer post-Phase 1) | Combo chaining, mastery ceiling |
+| Hades | Run-and-bank | In-run build choices, verb modification |
+| Terraria | Ore tiers, crafting economy | Ores unlock new gameplay verbs |
 
 ---
 
 ## 9. Opportunities — Forward Pointers for Improvement
 
-*These are findings from the current-state analysis, not a committed plan. A separate design document will prioritize and scope improvements.*
+*Phase 1 is done. This section re-tiers all previous opportunities, marks completed items, and identifies what's next.*
 
-### Highest Leverage
+### Phase 1 — Completed
 
-1. **Give AG a real mechanical role.** Options: stat-scaling move speed (`MOVE_INTERVAL_MS ÷ AG` modifier), a dodge step (press Shift + direction to dash one cell with i-frame), or evasion vs. telegraphed attacks. AG habits should pay off in the crawlers.
+These were the highest-leverage items from the previous analysis. All confirmed done in the current codebase:
 
-2. **Stat-scale mining speed.** ST (or a tool-level formula) should reduce the per-swing durability delta. A high-ST character should feel meaningfully faster at clearing rock. This also makes the mine play differently for different builds.
-
-3. **Add a death penalty to the mine.** A small percentage haul loss (even 10–20%) is enough to create push-your-luck tension. The mine currently has none.
-
-4. **In-run pickups that change the run.** Consumables found in loot rooms (a speed potion, a shield rune, a pickaxe upgrade); or rare "vein echoes" that double ore drops for one floor. The run must feel different from the last.
-
-5. **Add mastery expression to combat.** A direction-timed dash/evade on approach; a charged swing (hold Space 2+ ticks for a stagger); an attack that benefits from flanking angle. One or two verbs would open a skill ceiling.
-
-### Medium Leverage
-
-6. **Deepen the forest's fog.** Beast detection ranges (beasts "hear" you before they see you); directional awareness (facing a corridor before entering it); darkness as a terrain modifier. Turn fog from ambiance into an information game.
-
-7. **Score / run metrics.** A depth-stage score, kill count, resource efficiency rating — something that lets players measure improvement run-over-run. Aligns with the habit-tracking philosophy.
-
-8. **Environmental hazards that interact.** Mine: cave-in zones that collapse after N swings near them; underground rivers that slow movement; gas pockets that combo with fire runes. Forest: underbrush that slows movement; mud near springs; rain that cancels fire runes.
-
-9. **Boss encounters at depth gates.** Instead of Stone Golem/Ancient Guardian as regular monsters, place them as floor guardians at the depth milestones (Floor 10, Stage 10) with unique patterns. Clearing them unlocks the next ore/material tier and gives a clear "chapter" structure.
-
-10. **Biome variety.** The mine could shift texture at depth bands (cave → deep cave → magma layer). The forest could have biome types per stage (thicket → meadow clearing → ancient grove). Visual + mechanical differentiation.
-
-### Lower Leverage / Polish
-
-11. **CH meaningful beyond illusion spells.** Charisma in an RPG often affects NPC relations — could CH affect shrine outcomes or beast aggro radius?
-
-12. **Per-run loot drop that feeds build identity.** A rare "amulet" or "charm" that appears in one clearing per run, grants a temporary passive for the rest of that run only. No persistent effect, but creates a moment of decision.
-
-13. **Juice and feedback.** Screen shake on heavy hits; progressive camera zoom as you descend deeper; ambient sound cues for approaching beasts before they're visible.
+- ~~AG dead weight~~ → **Done.** AG now scales dash cooldown and move speed in both crawlers.
+- ~~Mining speed gear-only~~ → **Done.** ST-scaled via `stBonus = floor(meleePower / 8)`.
+- ~~Move speed unmoored from stats~~ → **Done.** `moveInterval(AG) = max(100, 150 − AG×2)`.
+- ~~Single repeated attack action~~ → **Done (partial).** Dash + charged swing add meaningful verbs; the forest telegraph + dash-dodge interaction creates a skill-expression loop.
 
 ---
 
-*End of analysis. Cited file paths: `src/engine/mining.ts`, `src/engine/forest.ts`, `src/engine/crawl.ts`, `src/engine/combat.ts`, `src/hooks/useMiningLoop.ts`, `src/hooks/useForestLoop.ts`, `src/content/mining.ts`, `src/content/forest.ts`, `src/store/useGameStore.ts`, `coop/protocol.ts`.*
+### Still-Open: Highest Leverage
+
+**1. Add a death penalty to the mine.**
+The forest's half-haul penalty is its primary source of tension. The mine has zero penalty — death is a free bank. Even 15–20% haul loss on death would create push-your-luck decisions and make each floor feel meaningful. This is the single highest-leverage design change remaining.
+
+**2. In-run pickups that change the run.**
+Both games produce loot (economy fuel) but never in-run modifiers. Options: rare consumables in clearing loot rooms (speed rune for 30 s, a charged-swing count booster, a mana crystal); a "vein echo" artifact that doubles ore drops for one floor; a beast charm that pacifies one nearby predator. One or two per run, non-persistent. The run must feel different from the last.
+
+**3. Score and run metrics.**
+A floor-weighted kill count, a resource-efficiency score, a personal-best depth-and-time metric — something that lets players measure improvement run-over-run. Aligns directly with the habit-tracking philosophy: the minigame should reinforce the idea that you got better today than yesterday.
+
+**4. Boss encounters at depth gates.**
+Stone Golem (mine floor 10) and Ancient Guardian (forest stage 10) appear as ordinary wandering monsters with no structure. Placing them as room guardians — fixed location, unique entry fanfare, distinct attack pattern — with a kill required to unlock the next ore/material tier would give each 10-floor band a climax and a goal. A player can now say "my goal this session is to reach floor 10 and slay the Golem."
+
+**5. Make CH mechanical in the crawlers.**
+Charisma has almost no effect. Options: CH affects shrine outcomes (higher CH → better roll on disturbed_den, turning trap shrines into risky-but-rewarding bets); CH reduces wandering beast aggro radii (lower chance of waking sleeping beasts); CH adds a charm mechanic (pacify one prey beast for 10 s to safely gather nearby). Any of these tie Charisma habits to genuine in-game payoff.
+
+---
+
+### Still-Open: Medium Leverage
+
+**6. Deepen the forest's fog.**
+Beast detection ranges (beasts "hear" you before they see you — hear range > aggro radius); directional awareness (beasts only wake if they're in front of you); rain/darkness stages that shrink sight radius further and make springs harder to find. Turn fog from ambiance into an information game.
+
+**7. Environmental hazards that interact with existing systems.**
+Mine: cave-in zones that collapse after N swings nearby; gas pockets that combo with fire runes; underground rivers that slow movement. Forest: underbrush that slows movement; mud near springs; rain that cancels fire runes. These make the map itself an active participant rather than a backdrop.
+
+**8. Biome variety.**
+The mine could shift texture at depth bands (cave → deep cave → magma layer) with unique rock types, new color palettes, and biome-specific monsters. The forest could have biome types per stage (thicket → meadow clearing → ancient grove) with qualitatively different layouts and resources. Visual and mechanical differentiation.
+
+**9. Combo chaining from stagger.**
+The charged swing staggers (`frozenUntilMs = nowMs + 500`). Right now the stagger is a damage window. A natural extension: a stagger-chained attack that costs extra stamina but deals a third hit — the beginning of a combo system. Even a simple 2→3-hit chain would give the forest's skill ceiling a meaningful ceiling.
+
+---
+
+### Still-Open: Lower Leverage / Polish
+
+**10. Juice and feedback.**
+Screen shake on heavy hits; a distinct color flash or animation frame for dash i-frame activation; a held-pose indicator for charged swings; progressive camera behavior as you descend deeper (slight zoom out at floor/stage 5+). These don't change mechanics but make skill expression *felt*.
+
+**11. Per-run loot drop that feeds build identity.**
+A rare "charm" that appears in one clearing per run, grants a temporary passive for that run only (no persistent effect). Examples: "Beast Ward" (all predators have −2 touch damage this run); "Miner's Eye" (ore cluster locations revealed on minimap). Creates a moment of decision; makes runs memorable.
+
+**12. Expanded spell economy.**
+Spells currently require separate progression outside the crawlers. In-run spell economy: a rare spell-scroll consumable that grants one use of a spell you don't know; a mana font node (like energy gems) that restores MP. This makes spell-build more accessible and makes WI/KN/CH relevant to a wider share of players.
+
+---
+
+*End of analysis. Verified source files: `src/engine/crawl.ts`, `src/engine/mining.ts`, `src/engine/forest.ts`, `src/engine/combat.ts`, `src/engine/spells.ts`, `src/content/spells.ts`, `src/content/mining.ts`, `src/content/forest.ts`, `src/hooks/useMiningLoop.ts`, `src/hooks/useForestLoop.ts`, `src/store/useGameStore.ts`, `src/net/coop/protocol.ts`, `src/net/coop/session.ts`.*
