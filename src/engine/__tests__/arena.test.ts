@@ -61,7 +61,7 @@ function freshRun(f = fighter(), b = boss()): ArenaState {
 }
 
 function minionAt(s: ArenaState, pos: { x: number; y: number }, hp = 8): Minion {
-  const m: Minion = { id: s.seq++, pos, hp, maxHp: hp, attack: 6, nextMoveMs: 0, nextHitMs: 0, frozenUntilMs: 0, poisonDmg: 0, poisonNextTickMs: 0, poisonExpiresMs: 0 };
+  const m: Minion = { id: s.seq++, pos, hp, maxHp: hp, attack: 6, variant: 'bat', nextMoveMs: 0, nextHitMs: 0, frozenUntilMs: 0, poisonDmg: 0, poisonNextTickMs: 0, poisonExpiresMs: 0 };
   s.minions.push(m);
   return m;
 }

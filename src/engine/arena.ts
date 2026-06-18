@@ -116,7 +116,11 @@ export interface Projectile {
   /** Pre-defense damage. Defense is applied on impact (boss: bossDefense; minions: 0). */
   dealt: number;
   nextStepAtMs: number;
+  /** 'minion' projectiles damage the player; 'player' (default) damage enemies. */
+  source?: 'player' | 'minion';
 }
+
+export type { MinionVariant };
 
 export interface Minion {
   id: number;
@@ -124,6 +128,7 @@ export interface Minion {
   hp: number;
   maxHp: number;
   attack: number;
+  variant: MinionVariant;
   nextMoveMs: number;
   nextHitMs: number;
   frozenUntilMs: number;
@@ -469,6 +474,7 @@ function spawnMinion(s: ArenaState, now: number, rng: RNG): void {
     hp: s.minionHp,
     maxHp: s.minionHp,
     attack: s.minionAttack,
+    variant: s.minionVariant,
     nextMoveMs: now + scaled(s, MINION_MOVE_CD_MS),
     nextHitMs: now + scaled(s, MINION_HIT_CD_MS),
     frozenUntilMs: 0,
@@ -918,13 +924,22 @@ function stepProjectiles(s: ArenaState, now: number, rng: RNG): void {
     let done = false;
     while (now >= p.nextStepAtMs && !done) {
       if (isBlocked(s, p.pos) || !inBoard(p.pos, s.radius)) { done = true; break; }
-      const here = enemyAt(s, p.pos);
-      if (here) {
-        // Apply the correct target's defense. Minions have no separate defense stat.
-        const dmg = here.kind === 'boss' ? Math.max(1, p.dealt - s.bossDefense) : p.dealt;
-        hurtEnemy(s, here, dmg, now, rng);
-        done = true;
-        break;
+      if (p.source === 'minion') {
+        // Minion projectile — damages the player on contact.
+        if (cellEquals(p.pos, s.player.pos)) {
+          if (!s.invincible) strikePlayer(s, p.dealt, 'physical', now, rng);
+          done = true;
+          break;
+        }
+      } else {
+        // Player projectile — damages the first enemy hit.
+        const here = enemyAt(s, p.pos);
+        if (here) {
+          const dmg = here.kind === 'boss' ? Math.max(1, p.dealt - s.bossDefense) : p.dealt;
+          hurtEnemy(s, here, dmg, now, rng);
+          done = true;
+          break;
+        }
       }
       p.pos = step(p.pos, p.dir);
       p.nextStepAtMs += PROJECTILE_STEP_MS;
@@ -1024,19 +1039,57 @@ function stepMinions(s: ArenaState, now: number, field: Map<string, number>, rng
       if (m.hp <= 0) { s.minions = s.minions.filter((x) => x.id !== m.id); continue; }
     }
     if (now < m.frozenUntilMs) continue; // frozen — skip move and attack
+
+    const dist = distance(m.pos, s.player.pos);
+
     if (now >= m.nextMoveMs) {
-      if (distance(m.pos, s.player.pos) > 1) {
-        const others = s.minions.filter((o) => o.id !== m.id).map((o) => o.pos);
-        const blocked = blockedKeys(s, [s.bossPos, s.player.pos, ...others]);
-        const next = flowStep(m.pos, field, s.radius, blocked);
-        if (next) m.pos = next;
+      if (m.variant === 'archer') {
+        // Archers kite: close to within 3 cells, but back off if the player gets adjacent.
+        if (dist > 3) {
+          const others = s.minions.filter((o) => o.id !== m.id).map((o) => o.pos);
+          const blocked = blockedKeys(s, [s.bossPos, s.player.pos, ...others]);
+          const next = flowStep(m.pos, field, s.radius, blocked);
+          if (next) m.pos = next;
+        } else if (dist <= 1) {
+          // Too close — step away from the player.
+          const others = s.minions.filter((o) => o.id !== m.id).map((o) => o.pos);
+          const blocked = blockedKeys(s, [s.bossPos, ...others]);
+          const retreatCandidates = DIRS
+            .map((d) => step(m.pos, d))
+            .filter((n) => inBoard(n, s.radius) && !blocked.has(cellKey(n)) && distance(n, s.player.pos) > dist);
+          if (retreatCandidates.length > 0)
+            m.pos = retreatCandidates[Math.floor(rng() * retreatCandidates.length)];
+        }
+      } else {
+        // Bat: close in for melee.
+        if (dist > 1) {
+          const others = s.minions.filter((o) => o.id !== m.id).map((o) => o.pos);
+          const blocked = blockedKeys(s, [s.bossPos, s.player.pos, ...others]);
+          const next = flowStep(m.pos, field, s.radius, blocked);
+          if (next) m.pos = next;
+        }
       }
       m.nextMoveMs = now + scaled(s, MINION_MOVE_CD_MS);
     }
-    if (distance(m.pos, s.player.pos) <= 1 && now >= m.nextHitMs) {
-      strikePlayer(s, variance(m.attack, rng), 'physical', now, rng);
-      m.nextHitMs = now + scaled(s, MINION_HIT_CD_MS);
-      if (s.status !== 'active') return;
+
+    if (now >= m.nextHitMs) {
+      if (m.variant === 'archer' && dist <= 4) {
+        // Fire a projectile toward the player.
+        const dir = stepToward(m.pos, s.player.pos);
+        s.projectiles.push({
+          id: s.seq++,
+          pos: step(m.pos, dir),
+          dir,
+          dealt: variance(m.attack, rng),
+          nextStepAtMs: now + PROJECTILE_STEP_MS,
+          source: 'minion',
+        });
+        m.nextHitMs = now + scaled(s, MINION_HIT_CD_MS);
+      } else if (m.variant !== 'archer' && dist <= 1) {
+        strikePlayer(s, variance(m.attack, rng), 'physical', now, rng);
+        m.nextHitMs = now + scaled(s, MINION_HIT_CD_MS);
+        if (s.status !== 'active') return;
+      }
     }
   }
 }

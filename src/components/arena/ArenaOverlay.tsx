@@ -29,6 +29,7 @@ function centerFor(h: Cell, radius: number): { x: number; y: number } {
 const STATUS_GLYPH: Record<StatusKey, string> = { bless: '🛡️', burn: '🔥', weaken: '🔻', blind: '💫', freeze: '❄️', poison: '☠️' };
 const TELEGRAPH_LABEL: Record<TelegraphKind, string> = { slam: 'SLAM', line: 'LINE', nova: 'NOVA', volley: 'VOL' };
 const RUNE_GLYPH: Record<ArenaRune['kind'], string> = { fire: '🔥', ice: '❄️', poison: '☠️' };
+const MINION_GLYPH: Record<string, string> = { bat: '🦇', archer: '🐺' };
 const RUNE_COLOR: Record<ArenaRune['kind'], string> = { fire: 'rgba(239,68,68,0.35)', ice: 'rgba(96,165,250,0.35)', poison: 'rgba(134,239,172,0.30)' };
 
 function obstacleGlyph(h: Cell): string {
@@ -302,7 +303,7 @@ export function ArenaOverlay() {
           <span className="font-display text-sm font-bold text-gold-bright">{arena.bossName}</span>
           <div className="flex items-center gap-2">
             {arena.minions.length > 0 && (
-              <span className="font-display text-[10px] text-amber-400">🦇×{arena.minions.length}</span>
+              <span className="font-display text-[10px] text-amber-400">{MINION_GLYPH[arena.minionVariant] ?? '🦇'}×{arena.minions.length}</span>
             )}
             {arena.totalPhases > 1 && (
               <span className="flex gap-0.5">
@@ -480,7 +481,7 @@ export function ArenaOverlay() {
             <div key={`mn-${m.id}`}>
               <div className="pointer-events-none z-[8] flex items-center justify-center" style={spriteBox(m.pos, CELL * 0.62)}>
                 <span style={{ fontSize: SIZE * 0.9, lineHeight: 1, filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.85))', opacity: frozen ? 0.6 : 1 }}>
-                  {frozen ? '🧊' : '🦇'}
+                  {frozen ? '🧊' : (MINION_GLYPH[m.variant] ?? '🦇')}
                 </span>
               </div>
               {m.hp < m.maxHp && (
