@@ -55,6 +55,12 @@ export const OCCLUSION_RISE = 2;
 export const EFFECT_STAGGER_MS = 450;
 /** Default per-action animation length. */
 const EFFECT_DURATION_MS = 420;
+/**
+ * Positional spells that are always available in Tactics regardless of the player's
+ * inventory. They form the core of the positioning system (FF Tactics pattern: baseline
+ * abilities don't require loot discovery).
+ */
+export const TACTICS_GRANTED_SPELLS = ['push', 'blink', 'cleave'] as const;
 
 // --- AG / elevation formulas (the load-bearing rules; stat levels are ~1–25) --------------------
 function clamp(n: number, lo: number, hi: number): number {
@@ -1158,8 +1164,9 @@ export function generateSkirmish(
     status: 'active',
     tier,
     // Arena-only mechanics (runes, ring-of-fire, old teleport) aren't modelled on the tactics grid.
-    // The new positional mechanics (blink, push, cleave) ARE handled here — let them through.
-    knownSpells: knownSpells.filter((k) => {
+    // The new positional mechanics (blink, push, cleave) ARE always available — they form the
+    // core of the positioning system regardless of what spellbooks the player has found.
+    knownSpells: [...new Set([...TACTICS_GRANTED_SPELLS, ...knownSpells])].filter((k) => {
       const m = getSpell(k)?.mechanic;
       return !m || m === 'blink' || m === 'push' || m === 'cleave';
     }),

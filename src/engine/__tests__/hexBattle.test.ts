@@ -15,6 +15,7 @@ import {
   generateSkirmish,
   tacticsReward,
   TACTICS_SIZE_RADIUS,
+  TACTICS_GRANTED_SPELLS,
   OCCLUSION_RISE,
   COVER_DEFENSE,
   HAZARD_DMG,
@@ -410,6 +411,8 @@ describe('generateSkirmish', () => {
     // Mechanic spells are filtered out of the action set.
     expect(s.knownSpells).not.toContain('fire_rune');
     expect(s.knownSpells).toContain('sparks');
+    // Positional spells are always granted regardless of inventory.
+    for (const k of TACTICS_GRANTED_SPELLS) expect(s.knownSpells).toContain(k);
     // Every enemy spawn is reachable from the player spawn (board not walled off).
     const reachable = new Set<string>([hexKey(s.player.hex)]);
     let frontier = [s.player.hex];
@@ -428,6 +431,19 @@ describe('generateSkirmish', () => {
       frontier = next;
     }
     for (const key of occupied) expect(reachable.has(key)).toBe(true);
+  });
+
+  it('always grants push/blink/cleave even when the player has no spellbooks', () => {
+    // A brand-new character has only starter spells — no positional spellbooks found.
+    const noBooks = generateSkirmish(fighter(), 8, 4, ['sparks', 'mend'], { rng: seeded(1) });
+    for (const k of TACTICS_GRANTED_SPELLS) expect(noBooks.knownSpells).toContain(k);
+    // Arena-only mechanics still filtered out even if somehow in inventory.
+    const withRune = generateSkirmish(fighter(), 8, 4, ['fire_rune', 'chaotic_blink'], { rng: seeded(2) });
+    expect(withRune.knownSpells).not.toContain('fire_rune');
+    expect(withRune.knownSpells).not.toContain('chaotic_blink');
+    // Deduplication: if the player already owned push/blink/cleave, no duplicates.
+    const withAll = generateSkirmish(fighter(), 8, 4, ['push', 'blink', 'cleave', 'sparks'], { rng: seeded(3) });
+    expect(withAll.knownSpells.filter((k) => k === 'push')).toHaveLength(1);
   });
 
   it('maps sizes to radii and scales the board + enemy count up with size', () => {
