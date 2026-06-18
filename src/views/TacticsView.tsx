@@ -5,6 +5,7 @@ import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
 import { cn } from '@/lib/cn';
+import { resume as sfxResume } from '@/lib/sfx';
 
 const SIZE_OPTIONS: { id: TacticsSize; label: string; tiles: number }[] = [
   { id: 'small', label: 'Small', tiles: 37 },
@@ -102,7 +103,7 @@ export function TacticsView() {
           </div>
         </div>
 
-        <Button onClick={beginTactics} disabled={!canEnter} className="w-full py-2.5">
+        <Button onClick={() => { void sfxResume(); beginTactics(); }} disabled={!canEnter} className="w-full py-2.5">
           {!unlocked
             ? `Unlocks at Level ${TACTICS_UNLOCK_LEVEL}`
             : canEnter

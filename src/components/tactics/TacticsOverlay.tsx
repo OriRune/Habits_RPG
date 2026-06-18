@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Heart, Zap, Sparkles, Footprints, LogOut, Skull, Trophy, ChevronRight, Shield, Eye, EyeOff } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
+import { useTacticsAudio } from '@/hooks/useTacticsAudio';
 import {
   type Tile,
   type TacticalEffect,
@@ -126,6 +127,10 @@ export function TacticsOverlay() {
   const tacticsCast = useGameStore((s) => s.tacticsCast);
   const tacticsEndTurn = useGameStore((s) => s.tacticsEndTurn);
   const endTactics = useGameStore((s) => s.endTactics);
+  const soundEnabled = useGameStore((s) => s.settings.soundEnabled);
+
+  // Audio: synthesised combat SFX + adaptive tension drone.
+  useTacticsAudio(tactics, soundEnabled);
 
   const [live, setLive] = useState<TacticalEffect[]>([]);
   const [animating, setAnimating] = useState(false);

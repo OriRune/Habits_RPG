@@ -20,6 +20,7 @@
 // Adding cues: extend SfxCue and add a matching entry to _CUES.
 
 export type SfxCue =
+  // ── Rooftop Chase ──────────────────────────────────
   | 'jump'
   | 'doubleJump'
   | 'land'
@@ -30,7 +31,32 @@ export type SfxCue =
   | 'growl'
   | 'surge'
   | 'nearMiss'
-  | 'win';
+  | 'win'
+  // ── Hex Tactics (combat) ──────────────────────────
+  /** Short melee weapon swing. */
+  | 'swing'
+  /** Arrow/bolt projectile whoosh. */
+  | 'arrowFly'
+  /** Impact thud when an attack lands. */
+  | 'hit'
+  /** Spell-cast shimmer/crackle. */
+  | 'cast'
+  /** Soft bell chime for a heal. */
+  | 'heal'
+  /** Force gust — Push spell launch. */
+  | 'push'
+  /** Phase-shift blip — Blink teleport. */
+  | 'blink'
+  /** Deep descending thud when an enemy dies. */
+  | 'enemyDeath'
+  /** Low thump when the player is hit. */
+  | 'playerHurt'
+  /** Subtle tick for turn boundary. */
+  | 'turnEnd'
+  /** Rising triumphant fanfare — battle won. */
+  | 'victory'
+  /** Descending somber tones — battle lost. */
+  | 'defeat';
 
 // ── Module-level singletons ────────────────────────────────────────────────────
 
@@ -281,6 +307,126 @@ const _CUES: Record<SfxCue, (ctx: AudioContext) => void> = {
       gain.connect(_masterGain!);
       osc.start(t0);
       osc.stop(t0 + 0.34);
+    });
+  },
+
+  // ── Hex Tactics combat cues ───────────────────────────────────────────────
+
+  /** Short melee weapon swing — noise + downward osc. */
+  swing(ctx) {
+    _noise(ctx, 900, 200, 0.14, 0.22, 'bandpass', 2.2);
+    _osc(ctx, 'square', 200, 82, 0.12, 0.18, 0.007);
+  },
+
+  /** Arrow whoosh — high-Q bandpass noise sweep. */
+  arrowFly(ctx) {
+    _noise(ctx, 2600, 700, 0.20, 0.16, 'bandpass', 3.8);
+  },
+
+  /** Impact thud — low triangle + soft noise burst. */
+  hit(ctx) {
+    _osc(ctx, 'triangle', 145, 50, 0.18, 0.32, 0.005);
+    _noise(ctx, 320, 95, 0.11, 0.18, 'bandpass', 1.0);
+  },
+
+  /** Spell-cast shimmer — two rising sine tones. */
+  cast(ctx) {
+    _osc(ctx, 'sine', 640, 1280, 0.26, 0.26, 0.014);
+    _osc(ctx, 'sine', 1420, 2200, 0.18, 0.10, 0.010);
+  },
+
+  /** Heal chime — two harmonious bell-like sines. */
+  heal(ctx) {
+    _osc(ctx, 'sine', 660, 660, 0.55, 0.20, 0.008);
+    _osc(ctx, 'sine', 990, 990, 0.48, 0.12, 0.010);
+  },
+
+  /** Force push gust — upward noise sweep + bass thump. */
+  push(ctx) {
+    _noise(ctx, 420, 3400, 0.28, 0.30, 'bandpass', 2.6);
+    _osc(ctx, 'sine', 260, 76, 0.18, 0.26, 0.010);
+  },
+
+  /** Blink teleport — quick pitch descend then a sharp blip. */
+  blink(ctx) {
+    _osc(ctx, 'sine', 900, 240, 0.10, 0.20, 0.005);
+    _osc(ctx, 'sine', 1800, 900, 0.14, 0.18, 0.003);
+  },
+
+  /** Enemy death — descending rumble. */
+  enemyDeath(ctx) {
+    _osc(ctx, 'sawtooth', 165, 40, 0.40, 0.30, 0.006);
+    _noise(ctx, 210, 58, 0.26, 0.18, 'lowpass', 0.7);
+  },
+
+  /** Player hurt — low square thump with noise. */
+  playerHurt(ctx) {
+    _osc(ctx, 'square', 108, 46, 0.20, 0.40, 0.004);
+    _noise(ctx, 250, 78, 0.14, 0.20, 'bandpass', 0.8);
+  },
+
+  /** Turn boundary — short, quiet sine blip. */
+  turnEnd(ctx) {
+    _osc(ctx, 'sine', 490, 380, 0.08, 0.12, 0.005);
+  },
+
+  /**
+   * Victory fanfare — five-note ascending arpeggio with a final sustained chord.
+   * More elaborate than the chase 'win' to mark the weight of a tactical victory.
+   */
+  victory(ctx) {
+    const t = ctx.currentTime;
+    const notes = [330, 415, 494, 659, 880];
+    notes.forEach((freq, i) => {
+      const t0 = t + i * 0.09;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.linearRampToValueAtTime(0.30, t0 + 0.010);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.30);
+      osc.connect(gain);
+      gain.connect(_masterGain!);
+      osc.start(t0);
+      osc.stop(t0 + 0.36);
+    });
+    // Sustaining final chord (E major-ish) that fades over 0.8 s.
+    [[330, 0.18], [494, 0.15], [659, 0.14]].forEach(([freq, peak]) => {
+      const t0 = t + notes.length * 0.09;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.linearRampToValueAtTime(peak, t0 + 0.025);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.80);
+      osc.connect(gain);
+      gain.connect(_masterGain!);
+      osc.start(t0);
+      osc.stop(t0 + 0.86);
+    });
+  },
+
+  /**
+   * Defeat — four descending minor notes, somber and unhurried.
+   */
+  defeat(ctx) {
+    const t = ctx.currentTime;
+    const notes = [392, 330, 262, 196]; // G, E, C, G (descending)
+    notes.forEach((freq, i) => {
+      const t0 = t + i * 0.14;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.linearRampToValueAtTime(0.24, t0 + 0.020);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.55);
+      osc.connect(gain);
+      gain.connect(_masterGain!);
+      osc.start(t0);
+      osc.stop(t0 + 0.62);
     });
   },
 };
