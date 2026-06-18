@@ -8,6 +8,7 @@ import {
   type UnitStatus,
   type EnemyIntent,
   type AIArchetype,
+  type TacticsObjective,
   TERRAIN_ICONS,
   ARCHETYPE_INFO,
   previewPlayerAttack,
@@ -126,6 +127,7 @@ export function TacticsOverlay() {
   const tacticsAttack = useGameStore((s) => s.tacticsAttack);
   const tacticsCast = useGameStore((s) => s.tacticsCast);
   const tacticsEndTurn = useGameStore((s) => s.tacticsEndTurn);
+  const tacticsHold = useGameStore((s) => s.tacticsHold);
   const endTactics = useGameStore((s) => s.endTactics);
   const soundEnabled = useGameStore((s) => s.settings.soundEnabled);
 
@@ -351,11 +353,19 @@ export function TacticsOverlay() {
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+          {tactics.player.overwatch && (
+            <span className="flex items-center gap-1 rounded border border-sky-500/50 bg-sky-900/30 px-2 py-0.5 font-display text-[10px] text-sky-300" title="Overwatch active — reaction shot fires on the first enemy that steps into range">
+              ⌖ Watching
+            </span>
+          )}
           <Gauge icon={<Heart className="h-3.5 w-3.5 text-red-400" />} value={tactics.player.hp} max={tactics.player.maxHp} fill="#ef4444" />
           <Gauge icon={<Sparkles className="h-3.5 w-3.5 text-blue-400" />} value={tactics.player.mp} max={tactics.player.maxMp} fill="#3b82f6" />
           <Gauge icon={<Zap className="h-3.5 w-3.5 text-amber-400" />} value={tactics.player.sta} max={tactics.player.maxSta} fill="#f59e0b" />
         </div>
       </div>
+
+      {/* Objective banner */}
+      {tactics.objective && <ObjectiveBanner objective={tactics.objective} turnCount={tactics.turnCount} />}
 
       {/* Board */}
       <div ref={boardWrapRef} className="relative flex flex-1 items-center justify-center overflow-hidden">
@@ -488,6 +498,32 @@ export function TacticsOverlay() {
                 />
               );
             })}
+
+            {/* Beacon tile marker — pulsing ring on the designated Hold the Beacon hex */}
+            {tactics.objective?.kind === 'beacon' && tactics.objective.beaconHex && (() => {
+              const bHex = tactics.objective.beaconHex;
+              const t = top(bHex);
+              const corners = hexCorners(size);
+              const done = tactics.objective.complete;
+              const color = done ? '#22c55e' : '#fbbf24';
+              return (
+                <g key="beacon-marker" style={{ pointerEvents: 'none' }}>
+                  <polygon
+                    points={ptsAt(corners, t.x, t.y)}
+                    fill={color + '22'}
+                    stroke={color}
+                    strokeWidth={2}
+                    opacity={0.85}
+                  />
+                  <text
+                    x={t.x} y={t.y}
+                    textAnchor="middle" dominantBaseline="central"
+                    fontSize={size * 0.5}
+                    opacity={0.9}
+                  >◎</text>
+                </g>
+              );
+            })()}
           </svg>
 
           {/* Units (DOM overlay) */}
@@ -576,6 +612,14 @@ export function TacticsOverlay() {
               </ActionButton>
             );
           })}
+          <ActionButton
+            accent
+            disabled={locked || tactics.player.hasActed}
+            onClick={tacticsHold}
+            title="Arm an overwatch stance — fire a reaction shot on the first enemy that steps into range"
+          >
+            {tactics.player.overwatch ? '⌖ Watching…' : 'Hold ⌖'}
+          </ActionButton>
           <ActionButton accent disabled={locked} onClick={tacticsEndTurn}>
             End turn <ChevronRight className="h-4 w-4" />
           </ActionButton>
@@ -798,5 +842,41 @@ function ActionButton({
     >
       {children}
     </button>
+  );
+}
+
+/** Thin banner showing the match's optional secondary objective and its live progress. */
+function ObjectiveBanner({ objective, turnCount }: { objective: TacticsObjective; turnCount: number }) {
+  const { kind, label, desc, target, progress, complete, failed } = objective;
+
+  let progressLabel = '';
+  if (kind === 'beacon') {
+    progressLabel = complete ? '✓ Complete' : `${progress}/${target} turns`;
+  } else if (kind === 'swift') {
+    progressLabel = complete ? '✓ Complete' : failed ? '✗ Missed' : `Turn ${turnCount} / ${target}`;
+  } else if (kind === 'flawless') {
+    progressLabel = failed ? '✗ Failed' : complete ? '✓ Complete' : `HP ≥ ${target}%`;
+  }
+
+  return (
+    <div
+      title={desc}
+      className={cn(
+        'flex items-center justify-between border-b px-4 py-1 font-display text-[11px]',
+        complete
+          ? 'border-green-700/40 bg-green-900/20 text-green-300'
+          : failed
+            ? 'border-red-700/40 bg-red-900/20 text-red-400 line-through opacity-60'
+            : 'border-gold-deep/25 bg-amber-900/10 text-amber-300/80',
+      )}
+    >
+      <span>
+        <span className="mr-1 opacity-70">Bonus:</span>
+        {label}
+      </span>
+      <span className={cn('font-bold', complete ? 'text-green-300' : failed ? 'text-red-400' : 'text-amber-300')}>
+        {progressLabel}
+      </span>
+    </div>
   );
 }
