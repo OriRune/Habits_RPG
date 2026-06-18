@@ -141,8 +141,9 @@ export const DASH_SPEED_BONUS = 0.4;
 /** Width of the first (grace) building — no props, roofY = 0. */
 export const GRACE_DISTANCE = 22;
 
-/** How many buildings to pre-generate for the course. */
-export const BUILDING_COUNT = 50;
+/** How many buildings to pre-generate for the course.
+ *  30 covers a perfect run (≈ building 24 at 600 wu) with a comfortable margin. */
+export const BUILDING_COUNT = 30;
 
 /** Possible roof elevation levels (world-units above baseline). */
 export const ROOF_LEVELS = [0, 2.5, 5] as const;

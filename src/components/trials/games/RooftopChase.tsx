@@ -566,6 +566,18 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
     prevJustDashed.current  = state.justDashed;
   });
 
+  // ── Chaser landing dust (triggers when beast lands after leaping a gap) ────
+  const [chaserDustPuffs, setChaserDustPuffs] = useState<number[]>([]);
+  const prevChaserAirborne = useRef(false);
+  useEffect(() => {
+    // Rising→falling edge on chaserAirborne = beast just landed.
+    if (prevChaserAirborne.current && !state.chaserAirborne && state.chaserActive) {
+      const now = performance.now();
+      setChaserDustPuffs((ps) => [...ps.slice(-2), now]);
+    }
+    prevChaserAirborne.current = state.chaserAirborne;
+  });
+
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col items-center gap-3 px-2">
@@ -728,6 +740,20 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
           />
         ))}
 
+        {/* Chaser landing dust */}
+        {chaserDustPuffs.map((ts) => (
+          <div key={ts} className="absolute pointer-events-none" style={{
+            left: Math.max(-24, chaserXPx) + 16,
+            bottom: chaserScreenBottom,
+            width: 16, height: 8,
+            borderRadius: '50%',
+            backgroundColor: 'rgba(160,100,70,0.45)',
+            animation: 'rooftop-dust 0.5s ease-out forwards',
+          }}
+            onAnimationEnd={() => setChaserDustPuffs((ps) => ps.filter((t) => t !== ts))}
+          />
+        ))}
+
         {/* Chaser — positioned from real world coordinates (chaserX/Y in ChaseState) */}
         {state.chaserActive && (
           <div className="absolute" style={{
@@ -768,6 +794,18 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
           <div className="absolute top-8 left-1/2 -translate-x-1/2 font-display text-[11px] font-black whitespace-nowrap pointer-events-none animate-pulse"
             style={{ color: '#fbbf24', textShadow: '0 0 8px rgba(251,191,36,0.8)' }}>
             CLOSE CALL! ⚡
+          </div>
+        )}
+
+        {/* "Caught!" end state — beast pounces when lead hits 0 */}
+        {state.done && state.lead <= 0 && !state.justFell && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+            <div
+              className="font-display text-2xl font-black animate-pulse"
+              style={{ color: '#f87171', textShadow: '0 0 14px rgba(248,113,113,0.85)' }}
+            >
+              CAUGHT! 🐺
+            </div>
           </div>
         )}
 
@@ -832,12 +870,32 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
         <div className="w-full max-w-xs space-y-1">
           <div className="flex items-center justify-between px-0.5">
             <span className="font-display text-[10px] text-ink-muted">🐺 Chaser</span>
-            <span className="font-display text-[10px] font-bold" style={{ color: leadColor }}>
+            <span
+              className={leadFrac < 0.25 ? 'animate-pulse font-display text-[10px] font-bold' : 'font-display text-[10px] font-bold'}
+              style={{ color: leadColor }}
+            >
               {leadLabel}
             </span>
           </div>
-          <div className="h-2.5 w-full overflow-hidden rounded-full border border-gold-deep/30 bg-parchment-300/20">
-            <div className="h-full rounded-full transition-none" style={{ width: `${leadFrac * 100}%`, backgroundColor: leadColor }} />
+          {/* Bar track — glows red when danger; beast icon rides the fill edge */}
+          <div
+            className="relative h-2.5 w-full overflow-visible rounded-full border bg-parchment-300/20"
+            style={{
+              borderColor: leadFrac < 0.25 ? 'rgba(248,113,113,0.55)' : 'rgba(161,127,66,0.3)',
+              boxShadow: leadFrac < 0.25 ? `0 0 6px rgba(248,113,113,${0.3 + (0.25 - leadFrac) * 2})` : undefined,
+            }}
+          >
+            <div
+              className="h-full overflow-hidden rounded-full transition-none"
+              style={{ width: `${leadFrac * 100}%`, backgroundColor: leadColor }}
+            />
+            {/* Beast icon tracks the threat — left edge moves right as hero gains lead */}
+            <div
+              className="absolute top-1/2 -translate-y-1/2 text-[9px] leading-none pointer-events-none select-none"
+              style={{ left: `calc(${leadFrac * 100}% - 6px)` }}
+            >
+              🐺
+            </div>
           </div>
         </div>
       ) : (
