@@ -10,7 +10,7 @@
 // Phase 0 refactor: all sim state lives in ChaseState (engine) + useChaseLoop (hook).
 // This component is now a pure renderer of ChaseState — no RAF, no inline physics.
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   chaseScore,
   speedAt,
@@ -267,28 +267,39 @@ function ChaserSprite({ danger, airborne = false }: { danger: boolean; airborne?
 }
 
 function HazardSprite({ widthPx }: { widthPx: number }) {
+  // Recoloured as a dark iron spike post — contrasts the warm-brown rooftops so it reads
+  // clearly at a glance. Footprint and height unchanged (collision stays aligned).
   const cx = Math.floor(widthPx / 2);
   return (
     <div style={{ width: widthPx, height: 40, position: 'relative' }}>
+      {/* Iron post — dark metal with orange glow outline */}
       <div style={{
-        position: 'absolute', bottom: 0, left: cx - 7, width: 14, height: 36,
-        background: 'linear-gradient(180deg, #9a7050, #6a4830)',
-        border: '1px solid #4a2820',
-        borderRadius: '2px 2px 0 0',
+        position: 'absolute', bottom: 0, left: cx - 6, width: 12, height: 34,
+        background: 'linear-gradient(180deg, #1e1828, #141020)',
+        border: '1px solid rgba(255,130,20,0.55)',
+        borderRadius: '1px 1px 0 0',
+        boxShadow: '0 0 5px rgba(255,130,20,0.25)',
       }} />
+      {/* Warning stripe band — bright amber on dark iron */}
       <div style={{
-        position: 'absolute', bottom: 34, left: cx - 10, width: 20, height: 7,
-        background: 'linear-gradient(180deg, #b08060, #8a6040)',
-        border: '1px solid #5a3020',
-        borderRadius: '2px 2px 0 0',
+        position: 'absolute', bottom: 9, left: cx - 6, width: 12, height: 5,
+        background: 'repeating-linear-gradient(90deg, #f97316 0px, #f97316 3px, #141020 3px, #141020 6px)',
       }} />
+      {/* Crossbar bracket */}
       <div style={{
-        position: 'absolute', bottom: 40, left: cx - 3, width: 6, height: 6,
-        backgroundColor: 'rgba(200,190,180,0.4)',
-        borderRadius: '50%',
+        position: 'absolute', bottom: 25, left: cx - 11, width: 22, height: 4,
+        background: 'linear-gradient(180deg, #28222e, #18141e)',
+        border: '1px solid rgba(255,130,20,0.35)',
+        borderRadius: '1px',
       }} />
-      <div style={{ position: 'absolute', bottom: 10, left: cx - 7, width: 14, height: 1, backgroundColor: '#5a3820', opacity: 0.6 }} />
-      <div style={{ position: 'absolute', bottom: 20, left: cx - 7, width: 14, height: 1, backgroundColor: '#5a3820', opacity: 0.6 }} />
+      {/* Spike tip — glowing orange point */}
+      <div style={{
+        position: 'absolute', bottom: 34, left: cx - 4, width: 0, height: 0,
+        borderLeft: '6px solid transparent',
+        borderRight: '6px solid transparent',
+        borderBottom: '8px solid #f97316',
+        filter: 'drop-shadow(0 0 4px rgba(249,115,22,0.75))',
+      }} />
     </div>
   );
 }
@@ -373,10 +384,12 @@ function BuildingView({
   building,
   distance,
   decorScrollPx,
+  defeatedMookIds,
 }: {
-  building:      Building;
-  distance:      number;
-  decorScrollPx: number;
+  building:        Building;
+  distance:        number;
+  decorScrollPx:   number;
+  defeatedMookIds: Set<number>;
 }) {
   const roofScreenY = screenYForElev(building.roofY);
   const leftPx      = (building.x - distance) * PX_PER_WU + HERO_X_PX;
@@ -456,7 +469,15 @@ function BuildingView({
             }}
           >
             {prop.kind === 'hazard' && <HazardSprite widthPx={propWidthPx} />}
-            {prop.kind === 'mook'   && <MookSprite />}
+            {prop.kind === 'mook' && (
+              <div style={
+                defeatedMookIds.has(prop.id)
+                  ? { animation: 'rooftop-mook-defeat 0.5s ease-in forwards' }
+                  : undefined
+              }>
+                <MookSprite />
+              </div>
+            )}
             {prop.kind === 'lowbar' && <LowbarSprite widthPx={propWidthPx} />}
           </div>
         );
@@ -526,6 +547,13 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
   const viewStartX       = distance - 4;
   const visibleBuildings = (state.buildings as Building[]).filter(
     (b) => b.x + b.width >= viewStartX && b.x <= viewEndX,
+  );
+
+  // Defeated mook set — only recomputed when a stomp occurs (array ref changes).
+  const defeatedMookIds = useMemo(
+    () => new Set(state.defeatedPropIds),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.defeatedPropIds],
   );
 
   // ── Near-miss flash (stretches one-frame event to 700 ms) ──────────────────
@@ -671,6 +699,7 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
             building={b}
             distance={distance}
             decorScrollPx={decorScrollPx}
+            defeatedMookIds={defeatedMookIds}
           />
         ))}
 

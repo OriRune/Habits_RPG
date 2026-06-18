@@ -56,6 +56,9 @@ export function useChaseLoop(onFinish: (score: number) => void): {
   // ── Keyboard bindings ────────────────────────────────────────────────────────
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      // Ignore OS key auto-repeat — a held key must not count as a second press.
+      // This prevents the double-jump from firing while Space is still held down.
+      if (e.repeat) return;
       if (e.code === 'Space' || e.code === 'ArrowUp') {
         e.preventDefault(); jump();
       } else if (e.code === 'ArrowDown' || e.code === 'KeyS') {

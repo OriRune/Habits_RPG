@@ -317,17 +317,41 @@ export function nextBuilding(buildings: Building[], footX: number): Building | n
 }
 
 /**
+ * The building supporting the hero — requires at least `LANDING_SUPPORT_FRAC × HERO_HITBOX_W`
+ * world-units of horizontal overlap so players who clip the leading edge of a roof still land
+ * safely instead of registering as a fall.
+ *
+ * @param heroLeftX  Hero's left hitbox edge (= `state.distance`).
+ */
+export function supportingBuilding(buildings: Building[], heroLeftX: number): Building | null {
+  const minOverlap = LANDING_SUPPORT_FRAC * HERO_HITBOX_W;
+  for (const b of buildings) {
+    const overlap =
+      Math.min(heroLeftX + HERO_HITBOX_W, b.x + b.width) - Math.max(heroLeftX, b.x);
+    if (overlap >= minOverlap) return b;
+  }
+  return null;
+}
+
+/**
  * True when the hero is over a gap (not on any building) AND has fallen below the top of the
  * next building ahead — meaning they failed to clear it and the run should end.
  *
+ * Uses `supportingBuilding` (≥25 % hitbox overlap) for the "on a roof" check so edge
+ * landings are forgiving.  The look-ahead uses the front edge of the hitbox so the hero
+ * is compared against the roof they are about to land on, not one they already passed.
+ *
  * Special cases:
- * - If standing on a building: false (not in a gap).
+ * - If supported on a building: false (not in a gap).
  * - If airborne over a gap but still above the next roof top: false (still in the arc).
  * - No next building ahead: false (beyond the course end; finish handles that).
+ *
+ * @param heroLeftX  Hero's left hitbox edge (= `state.distance`).
  */
-export function hasFallen(buildings: Building[], footX: number, heroY: number): boolean {
-  if (buildingAt(buildings, footX) !== null) return false; // on a roof
-  const next = nextBuilding(buildings, footX);
+export function hasFallen(buildings: Building[], heroLeftX: number, heroY: number): boolean {
+  if (supportingBuilding(buildings, heroLeftX) !== null) return false; // supported on a roof
+  // Look ahead from the front edge of the hitbox for the next building.
+  const next = nextBuilding(buildings, heroLeftX + HERO_HITBOX_W);
   if (next === null) return false; // past the end — let the win/finish logic handle it
   return heroY < next.roofY; // fell below the target roof's top
 }
@@ -485,6 +509,13 @@ export function chaseScore(distance: number): number {
  */
 export const HERO_HITBOX_W = 2.2;
 
+/**
+ * Fraction of the hero hitbox that must overlap a rooftop to count as supported.
+ * 0.25 × HERO_HITBOX_W = 0.55 wu — forgiving on landing edges so the player
+ * does not register as "fallen" when visually clipping the leading corner of a roof.
+ */
+export const LANDING_SUPPORT_FRAC = 0.25;
+
 /** One-frame input snapshot passed to stepChase per RAF tick. */
 export interface ChaseInput {
   /** True on the frame the jump button was pressed (edge-triggered). */
@@ -559,6 +590,11 @@ export interface ChaseState {
    * extra lead on top of the base STOMP_LEAD_GAIN.
    */
   stompChain: number;
+  /**
+   * IDs of mook props that have been stomped (defeated) this run.
+   * Defeated props are skipped in the collision scan and animated-out in the renderer.
+   */
+  defeatedPropIds: number[];
 
   // ── One-frame event flags (true for exactly one step, then cleared) ────────
   justLanded: boolean;
@@ -605,6 +641,7 @@ export function initChase(rng: () => number): ChaseState {
     activeContactId: null,
     stompedPropId: null,
     stompChain: 0,
+    defeatedPropIds: [],
     justLanded: false,
     justStomped: false,
     justStumbled: false,
@@ -648,8 +685,8 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
   let jumpsUsed = state.jumpsUsed;
 
   // Determine grounded state at start of frame (needed for jump/slide gating).
-  const footXPrev   = state.distance + HERO_HITBOX_W / 2;
-  const underfootPrev = buildingAt(state.buildings as Building[], footXPrev);
+  // Uses supportingBuilding (≥25 % hitbox overlap) — consistent with the landing/fall logic.
+  const underfootPrev = supportingBuilding(state.buildings as Building[], state.distance);
   const roofYPrev   = underfootPrev ? underfootPrev.roofY : state.heroRoofY;
   const groundedPrev = state.heroY <= roofYPrev + 0.05;
 
@@ -692,12 +729,14 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
   const rawY  = state.heroY + newVy * dtSec;
 
   // ── 5. Find building underfoot after distance advance ───────────────────────
+  // supportingBuilding uses ≥25 % hitbox overlap for forgiving edge landings.
+  // footX (center) is kept for the chaser-position helper — fine there.
   const footX       = newDist + HERO_HITBOX_W / 2;
-  const underfoot   = buildingAt(state.buildings as Building[], footX);
+  const underfoot   = supportingBuilding(state.buildings as Building[], newDist);
   const currentRoofY = underfoot ? underfoot.roofY : 0;
 
   // ── 6. Fall check ───────────────────────────────────────────────────────────
-  if (hasFallen(state.buildings as Building[], footX, rawY)) {
+  if (hasFallen(state.buildings as Building[], newDist, rawY)) {
     return {
       ...state,
       heroY: rawY,
@@ -713,6 +752,7 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
       stompFlashMs,
       stompedPropId,
       stompChain: state.stompChain,
+      defeatedPropIds: state.defeatedPropIds,
       lead: state.lead,
       chaserActive: state.chaserActive,
       chaserX: state.chaserX,
@@ -772,6 +812,7 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
 
   outer: for (const b of state.buildings) {
     for (const p of b.props) {
+      if (state.defeatedPropIds.includes(p.id)) continue; // already defeated — skip
       if (newDist < p.x + p.width && newDist + HERO_HITBOX_W > p.x) {
         foundPropId   = p.id;
         foundPropData = { prop: p, roofY: b.roofY };
@@ -828,6 +869,12 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
     : justStomped
       ? state.stompChain + 1
       : state.stompChain;
+
+  // Track defeated mooks: append the stomped prop id so the renderer can animate it out.
+  const newDefeatedPropIds: number[] =
+    justStomped && foundPropId !== null
+      ? [...state.defeatedPropIds, foundPropId]
+      : state.defeatedPropIds;
 
   // ── 9b. Surge drama (theatrical — zero net lead impact) ────────────────────
   let newSurgeMs     = Math.max(0, state.surgeMs - dtMs);
@@ -894,6 +941,7 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
     activeContactId,
     stompedPropId,
     stompChain:     newStompChain,
+    defeatedPropIds: newDefeatedPropIds,
     justLanded,
     justStomped,
     justStumbled,

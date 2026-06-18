@@ -400,6 +400,12 @@ body {
   10%  { opacity: 1;    transform: scaleX(1) scaleY(1.4); }
   100% { opacity: 0;    transform: scaleX(1) scaleY(0.6) translateX(-220px); }
 }
+/* Stomped guard topples and fades off the roof */
+@keyframes rooftop-mook-defeat {
+  0%   { transform: translateY(0)    rotate(0deg);     opacity: 1; }
+  30%  { transform: translateY(-6px) rotate(-18deg);   opacity: 1; }
+  100% { transform: translateY(22px) rotate(-100deg);  opacity: 0; }
+}
 /* Hero fall-tumble when dropping into a gap */
 @keyframes rooftop-fall {
   0%   { transform: translateY(0) rotate(0deg); opacity: 1; }
