@@ -16,6 +16,7 @@ import {
   speedAt,
   CHASE_TARGET_DISTANCE,
   CHASER_SPAWN_DISTANCE,
+  SURGE_DURATION_MS,
   DASH_COOLDOWN_MS,
   LEAD_MAX,
   HERO_HITBOX_W as _HERO_HITBOX_W, // imported for documentation; not used in render math directly
@@ -514,6 +515,10 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
   const chaserScreenBottom = BELOW_ROOF_PX + state.chaserY * PX_PER_WU;
   const chaserDanger      = leadFrac < 0.3;
 
+  // Surge drama — flash intensity peaks at mid-surge (sin curve over 0→1 of surgeFrac).
+  const surgeFrac   = state.surgeMs > 0 ? 1 - state.surgeMs / SURGE_DURATION_MS : 0;
+  const surgeFlash  = state.surgeMs > 0 ? Math.sin(Math.PI * surgeFrac) : 0; // 0→1→0
+
   const spawnPct = Math.min(1, distance / CHASER_SPAWN_DISTANCE);
 
   // Visible buildings
@@ -522,6 +527,18 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
   const visibleBuildings = (state.buildings as Building[]).filter(
     (b) => b.x + b.width >= viewStartX && b.x <= viewEndX,
   );
+
+  // ── Near-miss flash (stretches one-frame event to 700 ms) ──────────────────
+  const [nearMissAnim, setNearMissAnim] = useState(false);
+  const prevJustNearMiss = useRef(false);
+  useEffect(() => {
+    if (state.justNearMiss && !prevJustNearMiss.current) {
+      setNearMissAnim(true);
+      const t = setTimeout(() => setNearMissAnim(false), 700);
+      return () => clearTimeout(t);
+    }
+    prevJustNearMiss.current = state.justNearMiss;
+  });
 
   // ── Landing animation (stretches one-frame event to 200 ms) ────────────────
   const [landingAnim, setLandingAnim] = useState(false);
@@ -735,6 +752,24 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
             falling={falling}
           />
         </div>
+
+        {/* Surge vignette — a red edge pulse as the beast lunges */}
+        {surgeFlash > 0.05 && (
+          <div
+            className="absolute inset-0 pointer-events-none"
+            style={{
+              boxShadow: `inset 0 0 ${Math.round(surgeFlash * 28)}px ${Math.round(surgeFlash * 14)}px rgba(200,30,10,${(surgeFlash * 0.35).toFixed(2)})`,
+            }}
+          />
+        )}
+
+        {/* Near-miss flash — gold burst when hero shoves chaser back at low lead */}
+        {nearMissAnim && (
+          <div className="absolute top-8 left-1/2 -translate-x-1/2 font-display text-[11px] font-black whitespace-nowrap pointer-events-none animate-pulse"
+            style={{ color: '#fbbf24', textShadow: '0 0 8px rgba(251,191,36,0.8)' }}>
+            CLOSE CALL! ⚡
+          </div>
+        )}
 
         {/* Stomp flash — shows chain count when on a streak */}
         {showStompFlash && (

@@ -28,6 +28,8 @@ export type SfxCue =
   | 'stumble'
   | 'fall'
   | 'growl'
+  | 'surge'
+  | 'nearMiss'
   | 'win';
 
 // ── Module-level singletons ────────────────────────────────────────────────────
@@ -221,6 +223,47 @@ const _CUES: Record<SfxCue, (ctx: AudioContext) => void> = {
     });
   },
 
+  /**
+   * Beast surge swell — a deep throaty rumble that crests and fades.
+   * Three low oscillators in a thick chord with a brief amplitude swell.
+   */
+  surge(ctx) {
+    const t = ctx.currentTime;
+    const voices: [number, number][] = [[58, 0.28], [62, 0.20], [46, 0.18]];
+    voices.forEach(([baseFreq, peak]) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      // Slowly descend in pitch across the swell for an ominous lunge feel.
+      osc.frequency.setValueAtTime(baseFreq + 12, t);
+      osc.frequency.linearRampToValueAtTime(baseFreq, t + 0.55);
+      osc.frequency.linearRampToValueAtTime(baseFreq - 6, t + 1.10);
+      // Attack → sustain → decay envelope.
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.linearRampToValueAtTime(peak, t + 0.22);
+      gain.gain.setValueAtTime(peak * 0.75, t + 0.60);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 1.20);
+      osc.connect(gain);
+      gain.connect(_masterGain!);
+      osc.start(t);
+      osc.stop(t + 1.26);
+    });
+    // A filtered noise burst at the start for impact texture.
+    _noise(ctx, 90, 40, 0.35, 0.14, 'lowpass', 0.6);
+  },
+
+  /**
+   * Near-miss electric sting — a bright metallic ping when the hero just
+   * barely shoves the beast back at very low lead.
+   */
+  nearMiss(ctx) {
+    // High-frequency metallic ping decaying fast.
+    _osc(ctx, 'sine',     1480, 820, 0.22, 0.28, 0.004);
+    _osc(ctx, 'triangle', 2100, 1100, 0.16, 0.14, 0.003);
+    // Short noise burst for the "spark" texture.
+    _noise(ctx, 3200, 800, 0.12, 0.18, 'highpass', 2.0);
+  },
+
   /** Four-note ascending arpeggio — run completed. */
   win(ctx) {
     const notes = [440, 554, 660, 880];
@@ -357,4 +400,17 @@ export function setDroneIntensity(x01: number): void {
   // Filter cutoff opens from 220 → 1100 Hz as danger rises — the timbre
   // becomes harsher and more present right before a potential catch.
   _droneFilter.frequency.setTargetAtTime(220 + x * 880, t, 0.20);
+}
+
+/**
+ * Briefly spike the drone to maximum intensity for dramatic effect (e.g. beast
+ * surges). The normal per-frame `setDroneIntensity` call will smoothly reclaim
+ * control on the next frame, so this needs no teardown.
+ */
+export function spikeDrone(): void {
+  if (!_droneGain || !_droneFilter || !_ctx) return;
+  const t = _ctx.currentTime;
+  // Instant burst to near-max, then allow setDroneIntensity to smooth back.
+  _droneGain.gain.setTargetAtTime(0.14, t, 0.03);
+  _droneFilter.frequency.setTargetAtTime(1100, t, 0.03);
 }

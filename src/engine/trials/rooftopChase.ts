@@ -86,6 +86,31 @@ export const DASH_LEAD_GAIN = 16;
 /** Lead gained from successfully sliding under a lowbar banner (clean slide). */
 export const SLIDE_LEAD_GAIN = 1;
 
+// ── Drama constants ────────────────────────────────────────────────────────────
+
+/**
+ * The chaser lunges toward the hero every this many world-units of distance.
+ * A surge is theatrically alarming but has zero net lead impact: the chaser
+ * closes by SURGE_LEAD_BURST then recedes by the same amount over SURGE_DURATION_MS.
+ */
+export const SURGE_INTERVAL_WU = 40;
+
+/** How long each surge lasts (milliseconds). */
+export const SURGE_DURATION_MS = 1200;
+
+/**
+ * How much lead the surge visually "steals" at its peak.
+ * This is purely visual — the surge is self-recovering, so it never drains
+ * the player's actual lead total. It just displaces chaserX temporarily.
+ */
+export const SURGE_VISUAL_OFFSET = 8;
+
+/**
+ * Lead level at which the "near-miss" feedback fires when a dash or stomp
+ * shoves the chaser back. Encourages the player by acknowledging a close call.
+ */
+export const NEAR_MISS_LEAD_THRESHOLD = 12;
+
 /**
  * Maximum world-unit distance between the chaser and the hero when lead is
  * at its maximum (LEAD_MAX). Scales linearly: at 0 lead the chaser is at the
@@ -506,6 +531,22 @@ export interface ChaseState {
   /** True while the chaser is in mid-air over a gap (for a leap animation in the renderer). */
   chaserAirborne: boolean;
 
+  // ── Drama state ────────────────────────────────────────────────────────────
+  /**
+   * Milliseconds remaining in the current chaser surge (0 = no surge active).
+   * Surges occur every SURGE_INTERVAL_WU of distance and are self-recovering.
+   */
+  surgeMs: number;
+  /** World-unit distance at which the next surge will fire. */
+  nextSurgeAt: number;
+  /** True on the step a surge begins (one-frame flag for audio). */
+  justSurged: boolean;
+  /**
+   * True on the step the player executes a dash or stomp while lead is below
+   * NEAR_MISS_LEAD_THRESHOLD — signals a dramatic close-call recovery.
+   */
+  justNearMiss: boolean;
+
   // ── Collision tracking ─────────────────────────────────────────────────────
   /** Prop ID currently overlapping the hero (to fire the contact event only once per prop). */
   activeContactId: number | null;
@@ -556,6 +597,10 @@ export function initChase(rng: () => number): ChaseState {
     chaserX: 0,
     chaserY: 0,
     chaserAirborne: false,
+    surgeMs: 0,
+    nextSurgeAt: CHASER_SPAWN_DISTANCE + SURGE_INTERVAL_WU,
+    justSurged: false,
+    justNearMiss: false,
     activeContactId: null,
     stompedPropId: null,
     stompChain: 0,
@@ -672,6 +717,10 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
       chaserX: state.chaserX,
       chaserY: state.chaserY,
       chaserAirborne: state.chaserAirborne,
+      surgeMs: state.surgeMs,
+      nextSurgeAt: state.nextSurgeAt,
+      justSurged: false,
+      justNearMiss: false,
       activeContactId: state.activeContactId,
       justLanded: false,
       justStomped: false,
@@ -779,10 +828,41 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
       ? state.stompChain + 1
       : state.stompChain;
 
-  // ── 9a. Compute chaser world position ──────────────────────────────────────
-  // footX is the hero's foot centre; derived above in step 5.
+  // ── 9b. Surge drama (theatrical — zero net lead impact) ────────────────────
+  let newSurgeMs     = Math.max(0, state.surgeMs - dtMs);
+  let newNextSurgeAt = state.nextSurgeAt;
+  let justSurged     = false;
+
+  if (chaserActive && !state.done) {
+    // Fire a new surge when distance crosses the next interval.
+    if (newDist >= newNextSurgeAt && newSurgeMs <= 0) {
+      newSurgeMs     = SURGE_DURATION_MS;
+      newNextSurgeAt = newNextSurgeAt + SURGE_INTERVAL_WU;
+      justSurged     = true;
+    }
+  }
+
+  // Surge offset: a sine wave over the surge duration → chaser visually closes
+  // by up to SURGE_VISUAL_OFFSET wu at the midpoint, then recedes back.
+  // This offset is passed to chaserWorldPos and subtracted from the gap.
+  const surgeFrac    = newSurgeMs > 0 ? 1 - newSurgeMs / SURGE_DURATION_MS : 0; // 0→1 as surge plays out
+  const surgeOffset  = chaserActive
+    ? Math.sin(Math.PI * surgeFrac) * SURGE_VISUAL_OFFSET
+    : 0;
+
+  // ── 9c. Near-miss detection ─────────────────────────────────────────────────
+  // "Near-miss" fires when the hero shoves the chaser back while lead is very low.
+  const justNearMiss =
+    (justDashed || justStomped) &&
+    state.lead < NEAR_MISS_LEAD_THRESHOLD &&
+    chaserActive &&
+    !state.done;
+
+  // ── 9d. Compute chaser world position ──────────────────────────────────────
+  // The surge offset reduces the effective gap (chaser lunges closer) without
+  // affecting state.lead — position only.
   const chaserPos = chaserActive
-    ? chaserWorldPos(footX, Math.max(0, newLead), state.buildings)
+    ? chaserWorldPos(footX, Math.max(0, newLead - surgeOffset), state.buildings)
     : { x: 0, y: 0, airborne: false };
 
   // ── 10. Terminal conditions ─────────────────────────────────────────────────
@@ -806,6 +886,10 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
     chaserX:        chaserPos.x,
     chaserY:        chaserPos.y,
     chaserAirborne: chaserPos.airborne,
+    surgeMs:        newSurgeMs,
+    nextSurgeAt:    newNextSurgeAt,
+    justSurged,
+    justNearMiss,
     activeContactId,
     stompedPropId,
     stompChain:     newStompChain,

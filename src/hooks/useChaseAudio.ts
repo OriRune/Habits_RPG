@@ -42,6 +42,8 @@ export function useChaseAudio(state: ChaseState, soundEnabled: boolean): void {
   const prevStumbled      = useRef(false);
   const prevFell          = useRef(false);
   const prevChaserActive  = useRef(false);
+  const prevSurged        = useRef(false);
+  const prevNearMiss      = useRef(false);
   const prevDone          = useRef(false);
 
   // ── Audio effect — runs after every render (no dep array = every frame) ───
@@ -59,6 +61,17 @@ export function useChaseAudio(state: ChaseState, soundEnabled: boolean): void {
     if (state.chaserActive && !prevChaserActive.current) {
       sfx.play('growl');
       sfx.startDrone();
+    }
+
+    // Surge — beast lunges; deep rumble swell + instant drone spike.
+    if (state.justSurged && !prevSurged.current) {
+      sfx.play('surge');
+      sfx.spikeDrone();
+    }
+
+    // Near-miss — hero shoved the beast back at dangerously low lead.
+    if (state.justNearMiss && !prevNearMiss.current) {
+      sfx.play('nearMiss');
     }
 
     // Run complete (reached the target distance without being caught).
@@ -86,6 +99,8 @@ export function useChaseAudio(state: ChaseState, soundEnabled: boolean): void {
     prevStumbled.current     = state.justStumbled;
     prevFell.current         = state.justFell;
     prevChaserActive.current = state.chaserActive;
+    prevSurged.current       = state.justSurged;
+    prevNearMiss.current     = state.justNearMiss;
     prevDone.current         = state.done;
   }); // intentionally no dep array — must fire every frame
 }
