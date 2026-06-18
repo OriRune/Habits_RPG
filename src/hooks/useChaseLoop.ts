@@ -1,0 +1,114 @@
+// RAF-clock hook for the Rooftop Chase trial.
+//
+// Owns the timing loop; all rules live in the pure engine (rooftopChase.ts).
+// Pattern mirrors useMiningLoop / useArenaLoop: "timing here, rules in engine."
+//
+// Differences from the dungeon loop hooks:
+//   - Trial state is local (never touches the Zustand store mid-run).
+//   - onFinish is called once with the final score; the store is updated by
+//     the parent component via completeTrial(trialId, score).
+//   - Input is edge-triggered (each flag is true for exactly one RAF frame),
+//     matching stepChase's ChaseInput contract.
+
+import { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  initChase,
+  stepChase,
+  type ChaseState,
+  type ChaseInput,
+} from '@/engine/trials/rooftopChase';
+
+export interface ChaseControls {
+  jump:  () => void;
+  slide: () => void;
+  dash:  () => void;
+}
+
+/**
+ * Mount once inside the RooftopChase component.
+ *
+ * Returns the current ChaseState (re-renders ~60fps while active) plus
+ * imperative control callbacks for the on-screen buttons.
+ */
+export function useChaseLoop(onFinish: (score: number) => void): {
+  state:    ChaseState;
+  controls: ChaseControls;
+} {
+  // Stable sim ref — updated every frame, never triggers re-renders by itself.
+  const stateRef    = useRef<ChaseState>(initChase(Math.random));
+  // Render state — one setState per frame (vs. ~15 in the old implementation).
+  const [renderState, setRenderState] = useState<ChaseState>(() => stateRef.current);
+
+  // Edge-triggered input buffer: set by handlers, consumed and cleared each RAF tick.
+  const inputRef = useRef<ChaseInput>({ jumpPressed: false, slidePressed: false, dashPressed: false });
+
+  const lastTsRef    = useRef<number | null>(null);
+  const doneRef      = useRef(false);
+  // Keep onFinish stable in the closure — avoids stale captures.
+  const onFinishRef  = useRef(onFinish);
+  onFinishRef.current = onFinish;
+
+  // ── Input callbacks (exposed to component buttons + keyboard handler) ───────
+  const jump = useCallback(() => { inputRef.current.jumpPressed  = true; }, []);
+  const slide = useCallback(() => { inputRef.current.slidePressed = true; }, []);
+  const dash  = useCallback(() => { inputRef.current.dashPressed  = true; }, []);
+
+  // ── Keyboard bindings ────────────────────────────────────────────────────────
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' || e.code === 'ArrowUp') {
+        e.preventDefault(); jump();
+      } else if (e.code === 'ArrowDown' || e.code === 'KeyS') {
+        e.preventDefault(); slide();
+      } else if (e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyD') {
+        e.preventDefault(); dash();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [jump, slide, dash]);
+
+  // ── RAF loop ─────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    let raf: number;
+
+    const loop = (ts: number) => {
+      if (doneRef.current) return;
+
+      if (lastTsRef.current === null) lastTsRef.current = ts;
+      // Cap dt at 50 ms so a tab-switch or heavy frame doesn't send the hero flying.
+      const dtSec = Math.min((ts - lastTsRef.current) / 1000, 0.05);
+      lastTsRef.current = ts;
+
+      // Consume buffered input (edge-triggered: flags are true for exactly one tick).
+      const input: ChaseInput = { ...inputRef.current };
+      inputRef.current = { jumpPressed: false, slidePressed: false, dashPressed: false };
+
+      // Advance simulation.
+      const newState = stepChase(stateRef.current, input, dtSec);
+      stateRef.current = newState;
+      setRenderState(newState);
+
+      if (newState.done) {
+        doneRef.current = true;
+        if (newState.justFell) {
+          // Let the fall animation play before tearing down the component.
+          setTimeout(() => onFinishRef.current(newState.score), 600);
+        } else {
+          onFinishRef.current(newState.score);
+        }
+        return; // do not re-schedule RAF
+      }
+
+      raf = requestAnimationFrame(loop);
+    };
+
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []); // mount-once; onFinish captured via ref
+
+  return {
+    state:    renderState,
+    controls: { jump, slide, dash },
+  };
+}

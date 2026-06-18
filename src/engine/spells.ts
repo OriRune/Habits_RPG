@@ -14,7 +14,7 @@ export const SCHOOL_STAT: Record<SpellSchool, StatId> = {
 
 export type StatusKey = 'burn' | 'blind' | 'weaken' | 'bless' | 'freeze' | 'poison';
 
-export type SpellMechanic = 'rune-fire' | 'rune-ice' | 'rune-poison' | 'ring-of-fire' | 'teleport';
+export type SpellMechanic = 'rune-fire' | 'rune-ice' | 'rune-poison' | 'ring-of-fire' | 'teleport' | 'push' | 'blink' | 'cleave';
 
 export interface SpellDef {
   key: string;

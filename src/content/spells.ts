@@ -99,6 +99,35 @@ export const SPELLS: Record<string, SpellDef> = {
     description: "A sapping curse that weakens the foe's blows (Charisma).",
   },
 
+  // --- Tactics positional abilities (only available in Hex Tactics skirmishes) ---
+  push: {
+    key: 'push',
+    name: 'Force Push',
+    school: 'illusion',
+    mpCost: 8,
+    power: 0,
+    mechanic: 'push',
+    description: 'Hurl an enemy 2 tiles away. They take bonus damage if they crash into a wall or land on a hazard (Charisma).',
+  },
+  blink: {
+    key: 'blink',
+    name: 'Blink',
+    school: 'support',
+    mpCost: 5,
+    power: 0,
+    mechanic: 'blink',
+    description: 'Teleport to any open tile within 2 squares, ignoring terrain height (Knowledge). Consumes your remaining movement.',
+  },
+  cleave: {
+    key: 'cleave',
+    name: 'Cleave',
+    school: 'support',
+    mpCost: 7,
+    power: 8,
+    mechanic: 'cleave',
+    description: 'A sweeping blow that strikes every enemy adjacent to you (Strength).',
+  },
+
   // --- Rune spells — place a trap on an adjacent tile; triggered by any unit stepping on it ---
   fire_rune: {
     key: 'fire_rune',

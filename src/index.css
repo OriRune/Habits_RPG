@@ -296,6 +296,13 @@ body {
   100% { opacity: 0;   transform: translate(-50%, -40%) scale(0.6); }
 }
 
+/* Damage / heal floater — number rises and fades above the struck unit. */
+@keyframes tactics-floater {
+  0%   { opacity: 1;   transform: translate(-50%, -100%) scale(1); }
+  60%  { opacity: 1;   transform: translate(-50%, -200%) scale(1.15); }
+  100% { opacity: 0;   transform: translate(-50%, -280%) scale(0.9); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   [style*='tactics-'] { animation-duration: 1ms !important; }
 }

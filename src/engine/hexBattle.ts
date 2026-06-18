@@ -11,6 +11,7 @@
 // numbers feel identical to the rest of the game.
 import type { StatId } from './stats';
 import type { Fighter, RNG } from './combat';
+import type { EnemyMove } from './bosses';
 import { attackRoll, spellDamageRoll, spellHealAmount, variance } from './combat';
 import { getSpell, SCHOOL_STAT, type StatusKey } from './spells';
 import type { WeaponDef } from './weapons';
@@ -136,6 +137,10 @@ export interface EnemyUnit {
   moveTiles: number;
   climb: number;
   statuses: UnitStatus[];
+  /** Weighted move pool from the enemy template. Basic attack only when absent. */
+  moveset?: EnemyMove[];
+  /** Transient defense bonus from a guard move; resets at the start of the enemy's next turn. */
+  guardBonus: number;
 }
 
 export type Turn = 'player' | 'enemy';
@@ -148,16 +153,50 @@ export type SelectedAction =
 
 export interface TacticalEffect {
   id: number;
-  /** 'melee' | 'arrow' | 'spell:<key>' — the overlay maps this to a CSS keyframe. */
+  /** 'melee' | 'arrow' | 'spell:<key>' | 'floater' — the overlay maps this to a CSS animation. */
   kind: string;
   from: Hex;
   to: Hex;
   /** Relative offset (ms) from the start of this resolution batch, for cascading animations. */
   startedAtMs: number;
   durationMs: number;
+  /** Text to display for 'floater' effects (damage number, heal amount). */
+  label?: string;
+  /** Color class for 'floater' effects. */
+  color?: 'dmg-player' | 'dmg-enemy' | 'heal' | 'status';
 }
 
 export type HexBattleStatus = 'active' | 'won' | 'lost';
+
+/** Predicted action for one enemy on their next turn, used to telegraph intent to the player. */
+export interface EnemyIntent {
+  enemyId: number;
+  /** Where the enemy plans to move (equals current hex if staying put). */
+  moveTo: Hex;
+  /** Whether this enemy will be in attack range after their planned move. */
+  willAttack: boolean;
+  /** Short action label from the most likely moveset entry. */
+  attackLabel: string;
+  /** Emoji icon for the planned action. */
+  attackIcon: string;
+}
+
+/** Pre-commit damage/heal estimate for the hover preview — min and max bracket the actual roll. */
+export interface AttackPreview {
+  min: number;
+  max: number;
+  /** dz = attacker elevation − target elevation. */
+  dz: number;
+  heightMult: number;
+  mitigation: number;
+  coverBonus: number;
+  guardBonus: number;
+  lethal: boolean;
+  weak: boolean;
+  resist: boolean;
+  /** True when this is a healing preview (support spells). */
+  isHeal?: boolean;
+}
 
 export interface HexBattleState {
   radius: number;
@@ -177,6 +216,10 @@ export interface HexBattleState {
   knownSpells: string[];
   weapon: WeaponDef;
   seq: number;
+  /** All board tiles the player could be attacked from on the enemy's next turn (danger zone). */
+  threatHexes: Hex[];
+  /** Predicted intent for each living enemy this upcoming enemy turn (for UI telegraph). */
+  intentPlan: EnemyIntent[];
 }
 
 // --- Small helpers ------------------------------------------------------------------------------
@@ -242,6 +285,8 @@ function clone(s: HexBattleState): HexBattleState {
     reachable: [...s.reachable],
     targetable: [...s.targetable],
     log: [...s.log],
+    threatHexes: [...s.threatHexes],
+    intentPlan: s.intentPlan.map((i) => ({ ...i, moveTo: { ...i.moveTo } })),
     // tiles are immutable after generation — safe to share by reference.
   };
 }
@@ -340,7 +385,21 @@ export function computeTargetable(s: HexBattleState, action: SelectedAction): He
   if (action.kind === 'spell') {
     const spell = getSpell(action.spellKey);
     if (!spell) return [];
-    if (spell.school === 'support') return []; // self-cast, no target needed
+    // Blink: target any open (non-blocked, unoccupied) tile within 2 steps.
+    if (spell.mechanic === 'blink') {
+      const occ = occupiedKeys(s);
+      return Object.values(s.tiles)
+        .filter((t) => {
+          if (t.terrain === 'blocked') return false;
+          if (occ.has(hexKey(t.hex))) return false;
+          const d = hexDistance(p, t.hex);
+          return d >= 1 && d <= 2;
+        })
+        .map((t) => t.hex);
+    }
+    // Cleave / support: self-cast, no target tile needed.
+    if (spell.mechanic === 'cleave' || spell.school === 'support') return [];
+    // All other spells (damage / illusion / push): target living enemies in range.
     return living
       .filter((e) => {
         const dz = pz - elevationAt(s, e.hex);
@@ -349,6 +408,72 @@ export function computeTargetable(s: HexBattleState, action: SelectedAction): He
       .map((e) => e.hex);
   }
   return [];
+}
+
+// --- Attack / spell preview (pure, no RNG consumed, no state mutation) --------------------------
+
+/** Pre-commit damage estimate for a weapon attack. Returns null if the attack isn't legal. */
+export function previewPlayerAttack(state: HexBattleState, target: Hex): AttackPreview | null {
+  if (state.player.hasActed || state.turn !== 'player' || state.status !== 'active') return null;
+  const enemy = enemyAt(state, target);
+  if (!enemy) return null;
+  const p = state.player;
+  const pz = elevationAt(state, p.hex);
+  const dz = pz - elevationAt(state, enemy.hex);
+  const hMult = heightDamageMult(dz);
+  const ranged = !!state.weapon.ranged;
+  const basePower = (ranged ? p.rangedPower : p.meleePower) * hMult * weakenFactor(p);
+  const coverBonus = coverAt(state, enemy.hex);
+  const mitigation = enemy.defense + coverBonus + enemy.guardBonus;
+  const base = basePower + state.weapon.bonus;
+  const weak = enemy.weakTo.includes(state.weapon.attackStat);
+  const resist = enemy.resistTo.includes(state.weapon.attackStat);
+  const weakMult = weak ? 1.25 : resist ? 0.6 : 1;
+  const minDmg = Math.max(1, Math.round(base * 0.85 * weakMult) - mitigation);
+  return {
+    min: minDmg,
+    max: Math.max(1, Math.round(base * 1.15 * weakMult) - mitigation),
+    dz, heightMult: hMult, mitigation, coverBonus, guardBonus: enemy.guardBonus,
+    lethal: minDmg >= enemy.hp, weak, resist,
+  };
+}
+
+/** Pre-commit damage/heal estimate for a spell cast. Returns null for illusion spells (status only). */
+export function previewSpell(state: HexBattleState, key: string, target: Hex | null): AttackPreview | null {
+  if (state.player.hasActed || state.turn !== 'player' || state.status !== 'active') return null;
+  const spell = getSpell(key);
+  if (!spell || state.player.mp < spell.mpCost) return null;
+
+  // Positional mechanics don't produce a numeric preview — overlay shows a text hint instead.
+  if (spell.mechanic === 'blink' || spell.mechanic === 'cleave' || spell.mechanic === 'push') return null;
+
+  if (spell.school === 'support') {
+    const raw = spellHealAmount(spell.power, state.player.supportSpell);
+    const gained = Math.min(raw, state.player.maxHp - state.player.hp);
+    return { min: gained, max: gained, dz: 0, heightMult: 1, mitigation: 0, coverBonus: 0, guardBonus: 0, lethal: false, weak: false, resist: false, isHeal: true };
+  }
+  if (spell.school === 'illusion' || !target) return null;
+
+  const enemy = enemyAt(state, target);
+  if (!enemy) return null;
+  const p = state.player;
+  const dz = elevationAt(state, p.hex) - elevationAt(state, enemy.hex);
+  const hMult = heightDamageMult(dz);
+  const casterPower = p.damageSpell * hMult * weakenFactor(p);
+  const base = spell.power + casterPower * 1.2;
+  const schoolStat = SCHOOL_STAT[spell.school];
+  const weak = enemy.weakTo.includes(schoolStat) || enemy.weakTo.includes('WI');
+  const resist = enemy.resistTo.includes(schoolStat) || enemy.resistTo.includes('WI');
+  const weakMult = weak ? 1.25 : resist ? 0.6 : 1;
+  const coverBonus = coverAt(state, enemy.hex);
+  const mit = enemy.ward + coverBonus;
+  const minDmg = Math.max(1, Math.round(base * 0.85 * weakMult) - mit);
+  return {
+    min: minDmg,
+    max: Math.max(1, Math.round(base * 1.15 * weakMult) - mit),
+    dz, heightMult: hMult, mitigation: mit, coverBonus, guardBonus: 0,
+    lethal: minDmg >= enemy.hp, weak, resist,
+  };
 }
 
 function recomputeHighlights(s: HexBattleState): void {
@@ -411,15 +536,16 @@ export function playerAttack(state: HexBattleState, target: Hex, rng: RNG = Math
     enemy.weakTo,
     enemy.resistTo,
     full,
-    enemy.defense + coverAt(s, enemy.hex),
+    enemy.defense + coverAt(s, enemy.hex) + enemy.guardBonus,
     rng,
   );
   enemy.hp -= dealt;
   const push = effectPusher(s);
   push(ranged ? 'arrow' : 'melee', s.player.hex, enemy.hex);
+  s.effects.push({ id: s.seq++, kind: 'floater', from: enemy.hex, to: enemy.hex, startedAtMs: EFFECT_STAGGER_MS + 60, durationMs: 900, label: String(dealt), color: 'dmg-enemy' });
   const tag = weak ? ' — weak to it!' : resist ? ' — resisted' : '';
   const hz = dz > 0 ? ' (high ground)' : dz < 0 ? ' (uphill)' : '';
-  s.log.push(`You hit ${enemy.name} for ${dealt}${tag}${hz}${full ? '' : ' (exhausted)'}.`);
+  s.log.push(`You hit ${enemy.name} for ${dealt}${tag}${hz}${full ? '' : ' (exhausted)'}${enemy.guardBonus > 0 ? ' (guarding)' : ''}.`);
   s.player.hasActed = true;
   finishPlayerAction(s);
   return s;
@@ -437,8 +563,13 @@ export function playerCastSpell(
   const spell = getSpell(spellKey);
   if (!spell || state.player.mp < spell.mpCost) return state;
 
-  const needsTarget = spell.school !== 'support';
+  // Cleave and blink are self-targeting (no enemy hex needed); push targets an enemy like illusion.
+  const needsTarget = spell.school !== 'support' && spell.mechanic !== 'cleave';
   if (needsTarget && (!target || !computeTargetable(state, { kind: 'spell', spellKey }).some((h) => hexEquals(h, target!)))) {
+    return state;
+  }
+  // Blink requires a valid destination tile even though it is school:support.
+  if (spell.mechanic === 'blink' && (!target || !computeTargetable(state, { kind: 'spell', spellKey }).some((h) => hexEquals(h, target!)))) {
     return state;
   }
 
@@ -446,6 +577,54 @@ export function playerCastSpell(
   s.player.mp -= spell.mpCost;
   const schoolStat = SCHOOL_STAT[spell.school];
   const push = effectPusher(s);
+
+  // --- Tactics positional mechanics (handled before school branching) ---
+  if (spell.mechanic === 'blink') {
+    push(`spell:${spell.key}`, s.player.hex, target!);
+    s.player.hex = { ...target! };
+    s.player.movesLeft = 0;
+    s.log.push(`You blink to a nearby position.`);
+    s.player.hasActed = true;
+    finishPlayerAction(s);
+    return s;
+  }
+  if (spell.mechanic === 'cleave') {
+    const adjacent = s.enemies.filter((e) => e.hp > 0 && hexDistance(s.player.hex, e.hex) === 1);
+    if (adjacent.length === 0) {
+      s.log.push(`Cleave — no adjacent targets.`);
+    } else {
+      for (const e of adjacent) {
+        const rawPower = s.player.meleePower * weakenFactor(s.player);
+        const { dealt, weak } = attackRoll(rawPower, spell.power, s.weapon.attackStat, e.weakTo, e.resistTo, true, e.defense + coverAt(s, e.hex), rng);
+        e.hp -= dealt;
+        push('melee', s.player.hex, e.hex);
+        s.effects.push({ id: s.seq++, kind: 'floater', from: e.hex, to: e.hex, startedAtMs: EFFECT_STAGGER_MS + 60, durationMs: 900, label: String(dealt), color: 'dmg-enemy' });
+        s.log.push(`Cleave hits ${e.name} for ${dealt}${weak ? ' (weak!)' : ''}.`);
+      }
+    }
+    s.player.hasActed = true;
+    finishPlayerAction(s);
+    return s;
+  }
+  if (spell.mechanic === 'push') {
+    const enemy = enemyAt(s, target!);
+    if (!enemy) return state;
+    const dir = computePushDir(s.player.hex, enemy.hex);
+    push(`spell:${spell.key}`, s.player.hex, enemy.hex);
+    const landing = applyPush(s, enemy, dir, 2);
+    const landTerrain = tileAt(s, landing)?.terrain;
+    if (landTerrain === 'hazard') {
+      const bonus = HAZARD_DMG * 2;
+      enemy.hp -= bonus;
+      s.effects.push({ id: s.seq++, kind: 'floater', from: landing, to: landing, startedAtMs: EFFECT_STAGGER_MS * 2, durationMs: 900, label: String(bonus), color: 'dmg-enemy' });
+      s.log.push(`${spell.name} hurls ${enemy.name} into a hazard for ${bonus} bonus damage!`);
+    } else {
+      s.log.push(`${spell.name} flings ${enemy.name} back!`);
+    }
+    s.player.hasActed = true;
+    finishPlayerAction(s);
+    return s;
+  }
 
   if (spell.school === 'damage') {
     const enemy = enemyAt(s, target!)!;
@@ -463,6 +642,7 @@ export function playerCastSpell(
     enemy.hp -= dealt;
     if (spell.status) applyUnitStatus(enemy.statuses, { ...spell.status });
     push(`spell:${spell.key}`, s.player.hex, enemy.hex);
+    s.effects.push({ id: s.seq++, kind: 'floater', from: enemy.hex, to: enemy.hex, startedAtMs: EFFECT_STAGGER_MS + 60, durationMs: 900, label: String(dealt), color: 'dmg-enemy' });
     const tag = weak ? ' — super effective!' : resist ? ' — resisted' : '';
     s.log.push(`${spell.name} sears ${enemy.name} for ${dealt}${tag}.`);
   } else if (spell.school === 'support') {
@@ -470,6 +650,7 @@ export function playerCastSpell(
       const heal = spellHealAmount(spell.power, s.player.supportSpell);
       const gained = Math.min(heal, s.player.maxHp - s.player.hp);
       s.player.hp += gained;
+      s.effects.push({ id: s.seq++, kind: 'floater', from: s.player.hex, to: s.player.hex, startedAtMs: EFFECT_STAGGER_MS + 60, durationMs: 900, label: `+${gained}`, color: 'heal' });
       s.log.push(`${spell.name} restores ${gained} HP.`);
     }
     if (spell.status) {
@@ -539,6 +720,9 @@ export function endPlayerTurn(state: HexBattleState, rng: RNG = Math.random): He
   s.player.hasActed = false;
   s.selected = null;
   recomputeHighlights(s);
+  // Compute intent/threat for the upcoming turn so the UI can telegraph enemy plans.
+  s.threatHexes = computeEnemyThreat(s);
+  s.intentPlan = planEnemyIntents(s);
   return s;
 }
 
@@ -563,7 +747,143 @@ function applyDoTAndDecay(
   unit.statuses = unit.statuses.map((st) => ({ ...st, turns: st.turns - 1 })).filter((st) => st.turns > 0);
 }
 
+// --- Push helpers -------------------------------------------------------------------------------
+
+const HEX_DIRS: Hex[] = [
+  { q: 1, r: 0 }, { q: 1, r: -1 }, { q: 0, r: -1 },
+  { q: -1, r: 0 }, { q: -1, r: 1 }, { q: 0, r: 1 },
+];
+
+function computePushDir(from: Hex, to: Hex): Hex {
+  const dq = to.q - from.q;
+  const dr = to.r - from.r;
+  let best = HEX_DIRS[0];
+  let bestDot = -Infinity;
+  for (const d of HEX_DIRS) {
+    const dot = dq * d.q + dr * d.r;
+    if (dot > bestDot) { bestDot = dot; best = d; }
+  }
+  return best;
+}
+
+function applyPush(s: HexBattleState, enemy: EnemyUnit, dir: Hex, tiles: number): Hex {
+  let cur = { ...enemy.hex };
+  for (let i = 0; i < tiles; i++) {
+    const next = { q: cur.q + dir.q, r: cur.r + dir.r };
+    const tile = tileAt(s, next);
+    if (!tile || tile.terrain === 'blocked') {
+      const dmg = HAZARD_DMG;
+      enemy.hp -= dmg;
+      s.effects.push({ id: s.seq++, kind: 'floater', from: cur, to: cur, startedAtMs: Math.round(EFFECT_STAGGER_MS * 1.5), durationMs: 800, label: String(dmg), color: 'dmg-enemy' });
+      s.log.push(`${enemy.name} crashes into a wall for ${dmg}!`);
+      break;
+    }
+    if (s.enemies.some((e) => e.id !== enemy.id && e.hp > 0 && hexEquals(e.hex, next))) break;
+    cur = next;
+    if (tile.terrain === 'hazard') break; // stop in the hazard (takes bonus damage after)
+  }
+  enemy.hex = { ...cur };
+  return cur;
+}
+
 // --- Enemy AI -----------------------------------------------------------------------------------
+
+/** Weighted-random move selection — mirrors the dungeon combat engine's pickEnemyMove. */
+function pickMove(moveset: EnemyMove[] | undefined, rng: RNG): EnemyMove | null {
+  if (!moveset || moveset.length === 0) return null;
+  const total = moveset.reduce((a, m) => a + (m.weight ?? 1), 0);
+  let r = rng() * total;
+  for (const m of moveset) {
+    r -= m.weight ?? 1;
+    if (r < 0) return m;
+  }
+  return moveset[moveset.length - 1];
+}
+
+function mostLikelyMove(moveset: EnemyMove[]): EnemyMove | null {
+  if (moveset.length === 0) return null;
+  return moveset.reduce((best, m) => ((m.weight ?? 1) > (best.weight ?? 1) ? m : best), moveset[0]);
+}
+
+// --- Archetype-scored AI movement ---------------------------------------------------------------
+
+type AIArchetype = 'charger' | 'kiter' | 'holder' | 'flanker';
+
+function archetypeFor(templateId: string): AIArchetype {
+  switch (templateId) {
+    case 'dire_wolf': case 'goblin': case 'ghoul': case 'ice_elemental': return 'charger';
+    case 'wisp': case 'frost_revenant': return 'kiter';
+    case 'stone_sentry': case 'thornling': return 'holder';
+    case 'skeleton': case 'giant_spider': return 'flanker';
+    default: return 'charger';
+  }
+}
+
+function computeFlankBonus(s: HexBattleState, self: EnemyUnit, candidate: Hex): number {
+  const others = s.enemies.filter((e) => e.hp > 0 && e.id !== self.id);
+  if (others.length === 0) return 0;
+  const dq = s.player.hex.q - candidate.q;
+  const dr = s.player.hex.r - candidate.r;
+  const len = Math.sqrt(dq * dq + dr * dr);
+  if (len === 0) return 0;
+  let avgQ = 0, avgR = 0;
+  for (const o of others) {
+    const ox = s.player.hex.q - o.hex.q;
+    const oy = s.player.hex.r - o.hex.r;
+    const ol = Math.sqrt(ox * ox + oy * oy);
+    if (ol > 0) { avgQ += ox / ol; avgR += oy / ol; }
+  }
+  const al = Math.sqrt(avgQ * avgQ + avgR * avgR);
+  if (al === 0) return 0;
+  const dot = (dq / len) * (avgQ / al) + (dr / len) * (avgR / al);
+  return (1 - dot) / 2;
+}
+
+function scoreMoveTile(s: HexBattleState, enemy: EnemyUnit, candidate: Hex, arch: AIArchetype): number {
+  const dist = hexDistance(candidate, s.player.hex);
+  const elevGain = elevationAt(s, candidate) - elevationAt(s, enemy.hex);
+  const terrain = tileAt(s, candidate)?.terrain;
+  if (terrain === 'hazard') return -1000;
+  const coverBonus = terrain === 'cover' ? 1 : 0;
+
+  switch (arch) {
+    case 'charger':
+      return -dist * 3 + elevGain * 1.5 + coverBonus;
+    case 'kiter': {
+      const preferred = Math.max(1, enemy.range);
+      const tooClose = dist < 2 ? -25 : 0;
+      return -Math.abs(dist - preferred) * 4 + elevGain * 3 + tooClose + coverBonus;
+    }
+    case 'holder': {
+      const distFromSelf = hexDistance(candidate, enemy.hex);
+      return -dist * 1 - distFromSelf * 3 + elevGain * 1;
+    }
+    case 'flanker': {
+      const flank = computeFlankBonus(s, enemy, candidate);
+      return -dist * 2 + flank * 5 + elevGain * 1 + coverBonus;
+    }
+  }
+}
+
+export function bestMoveFor(s: HexBattleState, enemy: EnemyUnit): Hex {
+  const arch = archetypeFor(enemy.templateId);
+  // Kiters always evaluate movement (they want optimal range, not just "any range").
+  if (arch !== 'kiter' && enemyInRange(s, enemy)) return enemy.hex;
+  const costs = reachableCosts(s, enemy.hex, enemy.moveTiles, enemy.climb);
+  let best = enemy.hex;
+  let bestScore = scoreMoveTile(s, enemy, enemy.hex, arch);
+  for (const { hex } of costs.values()) {
+    const sc = scoreMoveTile(s, enemy, hex, arch);
+    if (sc > bestScore) { bestScore = sc; best = hex; }
+  }
+  return best;
+}
+
+export function climbForEnemy(archetype: string | undefined, tier: number): number {
+  const base = archetype === 'beast' || archetype === 'elemental' ? 2 : 1;
+  return Math.min(MAX_ELEVATION, base + Math.floor(tier / 10));
+}
+
 function enemyTurn(s: HexBattleState, rng: RNG): void {
   const push = effectPusher(s);
   for (const enemy of s.enemies) {
@@ -592,25 +912,14 @@ function enemyInRange(s: HexBattleState, enemy: EnemyUnit): boolean {
 }
 
 function enemyAct(s: HexBattleState, enemy: EnemyUnit, rng: RNG, push: ReturnType<typeof effectPusher>): void {
-  // Already able to strike? Attack without moving.
-  if (enemyInRange(s, enemy)) {
+  enemy.guardBonus = 0;
+  const arch = archetypeFor(enemy.templateId);
+  // Non-kiters attack immediately when already in range; kiters always reassess position.
+  if (arch !== 'kiter' && enemyInRange(s, enemy)) {
     enemyAttack(s, enemy, rng, push);
     return;
   }
-  // Otherwise step toward the player via a climb-aware search (NOT stepToward, which ignores
-  // climb/occupancy and gets stuck on walls), then attack if the move brought the player in range.
-  const costs = reachableCosts(s, enemy.hex, enemy.moveTiles, enemy.climb);
-  let bestHex = enemy.hex;
-  let bestDist = hexDistance(enemy.hex, s.player.hex);
-  let bestCost = 0;
-  for (const { hex, cost } of costs.values()) {
-    const d = hexDistance(hex, s.player.hex);
-    if (d < bestDist || (d === bestDist && cost < bestCost)) {
-      bestDist = d;
-      bestHex = hex;
-      bestCost = cost;
-    }
-  }
+  const bestHex = bestMoveFor(s, enemy);
   if (!hexEquals(bestHex, enemy.hex)) {
     enemy.hex = { ...bestHex };
   } else {
@@ -621,24 +930,59 @@ function enemyAct(s: HexBattleState, enemy: EnemyUnit, rng: RNG, push: ReturnTyp
 
 function enemyAttack(s: HexBattleState, enemy: EnemyUnit, rng: RNG, push: ReturnType<typeof effectPusher>): void {
   push(enemy.range > 1 ? 'arrow' : 'melee', enemy.hex, s.player.hex);
-  // Blind foes may flail and miss.
   if (hasStatus(enemy, 'blind') && rng() < 0.4) {
     s.log.push(`${enemy.name} is blinded and misses!`);
     return;
   }
-  // Player evasion (Agility-derived dodge).
   if (rng() < s.player.dodge) {
     s.log.push(`You dodge ${enemy.name}'s attack!`);
     return;
   }
+
+  const move = pickMove(enemy.moveset, rng);
+  const kind = move?.kind ?? 'attack';
   const dz = elevationAt(s, enemy.hex) - elevationAt(s, s.player.hex);
-  let dmg = variance(enemy.attack * heightDamageMult(dz) * weakenFactor(enemy), rng);
+  const hMult = heightDamageMult(dz);
   const mit = (enemy.attackSchool === 'magic' ? s.player.ward : s.player.defense) + coverAt(s, s.player.hex);
-  dmg = Math.max(1, dmg - mit);
-  dmg = Math.max(1, dmg - blessFlat(s.player));
-  const dealt = Math.round(dmg);
-  s.player.hp -= dealt;
-  s.log.push(`${enemy.name} hits you for ${dealt}.`);
+  const bless = blessFlat(s.player);
+
+  if (kind === 'guard') {
+    enemy.guardBonus = move?.bonus ?? 4;
+    s.log.push(`${enemy.name} ${move?.label ?? 'braces defensively'} (+${enemy.guardBonus} defense).`);
+    return;
+  }
+
+  const baseMult = kind === 'heavy' ? (move?.mult ?? 1.6) : 1.0;
+  const hits = kind === 'multi' ? Math.max(1, move?.hits ?? 2) : 1;
+
+  let totalDealt = 0;
+  for (let i = 0; i < hits; i++) {
+    let dmg = variance(enemy.attack * baseMult * hMult * weakenFactor(enemy), rng);
+    dmg = Math.max(1, dmg - mit);
+    dmg = Math.max(1, dmg - bless);
+    totalDealt += Math.round(dmg);
+  }
+
+  s.player.hp -= totalDealt;
+  s.effects.push({ id: s.seq++, kind: 'floater', from: s.player.hex, to: s.player.hex, startedAtMs: EFFECT_STAGGER_MS + 60, durationMs: 900, label: `-${totalDealt}`, color: 'dmg-player' });
+
+  if (kind === 'drain') {
+    const healed = Math.round(totalDealt * (move?.drainRatio ?? 0.5));
+    enemy.hp = Math.min(enemy.maxHp, enemy.hp + healed);
+    s.log.push(`${enemy.name} ${move?.label ?? 'drains your life'} for ${totalDealt}${healed > 0 ? `, healing ${healed}` : ''}.`);
+  } else if (kind === 'inflict') {
+    if (move?.inflictKey) {
+      applyUnitStatus(s.player.statuses, { key: move.inflictKey as StatusKey, turns: move.inflictTurns ?? 2, magnitude: move.inflictMag ?? 1 });
+      s.effects.push({ id: s.seq++, kind: 'floater', from: s.player.hex, to: s.player.hex, startedAtMs: EFFECT_STAGGER_MS * 2, durationMs: 800, label: move.inflictKey, color: 'status' });
+    }
+    s.log.push(`${enemy.name} ${move?.label ?? 'strikes you'} for ${totalDealt}.`);
+  } else if (kind === 'heavy') {
+    s.log.push(`${enemy.name} ${move?.label ?? 'lands a heavy blow'} for ${totalDealt}!`);
+  } else if (kind === 'multi' && hits > 1) {
+    s.log.push(`${enemy.name} ${move?.label ?? 'attacks rapidly'} for ${totalDealt} (${hits} hits).`);
+  } else {
+    s.log.push(`${enemy.name} hits you for ${totalDealt}.`);
+  }
 }
 
 function checkOutcome(s: HexBattleState): void {
@@ -649,6 +993,54 @@ function checkOutcome(s: HexBattleState): void {
     s.player.hp = 0;
     s.status = 'lost';
   }
+}
+
+// --- Enemy intent + threat zone (pure, used for UI telegraph and danger overlay) ----------------
+
+export function planEnemyIntents(state: HexBattleState): EnemyIntent[] {
+  const pz = elevationAt(state, state.player.hex);
+  return state.enemies
+    .filter((e) => e.hp > 0)
+    .map((enemy) => {
+      if (hasStatus(enemy, 'freeze')) {
+        return { enemyId: enemy.id, moveTo: enemy.hex, willAttack: false, attackLabel: 'frozen in place', attackIcon: '❄️' };
+      }
+      const moveTo = bestMoveFor(state, enemy);
+      const ez = elevationAt(state, moveTo);
+      const effRange = enemy.range <= 1 ? 1 : enemy.range + heightRangeBonus(ez - pz);
+      const willAttack = hexDistance(moveTo, state.player.hex) <= effRange &&
+        (enemy.range <= 1 || hasLineOfSight(state, moveTo, state.player.hex));
+      const move = enemy.moveset ? mostLikelyMove(enemy.moveset) : null;
+      return {
+        enemyId: enemy.id,
+        moveTo,
+        willAttack,
+        attackLabel: move?.label ?? 'attacks',
+        attackIcon: move?.icon ?? (enemy.range > 1 ? '🏹' : '⚔️'),
+      };
+    });
+}
+
+export function computeEnemyThreat(state: HexBattleState): Hex[] {
+  const threatened = new Set<string>();
+  for (const enemy of state.enemies) {
+    if (enemy.hp <= 0 || hasStatus(enemy, 'freeze')) continue;
+    const positions = [enemy.hex, ...computeReachable(state, enemy.hex, enemy.moveTiles, enemy.climb)];
+    for (const from of positions) {
+      const fromZ = elevationAt(state, from);
+      for (const tile of Object.values(state.tiles)) {
+        if (tile.terrain === 'blocked') continue;
+        const tKey = hexKey(tile.hex);
+        if (threatened.has(tKey)) continue;
+        const dz = fromZ - tile.elevation;
+        const effectiveRange = enemy.range <= 1 ? 1 : enemy.range + heightRangeBonus(dz);
+        if (hexDistance(from, tile.hex) > effectiveRange) continue;
+        if (enemy.range > 1 && !hasLineOfSight(state, from, tile.hex)) continue;
+        threatened.add(tKey);
+      }
+    }
+  }
+  return [...threatened].map((k) => state.tiles[k].hex);
 }
 
 // --- Generation ---------------------------------------------------------------------------------
@@ -723,8 +1115,10 @@ export function generateSkirmish(
       resistTo: [...(tmpl.resistTo ?? [])],
       range: tmpl.attackSchool === 'magic' ? 3 : 1,
       moveTiles: 3 + Math.max(0, radius - 4), // keep pace on large boards
-      climb: 1,
+      climb: climbForEnemy(tmpl.archetype, tier),
       statuses: [],
+      moveset: tmpl.moveset ? [...tmpl.moveset] : undefined,
+      guardBonus: 0,
     } satisfies EnemyUnit;
   });
 
@@ -763,11 +1157,19 @@ export function generateSkirmish(
     log: [`A skirmish begins — ${enemies.length} foes stand against you.`],
     status: 'active',
     tier,
-    // Mechanic spells (runes / ring / blink) have bespoke semantics we don't model on the grid yet.
-    knownSpells: knownSpells.filter((k) => !getSpell(k)?.mechanic),
+    // Arena-only mechanics (runes, ring-of-fire, old teleport) aren't modelled on the tactics grid.
+    // The new positional mechanics (blink, push, cleave) ARE handled here — let them through.
+    knownSpells: knownSpells.filter((k) => {
+      const m = getSpell(k)?.mechanic;
+      return !m || m === 'blink' || m === 'push' || m === 'cleave';
+    }),
     weapon,
     seq,
+    threatHexes: [],
+    intentPlan: [],
   };
+  s.threatHexes = computeEnemyThreat(s);
+  s.intentPlan = planEnemyIntents(s);
   return s;
 }
 

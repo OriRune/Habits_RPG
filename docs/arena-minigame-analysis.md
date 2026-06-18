@@ -86,9 +86,19 @@ The fight is built around one central loop: **telegraph → dodge → punish**. 
 
 ### XP rewards (on win)
 
-- **Strength, Dexterity, Endurance** each gain 4 + tier × (0.4 + 0.6 × progress) XP
+XP is distributed **proportionally to usage** across whichever stats the player actually exercised during the run. The total budget scales with tier and how much of the boss was worn down (4 + tier × (0.4 + 0.6 × progress)), then split by tally:
 
-Only these three stats are rewarded. Wisdom, Knowledge, Charisma, and Agility are used in the fight but gain nothing from it — a meaningful tension point (see §6).
+| Action | Stat credited |
+|---|---|
+| Melee attacks | ST |
+| Ranged attacks | DX |
+| Melee or ranged attacks (stamina spent) | EN |
+| Damage spells (sparks, firebolt, ring, runes) | WI |
+| Support spells (mend, bless) | KN |
+| Illusion spells (dazzle, hex) | CH |
+| Successful dodges | AG |
+
+A caster-focused run earns WI/KN/CH; a melee-only run earns ST/EN. If no actions were recorded the full budget defaults to ST.
 
 ---
 
@@ -101,7 +111,7 @@ The arena follows the same pure-functional pattern as the rest of the engine. `s
 - `arenaMove/arenaMelee/arenaRanged/arenaCast/arenaUseItem` — discrete player actions
 - `arenaTick(state, now, rng)` — advances the world clock by ~90ms per call
 
-The `useArenaLoop` hook fires `arenaTick` on a `requestAnimationFrame` clock. The Zustand store owns `ArenaState | null`. This is clean and testable — 504 lines of tests cover movement, combat, AI paths, rewards, and all special mechanics.
+The `useArenaLoop` hook fires `arenaTick` on a `requestAnimationFrame` clock. The Zustand store owns `ArenaState | null`. This is clean and testable — 653 lines of tests cover movement, combat, AI paths, rewards, and all special mechanics.
 
 ### Board representation
 
@@ -154,7 +164,7 @@ The infrastructure for genuinely dramatic boss fights is there. The phase system
 
 ### Pure functional engine enables confidence
 
-Having 504 tests and a fully deterministic (injected RNG) engine means changes can be verified without running the game. This is valuable for iterating on mechanics.
+Having 653 lines of tests and a fully deterministic (injected RNG) engine means changes can be verified without running the game. This is valuable for iterating on mechanics.
 
 ### BFS pathfinding over greedy step
 
@@ -180,15 +190,15 @@ Every non-named boss is `Trial Guardian (Lv N)` with four generic attack pattern
 
 ### Spell usage has limited tactical depth
 
-The arena's interaction model defaults to melee or ranged attacking; spells are a bolt-on. In the original implementation, mana regen was slow (1.2/sec), spells were expensive (4–10 MP), and **spells and attacks shared a single cooldown** (`cooldownUntilMs`), meaning casting a spell blocked the next attack and vice-versa. The result: casting was strictly worse than attacking for sustained DPS. *(Phase 0 split these into independent cooldowns and raised MP regen to 1.8/sec — the underlying content problem remains.)*
+The arena's interaction model defaults to melee or ranged attacking; spells are a bolt-on. Mana regen is 1.8/sec; spells cost 4–10 MP; spells have an independent 520ms cooldown (`spellCooldownUntilMs`) while attacks run on a separate 320ms clock — so casting can interleave with attacking without blocking it. Mechanically, a weaving playstyle is now viable.
 
-Rune placement requires the boss to step on your trap — against a boss that pathfinds toward you, this is difficult to control. The ring of fire (3.5s duration) is situationally very strong. But most bosses have `weakTo: []`, so there's rarely a stat-based reason to choose spells over weapons.
+The deeper problem is content: most bosses define `weakTo: []`, so there is no mechanical reward for choosing a particular spell school over weapon attacks. Rune placement requires the boss to step on your trap — against BFS-driven pursuit AI this is hard to arrange. The ring of fire is situationally strong. But without boss weaknesses to exploit, the spell kit offers breadth without strategic depth.
 
 ### Stats are unbalanced contributors
 
-AG (dodge) is the only defensive stat that applies directly in the arena, but its magnitude is invisible to the player — they can't see their dodge chance or feel it working. The WI/KN/CH trio powers spells but, as noted, spells are secondary to attacking. EN contributes max stamina, which matters, but the regen rate means you're rarely stamina-starved.
+AG (dodge) applies directly in the arena as a flat chance to completely avoid a hit, but its magnitude is invisible to the player — there is no UI showing their dodge percentage or a floater when a dodge fires. EN contributes max stamina (and indirectly earns XP per attack), but the regen rate means stamina rarely bottlenecks play. WI/KN/CH now earn proportional XP when spells are cast, which gives caster builds an incentive — but without boss weaknesses to exploit, the XP gain is the only reward for specializing.
 
-In the original, XP rewarded only Strength, Dexterity, and Endurance — actively discouraging caster builds even though spells work there. *(Phase 0 replaced this with usage-based XP: melee→ST, ranged→DX, damage spells→WI, support→KN, illusion→CH, dodges→AG, stamina actions→EN.)*
+XP is awarded proportional to stat usage during the run, so the loop now reinforces how you play. What remains: dodge has no visible feedback, and spell schools (WI/KN/CH) lack boss weaknesses to make school selection feel meaningful beyond the XP trickle.
 
 ### No progression between arena runs
 
@@ -246,15 +256,15 @@ Minions have the same basic stats regardless of the boss. They pathfind correctl
 
 ## 9. Summary: Current State
 
-The arena is a **strong technical foundation with thin content and cramped scale**. The telegraph-dodge loop is genuinely good game design. The pure-functional engine, BFS pathfinding, and shared combat math are professionally executed. But the experience of playing it is limited by:
+The arena is a **strong technical foundation with thin content**. The telegraph-dodge loop is genuinely good game design. The pure-functional engine, BFS pathfinding, shared combat math, and usage-based XP are professionally executed. But the experience of playing it is limited by:
 
-1. **Board too small** — positioning is the core mechanic but there's no room for it
-2. **Bosses are generic** — named bosses exist in data but use no unique mechanics
-3. **Spells are secondary** — the cooldown/cost math makes casting inferior to attacking
-4. **No run-to-run progression** — nothing to optimize toward between sessions
-5. **Random maps have no tactical identity** — can't learn or plan
+1. **Bosses are generic** — named bosses exist in data but use no unique mechanics; every fight feels identical except for the HP total
+2. **Spells lack incentive** — casting interleaves with attacks and earns proportional XP, but without boss weaknesses to exploit there is no mechanical reason to choose a spell school over weapon attacks
+3. **No run-to-run progression** — no meta-currencies, unlockable modifiers, or mastery arc beyond a raw tier integer
+4. **Random maps have no tactical identity** — obstacle layouts are random blobs with no authored shapes to learn or exploit
+5. **Minions are a DPS tax** — identical stats and behavior, no variety requiring a different player response
 
-The arena has the bones of a great minigame. It needs space, personality, and reasons to care about it beyond a gold payout.
+The arena has the bones of a great minigame. It needs personality — bosses that feel distinct and learnable, spells with a mechanical reason to choose them, and a reason to keep running it beyond a one-time gold payout.
 
 ---
 
@@ -264,11 +274,12 @@ These are starting points for a planning session, not a finalized design:
 
 | Area | Direction |
 |---|---|
-| **Board scale** | Larger default radius (5–6), or multiple "arena types" with distinct shapes (corridor, arena pit, ruined keep) |
 | **Boss identity** | Give each named boss 3–4 unique attack patterns by wiring `EnemyMove` movesets into arena telegraphs |
-| **Spell balance** | Reduce spell cooldown, or give spells the same CD as attacks but make them clearly stronger against bosses with `weakTo` spell schools |
-| **Stat rewards** | Distribute XP across all 8 stats based on which were actually used (spells cast → WI/KN, dodges → AG) |
+| **Boss weaknesses** | Populate `weakTo`/`resistTo` on boss defs so spell school selection has a mechanical payoff |
+| **Spell balance** | ~~Split cooldowns, raise MP regen~~ ✓ done — remaining gap is boss weaknesses (above) and rune placement being hard to arrange against pursuit AI |
+| **Stat rewards** | ~~Distribute XP across all 8 stats based on usage~~ ✓ done — usage-based XP live since Phase 0 |
 | **Authored layouts** | 8–12 hand-crafted board layouts (obstacle patterns) with a named tactical identity — "The Pit," "The Corridor," "The Four Pillars" |
 | **Boss phases with transitions** | Phase changes should alter the arena (spawn obstacles, change board size, add minion wave) not just change HP/attack |
 | **Minion variety** | Ranged minions, shielded minions, explosive-on-death minions — each requiring a different player response |
-| **Run meta-layer** | A lightweight modifier system: enter with a debuff for a bonus reward, choose a challenge on entry, unlock arena-specific blessings |
+| **Run meta-layer** | Hades-style gauntlet: a sequence of escalating bosses, boon/modifier picks between fights, arena-specific material drops by tier |
+| **Dodge visibility** | Show the player's dodge % in the HUD and emit a "Dodge!" floater when it fires — `lastDodgedAtMs` is already set by the engine |

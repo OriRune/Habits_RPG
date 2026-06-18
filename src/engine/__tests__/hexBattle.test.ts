@@ -73,7 +73,8 @@ function makeEnemy(id: number, hex: Hex, over: Partial<EnemyUnit> = {}): EnemyUn
   return {
     id, templateId: 'goblin', name: `Foe${id}`, icon: '👹', hex,
     hp: 30, maxHp: 30, attack: 8, defense: 0, ward: 0, attackSchool: 'physical',
-    weakTo: [], resistTo: [], range: 1, moveTiles: 3, climb: 1, statuses: [], ...over,
+    weakTo: [], resistTo: [], range: 1, moveTiles: 3, climb: 1, statuses: [],
+    guardBonus: 0, ...over,
   };
 }
 
@@ -86,7 +87,7 @@ function makeState(over: Partial<HexBattleState> = {}): HexBattleState {
     enemies: over.enemies ?? [],
     turn: 'player', selected: null, reachable: [], targetable: [], effects: [],
     log: [], status: 'active', tier: 5, knownSpells: ['sparks', 'mend', 'dazzle'],
-    weapon: SWORD, seq: 100, ...over,
+    weapon: SWORD, seq: 100, threatHexes: [], intentPlan: [], ...over,
   };
 }
 

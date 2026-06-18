@@ -3,26 +3,31 @@
 // Gaps between buildings are lethal — fall in and the run ends.
 // A beast chaser appears after the opening stretch; dash to shove it back.
 //
-// New in round 2:
-//   - Building model (discrete platforms at varied heights) replaces flat-floor + 'gap' features.
-//   - hasFallen() / buildingAt() / nextBuilding() pure helpers.
-//   - resolveContact() now takes roofY (5-arg).
-//   - Chaser delayed spawn (CHASER_SPAWN_DISTANCE) + updateLead() takes active flag + 'dash' event.
-//   - Dash constants: DASH_COOLDOWN_MS, DASH_LEAD_GAIN, DASH_DURATION_MS, DASH_SPEED_BONUS.
+// Round 2: Building model, hasFallen, resolveContact(5-arg), chaser spawn delay, dash constants.
+// Round 3 (Phase 0 overhaul): ChaseState, initChase, stepChase (pure sim reducer).
+//   Speed constants retuned so the ramp covers a full ~90s run (cap ≈ 600 wu).
 
 // ── Tuning constants ───────────────────────────────────────────────────────────
 
-/** World-units of running needed for a perfect score. */
-export const CHASE_TARGET_DISTANCE = 200;
+/**
+ * World-units of running needed for a perfect score.
+ * At BASE_SPEED=4 with SPEED_RAMP=0.010 this is reached in ~92 seconds of
+ * clean running — the intended 1–3 min target for a skilled player.
+ */
+export const CHASE_TARGET_DISTANCE = 600;
 
 /** Initial scroll speed (world-units / second). */
-export const BASE_SPEED = 6;
+export const BASE_SPEED = 4;
 
-/** Speed increase per world-unit of distance traveled. */
-export const SPEED_RAMP = 0.018;
+/**
+ * Speed increase per world-unit of distance traveled.
+ * With BASE_SPEED=4, SPEED_RAMP=0.010, MAX_SPEED=10: cap is hit right at
+ * CHASE_TARGET_DISTANCE, so the ramp is meaningful across the whole run.
+ */
+export const SPEED_RAMP = 0.010;
 
 /** Hard cap on scroll speed. */
-export const MAX_SPEED = 22;
+export const MAX_SPEED = 10;
 
 // Physics — tuned for a visible jump arc and clearable gaps.
 // apex ≈ 7.6 world-units (53 px at 7 px/wu), air time ≈ 1.375 s at base speed.
@@ -48,7 +53,7 @@ export const SLIDE_MS = 450;
 // ── Chaser constants ───────────────────────────────────────────────────────────
 
 /** Distance (wu) the hero must travel before the chaser appears. */
-export const CHASER_SPAWN_DISTANCE = 45;
+export const CHASER_SPAWN_DISTANCE = 120;
 
 /** Starting lead buffer (world-units ahead of chaser). Used as LEAD_MAX too. */
 export const LEAD_START = 50;
@@ -354,4 +359,312 @@ export function resolveContact(
 /** Map distance traveled to a normalised 0..1 score. */
 export function chaseScore(distance: number): number {
   return Math.max(0, Math.min(1, distance / CHASE_TARGET_DISTANCE));
+}
+
+// ── Pure sim state (ChaseState + initChase + stepChase) ───────────────────────
+//
+// The full simulation is captured in a plain serializable struct (ChaseState).
+// stepChase() is a pure reducer: (state, input, dtSec) → newState.
+// The component/hook holds state in refs and calls stepChase each RAF frame.
+
+/**
+ * Hero hitbox width in world-units.
+ * Slightly narrower than the visual sprite for fairness.
+ * Exported so the renderer can use the same value for pixel layout.
+ */
+export const HERO_HITBOX_W = 2.2;
+
+/** One-frame input snapshot passed to stepChase per RAF tick. */
+export interface ChaseInput {
+  /** True on the frame the jump button was pressed (edge-triggered). */
+  jumpPressed: boolean;
+  /** True on the frame the slide button was pressed (edge-triggered). */
+  slidePressed: boolean;
+  /** True on the frame the dash button was pressed (edge-triggered). */
+  dashPressed: boolean;
+}
+
+/** Full simulation state. All timing durations are in milliseconds remaining. */
+export interface ChaseState {
+  /** The generated course (immutable after initChase). */
+  readonly buildings: readonly Building[];
+
+  // ── Hero position ──────────────────────────────────────────────────────────
+  /** Absolute vertical position above the world baseline (0 = standing at baseline). */
+  heroY: number;
+  /** Vertical velocity, wu/sec (+up, −down). */
+  heroVy: number;
+  /** Roof elevation of the building currently underfoot (0 when over a gap or at baseline). */
+  heroRoofY: number;
+  /** World-x of the hero's left hitbox edge; increases over time. */
+  distance: number;
+  /** Jumps consumed since last landing (0 = grounded, 1 = first jump used). */
+  jumpsUsed: number;
+  /** Hero's Y at the end of the previous step — used for landing detection. */
+  prevHeroY: number;
+
+  // ── Timed states (ms remaining; 0 = inactive) ─────────────────────────────
+  stumbleMs: number;
+  slideMs: number;
+  dashMs: number;
+  dashCooldownMs: number;
+  /** Duration remaining for the stomp visual flash (ms). */
+  stompFlashMs: number;
+
+  // ── Chaser ─────────────────────────────────────────────────────────────────
+  lead: number;
+  chaserActive: boolean;
+
+  // ── Collision tracking ─────────────────────────────────────────────────────
+  /** Prop ID currently overlapping the hero (to fire the contact event only once per prop). */
+  activeContactId: number | null;
+  /** ID of the last successfully stomped prop, for the flash effect. */
+  stompedPropId: number | null;
+
+  // ── One-frame event flags (true for exactly one step, then cleared) ────────
+  justLanded: boolean;
+  justStomped: boolean;
+  justStumbled: boolean;
+  justDashed: boolean;
+  /** True on the step the hero went over a gap and began falling. */
+  justFell: boolean;
+
+  // ── Terminal ───────────────────────────────────────────────────────────────
+  done: boolean;
+  /** Normalised 0..1 score at end (or current progress mid-run). */
+  score: number;
+}
+
+/** Return the initial ChaseState for a fresh run. */
+export function initChase(rng: () => number): ChaseState {
+  return {
+    buildings: generateCourse(rng),
+    heroY: 0,
+    heroVy: 0,
+    heroRoofY: 0,
+    distance: 0,
+    jumpsUsed: 0,
+    prevHeroY: 0,
+    stumbleMs: 0,
+    slideMs: 0,
+    dashMs: 0,
+    dashCooldownMs: 0,
+    stompFlashMs: 0,
+    lead: LEAD_START,
+    chaserActive: false,
+    activeContactId: null,
+    stompedPropId: null,
+    justLanded: false,
+    justStomped: false,
+    justStumbled: false,
+    justDashed: false,
+    justFell: false,
+    done: false,
+    score: 0,
+  };
+}
+
+/**
+ * Advance the chase simulation by one time step.
+ *
+ * Pure function: does not mutate `state`. Returns a new ChaseState.
+ * One-frame event flags (justLanded, justStomped, etc.) are cleared at the
+ * start of each step and re-set only if the event occurs this step.
+ *
+ * @param state  Current simulation state.
+ * @param input  Edge-triggered input this frame (each flag is true for ≤1 step).
+ * @param dtSec  Elapsed time since last step (seconds). Clamped externally to ≤0.05.
+ */
+export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): ChaseState {
+  if (state.done) return state;
+
+  const dtMs = dtSec * 1000;
+
+  // ── 1. Tick timers ──────────────────────────────────────────────────────────
+  let stumbleMs     = Math.max(0, state.stumbleMs     - dtMs);
+  let slideMs       = Math.max(0, state.slideMs       - dtMs);
+  let dashMs        = Math.max(0, state.dashMs        - dtMs);
+  let dashCooldownMs = Math.max(0, state.dashCooldownMs - dtMs);
+  let stompFlashMs  = Math.max(0, state.stompFlashMs  - dtMs);
+
+  const nowStumbling = stumbleMs > 0;
+  let stompedPropId = state.stompedPropId;
+
+  // ── 2. Process input ────────────────────────────────────────────────────────
+  let heroVy    = state.heroVy;
+  let jumpsUsed = state.jumpsUsed;
+
+  // Determine grounded state at start of frame (needed for jump/slide gating).
+  const footXPrev   = state.distance + HERO_HITBOX_W / 2;
+  const underfootPrev = buildingAt(state.buildings as Building[], footXPrev);
+  const roofYPrev   = underfootPrev ? underfootPrev.roofY : state.heroRoofY;
+  const groundedPrev = state.heroY <= roofYPrev + 0.05;
+
+  // Jump — blocked while stumbling or sliding.
+  const nowSliding = slideMs > 0 && groundedPrev;
+  if (input.jumpPressed && !nowStumbling && !nowSliding) {
+    if (groundedPrev) {
+      heroVy    = JUMP_VELOCITY;
+      jumpsUsed = 1;
+    } else if (jumpsUsed < MAX_JUMPS) {
+      heroVy = DOUBLE_JUMP_VELOCITY;
+      jumpsUsed++;
+    }
+  }
+
+  // Slide — only while grounded and not stumbling.
+  if (input.slidePressed && !nowStumbling && groundedPrev) {
+    slideMs = SLIDE_MS;
+  }
+
+  // Dash — only when off cooldown and not stumbling.
+  let justDashed = false;
+  if (input.dashPressed && dashCooldownMs <= 0 && !nowStumbling) {
+    dashMs         = DASH_DURATION_MS;
+    dashCooldownMs = DASH_COOLDOWN_MS;
+    justDashed     = true;
+  }
+
+  // ── 3. Advance distance ─────────────────────────────────────────────────────
+  const activeDash  = dashMs > 0;
+  const scrollSpeed = speedAt(state.distance) * (activeDash ? 1 + DASH_SPEED_BONUS : 1);
+  const newDist     = state.distance + scrollSpeed * dtSec;
+
+  // ── 4. Vertical physics (semi-implicit Euler) ───────────────────────────────
+  const newVy = heroVy - GRAVITY * dtSec;
+  const rawY  = state.heroY + newVy * dtSec;
+
+  // ── 5. Find building underfoot after distance advance ───────────────────────
+  const footX       = newDist + HERO_HITBOX_W / 2;
+  const underfoot   = buildingAt(state.buildings as Building[], footX);
+  const currentRoofY = underfoot ? underfoot.roofY : 0;
+
+  // ── 6. Fall check ───────────────────────────────────────────────────────────
+  if (hasFallen(state.buildings as Building[], footX, rawY)) {
+    return {
+      ...state,
+      heroY: rawY,
+      heroVy: newVy,
+      heroRoofY: currentRoofY,
+      distance: newDist,
+      jumpsUsed,
+      prevHeroY: rawY,
+      stumbleMs,
+      slideMs: 0,
+      dashMs,
+      dashCooldownMs,
+      stompFlashMs,
+      stompedPropId,
+      lead: state.lead,
+      chaserActive: state.chaserActive,
+      activeContactId: state.activeContactId,
+      justLanded: false,
+      justStomped: false,
+      justStumbled: false,
+      justDashed,
+      justFell: true,
+      done: true,
+      score: chaseScore(newDist),
+    };
+  }
+
+  // ── 7. Land on roof surface ─────────────────────────────────────────────────
+  let newY       = rawY;
+  let finalVy    = newVy;
+  let justLanded = false;
+
+  if (underfoot && newY <= currentRoofY) {
+    const wasAbove = state.prevHeroY > currentRoofY;
+    if (wasAbove) {
+      justLanded = true;
+      jumpsUsed  = 0;
+    }
+    newY    = currentRoofY;
+    finalVy = 0;
+  }
+
+  const grounded    = newY <= currentRoofY + 0.05;
+  // Slide is cancelled if hero leaves the ground.
+  if (!grounded) slideMs = 0;
+  const activeSlideFinal = grounded && slideMs > 0;
+
+  // ── 8. Collision detection & resolution ────────────────────────────────────
+  let activeContactId = state.activeContactId;
+  let leadEvent: 'stumble' | 'stomp' | 'dash' | undefined;
+  let justStomped    = false;
+  let justStumbled   = false;
+  let finalHeroVy    = finalVy;
+  let finalJumpsUsed = jumpsUsed;
+  let newStumbleMs   = stumbleMs;
+
+  if (justDashed) leadEvent = 'dash';
+
+  let foundPropId:   number | null = null;
+  let foundPropData: { prop: RoofProp; roofY: number } | null = null;
+
+  outer: for (const b of state.buildings) {
+    for (const p of b.props) {
+      if (newDist < p.x + p.width && newDist + HERO_HITBOX_W > p.x) {
+        foundPropId   = p.id;
+        foundPropData = { prop: p, roofY: b.roofY };
+        break outer;
+      }
+    }
+  }
+
+  if (foundPropData && foundPropId !== activeContactId) {
+    const result = resolveContact(
+      newY, finalHeroVy, activeSlideFinal,
+      foundPropData.prop, foundPropData.roofY,
+    );
+    activeContactId = foundPropId;
+
+    if (result === 'stomp') {
+      finalHeroVy    = STOMP_BOUNCE_VELOCITY;
+      finalJumpsUsed = 0;
+      justStomped    = true;
+      stompedPropId  = foundPropId;
+      stompFlashMs   = 500;
+      if (!leadEvent) leadEvent = 'stomp';
+    } else if (result === 'stumble') {
+      newStumbleMs = STUMBLE_MS;
+      justStumbled = true;
+      if (!leadEvent) leadEvent = 'stumble';
+    }
+  } else if (!foundPropData) {
+    activeContactId = null;
+  }
+
+  // ── 9. Update chaser lead ───────────────────────────────────────────────────
+  const chaserActive = newDist >= CHASER_SPAWN_DISTANCE;
+  const newLead      = updateLead(state.lead, dtSec, chaserActive, leadEvent);
+
+  // ── 10. Terminal conditions ─────────────────────────────────────────────────
+  const done = newLead <= 0 || newDist >= CHASE_TARGET_DISTANCE;
+
+  return {
+    buildings:      state.buildings,
+    heroY:          newY,
+    heroVy:         finalHeroVy,
+    heroRoofY:      currentRoofY,
+    distance:       newDist,
+    jumpsUsed:      finalJumpsUsed,
+    prevHeroY:      newY,
+    stumbleMs:      newStumbleMs,
+    slideMs,
+    dashMs,
+    dashCooldownMs,
+    stompFlashMs,
+    lead:           Math.max(0, newLead),
+    chaserActive,
+    activeContactId,
+    stompedPropId,
+    justLanded,
+    justStomped,
+    justStumbled,
+    justDashed,
+    justFell:       false,
+    done,
+    score:          chaseScore(newDist),
+  };
 }
