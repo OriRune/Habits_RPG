@@ -6,14 +6,17 @@ import {
   type TacticalEffect,
   type UnitStatus,
   type EnemyIntent,
+  type AIArchetype,
   TERRAIN_ICONS,
+  ARCHETYPE_INFO,
   previewPlayerAttack,
   previewSpell,
   type AttackPreview,
 } from '@/engine/hexBattle';
 import { hexKey, hexDistance, type Hex } from '@/engine/hex';
-import { getSpell, type StatusKey } from '@/engine/spells';
+import { getSpell, SCHOOL_STAT, type StatusKey } from '@/engine/spells';
 import { MAX_ELEVATION, SPELL_RANGE, climbFor, heightRangeBonus, hasLineOfSight } from '@/engine/hexBattle';
+import type { StatId } from '@/engine/stats';
 import { base, topCenter, hexCorners, isoBounds, colHeight, type Pt } from './iso';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/cn';
@@ -34,12 +37,16 @@ const STATUS_GLYPH: Record<StatusKey, string> = {
 };
 
 const SPELL_FX: Record<string, { anim: string; glyph: string }> = {
-  sparks: { anim: 'tactics-sparks', glyph: '⚡' },
-  firebolt: { anim: 'tactics-firebolt', glyph: '🔥' },
-  mend: { anim: 'tactics-mend', glyph: '✚' },
-  bless: { anim: 'tactics-bless', glyph: '✨' },
-  dazzle: { anim: 'tactics-dazzle', glyph: '💫' },
-  hex: { anim: 'tactics-hex', glyph: '🟣' },
+  sparks:  { anim: 'tactics-sparks',  glyph: '⚡' },
+  firebolt:{ anim: 'tactics-firebolt',glyph: '🔥' },
+  mend:    { anim: 'tactics-mend',    glyph: '✚' },
+  bless:   { anim: 'tactics-bless',   glyph: '✨' },
+  dazzle:  { anim: 'tactics-dazzle',  glyph: '💫' },
+  hex:     { anim: 'tactics-hex',     glyph: '🟣' },
+  // Tactics positional spells (always available)
+  push:    { anim: 'tactics-cast',    glyph: '💨' },
+  blink:   { anim: 'tactics-cast',    glyph: '🌀' },
+  cleave:  { anim: 'tactics-cast',    glyph: '⚡' },
 };
 
 const FLOATER_COLOR: Record<NonNullable<TacticalEffect['color']>, string> = {
@@ -253,16 +260,32 @@ export function TacticsOverlay() {
   const intentByEnemyId = new Map<number, EnemyIntent>();
   for (const intent of (tactics.intentPlan ?? [])) intentByEnemyId.set(intent.enemyId, intent);
 
+  // Which stat the player's current action governs (for weak/resist affinity display).
+  const activeAttackStat: StatId | null = (() => {
+    if (!sel || locked) return null;
+    if (sel.kind === 'attack') return tactics.weapon.attackStat;
+    if (sel.kind === 'spell') {
+      const sp = getSpell(sel.spellKey);
+      if (!sp || sp.school === 'support') return null; // heals don't check affinities
+      return SCHOOL_STAT[sp.school];
+    }
+    return null;
+  })();
+
   const unitsByDepth = [
     {
       key: 'player', hex: tactics.player.hex, glyph: '🧝',
       hp: tactics.player.hp, maxHp: tactics.player.maxHp, statuses: tactics.player.statuses,
       friendly: true, name: 'You' as string | undefined, enemyId: undefined as number | undefined,
+      aiArchetype: undefined as AIArchetype | undefined,
+      weakTo: [] as StatId[], resistTo: [] as StatId[],
     },
     ...tactics.enemies.map((e) => ({
       key: `e${e.id}`, hex: e.hex, glyph: e.icon,
       hp: e.hp, maxHp: e.maxHp, statuses: e.statuses, friendly: false, name: e.name as string | undefined,
       enemyId: e.id,
+      aiArchetype: e.aiArchetype,
+      weakTo: e.weakTo, resistTo: e.resistTo,
     })),
   ].sort((a, b) => groundY(a.hex) - groundY(b.hex));
 
@@ -310,6 +333,17 @@ export function TacticsOverlay() {
           >
             {showIntents ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
           </button>
+          {/* Archetype legend — colored dots with tooltips */}
+          <div className="ml-1 flex items-center gap-1" title="Enemy archetype ring colors">
+            {(Object.entries(ARCHETYPE_INFO) as [AIArchetype, typeof ARCHETYPE_INFO[AIArchetype]][]).map(([arch, info]) => (
+              <div
+                key={arch}
+                title={`${info.label}: ${info.blurb}`}
+                className="h-2.5 w-2.5 cursor-help rounded-full"
+                style={{ backgroundColor: info.color + '55', border: `1.5px solid ${info.color}` }}
+              />
+            ))}
+          </div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
           <Gauge icon={<Heart className="h-3.5 w-3.5 text-red-400" />} value={tactics.player.hp} max={tactics.player.maxHp} fill="#ef4444" />
@@ -432,21 +466,21 @@ export function TacticsOverlay() {
               );
             })}
 
-            {/* Intent attack markers — a small crosshair over the player when an enemy will attack */}
-            {showIntents && (tactics.intentPlan ?? []).map((intent) => {
-              if (!intent.willAttack) return null;
-              const pos = top(tactics.player.hex);
+            {/* Archetype rings — colored hex outlines on enemy tiles (helps read behavior at a glance) */}
+            {tactics.enemies.filter((e) => e.hp > 0).map((e) => {
+              const t = top(e.hex);
+              const corners = hexCorners(size);
+              const info = ARCHETYPE_INFO[e.aiArchetype];
               return (
-                <text
-                  key={`intent-atk-${intent.enemyId}`}
-                  x={pos.x + (intent.enemyId % 3 - 1) * size * 0.7}
-                  y={pos.y - size * 0.8}
-                  textAnchor="middle" dominantBaseline="central"
-                  fontSize={size * 0.55}
-                  style={{ pointerEvents: 'none', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.8))' }}
-                >
-                  {intent.attackIcon}
-                </text>
+                <polygon
+                  key={`arch-ring-${e.id}`}
+                  points={ptsAt(corners, t.x, t.y)}
+                  fill="none"
+                  stroke={info.color}
+                  strokeWidth={2.5}
+                  opacity={0.7}
+                  style={{ pointerEvents: 'none' }}
+                />
               );
             })}
           </svg>
@@ -455,6 +489,14 @@ export function TacticsOverlay() {
           {unitsByDepth.map((u) => {
             const c = top(u.hex);
             const intent = u.enemyId !== undefined ? intentByEnemyId.get(u.enemyId) : undefined;
+            const archetypeColor = u.aiArchetype ? ARCHETYPE_INFO[u.aiArchetype].color : undefined;
+            const archetypeBlurb = u.aiArchetype ? `${ARCHETYPE_INFO[u.aiArchetype].label} — ${ARCHETYPE_INFO[u.aiArchetype].blurb}` : undefined;
+            const weakResist: 'weak' | 'resist' | null = (() => {
+              if (!activeAttackStat || u.friendly) return null;
+              if (u.weakTo.includes(activeAttackStat)) return 'weak';
+              if (u.resistTo.includes(activeAttackStat)) return 'resist';
+              return null;
+            })();
             return (
               <UnitSprite
                 key={u.key}
@@ -468,6 +510,9 @@ export function TacticsOverlay() {
                 name={u.name}
                 scale={size / 30}
                 intent={showIntents ? intent : undefined}
+                archetypeColor={archetypeColor}
+                archetypeBlurb={archetypeBlurb}
+                weakResist={weakResist}
                 onClick={u.enemyId !== undefined ? () => onTileClick(u.hex) : undefined}
               />
             );
@@ -586,11 +631,18 @@ export function TacticsOverlay() {
 }
 
 function UnitSprite({
-  x, y, glyph, hp, maxHp, statuses, friendly, name, scale = 1, intent, onClick,
+  x, y, glyph, hp, maxHp, statuses, friendly, name, scale = 1,
+  intent, archetypeColor, archetypeBlurb, weakResist, onClick,
 }: {
   x: number; y: number; glyph: string; hp: number; maxHp: number; statuses: UnitStatus[];
   friendly?: boolean; name?: string; scale?: number;
   intent?: EnemyIntent;
+  /** Archetype ring color (hex string); absent for the player. */
+  archetypeColor?: string;
+  /** Short archetype label + blurb shown in the intent badge tooltip. */
+  archetypeBlurb?: string;
+  /** Whether the current player action hits a weakness (⬆) or resistance (⬇) of this enemy. */
+  weakResist?: 'weak' | 'resist' | null;
   onClick?: () => void;
 }) {
   const pct = Math.max(0, Math.min(100, (hp / maxHp) * 100));
@@ -601,20 +653,59 @@ function UnitSprite({
       title={name}
       onClick={onClick}
     >
+      {/* Intent badge — shows planned action icon + archetype name (Phase C) */}
       {intent && !friendly && (
-        <div className="pointer-events-none flex items-center gap-0.5 rounded-sm bg-wood-950/70 px-0.5 text-[9px]" title={intent.attackLabel}>
+        <div
+          className="pointer-events-none flex items-center gap-0.5 rounded-sm bg-wood-950/70 px-0.5 text-[9px]"
+          title={archetypeBlurb ? `${archetypeBlurb}\n${intent.attackLabel}` : intent.attackLabel}
+        >
           {intent.willAttack ? (
             <span style={{ fontSize: Math.round(10 * scale) }}>{intent.attackIcon}</span>
           ) : intent.attackIcon === '❄️' ? (
             <span className="text-blue-300">❄️</span>
           ) : null}
+          {archetypeBlurb && (
+            <span
+              className="ml-0.5 font-display leading-none"
+              style={{ fontSize: Math.round(8 * scale), color: archetypeColor ?? '#aaa' }}
+            >
+              {archetypeBlurb.split(' ')[0]}
+            </span>
+          )}
         </div>
       )}
       <StatusRow statuses={statuses} />
       <div className="h-1 overflow-hidden rounded-full border border-black/50 bg-black/60" style={{ width: Math.round(26 * scale) }}>
         <div className="h-full" style={{ width: `${pct}%`, backgroundColor: friendly ? '#34d399' : '#ef4444' }} />
       </div>
-      <span style={{ fontSize: Math.round(26 * scale), lineHeight: 1, filter: 'drop-shadow(0 2px 2px rgba(0,0,0,0.7))' }}>{glyph}</span>
+      {/* Unit glyph — with subtle archetype glow and weak/resist indicator */}
+      <div className="relative flex items-center justify-center">
+        <span
+          style={{
+            fontSize: Math.round(26 * scale),
+            lineHeight: 1,
+            filter: archetypeColor
+              ? `drop-shadow(0 0 ${Math.round(5 * scale)}px ${archetypeColor}88) drop-shadow(0 2px 2px rgba(0,0,0,0.7))`
+              : 'drop-shadow(0 2px 2px rgba(0,0,0,0.7))',
+          }}
+        >
+          {glyph}
+        </span>
+        {/* Weak/resist affinity indicator — shown when the player's selected action has an affinity */}
+        {weakResist && (
+          <span
+            className="absolute -right-1 -bottom-0.5 leading-none"
+            style={{
+              fontSize: Math.round(10 * scale),
+              color: weakResist === 'weak' ? '#4ade80' : '#f87171',
+              filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.8))',
+            }}
+            title={weakResist === 'weak' ? 'Weak to this attack (+damage)' : 'Resists this attack (-damage)'}
+          >
+            {weakResist === 'weak' ? '⬆' : '⬇'}
+          </span>
+        )}
+      </div>
     </div>
   );
 }

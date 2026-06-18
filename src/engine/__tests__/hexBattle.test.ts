@@ -72,7 +72,7 @@ function makePlayer(hex: Hex, over: Partial<PlayerUnit> = {}): PlayerUnit {
 
 function makeEnemy(id: number, hex: Hex, over: Partial<EnemyUnit> = {}): EnemyUnit {
   return {
-    id, templateId: 'goblin', name: `Foe${id}`, icon: '👹', hex,
+    id, templateId: 'goblin', name: `Foe${id}`, icon: '👹', aiArchetype: 'charger', hex,
     hp: 30, maxHp: 30, attack: 8, defense: 0, ward: 0, attackSchool: 'physical',
     weakTo: [], resistTo: [], range: 1, moveTiles: 3, climb: 1, statuses: [],
     guardBonus: 0, ...over,

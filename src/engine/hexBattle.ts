@@ -130,6 +130,8 @@ export interface EnemyUnit {
   templateId: string;
   name: string;
   icon: string;
+  /** AI movement/behavior archetype — drives the per-archetype scoring in bestMoveFor(). */
+  aiArchetype: AIArchetype;
   hex: Hex;
   hp: number;
   maxHp: number;
@@ -813,7 +815,16 @@ function mostLikelyMove(moveset: EnemyMove[]): EnemyMove | null {
 
 // --- Archetype-scored AI movement ---------------------------------------------------------------
 
-type AIArchetype = 'charger' | 'kiter' | 'holder' | 'flanker';
+export type AIArchetype = 'charger' | 'kiter' | 'holder' | 'flanker';
+
+/** Visual and descriptive metadata for each AI archetype. Used by the overlay for ring colors,
+ *  legend chips, and hover/intent tooltips. */
+export const ARCHETYPE_INFO: Record<AIArchetype, { label: string; blurb: string; color: string }> = {
+  charger: { label: 'Charger', blurb: 'Closes fast, ignores danger', color: '#ef4444' },
+  kiter:   { label: 'Kiter',   blurb: 'Stays at range, seeks high ground', color: '#38bdf8' },
+  holder:  { label: 'Holder',  blurb: 'Digs in, guards its position', color: '#f59e0b' },
+  flanker: { label: 'Flanker', blurb: 'Circles to a new angle', color: '#a855f7' },
+};
 
 function archetypeFor(templateId: string): AIArchetype {
   switch (templateId) {
@@ -872,7 +883,8 @@ function scoreMoveTile(s: HexBattleState, enemy: EnemyUnit, candidate: Hex, arch
 }
 
 export function bestMoveFor(s: HexBattleState, enemy: EnemyUnit): Hex {
-  const arch = archetypeFor(enemy.templateId);
+  // Use the pre-baked archetype stored on the unit (avoids a redundant lookup).
+  const arch = enemy.aiArchetype;
   // Kiters always evaluate movement (they want optimal range, not just "any range").
   if (arch !== 'kiter' && enemyInRange(s, enemy)) return enemy.hex;
   const costs = reachableCosts(s, enemy.hex, enemy.moveTiles, enemy.climb);
@@ -919,7 +931,7 @@ function enemyInRange(s: HexBattleState, enemy: EnemyUnit): boolean {
 
 function enemyAct(s: HexBattleState, enemy: EnemyUnit, rng: RNG, push: ReturnType<typeof effectPusher>): void {
   enemy.guardBonus = 0;
-  const arch = archetypeFor(enemy.templateId);
+  const arch = enemy.aiArchetype;
   // Non-kiters attack immediately when already in range; kiters always reassess position.
   if (arch !== 'kiter' && enemyInRange(s, enemy)) {
     enemyAttack(s, enemy, rng, push);
@@ -1104,12 +1116,15 @@ export function generateSkirmish(
   const enemies: EnemyUnit[] = enemySpawns.map((hex) => {
     const tmpl = ENEMIES[enemyPool[Math.floor(rng() * enemyPool.length)]];
     const hp = Math.max(1, Math.round(tmpl.hp * scale));
-    const firstIcon = tmpl.moveset?.[0]?.icon ?? '👹';
+    // Prefer the template's dedicated glyph; fall back to the first moveset icon so the
+    // board shows a meaningful sprite even for templates that haven't been given one yet.
+    const unitIcon = tmpl.glyph ?? tmpl.moveset?.[0]?.icon ?? '👹';
     return {
       id: seq++,
       templateId: tmpl.id,
       name: tmpl.name,
-      icon: firstIcon,
+      icon: unitIcon,
+      aiArchetype: archetypeFor(tmpl.id),
       hex: { ...hex },
       hp,
       maxHp: hp,
