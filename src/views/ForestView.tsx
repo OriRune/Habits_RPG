@@ -8,9 +8,9 @@ import { SectionTitle } from '@/components/ui/Divider';
 /** What the next depth milestone unlocks (mirrors content/forest stageMin gates + biome bands). */
 function milestoneHint(deepest: number): string {
   if (deepest < 2) return 'Reach Depth 2 for Gray Wolves (more leather).';
-  if (deepest < 4) return 'Reach Depth 4 — the Deepwood Grove and its Shadow Lynx.';
+  if (deepest < 4) return 'Reach Depth 4 — defeat the Grove Sentinel to enter the Deepwood.';
   if (deepest < 5) return 'Reach Depth 5 — Forest Bears prowl these shadows.';
-  if (deepest < 8) return 'Reach Depth 8 — the Ancient Heart hides Amber Resin.';
+  if (deepest < 8) return 'Reach Depth 8 — defeat the Ancient Guardian to enter the Ancient Heart.';
   return 'The Ancient Heart — chase a new record.';
 }
 

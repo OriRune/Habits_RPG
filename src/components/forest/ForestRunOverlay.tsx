@@ -348,6 +348,11 @@ export function ForestRunOverlay() {
         <span className="font-display text-sm font-bold text-gold-bright">
           The Wild Forest · Depth {forest.stage}
           <span className="ml-2 text-[11px] font-normal opacity-70">{band.name}</span>
+          {forest.beasts.some((b) => FOREST_BEASTS[b.key]?.isGuardian) && (
+            <span className="ml-2 rounded px-1 py-0.5 text-[10px] font-bold text-amber-300 bg-amber-900/40 border border-amber-600/50">
+              ⚔ Guardian
+            </span>
+          )}
         </span>
         <div className="flex flex-col items-end gap-1">
           <Gauge icon={<Heart className="h-3.5 w-3.5 text-stat-HP" />} value={forest.hp} max={forest.maxHp} fill="#2e8a5e" />

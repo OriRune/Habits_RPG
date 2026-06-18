@@ -21,7 +21,7 @@ import { mergeReward } from './dungeon';
 import { attackRoll, spellDamageRoll, spellHealAmount } from './combat';
 import { getSpell, SCHOOL_STAT } from './spells';
 import type { WeaponDef } from './weapons';
-import { MINE_ORES, MINE_MONSTERS, type MineOreDef } from '@/content/mining';
+import { MINE_ORES, MINE_MONSTERS, MINE_GUARDIAN_FLOORS, type MineOreDef } from '@/content/mining';
 import { bandForFloor } from './crawlBiomes';
 import {
   type Dir,
@@ -252,6 +252,19 @@ function monsterLootPool(floor: number): Array<{ kind: 'gold' } | { kind: 'mater
   if (floor >= 10) pool.push({ kind: 'material', material: 'gemstone' });
   if (floor >= 15) pool.push({ kind: 'material', material: 'obsidian' }); // magma band
   return pool;
+}
+
+/** Flat score bonus awarded for killing a band-gate guardian. */
+const GUARDIAN_SCORE_BONUS = 500;
+
+/** Guaranteed treasure loot when a band-gate guardian is slain. */
+function guardianTreasure(floor: number, rng: RNG): Reward {
+  if (floor <= 7) {
+    // Stone Golem: Rocky → Frozen gate; reward previews Frozen-band materials.
+    return { gold: randInt(30, 50, rng), materials: { frost_quartz: 3, iron_bar: 2 } };
+  }
+  // Magma Colossus: Frozen → Magma gate; reward previews Magma-band materials.
+  return { gold: randInt(60, 100, rng), materials: { obsidian: 3, frost_quartz: 2 } };
 }
 
 function avgNodeDurability(floor: number): number {
@@ -502,7 +515,7 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
   }
   const currentBandId = bandForFloor(floor).id;
   const eligibleMon = Object.values(MINE_MONSTERS).filter(
-    (m) => m.floorMin <= floor && (!m.band || m.band === currentBandId),
+    (m) => !m.isGuardian && m.floorMin <= floor && (!m.band || m.band === currentBandId),
   );
   const monCount = eligibleMon.length === 0 ? 0 : Math.min(10, 2 + Math.floor(floor * 0.6));
   const monsters: MineMonster[] = [];
@@ -518,6 +531,39 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
       frozenUntilMs: 0,
       poisonDmg: 0, poisonNextTickMs: 0, poisonExpiresMs: 0,
     });
+  }
+
+  // --- Step 9: band-gate guardian (deterministic, once per boundary floor) ---
+  const guardianKey = MINE_GUARDIAN_FLOORS[floor];
+  if (guardianKey) {
+    const gDef = MINE_MONSTERS[guardianKey];
+    if (gDef) {
+      // Find a floor cell distant from both the entrance and the shaft.
+      const shaftCell = (() => {
+        for (let r = 0; r < rows; r++)
+          for (let c = 0; c < cols; c++)
+            if (floor_[r][c].kind === 'shaft') return { r, c };
+        return { r: rows - 3, c: Math.floor(cols / 2) };
+      })();
+      const guardianCells = mFloor.filter(
+        ([r, c]) =>
+          manhattan({ r, c }, { r: startR, c: startC }) > 8 &&
+          manhattan({ r, c }, shaftCell) > 4,
+      );
+      const placed = guardianCells[Math.floor(rng() * guardianCells.length)];
+      if (placed) {
+        const [gr, gc] = placed;
+        monsters.push({
+          id: `guardian-${floor}`,
+          key: guardianKey,
+          r: gr, c: gc,
+          hp: gDef.hp, maxHp: gDef.hp,
+          readyAtMs: 0,
+          frozenUntilMs: 0,
+          poisonDmg: 0, poisonNextTickMs: 0, poisonExpiresMs: 0,
+        });
+      }
+    }
   }
 
   return {
@@ -654,19 +700,25 @@ export function tryDash(state: MineState, dir: Dir, nowMs: number): MineState {
 // ---------------------------------------------------------------------------
 
 function killMonster(state: MineState, mon: MineMonster, rng: RNG): MineState {
-  const killBonus = state.killsThisFloor + 1;
-  const swingsToKill = Math.ceil(mon.maxHp / Math.max(1, state.meleePower));
-  const qty = Math.max(1, Math.round(swingsToKill / avgNodeDurability(state.floor)) + killBonus);
-  const pool = monsterLootPool(state.floor);
-  const pick = pool[Math.floor(rng() * pool.length)];
-  const drop: Reward =
-    pick.kind === 'gold' ? { gold: qty } : { materials: { [pick.material]: qty } };
+  const def = MINE_MONSTERS[mon.key];
+  const isGuardian = !!def?.isGuardian;
+  let drop: Reward;
+  if (isGuardian) {
+    drop = guardianTreasure(state.floor, rng);
+  } else {
+    const killBonus = state.killsThisFloor + 1;
+    const swingsToKill = Math.ceil(mon.maxHp / Math.max(1, state.meleePower));
+    const qty = Math.max(1, Math.round(swingsToKill / avgNodeDurability(state.floor)) + killBonus);
+    const pool = monsterLootPool(state.floor);
+    const pick = pool[Math.floor(rng() * pool.length)];
+    drop = pick.kind === 'gold' ? { gold: qty } : { materials: { [pick.material]: qty } };
+  }
   return {
     ...state,
     monsters: state.monsters.filter((m) => m.id !== mon.id),
     haul: mergeReward(state.haul, drop),
     killsThisFloor: state.killsThisFloor + 1,
-    score: state.score + 10 * state.floor,
+    score: state.score + 10 * state.floor + (isGuardian ? GUARDIAN_SCORE_BONUS : 0),
   };
 }
 

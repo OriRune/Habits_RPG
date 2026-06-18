@@ -20,7 +20,7 @@ import { mergeReward } from './dungeon';
 import { attackRoll, spellDamageRoll, spellHealAmount } from './combat';
 import { getSpell, SCHOOL_STAT } from './spells';
 import type { WeaponDef } from './weapons';
-import { FOREST_NODES, FOREST_BEASTS, SHRINE_EVENTS, type ForestNodeDef } from '@/content/forest';
+import { FOREST_NODES, FOREST_BEASTS, FOREST_GUARDIAN_STAGES, SHRINE_EVENTS, type ForestNodeDef } from '@/content/forest';
 import { bandForStage } from './crawlBiomes';
 import {
   type Dir,
@@ -339,28 +339,47 @@ export function nodeYield(nodeKey: string, rng: RNG): Reward {
   return { materials: { [def.grants.material]: amt } };
 }
 
+/** Flat score bonus awarded for killing a band-gate guardian. */
+const GUARDIAN_SCORE_BONUS = 500;
+
+/** Guaranteed treasure loot when a band-gate guardian is slain. */
+function guardianTreasure(stage: number, rng: RNG): Reward {
+  if (stage <= 4) {
+    // Grove Sentinel: Thicket → Deepwood gate; reward previews Deepwood-band materials.
+    return { gold: randInt(20, 40, rng), materials: { crystals: 3, herbs: 2 } };
+  }
+  // Ancient Guardian: Deepwood → Ancient gate; reward previews Ancient-band materials.
+  return { gold: randInt(40, 70, rng), materials: { amber_resin: 3, crystals: 2 } };
+}
+
 // ---------------------------------------------------------------------------
 // Kill-loot helper
 // ---------------------------------------------------------------------------
 
 function killBeast(state: ForestState, beast: ForestBeast, rng: RNG): ForestState {
   const def = FOREST_BEASTS[beast.key];
-  const gold = def ? randInt(def.bounty[0], def.bounty[1], rng) : 0;
-  // Prey carry a custom material/amount; predators default to leather scaled by kill streak.
-  const matKey = def?.dropMaterial ?? 'leather';
-  const qty = def?.dropAmount
-    ? randInt(def.dropAmount[0], def.dropAmount[1], rng)
-    : Math.max(1, Math.round(beast.maxHp / 10) + state.killsThisStage);
-  const drop: Reward = mergeReward(
-    { materials: { [matKey]: qty } },
-    gold > 0 ? { gold } : {},
-  );
+  const isGuardian = !!def?.isGuardian;
+  let drop: Reward;
+  if (isGuardian) {
+    drop = guardianTreasure(state.stage, rng);
+  } else {
+    const gold = def ? randInt(def.bounty[0], def.bounty[1], rng) : 0;
+    // Prey carry a custom material/amount; predators default to leather scaled by kill streak.
+    const matKey = def?.dropMaterial ?? 'leather';
+    const qty = def?.dropAmount
+      ? randInt(def.dropAmount[0], def.dropAmount[1], rng)
+      : Math.max(1, Math.round(beast.maxHp / 10) + state.killsThisStage);
+    drop = mergeReward(
+      { materials: { [matKey]: qty } },
+      gold > 0 ? { gold } : {},
+    );
+  }
   return {
     ...state,
     beasts: state.beasts.filter((b) => b.id !== beast.id),
     haul: mergeReward(state.haul, drop),
     killsThisStage: state.killsThisStage + 1,
-    score: state.score + 10 * state.stage,
+    score: state.score + 10 * state.stage + (isGuardian ? GUARDIAN_SCORE_BONUS : 0),
   };
 }
 
@@ -497,7 +516,7 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
   // so the room is always connected to the maze.
   const currentBandId = bandForStage(stage).id;
   const eligibleBeasts = Object.values(FOREST_BEASTS).filter(
-    (b) => b.stageMin <= stage && (!b.band || b.band === currentBandId),
+    (b) => !b.isGuardian && b.stageMin <= stage && (!b.band || b.band === currentBandId),
   );
   const beasts: ForestBeast[] = [];
   let beastId = 0;
@@ -630,6 +649,33 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
       r, c, hp: def.hp, maxHp: def.hp,
       readyAtMs: 0, asleep: true,
     });
+  }
+
+  // --- Band-gate guardian (deterministic, once per boundary stage) ---
+  const guardianKey = FOREST_GUARDIAN_STAGES[stage];
+  if (guardianKey) {
+    const gDef = FOREST_BEASTS[guardianKey];
+    if (gDef) {
+      // Place guardian on a trail cell far from the entrance (row 0) and treeline (last row).
+      const treeline = tiles[rows - 2]?.findIndex((t) => t.kind === 'treeline') ?? -1;
+      const treelineC = treeline >= 0 ? treeline : Math.floor(cols / 2);
+      const guardianCells = trailCells.filter(
+        ([r, c]) =>
+          r > 3 &&
+          r < rows - 4 &&
+          manhattan({ r, c }, { r: 0, c: startC }) > 8 &&
+          manhattan({ r, c }, { r: rows - 2, c: treelineC }) > 4,
+      );
+      const placed = guardianCells[Math.floor(rng() * guardianCells.length)];
+      if (placed) {
+        const [gr, gc] = placed;
+        beasts.push({
+          id: `guardian-${stage}`, key: guardianKey,
+          r: gr, c: gc, hp: gDef.hp, maxHp: gDef.hp,
+          readyAtMs: 0, asleep: true,
+        });
+      }
+    }
   }
 
   const seen: boolean[][] = Array.from({ length: rows }, () => new Array(cols).fill(false));

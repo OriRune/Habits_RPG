@@ -9,9 +9,9 @@ import { SectionTitle } from '@/components/ui/Divider';
 function milestoneHint(deepest: number): string {
   if (deepest < 3)  return 'Reach Floor 3 for Iron veins.';
   if (deepest < 4)  return 'Reach Floor 4 for Gold veins.';
-  if (deepest < 7)  return 'Reach Floor 7 — the Frozen Depths await.';
+  if (deepest < 7)  return 'Reach Floor 7 — defeat the Stone Golem to enter the Frozen Depths.';
   if (deepest < 10) return 'Reach Floor 10 for Gemstones & Ice Crawlers.';
-  if (deepest < 15) return 'Reach Floor 15 — the Magma Core.';
+  if (deepest < 15) return 'Reach Floor 15 — defeat the Magma Colossus to enter the Magma Core.';
   return 'The Magma Core — chase a new record.';
 }
 

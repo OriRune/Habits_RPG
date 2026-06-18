@@ -73,6 +73,13 @@ export interface ForestBeastDef {
    * Omit for band-agnostic beasts (eligible in any band at or above stageMin).
    */
   band?: import('@/engine/crawlBiomes').ForestBandId;
+  /**
+   * Band-gate guardian. Excluded from the random spawn pool; placed once by
+   * generateForest on the exact stage matching guardianStage.
+   */
+  isGuardian?: true;
+  /** The exact stage this guardian appears on (required when isGuardian is set). */
+  guardianStage?: number;
 }
 
 export const FOREST_NODES: Record<string, ForestNodeDef> = {
@@ -154,8 +161,16 @@ export const FOREST_BEASTS: Record<string, ForestBeastDef> = {
   },
   ancient_guardian: {
     key: 'ancient_guardian', name: 'Ancient Guardian', glyph: '🌳', color: '#2a6a3a',
-    stageMin: 10, hp: 55, touchDamage: 18, moveCadenceMs: 600, aggroRadius: 2, bounty: [20, 35],
+    stageMin: 8, hp: 55, touchDamage: 18, moveCadenceMs: 600, aggroRadius: 2, bounty: [20, 35],
     defense: 5, resistTo: ['DX'], weakTo: ['ST'],
+    isGuardian: true, guardianStage: 8,
+  },
+  // --- Band-gate guardians (placed once per run; excluded from random pool) ---
+  grove_sentinel: {
+    key: 'grove_sentinel', name: 'Grove Sentinel', glyph: '🦁', color: '#5a8a3a',
+    stageMin: 4, hp: 40, touchDamage: 12, moveCadenceMs: 550, aggroRadius: 2, bounty: [14, 28],
+    defense: 2, resistTo: ['DX'], weakTo: ['ST'],
+    isGuardian: true, guardianStage: 4,
   },
   // --- Deepwood Grove band (stages 4–7) ---
   shadow_lynx: {
@@ -213,6 +228,12 @@ export const SHRINE_EVENTS: Record<string, ShrineEventDef> = {
 
 export const FOREST_NODE_KEYS = Object.keys(FOREST_NODES);
 export const FOREST_BEAST_KEYS = Object.keys(FOREST_BEASTS);
+
+/** Maps exact guardian stage → beast key. Consumed by generateForest for deterministic placement. */
+export const FOREST_GUARDIAN_STAGES: Record<number, string> = {
+  4: 'grove_sentinel',
+  8: 'ancient_guardian',
+};
 
 export function getForestNode(key: string): ForestNodeDef | undefined {
   return FOREST_NODES[key];

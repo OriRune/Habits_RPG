@@ -64,6 +64,13 @@ export interface MineMonsterDef {
    * Omit for band-agnostic monsters (eligible in any band at or above floorMin).
    */
   band?: import('@/engine/crawlBiomes').MineBandId;
+  /**
+   * Band-gate guardian. Excluded from the random spawn pool; placed once by
+   * generateMine on the exact floor matching guardianFloor.
+   */
+  isGuardian?: true;
+  /** The exact floor this guardian appears on (required when isGuardian is set). */
+  guardianFloor?: number;
 }
 
 export const MINE_ORES: Record<string, MineOreDef> = {
@@ -132,8 +139,9 @@ export const MINE_MONSTERS: Record<string, MineMonsterDef> = {
   },
   stone_golem: {
     key: 'stone_golem', name: 'Stone Golem', glyph: '🪨', color: '#8a7a6a',
-    floorMin: 10, hp: 50, touchDamage: 15, moveCadenceMs: 850, bounty: [20, 35],
+    floorMin: 7, hp: 50, touchDamage: 15, moveCadenceMs: 850, bounty: [20, 35],
     defense: 6, resistTo: ['DX'], weakTo: ['ST'],
+    isGuardian: true, guardianFloor: 7,
   },
   cave_spider: {
     key: 'cave_spider', name: 'Cave Spider', glyph: '🕷️', color: '#6a3a6a',
@@ -152,10 +160,23 @@ export const MINE_MONSTERS: Record<string, MineMonsterDef> = {
     floorMin: 15, hp: 38, touchDamage: 16, moveCadenceMs: 580, bounty: [20, 38],
     defense: 3, band: 'magma', resistTo: ['ST'], weakTo: ['WI'],
   },
+  // --- Band-gate guardians (placed once per run; excluded from random pool) ---
+  magma_colossus: {
+    key: 'magma_colossus', name: 'Magma Colossus', glyph: '🌋', color: '#ff4400',
+    floorMin: 15, hp: 70, touchDamage: 20, moveCadenceMs: 900, bounty: [40, 70],
+    defense: 5, band: 'magma', resistTo: ['ST'], weakTo: ['WI'],
+    isGuardian: true, guardianFloor: 15,
+  },
 };
 
 export const MINE_ORE_KEYS = Object.keys(MINE_ORES);
 export const MINE_MONSTER_KEYS = Object.keys(MINE_MONSTERS);
+
+/** Maps exact guardian floor → monster key. Consumed by generateMine for deterministic placement. */
+export const MINE_GUARDIAN_FLOORS: Record<number, string> = {
+  7: 'stone_golem',
+  15: 'magma_colossus',
+};
 
 export function getMineOre(key: string): MineOreDef | undefined {
   return MINE_ORES[key];
