@@ -10,7 +10,7 @@
 // just decides *when* to call these. Damage math is shared with turn-based combat (attackRoll /
 // spellDamageRoll / spellHealAmount / variance in src/engine/combat.ts) so the numbers match.
 import type { StatId } from './stats';
-import type { BossDef, BossPhase } from './bosses';
+import type { BossDef, BossPhase, MinionVariant } from './bosses';
 import type { WeaponDef } from './weapons';
 import type { Fighter } from './combat';
 import { attackRoll, spellDamageRoll, spellHealAmount, variance } from './combat';
@@ -151,6 +151,8 @@ export interface ArenaState {
   bossId: string;
   bossName: string;
   bossFlavor: string;
+  /** Emoji glyph for the boss sprite — sourced from BossDef.glyph, falls back to '👹'. */
+  bossGlyph: string;
   bossPos: Cell;
   bossMaxHp: number;
   bossHp: number;
@@ -169,6 +171,7 @@ export interface ArenaState {
   minions: Minion[];
   minionHp: number;
   minionAttack: number;
+  minionVariant: MinionVariant;
 
   // Player snapshot (derived once at entry, mirrors deriveCombatant fields)
   player: { pos: Cell; facing: Dir };
@@ -209,6 +212,8 @@ export interface ArenaState {
   // Difficulty / modes
   speed: number;
   invincible: boolean;
+  /** Per-phase attack recovery delay (ms); lower = faster cadence. Set by applyArenaPhase. */
+  bossRecoverMs: number;
 
   // Per-stat usage tallies (incremented by player actions for usage-based XP)
   statUsage: Partial<Record<StatId, number>>;
@@ -403,6 +408,8 @@ function applyArenaPhase(s: ArenaState, phase: BossPhase): void {
   s.attackSchool = phase.attackSchool ?? 'physical';
   s.weakTo = phase.weakTo;
   s.resistTo = phase.resistTo ?? [];
+  s.bossRecoverMs = phase.recoverMs ?? BOSS_RECOVER_MS;
+  s.minionVariant = phase.minionVariant ?? 'bat';
 }
 
 function occupiedKeys(s: ArenaState): Set<string> {
@@ -471,6 +478,7 @@ export function createArena(
     bossId: boss.id,
     bossName: boss.name,
     bossFlavor: boss.flavor,
+    bossGlyph: boss.glyph ?? '👹',
     bossPos: bossStart,
     bossMaxHp: 0,
     bossHp: 0,
@@ -487,6 +495,7 @@ export function createArena(
     minions: [],
     minionHp: Math.max(1, Math.round(phases[0].hp * MINION_HP_FRAC)),
     minionAttack: Math.max(1, Math.round(phases[0].attack * MINION_ATK_FRAC)),
+    minionVariant: phases[0].minionVariant ?? 'bat',
     player: { pos: { ...playerStart }, facing: 'up' },
     hp: c.maxHp,
     maxHp: c.maxHp,
@@ -516,6 +525,7 @@ export function createArena(
     ringNextHitMs: {},
     speed,
     invincible: opts.invincible ?? false,
+    bossRecoverMs: BOSS_RECOVER_MS,
     statUsage: {},
     damageDealt: 0,
     startedAtMs: startMs,
@@ -579,7 +589,8 @@ function resolveBossDown(s: ArenaState, now: number, rng: RNG): void {
     s.bossNextActionMs = now + BOSS_OPENING_GRACE_MS;
     s.bossNextMoveMs = now + BOSS_OPENING_GRACE_MS;
     const summons = s.radius >= 5 ? 2 : s.radius >= 4 ? 1 : 0;
-    for (let i = 0; i < summons; i++) spawnMinion(s, now, rng);
+    const extra = s.phases[s.phaseIndex].spawnOnEntry ?? 0;
+    for (let i = 0; i < summons + extra; i++) spawnMinion(s, now, rng);
   } else {
     s.bossHp = 0;
     s.status = 'won';
@@ -1090,7 +1101,7 @@ function bossThink(s: ArenaState, now: number, field: Map<string, number>, rng: 
     raw: variance(s.bossAttack * spec.dmgMult, rng),
     school: s.attackSchool,
   });
-  s.bossNextActionMs = now + windup + scaled(s, BOSS_RECOVER_MS);
+  s.bossNextActionMs = now + windup + scaled(s, s.bossRecoverMs);
   s.bossNextMoveMs = now + windup;
 }
 
