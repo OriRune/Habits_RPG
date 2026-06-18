@@ -222,7 +222,7 @@ export interface MineState {
   /** Agility level snapshot — preserved across floors. */
   agLevel: number;
   /** Position of the descent shaft on the current floor — for the HUD directional indicator. */
-  shaftPos: { r: number; c: number };
+  shaftPos?: { r: number; c: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -950,9 +950,10 @@ export function castSpell(state: MineState, spellKey: string, nowMs: number, rng
     return s;
   }
 
-  // Damage spell: hit nearest monster
+  // Damage spell: hit the monster the player is facing first, then fall back to nearest.
   if (spell.school === 'damage') {
-    const target = nearestMonster(s);
+    const { r: fr, c: fc } = facedCell(s);
+    const target = monsterAt(s, fr, fc) ?? nearestMonster(s);
     if (target) {
       const def = MINE_MONSTERS[target.key];
       const { dealt } = spellDamageRoll(
@@ -1013,9 +1014,10 @@ export function castSpell(state: MineState, spellKey: string, nowMs: number, rng
     return s;
   }
 
-  // Illusion spell: apply debuff to nearest monster
+  // Illusion spell: debuff the monster the player is facing first, then fall back to nearest.
   if (spell.school === 'illusion' && spell.status) {
-    const target = nearestMonster(s);
+    const { r: fr2, c: fc2 } = facedCell(s);
+    const target = monsterAt(s, fr2, fc2) ?? nearestMonster(s);
     if (target) {
       const { key, magnitude, turns } = spell.status;
       const durationMs = (turns + Math.floor(s.illusionPower / 8)) * DOT_TICK_MS;

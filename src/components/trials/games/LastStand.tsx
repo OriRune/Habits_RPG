@@ -7,6 +7,8 @@ import { play as sfxPlay } from '@/lib/sfx';
 import {
   generateAttacks,
   lastStandScore,
+  reactionSpeed,
+  reactionRating,
   seededRng,
   STARTING_HP,
   DAMAGE_PER_HIT,
@@ -15,6 +17,7 @@ import {
   DIRECTIONS,
   type Direction,
   type Attack,
+  type ReactionRating,
 } from '@/engine/trials/lastStand';
 
 interface LastStandProps {
@@ -26,8 +29,10 @@ const DIR_EMOJI: Record<Direction, string> = { left: '⬅️', center: '⬆️',
 
 type Phase = 'countdown' | 'running' | 'done';
 type FeedbackMap = Record<Direction, 'blocked' | 'hit' | null>;
+type RatingMap = Record<Direction, ReactionRating | null>;
 
 const EMPTY_FEEDBACK: FeedbackMap = { left: null, center: null, right: null };
+const EMPTY_RATING: RatingMap = { left: null, center: null, right: null };
 
 export function LastStand({ onFinish }: LastStandProps) {
   const [phase, setPhase] = useState<Phase>('countdown');
@@ -37,6 +42,7 @@ export function LastStand({ onFinish }: LastStandProps) {
   const [hp, setHp] = useState(STARTING_HP);
   const [elapsed, setElapsed] = useState(0);
   const [feedback, setFeedback] = useState<FeedbackMap>(EMPTY_FEEDBACK);
+  const [ratingFeedback, setRatingFeedback] = useState<RatingMap>(EMPTY_RATING);
   const [damageFlash, setDamageFlash] = useState(false);
 
   // Refs for values read inside the RAF loop without triggering re-renders.
@@ -76,10 +82,12 @@ export function LastStand({ onFinish }: LastStandProps) {
 
   const finish = useCallback(
     (finalAttacks: Attack[], died: boolean) => {
-      const blocked = finalAttacks.filter((a) => a.result === 'blocked').length;
+      const blockSpeeds = finalAttacks
+        .filter((a) => a.result === 'blocked' && a.blockedAtMs != null)
+        .map((a) => reactionSpeed(a.landMs, a.blockedAtMs!));
       const resolved = finalAttacks.filter((a) => a.result !== null).length;
       sfxPlay(died ? 'defeat' : 'win');
-      onFinish(lastStandScore(blocked, resolved));
+      onFinish(lastStandScore(blockSpeeds, resolved));
     },
     [onFinish],
   );
@@ -177,11 +185,16 @@ export function LastStand({ onFinish }: LastStandProps) {
         .sort((a, b) => a.landMs - b.landMs)[0];
       if (!target) return;
       const next = attacksCopy.current.map((a) =>
-        a.id === target.id ? { ...a, result: 'blocked' as const } : a,
+        a.id === target.id ? { ...a, result: 'blocked' as const, blockedAtMs: el } : a,
       );
       setAttacks(next);
       attacksCopy.current = next;
       triggerFeedback(dir, 'blocked');
+      // Flash the reaction rating for this block.
+      const speed = reactionSpeed(target.landMs, el);
+      const rating = reactionRating(speed);
+      setRatingFeedback(prev => ({ ...prev, [dir]: rating }));
+      scheduleTimeout(() => setRatingFeedback(prev => ({ ...prev, [dir]: null })), 600);
       sfxPlay('lastStandBlock');
     },
     [triggerFeedback],
@@ -276,6 +289,16 @@ export function LastStand({ onFinish }: LastStandProps) {
             ? Math.min(1, (elapsed - (attk.landMs - SPAWN_AHEAD_MS)) / SPAWN_AHEAD_MS)
             : 0;
           const fb = feedback[dir];
+          const rating = ratingFeedback[dir];
+
+          const ratingColor =
+            rating === 'perfect' ? '#34d399'   // emerald-400
+            : rating === 'good'  ? '#f5c842'   // gold-bright approximation
+            :                      '#fbbf24';  // amber-400 (late)
+          const ratingLabel =
+            rating === 'perfect' ? 'Perfect!'
+            : rating === 'good'  ? 'Good'
+            :                      'Late';
 
           return (
             <div key={dir} className="flex flex-col items-center gap-1.5 w-16">
@@ -294,6 +317,19 @@ export function LastStand({ onFinish }: LastStandProps) {
                 }}
               >
                 {fb === 'blocked' ? '🛡️' : fb === 'hit' ? '💥' : '⚔️'}
+              </div>
+
+              {/* Reaction rating label — fades in on block, gone after 600 ms */}
+              <div
+                className="text-xs font-bold leading-none"
+                style={{
+                  color: ratingColor,
+                  opacity: rating ? 1 : 0,
+                  transition: 'opacity 0.2s ease-out',
+                  minHeight: '1em',
+                }}
+              >
+                {rating ? ratingLabel : ''}
               </div>
 
               {/* Timer bar — fills as attack closes in; turns red near impact */}

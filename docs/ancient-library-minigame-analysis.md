@@ -1,130 +1,190 @@
-# Ancient Library — Minigame Analysis
+# Ancient Library — Minigame Analysis (Updated)
+
+> Reflects the current implementation after the improvements described in `docs/ancient-library-improvement-plan.md`.
+> Previous analysis snapshot is in git history.
+
+---
 
 ## 1. Basic Summary
 
-Ancient Library is the Knowledge (KN) Skill Trial — one of eight daily minigames tied to the game's eight character stats. It is a classic Simon-style memory game: a sequence of emoji glyphs flashes on screen one at a time, then the player must tap them back in the exact same order. Each round the sequence grows by one glyph. The trial ends on the first wrong tap, or after completing all six rounds.
+Ancient Library is the Knowledge (KN) Skill Trial — one of eight daily minigames tied to the game's eight character stats. It is a Simon-style memory game: a sequence of emoji glyphs flashes on screen one at a time, each accompanied by a distinct musical tone, then the player must tap them back in the same order. Each round the sequence grows by one glyph. The trial ends after all seven rounds, on a second wrong tap, or after using the single retry and failing a second time.
 
-Within the larger game, Skill Trials are daily challenges unlocked at player level 3. Each trial awards stat XP (contributing to the relevant stat's growth) and gold. Ancient Library is the exclusive source of KN XP from trials, and can be completed once per calendar day (or replayed freely if the `repeatMinigames` dev setting is on). It takes roughly 60–90 seconds for a skilled run.
+Within the larger game, Skill Trials are daily challenges unlocked at player level 3. Each trial awards stat XP and gold. Ancient Library is the exclusive source of KN XP from trials. It can be completed once per calendar day (or replayed freely if the `repeatMinigames` dev setting is on). A skilled run takes roughly 60–90 seconds.
+
+Key characteristics of the current implementation:
+- **Seven rounds**, sequence lengths 2–8 (warm-up at length 2, max length 8)
+- **Daily-seeded sequence** — same glyphs for all players on a given calendar day
+- **Audio feedback** — each glyph has a pentatonic tone; correct/wrong sounds play on round outcomes
+- **Single retry** — one wrong tap per session replays the current round instead of ending the trial
+- **KN stat integration** — at KN ≥ 5, the show phase double-flashes one back-half glyph; at KN ≥ 10, two glyphs are double-flashed
+- **Thematic button colors** — each glyph button has a unique idle tint and a tap-flash highlight
 
 ---
 
 ## 2. Core Game Loop
 
 ### Start
+
 The player navigates to the Skills tab (`tab='skills'`), which renders `TrialsView`. They tap the Ancient Library card (📚, KN Trial). If the trial has already been cleared today, the card is marked "Done" (still tappable if `repeatMinigames` is enabled). Tapping opens `TrialModal` in `intro` stage.
 
-The intro screen shows the trial name, a one-sentence description, and a "Begin Trial" button. Pressing it fires `sfxResume()` to unlock the browser AudioContext, then transitions `TrialModal` to `playing` stage, which mounts `<AncientLibrary onFinish={…} />`.
+The intro screen shows the trial name, a one-sentence description, a "Begin Trial" button, and (if a previous best exists) the best score with stars and percentage. Pressing the button fires `sfxResume()` to unlock the browser AudioContext, then transitions `TrialModal` to `playing` stage, which mounts `<AncientLibrary onFinish={…} />`.
 
 ### Repeating loop per round
-1. **Show phase** — glyphs from the master sequence are displayed one at a time, 700 ms per glyph. After the last glyph there is a 400 ms pause.
-2. **Input phase** — the 3×2 glyph button grid activates. A row of filled/empty circles shows how many inputs have been given vs. how many remain.
-3. **Validate** — each tap is checked immediately against the expected position in the sequence.
-   - Correct and sequence complete → `correct` phase (800 ms visual), then either next round (900 ms) or trial finish.
-   - Wrong → `wrong` phase (1 s visual), then trial finish.
+
+1. **Show phase** — glyphs from the master sequence are displayed one at a time. Each glyph is accompanied by its pentatonic tone. Display speed starts at 700 ms/glyph and decreases linearly to 500 ms/glyph by the final round (via `glyphShowMs(round)`). KN hint glyphs are shown twice consecutively. After the last glyph, a 400 ms pause allows transition to input.
+2. **Input phase** — the 3×2 glyph button grid activates. A row of filled/empty circles shows progress. Each button tap plays the glyph's tone and flashes the button with its thematic color for 150 ms.
+3. **Validate** — each tap is checked immediately.
+   - Correct and sequence complete → `correct` phase (800 ms: completed sequence is displayed, `libraryCorrect` sound), then either next round (900 ms delay) or trial finish.
+   - Wrong tap, retry available → `wrong` phase (1 s), then the same round replays from the beginning; retry is consumed.
+   - Wrong tap, retry exhausted → `wrong` phase (1 s, `libraryWrong` sound), then trial finish.
 4. Round counter increments, sequence length increments by 1, loop repeats.
 
 ### Challenge / difficulty
-The sequence always starts at length 3 (round 1) and grows to length 8 (round 6). There are no power-ups, hints, or extra lives — one wrong tap ends the run. The only help is the per-position progress display (filled circles), which at least confirms correct inputs so far.
+
+Sequence lengths run 2 → 8 across seven rounds. The display speed ramps from 700 ms to 500 ms by the last round. The single retry allows one mistake per session at the cost of replaying the current round. KN stat double-flashes provide passive hints at high stat levels. The player can deliberate as long as they wish during input — there is no time pressure.
 
 ### End conditions
-- **Fail:** Player taps a wrong glyph. `phase='wrong'`, then `onFinish(libraryScore(roundsCompleted))` fires with whatever rounds were completed before the error.
-- **Complete:** Player survives all six rounds. `onFinish(libraryScore(6))` fires (score = 1.0).
+
+- **Fail:** Player taps a wrong glyph with no retry remaining. `phase='wrong'` briefly, then `onFinish(libraryScore(roundsCompleted))` fires.
+- **Complete:** Player survives all seven rounds. `onFinish(libraryScore(7))` fires (score = 1.0).
 
 ### Outcomes
-`TrialModal` receives the score and transitions to `result` stage, showing star rating, percentage, and a reward breakdown. The player taps "Claim Reward" which calls `completeTrial(trialId, score01)` in the store. This stamps today's ISO date, updates the best score, and deposits gold + KN XP. The "Done" badge appears on the hub card for the rest of the day.
+
+`TrialModal` receives the score and transitions to `result` stage, showing star rating, percentage, reward breakdown, and a "New personal best!" pulse if applicable. The player taps "Continue" which fires `completeTrial(trialId, score01)` in the store, depositing gold + KN XP. A second button ("Return to Trials") closes the modal. The "Done" badge appears on the hub card for the rest of the day. The last-cleared date is shown on the card for previous (non-today) clears.
 
 ---
 
 ## 3. Player Controls and Interaction
 
 ### Input controls
-- **Mobile / touch:** Tap glyph buttons. The grid is 3×2, sized for comfortable thumb reach (full-width `max-w-xs`, 3 columns).
+
+- **Mobile / touch:** Tap glyph buttons. The grid is 3×2, full-width `max-w-xs`, sized for comfortable thumb reach.
 - **Desktop / mouse:** Click the same buttons.
 - No keyboard input is wired up.
 
 ### UI elements
+
 | Element | Appears when | Purpose |
 |---|---|---|
-| Round counter (`Round X of 6`) | Always | Tracks progress |
-| Sequence length indicator | Always | Shows current target length |
-| Glyph display box (80px tall) | Always | Shows the active glyph (pulsing), feedback icons, or prompt text |
+| Round counter (`Round X of 7`) | Always | Tracks progress |
+| Sequence length indicator (`Sequence: N`) | Always | Shows current target length |
+| Glyph display box (80px tall) | Always | Active glyph (animated), completed sequence, feedback icons, or prompt text |
 | Progress tracker (circles) | `input` phase | Filled = correct so far, empty = still needed |
-| 3×2 glyph button grid | `input` phase | Tap to make your choices |
-| Sequence indicator strip | `showing` phase | Dots showing "shown / active / upcoming" positions |
+| 3×2 glyph button grid | `input` phase | Tap to make choices; thematic idle tint + tap-flash |
+| Retry indicator (`✦ 1 retry remaining` / `✦ retry used`) | `input` and `wrong` phases | Shows whether the retry is still available |
 | Status text line | Always | Narrates current phase in plain English |
 
+Notable elements removed since the original analysis:
+- **Sequence progress strip** — the `•` / glyph / `○` strip that appeared below the display box during show phase has been removed. It added visual noise without aiding memory.
+
 ### Feedback given to the player
-- Correct round: ✅ icon in the display box, status text "Round N complete! Next round…"
-- Wrong tap: ❌ icon, status text "Wrong glyph!"
-- Trial finished: 📚 icon, status text "Completed N of 6 rounds."
-- During show: "Watch the glyphs carefully…"
-- During input: "Tap the glyphs in order."
+
+- **Show phase:** Glyph lights up with a bounce-in animation (`key={showIndex}` triggers remount); its pentatonic tone plays.
+- **Tap (any):** The pressed button flashes its thematic color for 150 ms; the glyph's tone plays immediately.
+- **Wrong tap:** `libraryWrong` sound (descending buzz) plays; ❌ appears in the display box.
+- **Correct round:** `libraryCorrect` sound (ascending chime) plays; completed sequence is displayed side-by-side in the display box; status text "Round N complete! Next round…"
+- **Wrong with retry consumed:** Same wrong feedback, then the round replays with "1 retry remaining" dimmed.
+- **Trial finished:** 📚 in display box; status text "Completed N of 7 rounds."
 
 ### Menus / overlays
-The full modal (`TrialModal`) takes over the screen (`fixed inset-0 z-50`). It has a persistent header with the trial icon, name, stat label, and a close (✕) button. The close button works at any stage, discarding an in-progress run without granting a reward.
+
+`TrialModal` takes over the screen (`fixed inset-0 z-50`). The header shows the trial icon, name, stat label, and a ✕ button. Tapping ✕ during an active run shows an inline "Abandon run? Yes / No" confirmation prompt rather than closing immediately. At any other stage (intro or result) it closes directly.
 
 ---
 
 ## 4. Mechanics and Systems
 
-### Scoring (`src/engine/trials/ancientLibrary.ts:22`)
+### Scoring (`src/engine/trials/ancientLibrary.ts`)
+
 ```
 score = Math.min(1, roundsCompleted / LIBRARY_MAX_ROUNDS)
 ```
-- 0 rounds completed = 0.0 (failed on first sequence)
-- 3 rounds = 0.5
-- 6 rounds = 1.0
 
-### Sequence generation (`ancientLibrary.ts:13`)
-A single master sequence of 8 glyphs is generated at component mount using `Math.random` as the RNG. Each round uses a prefix of this master sequence (`masterSeq.slice(0, currentLength)`), so subsequent rounds extend the same sequence rather than replacing it — the player must keep memorising further into the same chain, not start a new one each round.
+- 0 rounds = 0.0 (failed on first sequence without using retry, or used retry and failed again on round 1)
+- 3 rounds ≈ 0.43
+- 7 rounds = 1.0
 
-`generateSequence` is deterministic when given a seeded RNG (used in tests), but in-game always uses `Math.random`, so the sequence is random each trial session.
+### Sequence generation
+
+A master sequence of 8 glyphs is generated once at component mount using a daily-seeded LCG (`seededRng(dailySeed(toISODate()))`). All players see the same sequence on a given calendar day. Each round uses a prefix of this master sequence (`masterSeq.slice(0, currentLength)`), so subsequent rounds extend the same chain — the player memorises further into the same sequence each round.
+
+`generateSequence` is deterministic when given a seeded RNG. The daily seed is derived from the ISO date string by stripping hyphens and parsing the result as an integer (e.g. "2026-06-18" → 20260618).
 
 ### Glyph set
-Six emoji glyphs: 🔥 💧 🌿 ⚡ 🌙 ⭐. All drawn from one set, so repetition within a sequence is possible and intentional.
+
+Six emoji glyphs: 🔥 💧 🌿 ⚡ 🌙 ⭐. Each is mapped to a thematic color (`GLYPH_COLORS`) and a pentatonic tone (`GLYPH_TONES`). Repetition within a sequence is possible and intentional.
 
 ### Sequence lengths across rounds
-| Round | Sequence length |
-|---|---|
-| 1 | 3 |
-| 2 | 4 |
-| 3 | 5 |
-| 4 | 6 |
-| 5 | 7 |
-| 6 | 8 |
 
-### Star thresholds (`trials.ts:106`)
+| Round | Sequence length | Display speed |
+|---|---|---|
+| 1 | 2 | 700 ms/glyph |
+| 2 | 3 | 667 ms/glyph |
+| 3 | 4 | 633 ms/glyph |
+| 4 | 5 | 600 ms/glyph |
+| 5 | 6 | 567 ms/glyph |
+| 6 | 7 | 533 ms/glyph |
+| 7 | 8 | 500 ms/glyph |
+
+Speed is linearly interpolated by `glyphShowMs(round)`. At KN hints, double-flashed positions add one extra step to the schedule (the sequence length itself is unchanged).
+
+### Glyph tones (`GLYPH_TONES` in `ancientLibrary.ts`)
+
+| Glyph | Frequency |
+|---|---|
+| 🔥 | 523 Hz (C5) |
+| 💧 | 587 Hz (D5) |
+| 🌿 | 659 Hz (E5) |
+| ⚡ | 784 Hz (G5) |
+| 🌙 | 880 Hz (A5) |
+| ⭐ | 1047 Hz (C6) |
+
+All tones are pentatonic, so any combination within a sequence is non-dissonant.
+
+### Star thresholds (`trials.ts`)
+
 | Stars | Score range | Rounds needed |
 |---|---|---|
 | ⭐ | < 0.40 | 0–2 |
-| ⭐⭐ | 0.40–0.74 | 3–4 |
-| ⭐⭐⭐ | ≥ 0.75 | 5–6 |
+| ⭐⭐ | 0.40–0.74 | 3–5 |
+| ⭐⭐⭐ | ≥ 0.75 | 6–7 |
 
-### Reward formula (`trials.ts:124`)
+(Thresholds unchanged; the extra round means 3★ now requires 6 or 7 rounds instead of 5 or 6.)
+
+### Reward formula (`trials.ts`)
+
 ```
 multiplier = 0.25 + 0.75 * score
 statXp     = round((20 + 8 * level) * multiplier)
 gold       = round((15 + 5 * level) * multiplier)
 ```
-- Score-0 (fail immediately): 25% of max reward (participation floor)
-- Score-1 (full clear): 100% of max reward
-- Both scale linearly with player level
+
+Unchanged from before. Score-0 still receives 25% of max reward (participation floor).
+
+### Retry system
+
+`retriesLeft` starts at 1. On a wrong tap:
+- If `retriesLeft > 0`: decrement to 0, enter `wrong` phase, then after `WRONG_FLASH_MS` reset `showIndex` and `playerInput` and re-enter `showing` phase for the same round.
+- If `retriesLeft === 0`: enter `wrong` phase, then call `finish(roundsCompleted)`.
+
+The retry indicator is visible during `input` and `wrong` phases. `roundsCompleted` is not incremented when a retry is used, so the score is unaffected by whether the retry was consumed.
+
+### KN stat integration
+
+`knLevel` is read from `useGameStore(s => s.character.statLevels.KN)`. It is passed to `buildShowSchedule(sequenceLength, knLevel, rng)` which returns the show schedule for the current round. Normally the schedule is `[0, 1, 2, …, length-1]`. With KN hints:
+- KN ≥ 5 (`KN_HINT_THRESHOLD`): one position from the back half is chosen at random; a duplicate is inserted immediately after its first occurrence.
+- KN ≥ 10 (`KN_HINT_THRESHOLD_2`): two such positions are double-flashed.
+
+Double-flashed positions play their tone twice and display the glyph twice consecutively. The hint applies only to sequences of length 3 or more. The RNG for picking hint positions uses `Math.random` (not the daily seed), so hint positions vary each session.
 
 ### Timers
-All timers are `setTimeout` chains inside React `useEffect` / `useCallback`. There is no game clock, stamina bar, or pressure-based time limit — the player can deliberate as long as they wish during the input phase.
+
+All timers are `setTimeout` chains inside React `useEffect` / `useCallback`. No game clock or time pressure during input phase.
 
 ### Win / loss conditions
-- **Win:** Complete 6 rounds without error.
-- **Loss:** Any single wrong glyph input, at any point. One-strike rule. No lives system.
 
-### Larger-game stats affecting the minigame
-The trial does **not** consult any character stat during play. Player KN level, gear, and buffs have no effect on the trial's difficulty or rules. The only interaction is reward scaling by `character.level` (higher level → more XP and gold for the same performance).
-
-### Randomization
-The master sequence is generated fresh each session from `Math.random` at component mount. The RNG is not seeded, so runs are not reproducible (except in tests using `seededRng`). No other randomization occurs during play.
-
-### Progression
-No in-run progression (no difficulty ramp, power-ups, or bonuses). The only progression hook is the `bestTrialScore` record in the store, which tracks the personal best and drives the star display on the hub card.
+- **Win:** Complete all seven rounds. Score = 1.0.
+- **Loss:** Wrong glyph input after the retry is exhausted. Score = `roundsCompleted / 7`.
 
 ---
 
@@ -134,54 +194,76 @@ No in-run progression (no difficulty ramp, power-ups, or bonuses). The only prog
 
 | File | Role |
 |---|---|
-| `src/engine/trials/ancientLibrary.ts` | Pure engine: constants, `generateSequence`, `libraryScore` |
-| `src/components/trials/games/AncientLibrary.tsx` | React component: all gameplay UI and state |
+| `src/engine/trials/ancientLibrary.ts` | Pure engine: constants, glyph mappings, `generateSequence`, `libraryScore`, `glyphShowMs`, `buildShowSchedule`, `seededRng`, `dailySeed` |
+| `src/components/trials/games/AncientLibrary.tsx` | React component: all gameplay UI and phase-machine state |
 | `src/engine/trials/trials.ts` | Trial registry, `trialReward`, `scoreToStars`, daily-reset helpers |
-| `src/components/trials/TrialModal.tsx` | Modal shell: intro → playing → result stages |
-| `src/views/TrialsView.tsx` | Skills tab view: trial card grid, opens TrialModal |
+| `src/components/trials/TrialModal.tsx` | Modal shell: intro → playing → result stages; close-confirmation prompt |
+| `src/views/TrialsView.tsx` | Skills tab view: trial card grid, best score %, last-cleared date, opens TrialModal |
+| `src/lib/sfx.ts` | Web Audio synth: `playNote(freq, durationMs)`, `libraryCorrect` cue, `libraryWrong` cue |
 | `src/store/useGameStore.ts` | Zustand store: `trialsClearedOn`, `bestTrialScore`, `completeTrial` action |
-| `src/engine/trials/__tests__/trials.test.ts` | Vitest unit tests for engine functions |
+| `src/engine/trials/__tests__/trials.test.ts` | Vitest unit tests — 149 tests covering engine functions including all new exports |
 
 ### Key functions
 
-**`generateSequence(rng: () => number): Glyph[]`** (`ancientLibrary.ts:13`)
-Produces an 8-element array of glyphs sampled from `GLYPHS` using the supplied RNG. Length = `LIBRARY_START_LENGTH + LIBRARY_MAX_ROUNDS - 1` = 8. Pure function, no side effects.
+**`generateSequence(rng)`** (`ancientLibrary.ts`)
+Produces a master sequence of `LIBRARY_START_LENGTH + LIBRARY_MAX_ROUNDS - 1 = 8` glyphs. Pure function, deterministic given a seeded RNG.
 
-**`libraryScore(roundsCompleted: number): number`** (`ancientLibrary.ts:22`)
-Maps completed rounds to a 0–1 score. Clamped at 1.
+**`libraryScore(roundsCompleted)`** (`ancientLibrary.ts`)
+Maps completed rounds to a 0–1 score (`roundsCompleted / LIBRARY_MAX_ROUNDS`). Clamped at 1.
 
-**`AncientLibrary({ onFinish })`** (`AncientLibrary.tsx:20`)
-The entire minigame lives here. On mount: `masterSeq` generated with `useMemo`. Phase machine:
-- `showing` → driven by `useEffect` + `setTimeout` advancing `showIndex`
-- `input` → `handleGlyphTap` validates each tap immediately
-- `correct` / `wrong` → brief pause, then `finish()` or `startRound(round + 1)`
-- `done` → calls `onFinish` with final score
+**`glyphShowMs(round)`** (`ancientLibrary.ts`)
+Returns display speed in ms for the given 0-based round. Linearly interpolates from `GLYPH_SHOW_MS_BASE` (700) to `GLYPH_SHOW_MS_MIN` (500) across `LIBRARY_MAX_ROUNDS - 1` steps.
 
-**`completeTrial(trialId, score01)`** (`useGameStore.ts:1834`)
-Store action. Guards against double-claiming the same day (unless `repeatMinigames`). Calls `trialReward`, merges reward into state via `applyReward`, then calls `checkLevelUp`.
+**`buildShowSchedule(sequenceLength, knLevel, rng)`** (`ancientLibrary.ts`)
+Returns the ordered index schedule for the show phase. Normally `[0, 1, …, length-1]`. With KN hints, inserts duplicate indices for back-half positions (one at KN ≥ 5, two at KN ≥ 10). Requires sequenceLength ≥ 3 for a hint to be inserted.
+
+**`seededRng(seed)`** (`ancientLibrary.ts`)
+LCG returning a `() => number` function (values in [0, 1)). Used for deterministic daily sequences.
+
+**`dailySeed(isoDate)`** (`ancientLibrary.ts`)
+Converts "YYYY-MM-DD" to a stable integer seed by stripping hyphens: `"2026-06-18"` → `20260618`.
+
+**`playNote(freq, durationMs)`** (`sfx.ts`)
+Plays a sine-wave oscillator at `freq` Hz for `durationMs` ms (default 200). Used by the component to play per-glyph tones during show and input phases.
+
+**`AncientLibrary({ onFinish })`** (`AncientLibrary.tsx`)
+The entire minigame. On mount: `masterSeq` fixed via `useMemo` from daily seed; `showSchedule` recomputed per round via `useMemo` from `buildShowSchedule`. Phase machine:
+- `showing` → driven by `useEffect` + `setTimeout` advancing `showIndex`; tone plays per `showIndex` change
+- `input` → `handleGlyphTap` validates each tap; plays tone and flashes button immediately; handles retry or finish
+- `correct` / `wrong` → brief visual pause with sound, then `finish()` or `startRound(round + 1)`
+- `done` → `onFinish` called with final score
+
+**`completeTrial(trialId, score01)`** (`useGameStore.ts`)
+Store action. Guards double-claiming same day (unless `repeatMinigames`). Calls `trialReward`, applies reward, calls `checkLevelUp`.
 
 ### State management
 
-All gameplay state is local `useState` inside `AncientLibrary.tsx`:
+All gameplay state is local `useState` in `AncientLibrary.tsx`:
+
 ```ts
-masterSeq:       Glyph[]          // fixed at mount
+masterSeq:       Glyph[]          // fixed at mount via useMemo (daily seed)
 round:           number           // 0-based round index
 phase:           Phase            // 'showing' | 'input' | 'wrong' | 'correct' | 'done'
-showIndex:       number           // which glyph is currently being displayed
+showIndex:       number           // position in showSchedule currently displayed
 playerInput:     Glyph[]          // player's entries so far this round
 roundsCompleted: number           // successful rounds (used for score)
+retriesLeft:     number           // 1 at start, set to 0 after first wrong tap
+flashGlyph:      Glyph | null     // set on tap, cleared after TAP_FLASH_MS (150 ms)
+mounted:         RefObject<bool>  // unmount guard; set true on mount, false on unmount
+showSchedule:    number[]         // per-round glyph index order (from buildShowSchedule)
 ```
 
-No game state is written to the Zustand store during play. The store is only written **once**, when the player taps "Claim Reward" in the result stage.
+Store is read once (`knLevel`) and written once (`completeTrial` on claim).
 
 ### Data flow
+
 ```
 TrialsView → opens TrialModal(trialId='ancient_library')
   TrialModal: intro → playing (mounts AncientLibrary)
     AncientLibrary plays; calls onFinish(score01)
   TrialModal: transitions to result stage (local score/stars/reward state)
-  Player taps "Claim Reward"
-    → store.completeTrial('ancient_library', score01)
+  Player taps "Continue" then "Return to Trials"
+    → store.completeTrial('ancient_library', score01) [on first Continue click]
       → trialReward(KN, score01, level) → Reward
       → applyReward(state, reward) → gold + KN XP
       → checkLevelUp(state)
@@ -190,17 +272,31 @@ TrialsView → opens TrialModal(trialId='ancient_library')
 ```
 
 ### Save/load behavior
-`trialsClearedOn` and `bestTrialScore` are persisted in `localStorage` via Zustand's `persist` middleware. They are initialised with `emptyTrialsClearedOn()` / `emptyBestTrialScore()` if not present (introduced in schema version 15). The migration in `useGameStore.ts:2658` back-fills both records from persisted saves that predate v15.
+
+`trialsClearedOn` and `bestTrialScore` are persisted in `localStorage` via Zustand's `persist` middleware. Initialized by `emptyTrialsClearedOn()` / `emptyBestTrialScore()` if not present; back-filled by the migration in `useGameStore.ts` for saves predating schema v15.
 
 ### Configuration
-All tuning constants live in `ancientLibrary.ts`:
+
+All tuning constants are exported from `ancientLibrary.ts`:
+
 ```ts
-GLYPHS             = ['🔥','💧','🌿','⚡','🌙','⭐']  // 6 symbols
-LIBRARY_START_LENGTH = 3    // sequence length in round 1
-LIBRARY_MAX_ROUNDS   = 6    // total rounds (lengths 3–8)
+GLYPHS               = ['🔥','💧','🌿','⚡','🌙','⭐']
+LIBRARY_START_LENGTH = 2      // sequence length in round 1
+LIBRARY_MAX_ROUNDS   = 7      // rounds 1–7, sequence lengths 2–8
+GLYPH_SHOW_MS_BASE   = 700    // ms per glyph in round 1
+GLYPH_SHOW_MS_MIN    = 500    // ms per glyph in the final round
+PRE_INPUT_PAUSE_MS   = 400    // pause after last glyph before input opens
+CORRECT_FLASH_MS     = 800    // duration of correct-phase window
+NEXT_ROUND_DELAY_MS  = 900    // delay from correct flash to next round start
+WRONG_FLASH_MS       = 1000   // duration of wrong-phase window
+TAP_FLASH_MS         = 150    // duration of button tap highlight
+KN_HINT_THRESHOLD    = 5      // KN level for first double-flash hint
+KN_HINT_THRESHOLD_2  = 10     // KN level for second double-flash hint
+GLYPH_TONES          = { per-glyph Hz map }
+GLYPH_COLORS         = { per-glyph hex color map }
 ```
 
-Timing constants are inline in `AncientLibrary.tsx`: `700` ms per glyph, `400` ms pre-input pause, `800` ms correct flash, `900` ms before next round, `1000` ms wrong-flash before finish.
+No gameplay timing or tuning values remain as literals in the component.
 
 ---
 
@@ -209,128 +305,133 @@ Timing constants are inline in `AncientLibrary.tsx`: `700` ms per glyph, `400` m
 | Concern | Solution |
 |---|---|
 | Language | TypeScript |
-| Framework | React 18 (hooks only — `useState`, `useEffect`, `useMemo`, `useCallback`) |
+| Framework | React 18 (hooks only — `useState`, `useEffect`, `useMemo`, `useCallback`, `useRef`) |
 | Build tool | Vite |
 | State management | Zustand with `persist` middleware (localStorage) |
 | Styling | Tailwind CSS with custom design tokens (parchment, gold-deep, gold-bright, ink, wood) |
-| Rendering | DOM / browser canvas is **not** used; the minigame is purely HTML/CSS |
-| Animation | CSS (`animate-pulse` via Tailwind, `transition-opacity`, `active:scale-95`) |
+| Rendering | DOM / HTML only — no canvas |
+| Animation | CSS (`animate-bounce` triggered via `key={showIndex}`, `active:scale-95`, inline style transitions) |
 | Timers | Native `setTimeout` / `clearTimeout` |
-| Physics | None — no movement or physics |
-| Audio | `sfxResume()` from `src/lib/sfx.ts` (Web Audio API unlock); no sounds actually play during the trial |
-| Testing | Vitest |
-| Asset pipeline | No external assets — all visuals are emoji and CSS |
+| Audio | Web Audio API via `src/lib/sfx.ts` — `playNote(freq)` for glyph tones, `sfx.play('libraryCorrect')` / `sfx.play('libraryWrong')` for outcome sounds |
+| Testing | Vitest — 149 tests across engine functions (no component-level tests; React Testing Library not installed) |
+| Assets | None — all visuals are emoji and CSS |
 
 ---
 
 ## 7. Assets and Presentation
 
 ### Visuals
-The minigame is entirely text and CSS — no sprite sheets, canvas drawing, or image files. Visual elements are:
-- **Glyphs:** Six emoji (🔥 💧 🌿 ⚡ 🌙 ⭐) displayed at `text-5xl` (active), `text-2xl` (input tracker), `text-xl` (sequence progress strip), and `text-2xl` (buttons)
-- **Feedback icons:** ✅ (correct), ❌ (wrong), 📚 (done) at `text-4xl`
-- **Parchment theme:** `bg-parchment-100/70`, `border-gold-deep/30`, `border-gold-bright`, `bg-gold-bright/10` — matches the broader Skills tab aesthetic
-- **Pulsing active glyph:** Tailwind `animate-pulse` class during show phase
-- **Button press:** `active:scale-95` with `transition-transform` on glyph buttons
-- **Opacity cascade on progress strip:** current glyph = 100%, past = 30% (replaced by `•`), future = 10%
+
+The minigame is entirely text and CSS. Visual elements:
+
+- **Glyphs:** Six emoji at `text-5xl` (active display, animated with bounce-in), `text-2xl` (input tracker, completed sequence), and `text-2xl` (buttons)
+- **Feedback icons:** ❌ (wrong) and 📚 (done) at `text-4xl`; ✅ replaced by the completed sequence display during the correct phase
+- **Thematic button colors:** Each button has a faint idle tint (`GLYPH_COLORS[g]` at 10% opacity) and a bright tap flash (55% opacity) with a matching border color. Colors are defined in `GLYPH_COLORS` — amber for 🔥, blue for 💧, green for 🌿, yellow for ⚡, purple for 🌙, cream for ⭐
+- **Glyph bounce animation:** `key={showIndex}` on the active glyph `<span>` causes React to remount it on each advance, triggering a 0.25 s single-iteration `animate-bounce`
+- **Parchment theme:** `bg-parchment-100/70`, `border-gold-deep/30`, `font-display` — matches the broader Skills tab aesthetic
+- **Retry indicator:** A `✦` symbol and label that dims (opacity-25) when the retry is consumed
+- **Input progress:** Filled glyphs + `○` placeholders for remaining positions during the input phase
 
 ### Audio
-`sfxResume()` is called when "Begin Trial" is tapped (to ungate Web Audio). However, **Ancient Library plays no sound effects** during gameplay — no glyph sounds, no correct/wrong audio, no round-complete feedback. This is unlike several other trials (Rooftop Chase, etc.) that do use sfx.
+
+All sounds are synthesized via the Web Audio API in `sfx.ts` — no audio files:
+
+- **Per-glyph tone** (`playNote`): ~200 ms sine-wave oscillator at the glyph's pentatonic frequency. Plays on every glyph shown during the show phase, and again on every button tap during input.
+- **`libraryCorrect`**: Two-note ascending chime (659 Hz → 880 Hz, then 880 Hz → 1320 Hz). Plays on successful round completion.
+- **`libraryWrong`**: Short descending triangle oscillator (280 Hz → 130 Hz) plus a low-pass noise burst. Plays on wrong tap.
+
+`sfxResume()` is called when "Begin Trial" is tapped to unlock the AudioContext under browser autoplay policy.
 
 ### Overall style and mood
-Scholarly / arcane. The parchment background palette, gold borders, and bookish glyph set (🌿 🌙 ⭐) reinforce a library-in-a-fantasy-world aesthetic. The typography uses `font-display` for labels. The feel is quiet and contemplative rather than action-driven.
+
+Scholarly / arcane. The parchment background, gold borders, and glyph set (🌿 🌙 ⭐) reinforce a fantasy-library aesthetic. The pentatonic tones give the trial a musical, contemplative feel rather than an action-game one. The experience is quiet but no longer silent.
 
 ---
 
 ## 8. Current Player Experience
 
-### What works
-- **Clarity of rules:** The mechanic is universally understood (Simon-says). The intro description is accurate and brief. No tutorial is needed.
-- **Visual structure:** The round counter, sequence-length indicator, glyph display box, and input progress circles give the player exactly the information they need at each moment.
-- **Correct pacing architecture:** The "show one, wait, next" rhythm with a 400 ms pause before input is a good foundation.
-- **Parchment aesthetic:** The minigame fits visually within the broader Skills tab and the game's fantasy theme.
-- **Reward clarity:** The result screen shows star rating, percentage, and the exact gold/KN XP amount clearly.
+### What works well
 
-### What feels awkward or unfinished
-- **No audio whatsoever:** Memory games rely heavily on sound to aid memorisation (each glyph mapped to a tone). The silence here is conspicuous — every other Simon-style implementation uses audio. The browser AudioContext is even unlocked on entry, then never used.
-- **No animation on button tap during input:** Pressing a correct glyph gives no confirmation feedback — the only feedback is the progress circle filling, which is subtle. There is no glyph highlight, bounce, color change, or sound.
-- **Sequence indicator strip is confusing:** During the show phase, the strip below the display box replaces shown glyphs with `•` dots. This is meant to track progress, but it also reveals the full sequence length (and where you are in it) without showing the actual glyphs — its value is unclear.
-- **No "you got it right" moment per glyph:** Correct taps are silent and unacknowledged beyond the circle. Only a complete sequence triggers the ✅. There is no microfeedback encouraging the player during the input phase.
-- **700 ms display speed is fixed:** Fast players find this boring; new players may find sequences of 7–8 glyphs move too quickly. There is no warm-up to the speed; round 1 and round 6 run at the same pace.
-- **Sequence grows by +1 per round, starting at 3:** This means the first two rounds (lengths 3 and 4) feel easy; the game difficulty spike happens somewhere in rounds 4–6. The early rounds may feel like "waiting for the real game to start."
-- **One-strike elimination:** Harsh for a memory game. Most Simon implementations offer 1–3 lives. This may feel punishing to new players, especially given the lack of audio cues.
+- **Clarity of rules:** The Simon mechanic is universally understood. The intro description is accurate. No tutorial needed.
+- **Audio-visual pairing:** Each glyph has both a color identity and a tone. Players naturally encode "fire = amber button = low tone." This multi-channel encoding aids memorisation significantly over a visual-only experience.
+- **Warm-up round:** The length-2 opener is fast and low-stakes, communicating the mechanic before pressure begins.
+- **Retry fairness:** The single retry absorbs the harshest frustration (mis-tap on an 8-glyph sequence at round 6) without removing challenge. The retry indicator keeps the player informed of its status.
+- **Per-tap immediacy:** Tone + color flash on every tap makes each press feel registered and responsive, removing the anxiety of "did that count?"
+- **Correct-phase review:** Seeing the completed sequence during the 800 ms correct window gives a brief satisfaction moment and a preview of what gets extended next round.
+- **Speed ramp:** The display speed decreasing from 700 ms to 500 ms adds a meaningful pacing element to later rounds without changing the core mechanic.
+- **KN integration:** At high KN levels, the double-flash hint makes the RPG investment feel relevant to the trial itself.
+- **Visual structure:** Round counter, sequence-length indicator, input tracker, and retry indicator give the player all needed context without clutter.
+- **Hub card meta info:** Best score (stars + %) and last-cleared date give players a concrete target when returning the next day.
+- **Close-button safety:** The abandon confirmation prompt prevents accidental run exits on mobile.
+
+### What still feels thin
+
+- **No visual escalation between rounds.** The parchment box, button grid, and status line look and feel identical in round 1 and round 7. There is no building tension — no color shift, no ambient sound change, no animation that signals "you're deep in a run now."
+- **No keyboard input.** Desktop players are mouse-only. Arrow keys, number keys, or letter bindings (e.g. F/W/G/L/M/S for the six glyphs) would make the trial more natural on desktop.
+- **Early rounds still feel easy.** Length 2 at round 1 is very quick. Players with high KN will find the first 3 rounds trivial. There is no adaptive difficulty.
 
 ### Pacing
-The `showing` phase timing is fixed at 700 ms/glyph regardless of round. At round 6, displaying 8 glyphs takes at least 5.6 seconds of passive watching before the player can act. This is a long mandatory wait at the end of a run. Combined with the 400 ms pause after display, the player waits ≥ 6 seconds in silence before having to recall an 8-glyph sequence.
+
+At round 7, displaying 8 glyphs takes 4.0 seconds of passive watching (8 × 500 ms), down from the original 5.6 s fixed pace. The 400 ms pre-input pause adds to this. The reduction is noticeable and makes late rounds feel snappier. KN double-flash adds roughly one glyph-worth of time per hint.
 
 ### Difficulty fairness
-The difficulty is real but well-defined: the sequence grows predictably, the glyph set is fixed, and there are no hidden gotchas. The one-strike rule is strict but consistent. A player who fails round 5 at position 7 of 7 will likely feel frustrated that a single mistake erases all progress. The 25% participation floor in rewards partially offsets this.
+
+The difficulty is well-defined and fair. The sequence grows predictably; the glyph set is fixed and small; the retry acknowledges the one-tap-to-ruin-everything problem; the KN stat provides meaningful passive assistance. A player who fails at round 6 after using their retry will feel the loss was earned rather than arbitrary.
 
 ---
 
 ## 9. Known Issues or Weak Points
 
-1. **No sound effects.** The sfx system is unlocked on entry but never played. This is the most significant missing feature for this game type.
-2. **No per-glyph tap feedback.** Correct taps during input phase are silent and visually minimal. Players have no confirmation they pressed the right glyph until the whole sequence is complete.
-3. **Sequence progress strip is visually confusing.** The `•` substitution during show phase is an obscure pattern that likely reads as noise to players.
-4. **Fixed display speed.** No ramp-up or adjustment across rounds makes early rounds feel slow and late rounds potentially too fast for new players.
-5. **Single-use `Math.random` RNG.** The sequence is generated with `useMemo(() => generateSequence(Math.random), [])`. If the component remounts, a new sequence is generated — but there is no in-game reason for remounting, so this is minor.
-6. **No undo / cancel during input.** Once a glyph is tapped, it cannot be corrected. There is no "clear" button. This is common for Simon games but worth noting as a design constraint.
-7. **No stat relevance.** The player's KN stat level does not affect the game in any way. A level-1 KN character and a maxed KN character play identically. This breaks the thematic loop — the "Knowledge" trial does not reward having Knowledge.
-8. **No sense of escalating drama.** There is no visual or audio escalation between round 1 and round 6. The experience feels uniform rather than building tension.
-9. **Close button discards run silently.** Tapping ✕ mid-run abandons the trial with no confirmation prompt and no partial reward. The daily gate is not consumed, so the player can re-enter, but this may not be obvious.
-10. **Test coverage is minimal.** Tests in `trials.test.ts` cover `generateSequence` and `libraryScore` but nothing about the React component behavior (phase transitions, tap validation, finish callback).
+1. **No component-level test coverage.** The phase machine, retry logic, KN hint integration, and `onFinish` callback path are all exercised only by playing the game. All new engine functions (`glyphShowMs`, `buildShowSchedule`, `seededRng`, `dailySeed`) are tested in `trials.test.ts` (149 tests total), but the React component has no automated tests. Adding them requires React Testing Library, which is not in `package.json`.
+
+2. **Wrong-phase status text edge case.** The status text during the `wrong` phase checks `retriesLeft` after it has already been decremented (when a retry fires, `retriesLeft` is set to 0 before the `wrong` phase renders). The condition `retriesLeft === 0 && roundsCompleted === 0` correctly catches "failed on first round, retry used up," but the plain `retriesLeft === 0` branch also matches the state during a retry (not just a final failure). In practice the displayed text is "Retrying…" either way, but the logic is not maximally clear.
+
+3. **No keyboard input.** Glyph buttons are mouse/touch only. Desktop players have no keyboard alternative.
+
+4. **No visual escalation.** Nothing in the visual presentation changes between round 1 and round 7. The experience is uniform in appearance even as the cognitive challenge grows.
+
+5. **KN hint RNG is not daily-seeded.** The master sequence is reproducible per day, but which glyph positions get double-flashed varies each session (uses `Math.random`). This is a minor inconsistency — a player reloading the page will see different hint positions.
+
+6. **No undo during input.** Once a glyph is tapped, it cannot be corrected short of using the retry. This is standard for Simon games but worth noting as a design constraint.
 
 ---
 
-## 10. Improvement Opportunities
+## 10. Remaining Improvement Opportunities
 
-### Audio
-- Map each of the 6 glyphs to a distinct musical tone (pentatonic scale, e.g.). Play the tone when a glyph lights up during show phase, and again when the player taps during input.
-- Play a short fanfare on round completion, and a fail sound on wrong tap.
-- This single change would transform the experience more than any visual improvement.
+### High value
 
-### Per-tap feedback during input
-- Briefly highlight the tapped button (color flash or scale pop) on each correct tap.
-- This provides immediate microfeedback and reduces uncertainty.
+**Component-level tests (requires React Testing Library)**
+Phase transitions, the retry path, and the `onFinish` callback path are untested at the React layer. A test suite using `vi.useFakeTimers()` to advance `setTimeout` chains would catch regressions in the phase machine. Currently blocked by RTL not being installed.
 
-### Difficulty curve
-- Start at length 2 for the first two rounds, giving a genuine warm-up, then grow to 8 by round 6 or 7.
-- Alternatively: add one "free round" at the start (untimed, any length) that plays but doesn't count toward score, to let the player calibrate.
-- Consider reducing the display interval slightly each round (700 ms → 600 ms by round 6) to add a pacing element without changing the core mechanic.
+**Keyboard input for desktop**
+Map the six glyphs to keyboard keys (e.g. `1–6`, or initials `F W G L M S`). The `handleGlyphTap` function already encapsulates all tap logic — adding a `useEffect` keydown listener that calls it would be a small addition. This would meaningfully improve the desktop experience.
 
-### Lives system
-- Award 1–2 second chances. A single wrong tap ending an 8-glyph run feels harsh.
-- Example: allow one retry per session; using it caps the round score at 2★.
+### Medium value
 
-### KN stat integration
-- At higher KN stat levels, add a "hint" mechanic: one glyph position in the sequence is briefly double-flashed, or the sequence replays 1 extra time, representing the character's trained memory.
-- This would make levelling KN feel meaningful inside the trial itself.
+**Visual escalation across rounds**
+Add some signal that distinguishes early rounds from late rounds — e.g. a subtle border color shift, a glyph display box shadow that deepens each round, or a round-progress fill bar. Currently the visual experience is completely flat across all seven rounds.
 
-### Remove or redesign the sequence progress strip
-- Replace the `•` strip with a simple count ("Showing glyph 3 of 5") or remove it entirely — the display box already communicates the current glyph.
+**Daily-seeded KN hint positions**
+For consistency with the daily-seeded master sequence, the hint positions selected by `buildShowSchedule` could also be derived from a deterministic seed (e.g. `dailySeed(toISODate()) + round`). This would make the entire trial reproducible per day.
 
-### Close-button confirmation
-- Add a brief "Abandon this run?" confirm step if the player taps ✕ during `showing` or `input` phase.
+### Low value / polish
 
-### Code cleanup
-- Extract the `setTimeout` timer delays as named constants alongside the other constants in `ancientLibrary.ts` (e.g. `GLYPH_SHOW_MS = 700`, `PRE_INPUT_PAUSE_MS = 400`).
-- Add component-level tests using a testing library (e.g. Vitest + React Testing Library) for phase transitions and the finish callback path.
+**Animated result stars**
+The `Stars` component in `TrialModal` renders identically for all trials. A brief scale-in animation on display would add a satisfying payoff moment. This is a shared component; any change benefits all eight trials.
+
+**Refined button layout**
+The 3×2 grid places glyphs in fixed positions. There is no design pressure behind which glyph occupies which cell. Arranging them by tone (ascending left-to-right, low-to-high) would reinforce the audio-spatial mapping players build over time.
 
 ---
 
 ## 11. Questions and Unknowns
 
-1. **Were sound effects intentionally omitted or simply not yet added?** The `sfxResume()` call on entry strongly suggests audio was planned. It is unclear whether specific tones were designed but not implemented, or whether audio was deferred entirely.
+1. **Is the one-retry limit the final design?** The current implementation is one retry per session with no score penalty. A cap (e.g. 2★ max if the retry was used) is possible but was not implemented. Whether a penalty should apply is an open design question.
 
-2. **Is the one-strike rule intentional as a permanent design decision, or a placeholder?** The `Last Stand` trial has a similar "miss too many" mechanic (multiple misses tolerated). Consistency across trials in terms of forgiveness would be worth defining.
+2. **Should adaptive difficulty exist?** Players with high KN levels will find early rounds trivial. The double-flash hints are a passive benefit, not a difficulty increase. Whether there is a desire for the trial to self-adjust (e.g. skip early rounds for experienced players, or increase glyph set size at high KN) is undefined.
 
-3. **Should the player's KN stat level affect gameplay at all?** The current design is purely skill-based with no character stat influence. This is a deliberate design choice for some trials (Armory Break, Last Stand) but may be inconsistent with the RPG framing for others.
+3. **Does the daily gate clear at midnight local time or UTC?** `toISODate()` uses the client's local date. Players crossing midnight locally get an early reset; players in certain timezones may notice the gate resets at an unexpected hour. This affects all trials, not just Ancient Library.
 
-4. **What is the intended display speed for high-round sequences?** 700 ms/glyph × 8 glyphs = 5.6 s of watching. Was this timed against playtests, or is it a first-pass value?
+4. **Is a thematic visual upgrade planned?** The parchment/emoji presentation is functional but minimal. A more elaborate presentation (animated runes, scroll motif, glowing sigils) is not on any roadmap but would meaningfully differentiate the trial visually from the other seven.
 
-5. **Is there a planned visual or thematic upgrade?** The parchment/emoji visual is functional but minimal compared to the Rooftop Chase or Lockpicking visuals. Is a more elaborate presentation (animated runes, scroll motif, etc.) part of the roadmap?
-
-6. **Does the daily gate clear at midnight local time or UTC?** The store uses `toISODate()`. If this returns the player's local date, players crossing midnight will get an unexpected reset; if UTC, players in certain timezones may find the gate resets at odd hours.
-
-7. **Is the `generateSequence` RNG source (`Math.random`) final?** Using `Math.random` means sequences cannot be reproduced for debugging, replays, or potential daily-seed features. The engine already supports injecting an RNG; the component just hard-codes `Math.random` at mount.
+5. **Should KN hints also appear during the input phase?** Currently the double-flash only affects the show phase. A hint during input (e.g. briefly pulsing the button of the expected next glyph at high KN levels) would be a stronger benefit — but might trivialise the trial at high levels.

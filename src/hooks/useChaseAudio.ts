@@ -3,11 +3,8 @@
 // Owns all Web Audio interactions for the chase; keeps useChaseLoop and the
 // component purely concerned with timing and rendering respectively.
 //
-// Pattern: mirrors the dust-puff / landing-animation effects in RooftopChase.tsx —
-// `useEffect` with no dependency array fires after every render (= every RAF frame),
-// edge-detects one-frame flags via prevRef sentinels, and fires audio cues.
-//
-// A separate cleanup effect (empty deps) stops the drone on unmount.
+// Pattern: useEffect with no dependency array fires after every render (= every RAF
+// frame). Edge-detection via prevRef sentinels fires one-shot cues on rising edges.
 
 import { useEffect, useRef } from 'react';
 import type { ChaseState } from '@/engine/trials/rooftopChase';
@@ -15,13 +12,12 @@ import { LEAD_MAX } from '@/engine/trials/rooftopChase';
 import * as sfx from '@/lib/sfx';
 
 /**
- * Mount inside the RooftopChase component alongside useChaseLoop.
+ * Mount inside the RooftopChaseRun component alongside useChaseLoop.
  *
  * @param state        Current ChaseState — re-rendered ~60 fps.
  * @param soundEnabled Mirrors settings.soundEnabled; silences all output when false.
  */
 export function useChaseAudio(state: ChaseState, soundEnabled: boolean): void {
-  // Sync sfx muted state whenever the setting changes (not every frame).
   useEffect(() => {
     sfx.setMuted(!soundEnabled);
   }, [soundEnabled]);
@@ -45,10 +41,11 @@ export function useChaseAudio(state: ChaseState, soundEnabled: boolean): void {
   const prevSurged        = useRef(false);
   const prevNearMiss      = useRef(false);
   const prevDone          = useRef(false);
+  const prevJumpedMook    = useRef(false);
+  const prevLedgeCaught   = useRef(false);
 
   // ── Audio effect — runs after every render (no dep array = every frame) ───
   useEffect(() => {
-    // One-shot cues — fire on rising edge of each one-frame flag.
     if (state.justJumped       && !prevJumped.current)       sfx.play('jump');
     if (state.justDoubleJumped && !prevDoubleJumped.current) sfx.play('doubleJump');
     if (state.justLanded       && !prevLanded.current)       sfx.play('land');
@@ -56,14 +53,16 @@ export function useChaseAudio(state: ChaseState, soundEnabled: boolean): void {
     if (state.justDashed       && !prevDashed.current)       sfx.play('dash');
     if (state.justStumbled     && !prevStumbled.current)     sfx.play('stumble');
     if (state.justFell         && !prevFell.current)         sfx.play('fall');
+    if (state.justJumpedMook   && !prevJumpedMook.current)   sfx.play('dodge');
+    if (state.justLedgeCaught  && !prevLedgeCaught.current)  sfx.play('ledgeCatch');
 
-    // Chaser spawns — play the growl and start the tension drone.
+    // Chaser spawns — play growl and start the tension drone.
     if (state.chaserActive && !prevChaserActive.current) {
       sfx.play('growl');
       sfx.startDrone();
     }
 
-    // Surge — beast lunges; deep rumble swell + instant drone spike.
+    // Surge — beast lunges.
     if (state.justSurged && !prevSurged.current) {
       sfx.play('surge');
       sfx.spikeDrone();
@@ -74,9 +73,9 @@ export function useChaseAudio(state: ChaseState, soundEnabled: boolean): void {
       sfx.play('nearMiss');
     }
 
-    // Run complete (reached the target distance without being caught).
+    // Run complete — play the dedicated chase fanfare rather than the generic win cue.
     if (state.done && !prevDone.current && state.score >= 1) {
-      sfx.play('win');
+      sfx.play('chaseWin');
     }
 
     // Stop the drone when the run ends (win, fall, or caught).
@@ -84,13 +83,11 @@ export function useChaseAudio(state: ChaseState, soundEnabled: boolean): void {
       sfx.stopDrone();
     }
 
-    // Drive drone intensity from the lead fraction every frame while chasing.
-    // 0 lead (caught) → intensity 1 (most intense); full lead → intensity 0.
+    // Drive drone intensity from lead fraction every frame while chasing.
     if (state.chaserActive && !state.done) {
       sfx.setDroneIntensity(1 - state.lead / LEAD_MAX);
     }
 
-    // Advance edge-detection sentinels.
     prevJumped.current       = state.justJumped;
     prevDoubleJumped.current = state.justDoubleJumped;
     prevLanded.current       = state.justLanded;
@@ -102,5 +99,7 @@ export function useChaseAudio(state: ChaseState, soundEnabled: boolean): void {
     prevSurged.current       = state.justSurged;
     prevNearMiss.current     = state.justNearMiss;
     prevDone.current         = state.done;
+    prevJumpedMook.current   = state.justJumpedMook;
+    prevLedgeCaught.current  = state.justLedgeCaught;
   }); // intentionally no dep array — must fire every frame
 }

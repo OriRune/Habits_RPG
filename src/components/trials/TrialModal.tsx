@@ -31,7 +31,7 @@ const TRIAL_DESCRIPTIONS: Record<TrialId, string> = {
   armory_break: 'Hold the Charge button to power up the needle, then release it when it enters the golden zone. The needle passes through the zone — release too early or too late and you miss. Three locks of rising difficulty; aim for the centre of the zone for maximum accuracy.',
   long_march: 'Choose your pace for each terrain tile: Rest to recover stamina, Walk for steady progress, or Push for distance at great cost. Running out of stamina ends the march early.',
   spirit_grove: 'Read the omen carefully, then choose the blessing the spirits are truly offering. Each round a different omen appears — your wisdom is what separates the correct blessing from the false ones.',
-  royal_court: 'Navigate the social landscape of court by choosing how you respond to each speaker. The favour meter rises and falls with your choices — read the room and earn the queen\'s respect.',
+  royal_court: 'Navigate the social landscape of court by choosing how you respond to each speaker. The favour meter rises and falls with your choices — read the room and earn the queen\'s respect. Bold responses marked 🎲 are Charisma gambits: you\'ll roll a d20 plus your CH modifier against a Difficulty Class. Succeed and you impress; fail and you stumble.',
   ancient_library: 'A sequence of glyphs will flash before you. After the display, tap them back in the same order. The sequence grows longer with each successful round.',
   last_stand: 'Enemy attacks telegraph their direction — Left, Center, or Right. Tap the matching block button before the attack lands. Miss too many and your endurance fails.',
 };
@@ -52,10 +52,12 @@ function GameComponent({
   trialId,
   onFinish,
   enLevel,
+  chLevel,
 }: {
   trialId: TrialId;
   onFinish: (s: number, history?: CourtChoiceRecord[]) => void;
   enLevel: number;
+  chLevel: number;
 }) {
   switch (trialId) {
     case 'lockpicking':     return <Lockpicking onFinish={onFinish} />;
@@ -63,7 +65,7 @@ function GameComponent({
     case 'armory_break':    return <ArmoryBreak onFinish={onFinish} />;
     case 'long_march':      return <LongMarch enLevel={enLevel} onFinish={onFinish} />;
     case 'spirit_grove':    return <SpiritGrove onFinish={onFinish} />;
-    case 'royal_court':     return <RoyalCourt onFinish={onFinish} />;
+    case 'royal_court':     return <RoyalCourt chLevel={chLevel} onFinish={onFinish} />;
     case 'ancient_library': return <AncientLibrary onFinish={onFinish} />;
     case 'last_stand':      return <LastStand onFinish={onFinish} />;
   }
@@ -75,6 +77,7 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
   const level   = useGameStore((s) => s.character.level);
   const enLevel = useGameStore((s) => s.character.statLevels?.EN ?? 0);
   const dxLevel = useGameStore((s) => s.character.statLevels?.DX ?? 0);
+  const chLevel = useGameStore((s) => s.character.statLevels?.CH ?? 0);
   const bestTrialScore = useGameStore((s) => s.bestTrialScore);
   const completeTrial = useGameStore((s) => s.completeTrial);
 
@@ -172,6 +175,14 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
                     </div>
                   );
                 })()}
+                {trialId === 'royal_court' && (
+                  <div className="rounded border border-amber-600/30 bg-amber-50/20 px-3 py-2 text-xs font-display text-ink-muted">
+                    <span className="font-bold text-amber-700">Charisma Lv.{chLevel}</span>
+                    {chLevel > 0
+                      ? ` — adds +${chLevel} to all 🎲 Charisma gambit rolls.`
+                      : ' — raising CH adds a bonus to Charisma gambit rolls, making bold responses more reliable.'}
+                  </div>
+                )}
                 <div className="flex items-center gap-2 pt-1">
                   <div className="h-2 flex-1 rounded-full border border-gold-deep/20 bg-parchment-300/50" />
                   <span className="text-xs font-display text-ink-muted">Daily free attempt — stat XP + gold reward</span>
@@ -205,7 +216,7 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
 
           {stage === 'playing' && (
             <div className="space-y-4">
-              <GameComponent trialId={trialId} onFinish={handleFinish} enLevel={enLevel} />
+              <GameComponent trialId={trialId} onFinish={handleFinish} enLevel={enLevel} chLevel={chLevel} />
             </div>
           )}
 
@@ -269,6 +280,16 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
                           </span>
                         </div>
                         <p className="text-[11px] text-ink-muted italic leading-snug line-clamp-2">{record.label}</p>
+                        {record.check && (
+                          <p className={`text-[10px] font-display ${record.check.success ? 'text-emerald-700' : 'text-rose-600'}`}>
+                            {record.check.natural === 'crit'
+                              ? '🎲 Natural 20 — Critical Success!'
+                              : record.check.natural === 'fumble'
+                                ? '🎲 Natural 1 — Critical Fumble!'
+                                : `🎲 ${record.check.roll}${record.check.modifier !== 0 ? ` ${record.check.modifier >= 0 ? '+' : '−'} ${Math.abs(record.check.modifier)} = ${record.check.total}` : ` = ${record.check.total}`} vs DC ${record.check.dc} — ${record.check.success ? 'Success' : 'Failed'}`
+                            }
+                          </p>
+                        )}
                       </div>
                     ))}
                   </div>

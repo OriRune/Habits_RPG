@@ -22,6 +22,7 @@ import {
   STOMP_LEAD_GAIN,
   STOMP_CHAIN_BONUS,
   SLIDE_LEAD_GAIN,
+  MOOK_JUMP_LEAD_GAIN,
   DASH_LEAD_GAIN,
   DASH_DURATION_MS,
   DASH_COOLDOWN_MS,
@@ -706,5 +707,81 @@ describe('stepChase — ledge-catch landing', () => {
     const s1 = stepChase(s0, NO_INPUT, DT);
     expect(s1.done).toBe(true);
     expect(s1.justFell).toBe(true);
+  });
+});
+
+// ── chain-stomp integration ────────────────────────────────────────────────────
+
+describe('stepChase — chain-stomp integration', () => {
+  it('stompChain resets to 0 when the hero lands after being airborne', () => {
+    const base = fresh();
+    // Hero is above ground, descending quickly — will land within a few frames.
+    // prevHeroY > heroRoofY signals the engine that the hero was airborne last frame.
+    const s0: ChaseState = {
+      ...base,
+      heroY:      0.2,
+      prevHeroY:  0.5, // clearly airborne the previous frame
+      heroVy:     -12,
+      heroRoofY:  0,
+      stompChain: 3,
+    };
+    let s = s0;
+    let landed = false;
+    for (let i = 0; i < 15; i++) {
+      s = stepChase(s, NO_INPUT, DT);
+      if (s.justLanded) { landed = true; break; }
+    }
+    expect(landed).toBe(true);
+    expect(s.stompChain).toBe(0);
+  });
+
+  it('justSlideClear starts false in initial state', () => {
+    expect(fresh().justSlideClear).toBe(false);
+  });
+
+  it('justJumpedMook starts false in initial state', () => {
+    expect(fresh().justJumpedMook).toBe(false);
+  });
+
+  it('justLedgeCaught starts false in initial state', () => {
+    expect(fresh().justLedgeCaught).toBe(false);
+  });
+
+  it('justSlideClear is cleared on the next frame (one-frame flag)', () => {
+    const withFlag: ChaseState = { ...fresh(), justSlideClear: true };
+    const next = stepChase(withFlag, NO_INPUT, DT);
+    expect(next.justSlideClear).toBe(false);
+  });
+
+  it('justJumpedMook is cleared on the next frame (one-frame flag)', () => {
+    const withFlag: ChaseState = { ...fresh(), justJumpedMook: true };
+    const next = stepChase(withFlag, NO_INPUT, DT);
+    expect(next.justJumpedMook).toBe(false);
+  });
+
+  it('justLedgeCaught is cleared on the next frame (one-frame flag)', () => {
+    const withFlag: ChaseState = { ...fresh(), justLedgeCaught: true };
+    const next = stepChase(withFlag, NO_INPUT, DT);
+    expect(next.justLedgeCaught).toBe(false);
+  });
+
+  it('MOOK_JUMP_LEAD_GAIN is positive', () => {
+    expect(MOOK_JUMP_LEAD_GAIN).toBeGreaterThan(0);
+  });
+
+  it('SLIDE_LEAD_GAIN is at least 5 after Phase 3 rebalance', () => {
+    expect(SLIDE_LEAD_GAIN).toBeGreaterThanOrEqual(5);
+  });
+
+  it('stompFlashMs is 0 in initial state (no active flash)', () => {
+    expect(fresh().stompFlashMs).toBe(0);
+  });
+
+  it('stompFlashMs ticks down toward 0 each frame', () => {
+    const base = fresh();
+    const withFlash: ChaseState = { ...base, stompFlashMs: 500 };
+    const next = stepChase(withFlash, NO_INPUT, DT);
+    expect(next.stompFlashMs).toBeLessThan(500);
+    expect(next.stompFlashMs).toBeGreaterThanOrEqual(0);
   });
 });

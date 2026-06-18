@@ -3,17 +3,15 @@
 // Owns the timing loop; all rules live in the pure engine (rooftopChase.ts).
 // Pattern mirrors useMiningLoop / useArenaLoop: "timing here, rules in engine."
 //
-// Differences from the dungeon loop hooks:
-//   - Trial state is local (never touches the Zustand store mid-run).
-//   - onFinish is called once with the final score; the store is updated by
-//     the parent component via completeTrial(trialId, score).
-//   - Input is edge-triggered (each flag is true for exactly one RAF frame),
-//     matching stepChase's ChaseInput contract.
+// The hook no longer calls onFinish directly — the component watches state.done
+// and decides when to submit (accept score) or restart (try again). This lets
+// the player retry a poor run without navigating back through the modal.
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   initChase,
   stepChase,
+  seededRng,
   type ChaseState,
   type ChaseInput,
 } from '@/engine/trials/rooftopChase';
@@ -25,31 +23,32 @@ export interface ChaseControls {
 }
 
 /**
- * Mount once inside the RooftopChase component.
+ * Mount once inside the RooftopChaseRun component.
  *
  * Returns the current ChaseState (re-renders ~60fps while active) plus
  * imperative control callbacks for the on-screen buttons.
+ * The run stops when state.done — the caller is responsible for submission.
  */
-export function useChaseLoop(onFinish: (score: number) => void): {
+export function useChaseLoop(): {
   state:    ChaseState;
   controls: ChaseControls;
 } {
+  // Seed is fixed at mount time so each run is reproducible if needed.
+  const seed = useRef(Date.now());
+
   // Stable sim ref — updated every frame, never triggers re-renders by itself.
-  const stateRef    = useRef<ChaseState>(initChase(Math.random));
-  // Render state — one setState per frame (vs. ~15 in the old implementation).
+  const stateRef    = useRef<ChaseState>(initChase(seededRng(seed.current)));
+  // Render state — one setState per frame.
   const [renderState, setRenderState] = useState<ChaseState>(() => stateRef.current);
 
   // Edge-triggered input buffer: set by handlers, consumed and cleared each RAF tick.
   const inputRef = useRef<ChaseInput>({ jumpPressed: false, slidePressed: false, dashPressed: false });
 
-  const lastTsRef    = useRef<number | null>(null);
-  const doneRef      = useRef(false);
-  // Keep onFinish stable in the closure — avoids stale captures.
-  const onFinishRef  = useRef(onFinish);
-  onFinishRef.current = onFinish;
+  const lastTsRef = useRef<number | null>(null);
+  const doneRef   = useRef(false);
 
   // ── Input callbacks (exposed to component buttons + keyboard handler) ───────
-  const jump = useCallback(() => { inputRef.current.jumpPressed  = true; }, []);
+  const jump  = useCallback(() => { inputRef.current.jumpPressed  = true; }, []);
   const slide = useCallback(() => { inputRef.current.slidePressed = true; }, []);
   const dash  = useCallback(() => { inputRef.current.dashPressed  = true; }, []);
 
@@ -57,7 +56,6 @@ export function useChaseLoop(onFinish: (score: number) => void): {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       // Ignore OS key auto-repeat — a held key must not count as a second press.
-      // This prevents the double-jump from firing while Space is still held down.
       if (e.repeat) return;
       if (e.code === 'Space' || e.code === 'ArrowUp') {
         e.preventDefault(); jump();
@@ -87,20 +85,13 @@ export function useChaseLoop(onFinish: (score: number) => void): {
       const input: ChaseInput = { ...inputRef.current };
       inputRef.current = { jumpPressed: false, slidePressed: false, dashPressed: false };
 
-      // Advance simulation.
       const newState = stepChase(stateRef.current, input, dtSec);
       stateRef.current = newState;
       setRenderState(newState);
 
       if (newState.done) {
         doneRef.current = true;
-        if (newState.justFell) {
-          // Let the fall animation play before tearing down the component.
-          setTimeout(() => onFinishRef.current(newState.score), 600);
-        } else {
-          onFinishRef.current(newState.score);
-        }
-        return; // do not re-schedule RAF
+        return; // do not re-schedule — component watches state.done and handles submission
       }
 
       raf = requestAnimationFrame(loop);
@@ -108,7 +99,7 @@ export function useChaseLoop(onFinish: (score: number) => void): {
 
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, []); // mount-once; onFinish captured via ref
+  }, []); // mount-once
 
   return {
     state:    renderState,

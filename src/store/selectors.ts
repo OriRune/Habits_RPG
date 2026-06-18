@@ -11,6 +11,8 @@ import {
 import { toISODate } from '@/engine/date';
 import { levelProgress } from '@/engine/leveling';
 import { rankStats } from '@/engine/classes';
+import { deriveCombatant } from '@/engine/combat';
+import { dungeonStamina } from '@/engine/crawl';
 import { type GameState, totalXp } from './useGameStore';
 
 export function selectTotalXp(s: GameState): number {
@@ -59,6 +61,25 @@ export function selectWeekProgress(h: Habit): { done: number; target: number } |
 
 export function selectTopStats(s: GameState): StatId[] {
   return rankStats(s.character.statXp);
+}
+
+/**
+ * Stats that matter in the Deep Mine, derived from base stat levels.
+ * Gear bonuses are excluded — use as a "before gear" lobby preview.
+ */
+export function selectMineStats(s: GameState) {
+  const c = deriveCombatant(
+    s.character.statLevels,
+    s.character.level,
+    s.combatStats,
+  );
+  return {
+    meleePower: c.meleePower,
+    agLevel: s.character.statLevels.AG,
+    defense: c.defense,
+    maxHp: c.maxHp,
+    maxSta: dungeonStamina(s.character.statLevels.EN),
+  };
 }
 
 /** Brief Section 18: warn gently when daily habit load is high. */

@@ -143,7 +143,7 @@ export const MINE_MONSTERS: Record<string, MineMonsterDef> = {
   stone_golem: {
     key: 'stone_golem', name: 'Stone Golem', glyph: '🪨', color: '#8a7a6a',
     floorMin: 7, hp: 50, touchDamage: 15, moveCadenceMs: 850, bounty: [20, 35],
-    defense: 6, resistTo: ['DX'], weakTo: ['ST'],
+    defense: 4, resistTo: ['DX'], weakTo: ['ST'],
     isGuardian: true, guardianFloor: 7,
   },
   cave_spider: {

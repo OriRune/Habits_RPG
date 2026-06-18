@@ -67,6 +67,14 @@ import {
 import { generateFloorMap } from '@/engine/dungeonMap';
 import { type DungeonRun } from '@/engine/dungeonTypes';
 export { type DungeonRun } from '@/engine/dungeonTypes';
+
+/** Lightweight record of a completed run — kept in `dungeonHistory` (last 10). */
+export interface DungeonRunSummary {
+  depth: number;
+  cleared: boolean;
+  defeated: boolean;
+  date: string;
+}
 import {
   type MineState,
   type MineTile,
@@ -131,6 +139,7 @@ import {
   type HexBattleState,
   type SelectedAction as TacticsAction,
   type TacticsSize,
+  type HeroOpts,
   TACTICS_SIZE_RADIUS,
   generateSkirmish,
   selectAction as tacticsSelectFn,
@@ -365,6 +374,8 @@ export interface GameState {
   bossLosses: Record<number, number>;
   /** Deepest dungeon floor ever reached — a persistent record that gates content. */
   deepestFloor: number;
+  /** Last 10 completed Dungeon Delve runs — shown on the entrance screen. */
+  dungeonHistory: DungeonRunSummary[];
   /** Date -> number of habit completions, powers mood + weekly views. */
   completionLog: Record<string, number>;
   lastActiveISO: string;
@@ -564,6 +575,11 @@ export interface GameState {
   tacticsHold: () => void;
   /** Commit the reward and close the skirmish (gold + stat XP on a win, effort trickle either way). */
   endTactics: () => void;
+  /** Co-op: replace local tactics with the host's authoritative state (guests call this on every broadcast). */
+  coopApplyTactics: (state: HexBattleState) => void;
+  /** Co-op host: begin a shared skirmish with a full hero roster. `heroes[0]` is the local (host) hero.
+   *  `seed` seeds the generator so the map layout is reproducible across sessions. */
+  beginTacticsCoop: (opts: { heroes: HeroOpts[]; seed?: number }) => void;
 
   updateSettings: (patch: Partial<GameSettings>) => void;
 
@@ -646,6 +662,8 @@ function applyReward(state: GameState, reward: Reward): void {
 
 /** Bank a finished mine run's haul into the economy, clear the run, and reconcile level. */
 function commitMining(state: GameState, run: MineState): GameState {
+  // Include gold haul in the final score so resource-gathering builds score alongside kills.
+  const finalScore = run.score + (run.haul.gold ?? 0);
   const next: GameState = {
     ...state,
     character: { ...state.character, statXp: { ...state.character.statXp } },
@@ -655,7 +673,7 @@ function commitMining(state: GameState, run: MineState): GameState {
     ownedGear: [...state.ownedGear],
     mining: null,
     deepestMineFloor: Math.max(state.deepestMineFloor, run.deepest),
-    bestMineScore: Math.max(state.bestMineScore, run.score),
+    bestMineScore: Math.max(state.bestMineScore, finalScore),
   };
   // The run's gold/materials, plus a modest Strength/Endurance trickle for the labour.
   const trickle = 4 + 3 * run.deepest;
@@ -670,6 +688,8 @@ function commitMining(state: GameState, run: MineState): GameState {
  */
 function commitMineDeath(state: GameState, run: MineState): GameState {
   const { kept } = splitHaul(run.haul, MINE_DEATH_KEEP);
+  // Include kept gold in the final score even on death (mirrors commitMining).
+  const finalScore = run.score + (kept.gold ?? 0);
   const next: GameState = {
     ...state,
     character: { ...state.character, statXp: { ...state.character.statXp } },
@@ -679,7 +699,7 @@ function commitMineDeath(state: GameState, run: MineState): GameState {
     ownedGear: [...state.ownedGear],
     mining: null,
     deepestMineFloor: Math.max(state.deepestMineFloor, run.deepest),
-    bestMineScore: Math.max(state.bestMineScore, run.score),
+    bestMineScore: Math.max(state.bestMineScore, finalScore),
   };
   // The dig still earns its Strength/Endurance trickle — only the haul is docked.
   const trickle = 4 + 3 * run.deepest;
@@ -821,8 +841,9 @@ function gearBonuses(state: GameState) {
   return aggregateGear(gearFor(state));
 }
 
-/** Build the acting Fighter from current character state (+ optional in-battle buffs). */
-function fighterFor(state: GameState, buffs: Partial<Record<StatId, number>> = {}): Fighter {
+/** Build the acting Fighter from current character state (+ optional in-battle buffs).
+ *  Exported so the co-op hook can compute a HeroOpts snapshot for the local player. */
+export function fighterFor(state: GameState, buffs: Partial<Record<StatId, number>> = {}): Fighter {
   const gear = gearBonuses(state);
   // Fold gear stat bonuses into the buffs map deriveCombatant already understands.
   const merged: Partial<Record<StatId, number>> = { ...buffs };
@@ -1075,6 +1096,7 @@ export const useGameStore = create<GameState>()(
       pendingClassChoice: null,
       bossLosses: {},
       deepestFloor: 0,
+      dungeonHistory: [],
       completionLog: {},
       lastActiveISO: toISODate(),
       settings: freshSettings(),
@@ -1697,6 +1719,12 @@ export const useGameStore = create<GameState>()(
         set((s) => {
           const run = s.dungeon;
           if (!run || run.status !== 'ended') return s;
+          const summary: DungeonRunSummary = {
+            depth: run.depth,
+            cleared: run.cleared,
+            defeated: !run.cleared && run.hp <= 0,
+            date: toISODate(),
+          };
           const next: GameState = {
             ...s,
             character: { ...s.character, statXp: { ...s.character.statXp } },
@@ -1705,6 +1733,7 @@ export const useGameStore = create<GameState>()(
             ownedWeapons: [...s.ownedWeapons],
             ownedGear: [...s.ownedGear],
             dungeon: null,
+            dungeonHistory: [summary, ...(s.dungeonHistory ?? [])].slice(0, 10),
           };
           applyReward(next, run.bankedReward); // gold/materials/items/weapons/gear — no XP
           return next;
@@ -1939,30 +1968,32 @@ export const useGameStore = create<GameState>()(
         set((s) => {
           if (!s.mining || s.mining.status !== 'active') return s;
           const mining = tryMove(s.mining, dir);
-          // Boon cache pickup: walking onto a 'boon' tile triggers the choice panel.
-          if (mining !== s.mining) {
-            const { r, c } = mining.player;
-            if (mining.tiles[r]?.[c]?.kind === 'boon') {
-              const tiles = mining.tiles.map((row) => row.slice());
-              tiles[r][c] = { kind: 'floor' };
-              const choices = rollBoonChoices('mine', mining.activeBoons, mineRng);
-              return {
-                mining: {
-                  ...mining,
-                  tiles,
-                  pendingBoonChoice: choices,
-                  status: 'choosing' as const,
-                },
-              };
-            }
-          }
           return mining !== s.mining ? { mining } : s;
         }),
 
       mineStrike: () =>
-        set((s) =>
-          s.mining && s.mining.status === 'active' ? { mining: strike(s.mining, mineRng) } : s,
-        ),
+        set((s) => {
+          if (!s.mining || s.mining.status !== 'active') return s;
+          const run = s.mining;
+          // Boon cache pickup: pressing Strike while standing on a boon tile opens the choice
+          // panel instead of swinging. This makes pickup intentional, preventing accidental
+          // triggers when sprinting through corridors mid-combat.
+          const { r, c } = run.player;
+          if (run.tiles[r]?.[c]?.kind === 'boon') {
+            const tiles = run.tiles.map((row) => row.slice());
+            tiles[r][c] = { kind: 'floor' };
+            const choices = rollBoonChoices('mine', run.activeBoons, mineRng);
+            return {
+              mining: {
+                ...run,
+                tiles,
+                pendingBoonChoice: choices,
+                status: 'choosing' as const,
+              },
+            };
+          }
+          return { mining: strike(run, mineRng) };
+        }),
 
       mineStrikeCharged: () =>
         set((s) =>
@@ -2475,39 +2506,54 @@ export const useGameStore = create<GameState>()(
       tacticsMove: (to) =>
         set((s) => {
           if (!s.tactics || s.tactics.status !== 'active') return s;
-          const tactics = tacticsMoveFn(s.tactics, to);
+          const tactics = tacticsMoveFn(s.tactics, to, s.tactics.activeHeroId);
           return tactics === s.tactics ? s : { tactics };
         }),
 
       tacticsAttack: (target) =>
         set((s) => {
           if (!s.tactics || s.tactics.status !== 'active') return s;
-          const tactics = tacticsAttackFn(s.tactics, target, Math.random);
+          const tactics = tacticsAttackFn(s.tactics, target, Math.random, s.tactics.activeHeroId);
           return tactics === s.tactics ? s : { tactics };
         }),
 
       tacticsCast: (spellKey, target) =>
         set((s) => {
           if (!s.tactics || s.tactics.status !== 'active') return s;
-          const tactics = tacticsCastFn(s.tactics, spellKey, target, Math.random);
+          const tactics = tacticsCastFn(s.tactics, spellKey, target, Math.random, s.tactics.activeHeroId);
           return tactics === s.tactics ? s : { tactics };
         }),
 
       tacticsEndTurn: () =>
         set((s) => {
           if (!s.tactics || s.tactics.status !== 'active') return s;
-          const tactics = tacticsEndTurnFn(s.tactics, Math.random);
+          const tactics = tacticsEndTurnFn(s.tactics, Math.random, s.tactics.activeHeroId);
           return tactics === s.tactics ? s : { tactics };
         }),
 
       tacticsHold: () =>
         set((s) => {
           if (!s.tactics || s.tactics.status !== 'active') return s;
-          const tactics = tacticsHoldFn(s.tactics, Math.random);
+          const tactics = tacticsHoldFn(s.tactics, Math.random, s.tactics.activeHeroId);
           return tactics === s.tactics ? s : { tactics };
         }),
 
       endTactics: () => set((s) => (s.tactics ? commitTactics(s, s.tactics) : s)),
+
+      coopApplyTactics: (state) =>
+        set(() => ({ tactics: state })),
+
+      beginTacticsCoop: ({ heroes, seed }) =>
+        set((s) => {
+          if (s.tactics) return s; // already in a skirmish
+          const tier = Math.max(TACTICS_UNLOCK_LEVEL, Math.min(MAX_LEVEL, s.character.level));
+          const tactics = generateSkirmish(fighterFor(s), s.character.statLevels.AG, tier, s.knownSpells, {
+            radius: TACTICS_SIZE_RADIUS[s.settings.tacticsSize],
+            rng: seed !== undefined ? mulberry32(seed) : Math.random,
+            heroes,
+          });
+          return { tactics };
+        }),
 
       resetGame: () =>
         set(() => ({
@@ -2541,6 +2587,8 @@ export const useGameStore = create<GameState>()(
           pendingLevelUp: null,
           pendingClassChoice: null,
           bossLosses: {},
+          deepestFloor: 0,
+          dungeonHistory: [],
           completionLog: {},
           lastActiveISO: toISODate(),
           settings: freshSettings(),
@@ -2549,7 +2597,7 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 20,
+      version: 22,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -2592,6 +2640,10 @@ export const useGameStore = create<GameState>()(
       // v20: Tactics Tier 2 — HexBattleState gained `objective`/`turnCount`/`overwatch` and
       //      PlayerUnit gained `overwatch`; active skirmish cleared (tactics → null) so no
       //      run-level migration needed.
+      // v21: Co-op Hex Tactics — HexBattleState gained `players[]`/`activeHeroId`; active
+      //      skirmish cleared (tactics → null) so no run-level migration needed.
+      // v22: Dungeon run history — new `dungeonHistory` array (defaults to []); `deepestFloor`
+      //      now also reset on character wipe (no migration needed — existing deepestFloor kept).
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {
@@ -2619,7 +2671,7 @@ export const useGameStore = create<GameState>()(
               statXpAtLastLevel: p.character.statXpAtLastLevel ?? { ...(p.character.statXp ?? emptyStatXP()) },
             }
           : p.character;
-        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, arena: null, tactics: null, created: true, trialsClearedOn: p.trialsClearedOn ?? emptyTrialsClearedOn(), bestTrialScore: p.bestTrialScore ?? emptyBestTrialScore() } as GameState;
+        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, arena: null, tactics: null, created: true, trialsClearedOn: p.trialsClearedOn ?? emptyTrialsClearedOn(), bestTrialScore: p.bestTrialScore ?? emptyBestTrialScore(), dungeonHistory: p.dungeonHistory ?? [] } as GameState;
       },
       // Deep-merge the nested `character`/`settings` objects so fields added in later versions
       // (e.g. statLevels) always fall back to their defaults instead of being dropped by the

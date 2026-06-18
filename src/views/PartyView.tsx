@@ -3,7 +3,7 @@ import { Copy, Check, Crown, LogOut, UserX, Circle } from 'lucide-react';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
-import { Pickaxe, Trees } from 'lucide-react';
+import { Pickaxe, Trees, Swords } from 'lucide-react';
 import { useAuthStore } from '@/net/auth';
 import { getLeaderboard, type LeaderboardRow } from '@/net/party';
 import { partyActions, usePartyStore } from '@/hooks/useParty';
@@ -116,28 +116,31 @@ function CoopRaidPanel() {
   // A live session someone else started that I haven't joined yet.
   const canJoin = session && session.status === 'active' && session.host_id !== myId && !joined;
   const hostName = session ? members.find((m) => m.user_id === session.host_id)?.username : null;
-  const gameLabel = session?.game === 'forest' ? 'Wild Forest' : 'Deep Mine';
-  const GameIcon = session?.game === 'forest' ? Trees : Pickaxe;
+  const gameLabel =
+    session?.game === 'forest' ? 'Wild Forest' : session?.game === 'tactics' ? 'Hex Tactics' : 'Deep Mine';
+  const GameIcon = session?.game === 'forest' ? Trees : session?.game === 'tactics' ? Swords : Pickaxe;
 
   return (
     <Panel tone="parchment" className="space-y-3 p-4">
       <SectionTitle>Co-op Raid</SectionTitle>
       {joined ? (
         <p className="text-center text-xs italic text-ink-muted">
-          You're in a {gameLabel} raid — the run window is open.
+          {session?.game === 'tactics'
+            ? "You're in a Hex Tactics co-op — the battle window is open."
+            : `You're in a ${gameLabel} raid — the run window is open.`}
         </p>
       ) : canJoin ? (
         <div className="space-y-2">
           <p className="text-sm text-ink">
-            <span className="font-bold text-gold-deep">{hostName ?? 'A member'}</span> is raiding the{' '}
-            {gameLabel}.
+            <span className="font-bold text-gold-deep">{hostName ?? 'A member'}</span>
+            {session?.game === 'tactics' ? ` is starting a ${gameLabel} skirmish.` : ` is raiding the ${gameLabel}.`}
           </p>
           <Button
             className="flex w-full items-center justify-center gap-2"
             disabled={busy}
             onClick={() => session && joinCoop(session)}
           >
-            <GameIcon size={16} /> Join the raid
+            <GameIcon size={16} /> {session?.game === 'tactics' ? 'Join the skirmish' : 'Join the raid'}
           </Button>
         </div>
       ) : (
@@ -145,7 +148,7 @@ function CoopRaidPanel() {
           <p className="text-xs text-ink-muted">
             Start a shared run — everyone dives the same map together in real time.
           </p>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             <Button
               className="flex items-center justify-center gap-2"
               disabled={busy}
@@ -167,6 +170,17 @@ function CoopRaidPanel() {
               }}
             >
               <Trees size={16} /> Wild Forest
+            </Button>
+            <Button
+              className="flex items-center justify-center gap-2"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                await startCoop(party.id, 'tactics');
+                setBusy(false);
+              }}
+            >
+              <Swords size={16} /> Hex Tactics
             </Button>
           </div>
         </>

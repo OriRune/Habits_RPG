@@ -626,13 +626,20 @@ export function selectAction(state: HexBattleState, action: SelectedAction): Hex
   return s;
 }
 
-/** Move the player to a reachable tile. Costs movement but never the action. */
-export function movePlayer(state: HexBattleState, to: Hex): HexBattleState {
+/** Move the player to a reachable tile. Costs movement but never the action.
+ *  `heroId` is optional and identifies the acting hero in a co-op session. Omitted → s.player. */
+export function movePlayer(state: HexBattleState, to: Hex, heroId?: string): HexBattleState {
   if (state.turn !== 'player' || state.status !== 'active') return state;
-  const costs = reachableCosts(state, state.player.hex, state.player.movesLeft, climbFor(state.player.ag));
+  const hero = heroId ? (state.players?.find((p) => p.id === heroId) ?? state.player) : state.player;
+  const costs = reachableCosts(state, hero.hex, hero.movesLeft, climbFor(hero.ag));
   const dest = costs.get(hexKey(to));
   if (!dest) return state; // illegal move — ignore
   const s = clone(state);
+  // Re-anchor s.player to the acting hero when heroId differs from activeHeroId.
+  if (heroId && heroId !== s.activeHeroId) {
+    const found = s.players?.find((p) => p.id === heroId);
+    if (found) { s.activeHeroId = heroId; s.player = found; }
+  }
   s.player.hex = { ...to };
   s.player.movesLeft -= dest.cost;
   s.selected = { kind: 'move' };
@@ -677,11 +684,18 @@ function resolvePlayerStrike(s: HexBattleState, hero: PlayerUnit, enemy: EnemyUn
   s.log.push(`${hitterName} ${hitVerb} ${enemy.name} for ${dealt}${tag}${hz}${full ? '' : ' (exhausted)'}${enemy.guardBonus > 0 ? ' (guarding)' : ''}.`);
 }
 
-/** Resolve the player's weapon attack against a targeted enemy. */
-export function playerAttack(state: HexBattleState, target: Hex, rng: RNG = Math.random): HexBattleState {
-  if (state.turn !== 'player' || state.status !== 'active' || state.player.hasActed) return state;
+/** Resolve the player's weapon attack against a targeted enemy.
+ *  `heroId` is optional and identifies the acting hero in a co-op session. Omitted → s.player. */
+export function playerAttack(state: HexBattleState, target: Hex, rng: RNG = Math.random, heroId?: string): HexBattleState {
+  const heroToCheck = heroId ? (state.players?.find((p) => p.id === heroId) ?? state.player) : state.player;
+  if (state.turn !== 'player' || state.status !== 'active' || heroToCheck.hasActed) return state;
   if (!computeTargetable(state, { kind: 'attack' }).some((h) => hexEquals(h, target))) return state;
   const s = clone(state);
+  // Re-anchor s.player to the acting hero when heroId differs from activeHeroId.
+  if (heroId && heroId !== s.activeHeroId) {
+    const found = s.players?.find((p) => p.id === heroId);
+    if (found) { s.activeHeroId = heroId; s.player = found; }
+  }
   const enemy = enemyAt(s, target)!;
   resolvePlayerStrike(s, s.player, enemy, rng);
   s.player.hasActed = true;

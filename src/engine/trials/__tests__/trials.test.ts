@@ -3,6 +3,8 @@ import { trialReward, scoreToStars, TRIALS, TRIALS_UNLOCK_LEVEL, emptyTrialsClea
 import {
   generateAttacks,
   lastStandScore,
+  reactionSpeed,
+  reactionRating,
   blockWindowForWave,
   seededRng as lastStandRng,
   TOTAL_WAVES,
@@ -11,6 +13,8 @@ import {
   SPAWN_AHEAD_MS,
   WAVE_INTERVAL_MS,
   DIRECTIONS,
+  REACTION_PERFECT,
+  REACTION_GOOD,
 } from '../lastStand';
 import {
   lockpickingScore,
@@ -915,19 +919,83 @@ describe('lastStand / blockWindowForWave', () => {
   });
 });
 
-describe('lastStand / lastStandScore', () => {
-  it('all blocked = 1', () => expect(lastStandScore(16, 16)).toBe(1));
-  it('none blocked = 0', () => expect(lastStandScore(0, 16)).toBe(0));
-  it('half blocked = 0.5', () => expect(lastStandScore(8, 16)).toBeCloseTo(0.5, 5));
-  it('zero resolved = 0 (no divide-by-zero)', () => expect(lastStandScore(0, 0)).toBe(0));
-  it('clamps above 1', () => expect(lastStandScore(20, 16)).toBe(1));
+describe('lastStand / reactionSpeed', () => {
+  // landMs = 1400; SPAWN_AHEAD_MS = 1400 → spawn at ms 0
+  const land = SPAWN_AHEAD_MS; // 1400
 
-  it('uses resolved count as denominator, not total attacks', () => {
-    // Player died early: 4 blocked out of 8 resolved (8 attacks were never played).
-    expect(lastStandScore(4, 8)).toBeCloseTo(0.5, 5);
+  it('blocked at spawn → 1.0', () => {
+    expect(reactionSpeed(land, 0)).toBeCloseTo(1, 5);
   });
 
-  it('same ratio produces same score regardless of scale', () => {
-    expect(lastStandScore(6, 8)).toBeCloseTo(lastStandScore(12, 16), 5);
+  it('blocked at landing → 0.0', () => {
+    expect(reactionSpeed(land, land)).toBeCloseTo(0, 5);
+  });
+
+  it('blocked at midpoint → 0.5', () => {
+    expect(reactionSpeed(land, land / 2)).toBeCloseTo(0.5, 5);
+  });
+
+  it('clamps to 0 if blocked past landing', () => {
+    expect(reactionSpeed(land, land + 100)).toBe(0);
+  });
+
+  it('clamps to 1 if block time before spawn (negative margin would exceed SPAWN_AHEAD_MS)', () => {
+    expect(reactionSpeed(land, -100)).toBe(1);
+  });
+});
+
+describe('lastStand / reactionRating', () => {
+  it('speed >= REACTION_PERFECT → "perfect"', () => {
+    expect(reactionRating(REACTION_PERFECT)).toBe('perfect');
+    expect(reactionRating(1.0)).toBe('perfect');
+  });
+
+  it('speed >= REACTION_GOOD but < REACTION_PERFECT → "good"', () => {
+    expect(reactionRating(REACTION_GOOD)).toBe('good');
+    expect(reactionRating(REACTION_PERFECT - 0.01)).toBe('good');
+  });
+
+  it('speed < REACTION_GOOD → "late"', () => {
+    expect(reactionRating(0)).toBe('late');
+    expect(reactionRating(REACTION_GOOD - 0.01)).toBe('late');
+  });
+});
+
+describe('lastStand / lastStandScore', () => {
+  it('zero resolved → 0 (no divide-by-zero)', () => expect(lastStandScore([], 0)).toBe(0));
+  it('no blocks but attacks resolved → 0', () => expect(lastStandScore([], 16)).toBe(0));
+
+  it('all blocked at spawn → 1', () => {
+    // 16 attacks all blocked with speed 1.0; sum = 16; resolved = 16 → 1.
+    const speeds = Array(16).fill(1);
+    expect(lastStandScore(speeds, 16)).toBe(1);
+  });
+
+  it('all blocked at landing → 0', () => {
+    const speeds = Array(16).fill(0);
+    expect(lastStandScore(speeds, 16)).toBe(0);
+  });
+
+  it('mixed speeds average correctly', () => {
+    // 8 blocks at speed 1.0, 8 misses (contribute 0 via denominator).
+    // Expected: 8 * 1 / 16 = 0.5
+    const speeds = Array(8).fill(1);
+    expect(lastStandScore(speeds, 16)).toBeCloseTo(0.5, 5);
+  });
+
+  it('misses lower the score even when everything blocked is fast', () => {
+    // 4 fast blocks out of 8 resolved — same as half-blocked at full speed.
+    expect(lastStandScore(Array(4).fill(1), 8)).toBeCloseTo(0.5, 5);
+  });
+
+  it('uses resolved count as denominator so dying early does not penalise unplayed attacks', () => {
+    // Died early with 4 perfect blocks out of 8 resolved (8 attacks never played).
+    // Score should be 0.5, not 0.25.
+    expect(lastStandScore(Array(4).fill(1), 8)).toBeCloseTo(0.5, 5);
+  });
+
+  it('clamps above 1', () => {
+    // Floating-point edge: sum of speeds slightly above resolved count.
+    expect(lastStandScore(Array(16).fill(1.1), 16)).toBe(1);
   });
 });

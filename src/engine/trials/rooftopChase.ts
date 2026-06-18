@@ -84,7 +84,16 @@ export const STOMP_CHAIN_BONUS = 2;
 export const DASH_LEAD_GAIN = 16;
 
 /** Lead gained from successfully sliding under a lowbar banner (clean slide). */
-export const SLIDE_LEAD_GAIN = 1;
+export const SLIDE_LEAD_GAIN = 5;
+
+/** Lead gained when jumping cleanly over a mook without stomping. */
+export const MOOK_JUMP_LEAD_GAIN = 3;
+
+/** Distance (wu) beyond which chaser surges inflict a small real lead drain. */
+export const SURGE_REAL_DRAIN_START = 400;
+
+/** Lead drained by each surge that fires beyond SURGE_REAL_DRAIN_START. */
+export const SURGE_REAL_DRAIN = 3;
 
 // ── Drama constants ────────────────────────────────────────────────────────────
 
@@ -153,6 +162,21 @@ export const OBSTACLE_HEIGHT = 4;
 
 /** Mook head detection: hero must be descending and within this Y band above mook top. */
 export const STOMP_WINDOW = 2.5;
+
+// ── Seeded RNG ─────────────────────────────────────────────────────────────────
+
+/**
+ * Simple LCG seeded pseudo-random number generator.
+ * Returns a deterministic sequence of values in [0, 1) for a given seed.
+ * Exported so callers can produce reproducible courses (e.g. for debugging).
+ */
+export function seededRng(seed: number): () => number {
+  let s = seed;
+  return () => {
+    s = (s * 1664525 + 1013904223) & 0xffffffff;
+    return (s >>> 0) / 0x100000000;
+  };
+}
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -255,9 +279,10 @@ export function generateCourse(rng: () => number, count = BUILDING_COUNT): Build
     // Building width: varies 10–28 wu
     const buildingWidth = 10 + rng() * 18;
 
-    // Props: 65% chance of one prop per roof
+    // Props: density ramps from 50% early to 80% late so the second half feels harder.
+    const propChance = i < 10 ? 0.50 : i < 20 ? 0.65 : 0.80;
     const props: RoofProp[] = [];
-    if (rng() > 0.35 && buildingWidth >= 8) {
+    if (rng() < propChance && buildingWidth >= 8) {
       const propR = rng();
       let kind: PropKind;
       let propWidth: number;
@@ -497,30 +522,28 @@ export function resolveContact(
   prop: RoofProp,
   roofY: number,
 ): 'clear' | 'stumble' | 'stomp' {
-  // Grounded = hero's feet at or below this roof surface
   const grounded = heroY <= roofY + 0.05;
 
-  if (prop.kind === 'mook') {
-    // Stomp: descending (vy < 0), airborne, feet within stomp window above mook top
-    const mookTop = roofY + OBSTACLE_HEIGHT;
-    if (!grounded && heroVy < 0 && heroY > roofY && heroY <= mookTop + STOMP_WINDOW) {
-      return 'stomp';
+  switch (prop.kind) {
+    case 'mook': {
+      // Stomp: descending, airborne, within the stomp detection window above mook top.
+      const mookTop = roofY + OBSTACLE_HEIGHT;
+      if (!grounded && heroVy < 0 && heroY > roofY && heroY <= mookTop + STOMP_WINDOW) {
+        return 'stomp';
+      }
+      return grounded ? 'stumble' : 'clear';
     }
-    return grounded ? 'stumble' : 'clear';
+    case 'hazard':
+      return grounded ? 'stumble' : 'clear';
+    case 'lowbar':
+      return sliding ? 'clear' : 'stumble';
+    default: {
+      // TypeScript exhaustiveness guard — adding a new PropKind without a case here is a compile error.
+      const _exhaustive: never = prop.kind;
+      void _exhaustive;
+      return grounded ? 'stumble' : 'clear';
+    }
   }
-
-  if (prop.kind === 'hazard') {
-    // Must be airborne to clear
-    return grounded ? 'stumble' : 'clear';
-  }
-
-  // 'lowbar': a hanging banner at head height — must slide under it.
-  // Jumping into it or running into it both stumble.
-  if (prop.kind === 'lowbar') {
-    return sliding ? 'clear' : 'stumble';
-  }
-
-  return grounded ? 'stumble' : 'clear';
 }
 
 // ── Score ──────────────────────────────────────────────────────────────────────
@@ -648,6 +671,12 @@ export interface ChaseState {
   justJumped: boolean;
   /** True on the step the hero performed a double-jump (midair second jump). */
   justDoubleJumped: boolean;
+  /** True on the step the hero caught a ledge (lip-catch landing rather than clean landing). */
+  justLedgeCaught: boolean;
+  /** True on the step the hero jumped cleanly over a mook without stomping (airborne clear). */
+  justJumpedMook: boolean;
+  /** True on the step the hero successfully slid under a lowbar banner. */
+  justSlideClear: boolean;
 
   // ── Terminal ───────────────────────────────────────────────────────────────
   done: boolean;
@@ -690,6 +719,9 @@ export function initChase(rng: () => number): ChaseState {
     justFell: false,
     justJumped: false,
     justDoubleJumped: false,
+    justLedgeCaught: false,
+    justJumpedMook: false,
+    justSlideClear: false,
     done: false,
     score: 0,
   };
@@ -817,6 +849,9 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
       justDashed,
       justJumped,
       justDoubleJumped,
+      justLedgeCaught: false,
+      justJumpedMook: false,
+      justSlideClear: false,
       justFell: true,
       done: true,
       score: chaseScore(newDist),
@@ -824,9 +859,10 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
   }
 
   // ── 7. Land on roof surface ─────────────────────────────────────────────────
-  let newY       = rawY;
-  let finalVy    = newVy;
-  let justLanded = false;
+  let newY           = rawY;
+  let finalVy        = newVy;
+  let justLanded     = false;
+  let justLedgeCaught = false;
 
   // Land when: (a) normally supported (≥25% overlap), or (b) ledge-catch (leading edge
   // on next roof while descending within LEDGE_CATCH_TOL). Both paths set landingRoof.
@@ -835,6 +871,7 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
     if (wasAbove) {
       justLanded = true;
       jumpsUsed  = 0;
+      if (lipCatch) justLedgeCaught = true;
     }
     newY    = currentRoofY;
     finalVy = 0;
@@ -850,7 +887,8 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
   let leadEvent: 'stumble' | 'stomp' | 'dash' | undefined;
   let justStomped    = false;
   let justStumbled   = false;
-  let clearedLowbar  = false;
+  let justSlideClear = false;
+  let justJumpedMook = false;
   let finalHeroVy    = finalVy;
   let finalJumpsUsed = jumpsUsed;
   let newStumbleMs   = stumbleMs;
@@ -883,15 +921,18 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
       finalJumpsUsed = 0;
       justStomped    = true;
       stompedPropId  = foundPropId;
-      stompFlashMs   = 500;
+      // Chain stomps get a longer flash so the chain counter is readable.
+      stompFlashMs   = 500 + 150 * state.stompChain;
       if (!leadEvent) leadEvent = 'stomp';
     } else if (result === 'stumble') {
       newStumbleMs = STUMBLE_MS;
       justStumbled = true;
       if (!leadEvent) leadEvent = 'stumble';
     } else if (result === 'clear' && foundPropData.prop.kind === 'lowbar' && activeSlideFinal) {
-      // Clean slide under a banner — award the small participation reward.
-      clearedLowbar = true;
+      justSlideClear = true;
+    } else if (result === 'clear' && foundPropData.prop.kind === 'mook') {
+      // Hero jumped cleanly over the guard without stomping.
+      justJumpedMook = true;
     }
   } else if (!foundPropData) {
     activeContactId = null;
@@ -908,9 +949,14 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
     newLead = Math.min(LEAD_MAX, newLead + chainBonus);
   }
 
-  // Clean slide reward: a tiny lead tick for navigating a banner skillfully.
-  if (clearedLowbar && chaserActive) {
+  // Clean slide reward.
+  if (justSlideClear && chaserActive) {
     newLead = Math.min(LEAD_MAX, newLead + SLIDE_LEAD_GAIN);
+  }
+
+  // Mook jump-clear reward: smaller than a stomp, but meaningful.
+  if (justJumpedMook && chaserActive) {
+    newLead = Math.min(LEAD_MAX, newLead + MOOK_JUMP_LEAD_GAIN);
   }
 
   // Advance stomp chain counter: resets on landing, increments on stomp.
@@ -937,6 +983,10 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
       newSurgeMs     = SURGE_DURATION_MS;
       newNextSurgeAt = newNextSurgeAt + SURGE_INTERVAL_WU;
       justSurged     = true;
+      // Late-game surges inflict a small real lead drain — keeps drama impactful for experienced players.
+      if (newDist >= SURGE_REAL_DRAIN_START) {
+        newLead = Math.max(0, newLead - SURGE_REAL_DRAIN);
+      }
     }
   }
 
@@ -998,6 +1048,9 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
     justDashed,
     justJumped,
     justDoubleJumped,
+    justLedgeCaught,
+    justJumpedMook,
+    justSlideClear,
     justFell:       false,
     done,
     score:          chaseScore(newDist),

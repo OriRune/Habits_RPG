@@ -509,6 +509,19 @@ body {
   from { transform: translateX(0); }
   to   { transform: translateX(-50%); }
 }
+/* Chaser pounce — plays when the hero is caught */
+@keyframes rooftop-pounce {
+  0%   { transform: translateX(0)    translateY(0)    scale(1)    rotate(0deg); }
+  35%  { transform: translateX(8px)  translateY(-14px) scale(1.25) rotate(-10deg); }
+  65%  { transform: translateX(20px) translateY(4px)   scale(1.35) rotate(8deg); }
+  100% { transform: translateX(20px) translateY(0px)   scale(1.25) rotate(5deg); }
+}
+/* Slide streak — faint horizontal smear emitted while sliding */
+@keyframes rooftop-slide-streak {
+  0%   { opacity: 0;    transform: scaleX(0.2); }
+  20%  { opacity: 0.65; transform: scaleX(1); }
+  100% { opacity: 0;    transform: scaleX(1) translateX(-28px); }
+}
 @media (prefers-reduced-motion: reduce) {
   [class*="rooftop-"] { animation: none !important; }
 }

@@ -14,6 +14,10 @@ const HEIGHTS = { sm: 'h-20', md: 'h-28', lg: 'h-40' };
 /**
  * Illustrates a dungeon event. Renders a real image once registered for the key,
  * otherwise a themed placeholder banner (big glyph + tint + caption).
+ *
+ * When a `--biome-tint` CSS variable is set on an ancestor (e.g. the dungeon
+ * container), a semi-transparent overlay blends the biome's palette colour into
+ * the scene background so each region reads as visually distinct.
  */
 export function SceneArt({ sceneKey, caption, size = 'md', className }: SceneArtProps) {
   const look = getScene(sceneKey);
@@ -22,10 +26,13 @@ export function SceneArt({ sceneKey, caption, size = 'md', className }: SceneArt
   const src = resolveSceneImage(sceneKey) ?? scenePlaceholderImage(look, cap);
 
   return (
-    <img
-      src={src}
-      alt={cap}
-      className={cn('w-full rounded-md border-2 border-gold-deep/60 object-cover', HEIGHTS[size], className)}
-    />
+    <div className={cn('relative overflow-hidden rounded-md border-2 border-gold-deep/60', HEIGHTS[size], className)}>
+      <img src={src} alt={cap} className="h-full w-full object-cover" />
+      {/* Biome tint overlay — reads --biome-tint from ancestor; transparent when unset */}
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{ backgroundColor: 'var(--biome-tint, transparent)', opacity: 0.22 }}
+      />
+    </div>
   );
 }

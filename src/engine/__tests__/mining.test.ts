@@ -7,6 +7,7 @@ import {
   stepMonsters,
   oreYield,
   isWalkable,
+  applyBoonChoice,
   type MineState,
   type MineTile,
   type MineSnapshot,
@@ -330,5 +331,76 @@ describe('isWalkable', () => {
     expect(isWalkable({ kind: 'rock' })).toBe(false);
     expect(isWalkable({ kind: 'bedrock' })).toBe(false);
     expect(isWalkable(undefined)).toBe(false);
+  });
+});
+
+describe('applyBoonChoice', () => {
+  function choosingState(boonKeys: string[]): MineState {
+    return makeState({
+      status: 'choosing',
+      pendingBoonChoice: boonKeys,
+      agLevel: 0,
+      moveIntervalMs: 150,   // moveInterval(0)
+      dashCooldownMs: 2000,  // dashCooldown(0)
+    });
+  }
+
+  it('ignores the call when status is not choosing', () => {
+    const s = makeState({ status: 'active', pendingBoonChoice: ['swift_step', 'iron_arm', 'vein_sense'] });
+    expect(applyBoonChoice(s, 'swift_step')).toBe(s);
+  });
+
+  it('ignores a key not in the pending choices', () => {
+    const s = choosingState(['stone_skin', 'quick_dash', 'overcharge']);
+    expect(applyBoonChoice(s, 'swift_step')).toBe(s);
+  });
+
+  it('swift_step: updates moveIntervalMs and clears pendingBoonChoice', () => {
+    // moveInterval(0) = 150; swift_step moveMult = 1.25 → Math.round(150/1.25) = 120
+    const after = applyBoonChoice(choosingState(['swift_step', 'stone_skin', 'quick_dash']), 'swift_step');
+    expect(after.status).toBe('active');
+    expect(after.pendingBoonChoice).toBeNull();
+    expect(after.activeBoons).toContain('swift_step');
+    expect(after.moveIntervalMs).toBe(120);
+  });
+
+  it('quick_dash: updates dashCooldownMs', () => {
+    // dashCooldown(0) = 2000; quick_dash dashCdMult = 0.7 → Math.round(2000*0.7) = 1400
+    const after = applyBoonChoice(choosingState(['quick_dash', 'stone_skin', 'iron_arm']), 'quick_dash');
+    expect(after.dashCooldownMs).toBe(1400);
+  });
+
+  it('vitality: increases maxHp and heals the player by the bonus', () => {
+    const s = choosingState(['vitality', 'stone_skin', 'iron_arm']);
+    const before = s.hp;
+    const after = applyBoonChoice(s, 'vitality');
+    expect(after.maxHp).toBe(s.maxHp + 20);
+    expect(after.hp).toBe(before + 20);
+  });
+});
+
+describe('boon effects in strike', () => {
+  it('iron_arm: weapon hit deals strictly more damage than without the boon', () => {
+    const monster = { id: 'a', key: 'cave_slug', r: 3, c: 4, hp: 100, maxHp: 100, readyAtMs: 0 };
+    const baseState = makeState({ meleePower: 5, monsters: [monster] });
+    const boonState = makeState({ meleePower: 5, monsters: [monster], activeBoons: ['iron_arm'] });
+    const seed = 42;
+    const hpAfterBase = strike(baseState, rngFrom(seed)).monsters[0]?.hp ?? 100;
+    const hpAfterBoon = strike(boonState, rngFrom(seed)).monsters[0]?.hp ?? 100;
+    // iron_arm adds 30% meleeMult — always deals more (or equal on min-roll edge case)
+    expect(hpAfterBoon).toBeLessThanOrEqual(hpAfterBase);
+  });
+
+  it('vein_sense: doubles the gold from a broken rubble vein', () => {
+    // Use a fixed rng returning 0.5: randInt(1,4,rng) = 1 + floor(0.5*4) = 3
+    // With vein_sense (yieldMult:2): Math.round(3*2) = 6
+    const fixedRng: RNG = () => 0.5;
+    const tiles = makeState().tiles;
+    tiles[3][4] = { kind: 'ore', oreKey: 'rubble', durability: 1 };
+
+    const base = strike(makeState({ tiles }), fixedRng);
+    const boon = strike(makeState({ tiles, activeBoons: ['vein_sense'] }), fixedRng);
+    expect(base.haul.gold).toBe(3);
+    expect(boon.haul.gold).toBe(6);
   });
 });

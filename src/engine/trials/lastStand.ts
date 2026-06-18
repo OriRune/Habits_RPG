@@ -29,6 +29,33 @@ export interface Attack {
   /** ms from run start when the attack lands. */
   landMs: number;
   result: 'blocked' | 'hit' | null;
+  /** ms from run start when the player blocked (only set when result === 'blocked'). */
+  blockedAtMs?: number;
+}
+
+// ── Reaction-speed scoring ─────────────────────────────────────────────────────
+
+/**
+ * Reaction speed factor (0..1) for a blocked attack.
+ * 1.0 = blocked the instant it appeared (landMs − SPAWN_AHEAD_MS).
+ * 0.0 = blocked exactly at landing (landMs).
+ */
+export function reactionSpeed(landMs: number, blockMs: number): number {
+  const margin = landMs - blockMs;
+  return Math.max(0, Math.min(1, margin / SPAWN_AHEAD_MS));
+}
+
+/** Speed threshold for "Perfect!" label — reacted within first third of the window. */
+export const REACTION_PERFECT = 0.66;
+/** Speed threshold for "Good" label — reacted within second third. Below → "Late". */
+export const REACTION_GOOD = 0.33;
+export type ReactionRating = 'perfect' | 'good' | 'late';
+
+/** Map a reaction speed factor to a display rating. */
+export function reactionRating(speed: number): ReactionRating {
+  if (speed >= REACTION_PERFECT) return 'perfect';
+  if (speed >= REACTION_GOOD) return 'good';
+  return 'late';
 }
 
 /**
@@ -77,11 +104,14 @@ export function blockWindowForWave(wave: number): number {
 }
 
 /**
- * Final score: fraction of resolved attacks that were blocked.
+ * Final score: mean reaction-speed factor across all resolved attacks.
+ * `blockSpeeds` contains a speed value (0..1) for each blocked attack;
+ * missed attacks contribute 0 implicitly via the `resolved` denominator.
  * Uses resolved count as denominator so dying early doesn't penalise future
  * unplayed attacks — only what the player actually faced is counted.
  */
-export function lastStandScore(blocked: number, resolved: number): number {
+export function lastStandScore(blockSpeeds: number[], resolved: number): number {
   if (resolved === 0) return 0;
-  return Math.min(1, blocked / resolved);
+  const sum = blockSpeeds.reduce((a, b) => a + b, 0);
+  return Math.min(1, sum / resolved);
 }

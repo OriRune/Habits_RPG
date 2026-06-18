@@ -21,6 +21,7 @@ const ALL_CLASSES = Array.from(
 export function CharacterView() {
   const character = useGameStore((s) => s.character);
   const codex = useGameStore((s) => s.codex);
+  const deepestFloor = useGameStore((s) => s.deepestFloor);
   const deepestMineFloor = useGameStore((s) => s.deepestMineFloor);
   const bestMineScore = useGameStore((s) => s.bestMineScore);
   const deepestForestStage = useGameStore((s) => s.deepestForestStage);
@@ -28,7 +29,7 @@ export function CharacterView() {
   const deepestArenaTier = useGameStore((s) => s.deepestArenaTier);
   const deepestTacticsTier = useGameStore((s) => s.deepestTacticsTier);
 
-  const hasAnyRecord = deepestMineFloor > 0 || deepestForestStage > 0 || deepestArenaTier > 0 || deepestTacticsTier > 0;
+  const hasAnyRecord = deepestFloor > 0 || deepestMineFloor > 0 || deepestForestStage > 0 || deepestArenaTier > 0 || deepestTacticsTier > 0;
 
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
@@ -68,6 +69,12 @@ export function CharacterView() {
             <SectionTitle className="flex-1">Records</SectionTitle>
           </div>
           <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+            {deepestFloor > 0 && (
+              <>
+                <span className="text-ink-muted">Dungeon Delve</span>
+                <span className="text-right font-display font-bold text-ink">Floor {deepestFloor}</span>
+              </>
+            )}
             {deepestMineFloor > 0 && (
               <>
                 <span className="text-ink-muted">Deep Mine</span>

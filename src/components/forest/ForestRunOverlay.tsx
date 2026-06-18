@@ -416,6 +416,55 @@ export function ForestRunOverlay() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [forest?.stage]);
 
+  // Adaptive tension drone — starts when the overlay mounts, stops on unmount.
+  useEffect(() => {
+    sfx.startDrone();
+    return () => sfx.stopDrone();
+  }, []);
+
+  // Drive drone intensity from visible, awake predators.
+  useEffect(() => {
+    if (!forest || forest.status !== 'active') { sfx.setDroneIntensity(0); return; }
+    const now = Date.now();
+    const sight = sightRadiusFor(forest);
+    const nearby = forest.beasts.filter((b) => {
+      if (b.asleep || FOREST_BEASTS[b.key]?.flees) return false;
+      return Math.abs(b.r - forest.player.r) + Math.abs(b.c - forest.player.c) <= sight + 1;
+    });
+    const windupActive = nearby.some((b) => b.windupUntilMs && b.windupUntilMs > now);
+    sfx.setDroneIntensity(Math.min(1, nearby.length * 0.28 + (windupActive ? 0.45 : 0)));
+  }); // runs every render — fast enough via forest state changes
+
+  // Charge bar DOM update — runs every rAF frame without triggering React re-renders.
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const p = controls.chargeProgressRef.current;
+      const el = chargeBarRef.current;
+      if (!el) return;
+      el.style.width = `${Math.round(p * 100)}%`;
+      el.style.opacity = p > 0.04 ? '1' : '0';
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Guardian arrival announcement — fires once when the new stage has a guardian.
+  useEffect(() => {
+    if (!forest) return;
+    if (
+      prevGuardianStageRef.current !== null &&
+      prevGuardianStageRef.current !== forest.stage &&
+      forest.beasts.some((b) => FOREST_BEASTS[b.key]?.isGuardian)
+    ) {
+      setGuardianAlert(Date.now());
+      shake(8, 450);
+      sfx.play('arenaBossPhase');
+    }
+    prevGuardianStageRef.current = forest.stage;
+  }, [forest?.stage]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (!forest) return null;
 
   const band = bandForStage(forest.stage);
@@ -495,6 +544,21 @@ export function ForestRunOverlay() {
           {forest.maxMp > 0 && (
             <Gauge icon={<Sparkles className="h-3.5 w-3.5 text-violet-400" />} value={forest.mp} max={forest.maxMp} fill="#7c3aed" />
           )}
+          {/* Charge bar — filled while holding Space; updated imperatively via rAF */}
+          <div className="flex items-center gap-1.5">
+            <span className="h-3.5 w-3.5" />
+            <div className="h-1.5 w-24 overflow-hidden rounded-full border border-amber-600/40 bg-wood-900">
+              <div ref={chargeBarRef} style={{ height: '100%', borderRadius: 9999, backgroundColor: '#fbbf24', width: '0%', opacity: 0 }} />
+            </div>
+            <span className="font-display text-[10px] text-amber-400/70">charge</span>
+          </div>
+          {/* Act context hint */}
+          {forest.status === 'active' && (() => {
+            const hint = ACT_HINTS[pendingActKind(forest)];
+            return hint
+              ? <span className="font-display text-[10px]" style={{ color: hint.color }}>{hint.text}</span>
+              : null;
+          })()}
         </div>
       </div>
 
@@ -623,7 +687,9 @@ export function ForestRunOverlay() {
                   boxShadow: node
                     ? `inset 0 0 0 1px rgba(0,0,0,0.3), inset 0 0 8px ${node.color}77`
                     : shrine
-                    ? `inset 0 0 0 2px rgba(255,210,80,0.7), inset 0 0 12px rgba(255,190,40,0.4)`
+                    ? SHRINE_KIND_BORDER[shrine.kind]
+                    : tile.kind === 'treeline'
+                    ? `inset 0 0 0 2px rgba(72,202,140,0.55), inset 0 0 16px rgba(72,202,140,0.28)`
                     : isTree
                     ? 'inset 0 0 0 2px rgba(110,170,70,0.5)'
                     : 'inset 0 0 0 1px rgba(0,0,0,0.28)',
@@ -662,14 +728,14 @@ export function ForestRunOverlay() {
                       style={{
                         fontSize: CELL * 0.52,
                         lineHeight: 1,
-                        filter: 'drop-shadow(0 0 6px rgba(255,200,60,0.9))',
+                        filter: SHRINE_KIND_GLOW[shrine.kind],
                         animation: 'forest-shaft-pulse 3s ease-in-out infinite',
                       }}
                     >
                       {shrine.glyph}
                     </span>
                   ) : tile.kind === 'treeline' ? (
-                    <Trees className="h-6 w-6 text-emerald-300" style={{ filter: 'drop-shadow(0 0 4px rgba(72,202,140,0.7))' }} />
+                    <Trees className="h-6 w-6 text-emerald-300" style={{ filter: 'drop-shadow(0 0 7px rgba(72,202,140,0.95))', animation: 'forest-shaft-pulse 2s ease-in-out infinite' }} />
                   ) : tile.kind === 'entrance' ? (
                     <span className="text-[16px] text-gold-bright">◇</span>
                   ) : tile.kind === 'boon' ? (
@@ -890,9 +956,15 @@ export function ForestRunOverlay() {
               <span className="text-[22px] leading-none" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.85))' }}>
                 {def?.glyph ?? '?'}
               </span>
-              {!b.asleep && b.hp < b.maxHp && (
-                <div className="absolute -top-1.5 left-0 right-0 h-[3px] overflow-hidden rounded-full bg-black/60">
-                  <div className="h-full rounded-full bg-red-400" style={{ width: `${(b.hp / b.maxHp) * 100}%` }} />
+              {!b.asleep && (b.hp < b.maxHp || !!FOREST_BEASTS[b.key]?.isGuardian) && (
+                <div className={cn(
+                  'absolute left-0 right-0 overflow-hidden rounded-full bg-black/60',
+                  FOREST_BEASTS[b.key]?.isGuardian ? '-top-3 h-[5px]' : '-top-1.5 h-[3px]',
+                )}>
+                  <div
+                    className={cn('h-full rounded-full', FOREST_BEASTS[b.key]?.isGuardian ? 'bg-amber-400' : 'bg-red-400')}
+                    style={{ width: `${(b.hp / b.maxHp) * 100}%` }}
+                  />
                 </div>
               )}
             </div>
@@ -1045,7 +1117,7 @@ export function ForestRunOverlay() {
           <div className="pointer-events-auto absolute inset-0 z-40 flex flex-col items-center justify-center gap-4 rounded-md bg-black/85 p-4">
             <p className="font-display text-lg font-bold text-gold-bright">Choose a Boon</p>
             <div className="flex gap-3">
-              {forest.pendingBoonChoice.map((key) => {
+              {forest.pendingBoonChoice.map((key, i) => {
                 const boon = BOONS[key];
                 if (!boon) return null;
                 return (
@@ -1053,6 +1125,7 @@ export function ForestRunOverlay() {
                     key={key}
                     onClick={() => chooseForestBoon(key)}
                     className="flex flex-col items-center gap-1.5 rounded-md border border-gold-deep/60 bg-parchment-300/20 p-3 text-center hover:bg-parchment-300/40 transition-colors w-28"
+                    style={{ animation: `boon-deal-in 0.22s ease-out ${i * 75}ms both` }}
                   >
                     <span className="text-3xl leading-none">{boon.icon}</span>
                     <span className="font-display text-sm font-bold text-gold-bright">{boon.name}</span>
@@ -1064,6 +1137,23 @@ export function ForestRunOverlay() {
           </div>
         )}
 
+        {/* Guardian arrival alert — brief red flash + banner on descent into a guardian stage */}
+        {guardianAlert > 0 && (
+          <div key={guardianAlert} className="pointer-events-none absolute inset-0 z-[58]"
+            style={{ backgroundColor: 'rgba(200,60,20,0.30)', animation: 'forest-guardian-alert 1.8s ease-out forwards' }}
+          />
+        )}
+        {guardianAlert > 0 && (
+          <div key={`ga-${guardianAlert}`}
+            className="pointer-events-none absolute inset-x-0 top-8 z-[59] flex justify-center"
+            style={{ animation: 'boon-deal-in 0.28s ease-out both' }}
+          >
+            <span className="rounded-md border border-amber-600/60 bg-amber-900/90 px-3 py-1 font-display text-xs font-bold text-amber-300">
+              ⚔ A guardian prowls this depth
+            </span>
+          </div>
+        )}
+
         {/* Banking summary (voluntary leave) */}
         {forest.status === 'banking' && (
           <div className="pointer-events-auto absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 rounded-md bg-black/80 p-4 text-center">
@@ -1072,6 +1162,9 @@ export function ForestRunOverlay() {
             <p className="font-display text-sm text-parchment-300">
               {forest.deepest > 1 ? `Reached Depth ${forest.deepest}` : 'Depth 1 explored'}
             </p>
+            {forest.score > 0 && (
+              <p className="font-display text-xs text-gold-bright">Score {forest.score.toLocaleString()}</p>
+            )}
             <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs">
               <HaulChips reward={forest.haul} empty="nothing gathered" />
             </div>
@@ -1087,6 +1180,9 @@ export function ForestRunOverlay() {
             <Skull className="h-9 w-9 text-ember-bright" />
             <p className="font-display text-lg font-bold text-parchment-100">Overcome by the Wild</p>
             <p className="font-display text-xs text-parchment-300">Felled at Depth {forest.deepest}</p>
+            {forest.score > 0 && (
+              <p className="font-display text-xs text-gold-bright">Score {forest.score.toLocaleString()}</p>
+            )}
             <div className="space-y-1.5">
               <div>
                 <div className="font-display text-[10px] uppercase tracking-wider text-parchment-300/70">Carried home</div>

@@ -42,6 +42,12 @@ export type SfxCue =
   | 'surge'
   | 'nearMiss'
   | 'win'
+  /** Light sidestep whoosh — hero jumped cleanly over a guard. */
+  | 'dodge'
+  /** Short bright tap — hero catches the roof lip at the last moment. */
+  | 'ledgeCatch'
+  /** Triumphant multi-note fanfare with sustain — hero escaped. */
+  | 'chaseWin'
   // ── Hex Tactics (combat) ──────────────────────────
   /** Short melee weapon swing. */
   | 'swing'
@@ -112,7 +118,18 @@ export type SfxCue =
   /** Satisfying cylinder click — lock opens. */
   | 'lockClick'
   /** Sharp metallic snap — pick breaks under sustained torque. */
-  | 'lockSnap';
+  | 'lockSnap'
+  // ── Deep Mine ─────────────────────────────────────────────────────────
+  /** Dull thud + dust noise — pick breaks through a rock tile. */
+  | 'mineRockBreak'
+  /** Brighter crack + mineral tinkle — an ore vein shatters. */
+  | 'mineOreBreak'
+  /** Ascending magic shimmer — boon cache opens. */
+  | 'mineBoonOpen'
+  /** Whoosh + low rumble — player descends to the next floor. */
+  | 'mineDescent'
+  /** Deep impact thud + ominous resonant ping — guardian is on this floor. */
+  | 'mineGuardianAlert';
 
 // ── Module-level singletons ────────────────────────────────────────────────────
 
@@ -128,8 +145,17 @@ let _droneFilter: BiquadFilterNode | null = null;
 let _droneGain: GainNode | null = null;
 let _droneActive = false;
 
+// Mine ambient loop state
+let _ambGain: GainNode | null = null;
+let _ambNodes: (OscillatorNode | AudioBufferSourceNode)[] = [];
+let _ambBandId: string | null = null;
+
 // Master output gain level (not to be confused with mute).
 const MASTER_GAIN = 0.35;
+// Ambient loop gain (lower than drone — it's background texture, not tension)
+const AMB_GAIN = 0.13;
+// Cross-fade duration in seconds
+const AMB_FADE_S = 1.5;
 
 // ── Lazy context initialisation ────────────────────────────────────────────────
 
@@ -233,6 +259,68 @@ function _noise(
   gain.connect(_masterGain!);
   src.start(t);
   src.stop(t + dur + 0.06);
+}
+
+// ── Ambient synthesis ──────────────────────────────────────────────────────────
+
+/**
+ * Build looping ambient nodes for the given mine band, connected to `dest`.
+ * Returns every node created so they can be stopped later.
+ *   rocky  — damp cave: low rumble + drip resonance
+ *   frozen — cold wind: high-freq hiss + low moan oscillator
+ *   magma  — lava core: sub-bass rumble + crackle + sawtooth harmonic
+ */
+function _buildAmbient(
+  ctx: AudioContext,
+  bandId: string,
+  dest: AudioNode,
+): (OscillatorNode | AudioBufferSourceNode)[] {
+  const nodes: (OscillatorNode | AudioBufferSourceNode)[] = [];
+
+  function loopNoise(filtFreq: number, filtType: BiquadFilterType, Q: number, gain: number): void {
+    const src = ctx.createBufferSource();
+    src.buffer = _noiseBuffer!;
+    src.loop = true;
+    const filt = ctx.createBiquadFilter();
+    filt.type = filtType;
+    filt.frequency.value = filtFreq;
+    filt.Q.value = Q;
+    const g = ctx.createGain();
+    g.gain.value = gain;
+    src.connect(filt);
+    filt.connect(g);
+    g.connect(dest);
+    src.start();
+    nodes.push(src);
+  }
+
+  function loopOsc(type: OscillatorType, freq: number, gain: number): void {
+    const osc = ctx.createOscillator();
+    osc.type = type;
+    osc.frequency.value = freq;
+    const g = ctx.createGain();
+    g.gain.value = gain;
+    osc.connect(g);
+    g.connect(dest);
+    osc.start();
+    nodes.push(osc);
+  }
+
+  if (bandId === 'frozen') {
+    loopNoise(3000, 'highpass', 0.4, 0.38); // icy wind hiss
+    loopNoise(520,  'bandpass', 1.1, 0.22); // cave resonance
+    loopOsc('sine', 68, 0.15);              // low wind moan
+  } else if (bandId === 'magma') {
+    loopNoise(85,  'lowpass',  0.6, 0.72); // sub-bass rumble
+    loopNoise(480, 'bandpass', 1.5, 0.28); // crackle / bubble
+    loopOsc('sawtooth', 40, 0.10);         // harmonic grind
+  } else {
+    // rocky (default)
+    loopNoise(260, 'lowpass',  0.8, 0.55); // damp cave echo
+    loopNoise(1100,'bandpass', 9.0, 0.16); // drip resonance
+  }
+
+  return nodes;
 }
 
 // ── Cue definitions ────────────────────────────────────────────────────────────
@@ -378,6 +466,56 @@ const _CUES: Record<SfxCue, (ctx: AudioContext) => void> = {
       gain.connect(_masterGain!);
       osc.start(t0);
       osc.stop(t0 + 0.34);
+    });
+  },
+
+  /** Light sidestep whoosh — hero jumped cleanly over a guard without stomping. */
+  dodge(ctx) {
+    _noise(ctx, 500, 2800, 0.11, 0.16, 'bandpass', 3.0);
+    _osc(ctx, 'sine', 380, 620, 0.09, 0.12, 0.006);
+  },
+
+  /** Short bright tap — hero catches the ledge lip at the last moment. */
+  ledgeCatch(ctx) {
+    _osc(ctx, 'triangle', 520, 280, 0.14, 0.28, 0.004);
+    _noise(ctx, 900, 300, 0.10, 0.14, 'bandpass', 1.5);
+  },
+
+  /**
+   * Triumphant chase-win fanfare — five ascending notes then a held chord.
+   * More elaborate than the generic 'win' to mark a full 600 wu escape.
+   */
+  chaseWin(ctx) {
+    const t = ctx.currentTime;
+    // Rising run: C E G C' E'
+    [262, 330, 392, 523, 659].forEach((freq, i) => {
+      const t0 = t + i * 0.10;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.linearRampToValueAtTime(0.32, t0 + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.26);
+      osc.connect(gain);
+      gain.connect(_masterGain!);
+      osc.start(t0);
+      osc.stop(t0 + 0.32);
+    });
+    // Held C-major chord that swells and fades over 1.2 s.
+    [[262, 0.20], [330, 0.16], [392, 0.14], [523, 0.12]].forEach(([freq, peak]) => {
+      const t0 = t + 5 * 0.10;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.linearRampToValueAtTime(peak, t0 + 0.06);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.20);
+      osc.connect(gain);
+      gain.connect(_masterGain!);
+      osc.start(t0);
+      osc.stop(t0 + 1.30);
     });
   },
 
@@ -705,6 +843,57 @@ const _CUES: Record<SfxCue, (ctx: AudioContext) => void> = {
     _osc(ctx, 'square', 520, 110, 0.07, 0.48, 0.002);
     _noise(ctx, 2600, 420, 0.06, 0.28, 'bandpass', 2.6);
   },
+
+  // ── Deep Mine ─────────────────────────────────────────────────────────────
+
+  /** Dull pick-crack + settling dust — rock tile cleared. */
+  mineRockBreak(ctx) {
+    _osc(ctx, 'triangle', 120, 42, 0.22, 0.38, 0.004);
+    _noise(ctx, 350, 80, 0.18, 0.18, 'bandpass', 1.0);
+  },
+
+  /** Sharper crack + mineral tinkle — ore vein shatters and yields loot. */
+  mineOreBreak(ctx) {
+    _osc(ctx, 'triangle', 200, 70, 0.18, 0.32, 0.004);
+    _noise(ctx, 600, 150, 0.12, 0.16, 'bandpass', 1.8);
+    _osc(ctx, 'sine', 1200, 700, 0.14, 0.10, 0.006);
+  },
+
+  /** Ascending three-note shimmer + high sparkle — boon cache opens. */
+  mineBoonOpen(ctx) {
+    const t = ctx.currentTime;
+    [523, 784, 1047].forEach((freq, i) => {
+      const t0 = t + i * 0.06;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t0);
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.linearRampToValueAtTime(0.14 - i * 0.03, t0 + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.40);
+      osc.connect(gain);
+      gain.connect(_masterGain!);
+      osc.start(t0);
+      osc.stop(t0 + 0.46);
+    });
+    _noise(ctx, 2800, 5000, 0.20, 0.06, 'highpass', 1.8);
+  },
+
+  /** Whoosh + low rumble — shaft descent to the next floor. */
+  mineDescent(ctx) {
+    _noise(ctx, 2200, 100, 0.55, 0.24, 'lowpass', 0.6);
+    _osc(ctx, 'sawtooth', 80, 36, 0.52, 0.16, 0.025);
+    _osc(ctx, 'sine', 160, 52, 0.44, 0.10, 0.030);
+  },
+
+  mineGuardianAlert(ctx) {
+    // Deep sub-bass impact thud
+    _noise(ctx, 60, 30, 0.80, 0.40, 'lowpass', 1.2);
+    // Ominous low sawtooth growl
+    _osc(ctx, 'sawtooth', 48, 38, 0.55, 0.65, 0.030);
+    // Resonant metallic warning ping
+    _osc(ctx, 'triangle', 340, 170, 0.42, 0.70, 0.006);
+  },
 };
 
 // ── Public API ─────────────────────────────────────────────────────────────────
@@ -846,4 +1035,62 @@ export function spikeDrone(): void {
   // Instant burst to near-max, then allow setDroneIntensity to smooth back.
   _droneGain.gain.setTargetAtTime(0.14, t, 0.03);
   _droneFilter.frequency.setTargetAtTime(1100, t, 0.03);
+}
+
+/**
+ * Start (or cross-fade to) the biome ambient for the Deep Mine.
+ * `bandId` is 'rocky' | 'frozen' | 'magma'.
+ * No-ops when the requested band is already playing.
+ * Safe to call before the AudioContext is resumed — nodes are created and will
+ * begin emitting audio once the context is resumed by a user gesture.
+ */
+export function startMineAmbient(bandId: string): void {
+  if (bandId === _ambBandId) return;
+  const ctx = getCtx();
+
+  // Fade out and schedule teardown of the current ambient.
+  if (_ambGain && _ctx) {
+    const t = _ctx.currentTime;
+    const oldGain = _ambGain;
+    const oldNodes = [..._ambNodes];
+    oldGain.gain.cancelScheduledValues(t);
+    oldGain.gain.setValueAtTime(oldGain.gain.value, t);
+    oldGain.gain.linearRampToValueAtTime(0.0001, t + AMB_FADE_S);
+    _ambNodes = [];
+    setTimeout(() => {
+      for (const n of oldNodes) { try { n.stop(); } catch { /* already stopped */ } }
+      oldGain.disconnect();
+    }, (AMB_FADE_S + 0.25) * 1000);
+  }
+
+  _ambBandId = bandId;
+  const ag = ctx.createGain();
+  ag.gain.value = 0.0001;
+  ag.connect(_masterGain!);
+  _ambGain = ag;
+  _ambNodes = _buildAmbient(ctx, bandId, ag);
+
+  const t = ctx.currentTime;
+  ag.gain.linearRampToValueAtTime(_muted ? 0.0001 : AMB_GAIN, t + AMB_FADE_S);
+}
+
+/**
+ * Fade out and stop the mine ambient.
+ * Safe to call when no ambient is running.
+ */
+export function stopMineAmbient(): void {
+  if (!_ambGain || !_ctx) return;
+  const t = _ctx.currentTime;
+  const oldGain = _ambGain;
+  const oldNodes = [..._ambNodes];
+  oldGain.gain.cancelScheduledValues(t);
+  oldGain.gain.setValueAtTime(oldGain.gain.value, t);
+  oldGain.gain.linearRampToValueAtTime(0.0001, t + AMB_FADE_S);
+  _ambNodes = [];
+  _ambGain = null;
+  _ambBandId = null;
+  setTimeout(() => {
+    for (const n of oldNodes) { try { n.stop(); } catch { /* already stopped */ } }
+    oldGain.disconnect();
+  }, (AMB_FADE_S + 0.25) * 1000);
 }

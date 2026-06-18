@@ -62,15 +62,19 @@ export function setJoined(joined: boolean): void {
   if (!joined) useCoopStore.setState({ remotePlayers: {} });
 }
 
-/** Begin the local run for a co-op game from the shared seed. */
+/** Begin the local run for a co-op game from the shared seed.
+ *  Tactics is a no-op here — the host awaits HeroJoin before building the board. */
 function beginRun(game: CoopGame, seed: number): void {
   if (game === 'forest') useGameStore.getState().beginForest(seed);
-  else useGameStore.getState().beginMining(seed);
+  else if (game === 'mine') useGameStore.getState().beginMining(seed);
+  // 'tactics': board is built after HeroJoin (see useTacticsCoopSession).
 }
 
-/** Human label for a co-op game ("Deep Mine" / "Wild Forest"). */
+/** Human label for a co-op game. */
 export function coopGameName(game: CoopGame): string {
-  return game === 'forest' ? 'Wild Forest' : 'Deep Mine';
+  if (game === 'forest') return 'Wild Forest';
+  if (game === 'tactics') return 'Hex Tactics';
+  return 'Deep Mine';
 }
 
 /** Host a co-op run (mine or forest): create the session with a fresh seed and enter locally. */

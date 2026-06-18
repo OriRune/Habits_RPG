@@ -1,6 +1,8 @@
 import { Pickaxe, Zap } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { MINE_ENERGY_COST } from '@/engine/mining';
+import { selectMineStats } from '@/store/selectors';
+import * as sfx from '@/lib/sfx';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
@@ -21,6 +23,7 @@ export function MiningView() {
   const deepestMineFloor = useGameStore((s) => s.deepestMineFloor);
   const bestMineScore = useGameStore((s) => s.bestMineScore);
   const beginMining = useGameStore((s) => s.beginMining);
+  const mineStats = useGameStore(selectMineStats);
 
   const canEnter = energy >= MINE_ENERGY_COST;
 
@@ -70,7 +73,29 @@ export function MiningView() {
           <div className="text-[11px] text-ink-muted">{milestoneHint(deepestMineFloor)}</div>
         </div>
 
-        <Button onClick={() => beginMining()} disabled={!canEnter} className="w-full py-2.5">
+        <div className="rounded-md border border-gold-deep/30 bg-parchment-300/40 p-3 text-sm space-y-1.5">
+          <div className="font-display text-xs uppercase tracking-wide text-ink-muted mb-1">Your mining profile</div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="text-ink-muted">Strike power</span>
+              <span className="font-mono text-ink">{mineStats.meleePower}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-ink-muted">Agility</span>
+              <span className="font-mono text-ink">{mineStats.agLevel}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-ink-muted">Defense</span>
+              <span className="font-mono text-ink">{mineStats.defense}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-ink-muted">HP / Stamina</span>
+              <span className="font-mono text-ink">{mineStats.maxHp} / {mineStats.maxSta}</span>
+            </div>
+          </div>
+        </div>
+
+        <Button onClick={() => { void sfx.resume(); beginMining(); }} disabled={!canEnter} className="w-full py-2.5">
           {canEnter ? 'Enter the Mine' : `Need ${MINE_ENERGY_COST} energy (complete habits)`}
         </Button>
       </Panel>

@@ -27,7 +27,7 @@ export interface LockpickingProps {
   onFinish: (score: number) => void;
 }
 
-type Phase = 'idle' | 'turning' | 'breaking' | 'opening' | 'done';
+type Phase = 'idle' | 'turning' | 'breaking' | 'opening' | 'revealing' | 'done';
 type FlashType = 'unlock' | 'break' | null;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -234,6 +234,77 @@ function ArcTicks({ center, radius }: { center: number; radius: number }) {
   );
 }
 
+// ── Sweet-spot reveal ────────────────────────────────────────────────────────
+
+/**
+ * Shown for ~1.6s after total failure (all picks spent).
+ * Draws a green wedge on the rim at the lock's true open zone so the player
+ * can see where the sweet spot was and learn the search technique.
+ */
+function SweetSpotReveal({
+  lock,
+  center,
+  radius,
+}: {
+  lock: LockConfig;
+  center: number;
+  radius: number;
+}) {
+  const { sweetSpotDeg, openToleranceDeg } = lock;
+
+  // Convert a pick-arc degree to SVG x/y on this plate.
+  // pickDeg 90 = 12 o'clock; 0 = 9 o'clock; 180 = 3 o'clock.
+  const toXY = (deg: number, r: number) => {
+    const rad = ((deg - 90) * Math.PI) / 180;
+    return { x: center + Math.sin(rad) * r, y: center - Math.cos(rad) * r };
+  };
+
+  const outer = radius - 2;
+  const inner = radius - 16;
+  const lo = sweetSpotDeg - openToleranceDeg;
+  const hi = sweetSpotDeg + openToleranceDeg;
+  const largeArc = openToleranceDeg * 2 > 180 ? 1 : 0;
+
+  const so = toXY(lo, outer); const eo = toXY(hi, outer);
+  const si = toXY(lo, inner); const ei = toXY(hi, inner);
+  const tip   = toXY(sweetSpotDeg, outer + 8);
+  const base  = toXY(sweetSpotDeg, inner - 4);
+  const label = toXY(sweetSpotDeg, outer + 22);
+
+  return (
+    <svg
+      width={center * 2}
+      height={center * 2}
+      className="absolute inset-0 pointer-events-none"
+      style={{ overflow: 'visible', animation: 'hint-pop 0.3s ease-out' }}
+    >
+      {/* Green wedge marking the open zone */}
+      <path
+        d={`M ${so.x} ${so.y} A ${outer} ${outer} 0 ${largeArc} 1 ${eo.x} ${eo.y} L ${ei.x} ${ei.y} A ${inner} ${inner} 0 ${largeArc} 0 ${si.x} ${si.y} Z`}
+        fill="rgba(74,222,128,0.28)"
+        stroke="rgba(74,222,128,0.75)"
+        strokeWidth={1.5}
+      />
+      {/* Radial pointer at the sweet-spot center */}
+      <line
+        x1={base.x} y1={base.y} x2={tip.x} y2={tip.y}
+        stroke="rgba(74,222,128,0.9)"
+        strokeWidth={2}
+        strokeLinecap="round"
+      />
+      {/* Star at the tip */}
+      <text
+        x={label.x} y={label.y}
+        textAnchor="middle" dominantBaseline="middle"
+        fontSize={11} fontWeight="bold"
+        fill="rgba(74,222,128,0.95)"
+      >
+        ★
+      </text>
+    </svg>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function Lockpicking({ onFinish }: LockpickingProps) {
@@ -317,9 +388,18 @@ export function Lockpicking({ onFinish }: LockpickingProps) {
     onFinish(lockpickingScore(opened, picks));
   }, [onFinish]);
 
+  // ── Sweet-spot reveal on terminal failure ────────────────────────────────
+  useEffect(() => {
+    if (phase !== 'revealing') return;
+    setHint('Out of picks!');
+    // Auto-advance after 1.6s; player can skip early via the Continue button
+    const t = setTimeout(() => finish(locksOpenedRef.current, 0), 1600);
+    return () => clearTimeout(t);
+  }, [phase, finish]);
+
   // ── RAF loop ──────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (phase === 'done') return;
+    if (phase === 'done' || phase === 'revealing') return;
 
     lastTsRef.current = null;
 
@@ -337,10 +417,15 @@ export function Lockpicking({ onFinish }: LockpickingProps) {
         cylinderDegRef.current = Math.max(0, cylinderDegRef.current - CYLINDER_RETURN_SPEED * 2.5 * dt);
         setCylinderDeg(cylinderDegRef.current);
         if (cylinderDegRef.current <= 0) {
-          // Check for out-of-picks failure — finish after the snap animation completes
+          // Out of picks — reveal the sweet spot briefly, then finish
           if (picksRemainingRef.current <= 0) {
-            finish(locksOpenedRef.current, 0);
-            return;
+            phaseRef.current = 'revealing';
+            setPhase('revealing');
+            setShakeX(0);
+            setShakeY(0);
+            setWarmth(0);
+            setStressRatio(0);
+            return; // RAF stops here; the 'revealing' useEffect drives the timeout
           }
           phaseRef.current = 'idle';
           setPhase('idle');
@@ -519,7 +604,7 @@ export function Lockpicking({ onFinish }: LockpickingProps) {
 
     rafRef.current = requestAnimationFrame(loop);
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, [phase === 'done', finish]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [phase === 'done' || phase === 'revealing', finish]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Keyboard ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -540,7 +625,7 @@ export function Lockpicking({ onFinish }: LockpickingProps) {
 
   // ── Pointer (mouse / touch) ───────────────────────────────────────────────
   const handlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (phaseRef.current === 'done') return;
+    if (phaseRef.current === 'done' || phaseRef.current === 'revealing') return;
     const rect = lockAreaRef.current?.getBoundingClientRect();
     if (!rect) return;
     const deg = pointerToDeg(rect.left + rect.width / 2, rect.top + rect.height / 2, e.clientX, e.clientY);
@@ -657,6 +742,15 @@ export function Lockpicking({ onFinish }: LockpickingProps) {
           {/* Arc tick marks — give the player positional reference */}
           <ArcTicks center={CENTER} radius={CENTER - 6} />
 
+          {/* Sweet-spot reveal — shown for ~1.6s after all picks are spent */}
+          {phase === 'revealing' && (
+            <SweetSpotReveal
+              lock={locks.current[currentLock]}
+              center={CENTER}
+              radius={CENTER - 6}
+            />
+          )}
+
           {/* Inner cylinder — rotates, carries the keyhole and tension wrench */}
           <div
             className="absolute rounded-full"
@@ -751,9 +845,11 @@ export function Lockpicking({ onFinish }: LockpickingProps) {
       <p className="text-center text-xs text-ink-muted max-w-[230px] leading-snug">
         {isDone
           ? 'Complete!'
-          : phase === 'turning'
-            ? 'Holding torque… watch the glow.'
-            : 'Move pick to search · Hold "Turn Lock" to apply torque'}
+          : phase === 'revealing'
+            ? 'Here\'s where the sweet spot was · tap Continue to see your score'
+            : phase === 'turning'
+              ? 'Holding torque… watch the glow.'
+              : 'Move pick to search · Hold "Turn Lock" to apply torque'}
       </p>
 
       {/* On-screen controls */}
@@ -764,20 +860,36 @@ export function Lockpicking({ onFinish }: LockpickingProps) {
             onPointerDown={(e) => { e.preventDefault(); pickKeyDirRef.current = -1; }}
             onPointerUp={() => { pickKeyDirRef.current = 0; }}
             onPointerLeave={() => { pickKeyDirRef.current = 0; }}
+            disabled={phase === 'revealing'}
+            aria-hidden={phase === 'revealing'}
+            style={phase === 'revealing' ? { opacity: 0.2, pointerEvents: 'none' } : undefined}
           >◀</button>
 
           <button
             className="h-12 flex-1 rounded-lg border-2 border-gold-deep bg-gradient-to-b from-gold-bright to-gold-deep font-display text-sm font-black text-wood-900 shadow-gold active:scale-95 touch-none"
-            onPointerDown={(e) => { e.preventDefault(); torqueHeldRef.current = true; }}
+            onPointerDown={(e) => {
+              e.preventDefault();
+              if (phaseRef.current === 'revealing') {
+                // Skip the reveal hold and go straight to the result screen
+                finish(locksOpenedRef.current, 0);
+                return;
+              }
+              torqueHeldRef.current = true;
+            }}
             onPointerUp={() => { torqueHeldRef.current = false; }}
             onPointerLeave={() => { torqueHeldRef.current = false; }}
-          >Turn Lock</button>
+          >
+            {phase === 'revealing' ? 'Continue →' : 'Turn Lock'}
+          </button>
 
           <button
             className="h-12 w-12 rounded-lg border-2 border-gold-deep/70 bg-wood-800 font-display text-base font-bold text-parchment-200 shadow-wood active:scale-95 touch-none"
             onPointerDown={(e) => { e.preventDefault(); pickKeyDirRef.current = 1; }}
             onPointerUp={() => { pickKeyDirRef.current = 0; }}
             onPointerLeave={() => { pickKeyDirRef.current = 0; }}
+            disabled={phase === 'revealing'}
+            aria-hidden={phase === 'revealing'}
+            style={phase === 'revealing' ? { opacity: 0.2, pointerEvents: 'none' } : undefined}
           >▶</button>
         </div>
       )}

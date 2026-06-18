@@ -22,6 +22,8 @@ import type { StatId } from '@/engine/stats';
 import { base, topCenter, hexCorners, isoBounds, colHeight, type Pt } from './iso';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/cn';
+import { useCoopStore } from '@/net/coop/session';
+import { useAuthStore } from '@/net/auth';
 
 // --- Board geometry -----------------------------------------------------------------------------
 function sizeFor(radius: number): number {
@@ -132,6 +134,14 @@ export function TacticsOverlay() {
   const endTactics = useGameStore((s) => s.endTactics);
   const soundEnabled = useGameStore((s) => s.settings.soundEnabled);
 
+  // Co-op: identify local player and session role
+  const coopJoined = useCoopStore((s) => s.joined);
+  const coopSession = useCoopStore((s) => s.session);
+  const coopSend = useCoopStore((s) => s.send);
+  const userId = useAuthStore((s) => s.session?.user?.id ?? '');
+  const isCoopSession = coopJoined && coopSession?.game === 'tactics';
+  const isCoopGuest = isCoopSession && coopSession?.host_id !== userId;
+
   // Audio: synthesised combat SFX + adaptive tension drone.
   useTacticsAudio(tactics, soundEnabled);
 
@@ -233,13 +243,18 @@ export function TacticsOverlay() {
   const threat = new Set(tactics.threatHexes.map(hexKey));
   const sel = tactics.selected;
   const isPlayerTurn = tactics.turn === 'player' && tactics.status === 'active';
-  const locked = animating || !isPlayerTurn;
+  // Per-hero weapon and spell loadout (co-op heroes carry their own; fall back to state-level for solo).
+  const weapon = tactics.player.weapon ?? tactics.weapon;
+  const knownSpells = tactics.player.knownSpells ?? tactics.knownSpells;
+  const myHeroEndedTurn = tactics.player.endedTurn ?? false;
+  const waitingForAlly = isCoopSession && isPlayerTurn && myHeroEndedTurn;
+  const locked = animating || !isPlayerTurn || waitingForAlly;
 
   const firing = (() => {
     const set = new Set<string>();
     if (locked) return set;
     let baseRange = 0;
-    if (sel?.kind === 'attack' && tactics.weapon.ranged) baseRange = tactics.weapon.range ?? 1;
+    if (sel?.kind === 'attack' && weapon.ranged) baseRange = weapon.range ?? 1;
     else if (sel?.kind === 'spell') {
       const sp = getSpell(sel.spellKey);
       if (sp && sp.school !== 'support') baseRange = SPELL_RANGE;
@@ -267,9 +282,19 @@ export function TacticsOverlay() {
   function onTileClick(h: Hex) {
     if (locked) return;
     const key = hexKey(h);
-    if (sel?.kind === 'move' && reachable.has(key)) tacticsMove(h);
-    else if (sel?.kind === 'attack' && targetable.has(key)) tacticsAttack(h);
-    else if (sel?.kind === 'spell' && targetable.has(key)) tacticsCast(sel.spellKey, h);
+    if (isCoopGuest && coopSend) {
+      const heroId = tactics?.player.id ?? userId;
+      if (sel?.kind === 'move' && reachable.has(key))
+        coopSend({ type: 'tactics-intent', userId, heroId, action: 'move', to: h });
+      else if (sel?.kind === 'attack' && targetable.has(key))
+        coopSend({ type: 'tactics-intent', userId, heroId, action: 'attack', to: h });
+      else if (sel?.kind === 'spell' && targetable.has(key))
+        coopSend({ type: 'tactics-intent', userId, heroId, action: 'cast', spellKey: sel.spellKey, to: h });
+    } else {
+      if (sel?.kind === 'move' && reachable.has(key)) tacticsMove(h);
+      else if (sel?.kind === 'attack' && targetable.has(key)) tacticsAttack(h);
+      else if (sel?.kind === 'spell' && targetable.has(key)) tacticsCast(sel.spellKey, h);
+    }
   }
 
   function onTileHover(h: Hex | null) {
@@ -282,8 +307,19 @@ export function TacticsOverlay() {
   function onPickSpell(spellKey: string) {
     const spell = getSpell(spellKey);
     if (!spell) return;
-    // Blink needs the player to pick a destination tile → enter targeting mode.
+    // Blink: enter targeting mode so the player picks a destination tile (same path for host/guest).
     if (spell.mechanic === 'blink') { setHoveredHex(null); tacticsSelect({ kind: 'spell', spellKey }); return; }
+    if (isCoopGuest && coopSend) {
+      const heroId = tactics?.player.id ?? userId;
+      // Guest: support spells are self-cast → send intent immediately; others enter targeting mode.
+      if (spell.school === 'support') {
+        coopSend({ type: 'tactics-intent', userId, heroId, action: 'cast', spellKey });
+      } else {
+        setHoveredHex(null);
+        tacticsSelect({ kind: 'spell', spellKey });
+      }
+      return;
+    }
     // Cleave and other support spells are self-cast — fire immediately.
     if (spell.school === 'support') { tacticsCast(spellKey, null); return; }
     // Damage / illusion / push → enter targeting mode.
@@ -291,7 +327,6 @@ export function TacticsOverlay() {
     tacticsSelect({ kind: 'spell', spellKey });
   }
 
-  const weapon = tactics.weapon;
   const attackLabel = weapon.ranged ? 'Shoot' : 'Strike';
 
   const tilesByDepth = Object.values(tactics.tiles)
@@ -322,6 +357,8 @@ export function TacticsOverlay() {
     if (e.kind === 'move' && e.enemyId !== undefined) moveFxByEnemyId.set(e.enemyId, e);
   }
 
+  const allyHeroes = isCoopSession ? (tactics.players ?? []).filter((p) => p.id !== tactics.player.id) : [];
+
   const unitsByDepth = [
     {
       key: 'player', hex: tactics.player.hex, displayHex: tactics.player.hex, glyph: '🧝',
@@ -331,6 +368,17 @@ export function TacticsOverlay() {
       weakTo: [] as StatId[], resistTo: [] as StatId[],
       slideMs: 200,
     },
+    ...allyHeroes.map((p) => ({
+      key: `ally-${p.id ?? 'ally'}`,
+      hex: p.hex, displayHex: p.hex, glyph: '🧙',
+      hp: p.hp, maxHp: p.maxHp, statuses: p.statuses,
+      friendly: true,
+      name: ((p.name ?? 'Ally') + (p.endedTurn ? ' ✓' : '')) as string | undefined,
+      enemyId: undefined as number | undefined,
+      aiArchetype: undefined as AIArchetype | undefined,
+      weakTo: [] as StatId[], resistTo: [] as StatId[],
+      slideMs: 200,
+    })),
     ...tactics.enemies.map((e) => {
       // hasPendingMove: a 'move' effect exists for this enemy and hasn't fired yet.
       //   → render at prevHex with no transition (instant snap, prevents "jump back").
@@ -364,19 +412,27 @@ export function TacticsOverlay() {
           <span
             className={cn(
               'rounded-full px-2.5 py-1 font-display text-xs font-bold uppercase tracking-wider',
-              isPlayerTurn ? 'bg-stat-AG/20 text-stat-AG' : 'bg-ember-deep/20 text-ember-bright',
+              tactics.status !== 'active' ? 'bg-ember-deep/20 text-ember-bright'
+              : waitingForAlly ? 'bg-parchment-300/10 text-parchment-300/50'
+              : isPlayerTurn ? 'bg-stat-AG/20 text-stat-AG'
+              : 'bg-ember-deep/20 text-ember-bright',
             )}
           >
-            {tactics.status !== 'active' ? 'Skirmish over' : isPlayerTurn ? 'Your turn' : 'Enemy turn'}
+            {tactics.status !== 'active' ? 'Skirmish over' : waitingForAlly ? 'Waiting…' : isPlayerTurn ? 'Your turn' : 'Enemy turn'}
           </span>
           {isPlayerTurn && (
             <span className="flex items-center gap-1 font-display text-[11px] text-parchment-300">
               <Footprints className="h-3.5 w-3.5 text-stat-AG" /> {tactics.player.movesLeft}
             </span>
           )}
-          {isPlayerTurn && tactics.player.hasActed && (
+          {isPlayerTurn && tactics.player.hasActed && !waitingForAlly && (
             <span className="rounded border border-stat-AG/40 bg-stat-AG/10 px-1.5 py-0.5 font-display text-[9px] text-stat-AG/70">
               ✓ Acted
+            </span>
+          )}
+          {waitingForAlly && (
+            <span className="rounded border border-parchment-300/25 bg-wood-800/50 px-1.5 py-0.5 font-display text-[9px] text-parchment-300/55">
+              Waiting for ally…
             </span>
           )}
           {/* Overlay toggles */}
@@ -466,7 +522,8 @@ export function TacticsOverlay() {
               const E = tile.elevation * colHeight(size);
               const highlight = reachable.has(key) ? 'reach' : targetable.has(key) ? 'target' : null;
               const isPlayerTile = key === playerKey;
-              const isThreat = showThreat && threat.has(key) && !isPlayerTile;
+              const isAllyTile = allyHeroes.some((p) => hexKey(p.hex) === key);
+              const isThreat = showThreat && threat.has(key) && !isPlayerTile && !isAllyTile;
               const isHovered = hoveredHex && hexKey(hoveredHex) === key;
 
               const wall = (a: number, b: number, fill: string) => {
@@ -498,8 +555,9 @@ export function TacticsOverlay() {
                       : highlight === 'reach' ? 'rgba(56,189,248,0.95)'
                       : highlight === 'target' ? 'rgba(251,191,36,0.95)'
                       : isPlayerTile ? 'rgba(56,189,248,0.6)'
+                      : isAllyTile ? 'rgba(52,211,153,0.6)'
                       : 'rgba(0,0,0,0.4)'}
-                    strokeWidth={isHovered ? 3.5 : highlight || isPlayerTile ? 3 : 1}
+                    strokeWidth={isHovered ? 3.5 : highlight || isPlayerTile || isAllyTile ? 3 : 1}
                     style={{ cursor: highlight || firing.has(key) ? 'pointer' : 'default' }}
                     onClick={() => onTileClick(tile.hex)}
                     onMouseEnter={() => onTileHover(tile.hex)}
@@ -669,7 +727,7 @@ export function TacticsOverlay() {
           <ActionButton active={sel?.kind === 'attack'} disabled={locked || tactics.player.hasActed} onClick={() => { setHoveredHex(null); tacticsSelect({ kind: 'attack' }); }}>
             ⚔️ {attackLabel}
           </ActionButton>
-          {tactics.knownSpells.map((key) => {
+          {knownSpells.map((key) => {
             const spell = getSpell(key);
             if (!spell) return null;
             const tooCostly = tactics.player.mp < spell.mpCost;
@@ -689,12 +747,18 @@ export function TacticsOverlay() {
           <ActionButton
             accent
             disabled={locked || tactics.player.hasActed}
-            onClick={tacticsHold}
+            onClick={isCoopGuest && coopSend
+              ? () => coopSend({ type: 'tactics-intent', userId, heroId: tactics?.player.id ?? userId, action: 'hold' })
+              : tacticsHold}
             title="Arm an overwatch stance — fire a reaction shot on the first enemy that steps into range"
           >
             {tactics.player.overwatch ? '⌖ Watching…' : 'Hold ⌖'}
           </ActionButton>
-          <ActionButton accent disabled={locked} onClick={tacticsEndTurn}>
+          <ActionButton accent disabled={locked}
+            onClick={isCoopGuest && coopSend
+              ? () => coopSend({ type: 'tactics-intent', userId, heroId: tactics?.player.id ?? userId, action: 'endTurn' })
+              : tacticsEndTurn}
+          >
             End turn <ChevronRight className="h-4 w-4" />
           </ActionButton>
           {confirmRetreat ? (

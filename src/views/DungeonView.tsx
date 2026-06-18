@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import { Heart, Sparkles, Coins, Zap, Wind, ChevronsDown, DoorOpen } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { ROOM_META, DUNGEON_ENERGY_COST } from '@/engine/dungeon';
@@ -102,6 +103,7 @@ export function DungeonView() {
   const energy = useGameStore((s) => s.character.energy);
   const level = useGameStore((s) => s.character.level);
   const deepestFloor = useGameStore((s) => s.deepestFloor);
+  const dungeonHistory = useGameStore((s) => s.dungeonHistory ?? []);
   const startDungeon = useGameStore((s) => s.startDungeon);
   const dungeonChoosePath = useGameStore((s) => s.dungeonChoosePath);
   const dungeonEncounterChoose = useGameStore((s) => s.dungeonEncounterChoose);
@@ -149,6 +151,23 @@ export function DungeonView() {
             </div>
             <div className="mt-1 text-[11px] text-ink-muted">{milestoneHint(deepestFloor)}</div>
           </div>
+
+          {dungeonHistory.length > 0 && (
+            <div className="rounded-md border border-gold-deep/20 bg-parchment-100/50 p-3">
+              <div className="mb-2 font-display text-xs uppercase tracking-wider text-ink-muted">Recent Runs</div>
+              <div className="space-y-1">
+                {dungeonHistory.slice(0, 5).map((run, i) => (
+                  <div key={i} className="flex items-center justify-between text-xs">
+                    <span className={run.cleared ? 'text-stat-HP' : run.defeated ? 'text-ember' : 'text-ink-muted'}>
+                      {run.cleared ? 'Banked' : run.defeated ? 'Fallen' : 'Fled'}
+                    </span>
+                    <span className="text-ink">Floor {run.depth}</span>
+                    <span className="text-ink-light">{run.date}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <Button onClick={startDungeon} disabled={!canEnter} className="w-full py-2.5">
             {!unlocked
@@ -200,7 +219,10 @@ export function DungeonView() {
     const nextDepth = dungeon.depth + 1;
     const nextIsBoss = nextDepth % 5 === 0;
     return (
-      <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
+      <div
+        className="mx-auto max-w-2xl space-y-4 px-4 py-5"
+        style={{ '--biome-tint': biome.tint } as CSSProperties}
+      >
         <SectionTitle tone="wood">Depth {dungeon.depth} · {biome.name}</SectionTitle>
         <Panel tone="parchment" className="space-y-4 p-5">
           <SceneArt sceneKey="dungeon:checkpoint" size="lg" caption="Floor cleared" />
@@ -247,7 +269,10 @@ export function DungeonView() {
   const inActiveCombat = inBattle && dungeon.battle?.status === 'active';
 
   return (
-    <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
+    <div
+      className="mx-auto max-w-2xl space-y-4 px-4 py-5"
+      style={{ '--biome-tint': biome.tint } as CSSProperties}
+    >
       <div className="flex items-center justify-between gap-2">
         <SectionTitle tone="wood" className="flex-1">
           Depth {dungeon.depth} · {biome.name}
@@ -270,6 +295,8 @@ export function DungeonView() {
         </Panel>
       )}
 
+      {/* key on nodeId so every room entry triggers the fade-in animation */}
+      <div key={dungeon.nodeId ?? 'path'} className="animate-fade-in">
       {choosingPath ? (
         <FloorMap map={dungeon.map} choices={dungeon.choices} path={dungeon.path} onChoose={dungeonChoosePath} />
       ) : inBattle ? (
@@ -319,6 +346,7 @@ export function DungeonView() {
           onAdvance={dungeonAdvance}
         />
       )}
+      </div>
     </div>
   );
 }

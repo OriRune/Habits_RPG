@@ -72,7 +72,9 @@ export function useCoopSession(): void {
   const game = coopSession?.game ?? 'mine';
 
   useEffect(() => {
-    if (!supabase || !sessionId || !joined) return;
+    // Tactics co-op is handled by useTacticsCoopSession — skip here to avoid
+    // both hooks competing for the same channel.
+    if (!supabase || !sessionId || !joined || game === 'tactics') return;
     const sb = supabase;
     const username = useAuthStore.getState().username ?? 'Adventurer';
     const channel = sb.channel(coopChannelName(sessionId), {
@@ -191,10 +193,11 @@ export function useCoopSession(): void {
   }, [sessionId, joined, isHost, userId, game]);
 
   // Auto-leave the session when the local run ends (banked / died / quit).
+  // Tactics sessions are watched by useTacticsCoopSession — skip here.
   useEffect(() => {
     const unsub = useGameStore.subscribe((s) => {
       const { joined: stillJoined, session } = useCoopStore.getState();
-      if (!stillJoined || !session) return;
+      if (!stillJoined || !session || session.game === 'tactics') return;
       const run = session.game === 'forest' ? s.forest : s.mining;
       if (!run) void leaveCoop(session.host_id === userId);
     });
