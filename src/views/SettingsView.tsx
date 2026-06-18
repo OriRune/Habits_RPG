@@ -84,6 +84,14 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
         <Panel tone="parchment" className="space-y-3 p-4">
           <SectionTitle>General</SectionTitle>
 
+          {/* Sound */}
+          <Toggle
+            label="Sound"
+            description="Sound effects and tension drone during minigames."
+            checked={settings.soundEnabled}
+            onChange={(v) => updateSettings({ soundEnabled: v })}
+          />
+
           {/* Arena pace */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between gap-3">

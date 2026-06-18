@@ -15,12 +15,15 @@ import {
   chaseScore,
   speedAt,
   CHASE_TARGET_DISTANCE,
+  CHASER_SPAWN_DISTANCE,
   DASH_COOLDOWN_MS,
   LEAD_MAX,
   HERO_HITBOX_W as _HERO_HITBOX_W, // imported for documentation; not used in render math directly
   type Building,
 } from '@/engine/trials/rooftopChase';
 import { useChaseLoop } from '@/hooks/useChaseLoop';
+import { useChaseAudio } from '@/hooks/useChaseAudio';
+import { useGameStore } from '@/store/useGameStore';
 
 // Suppress the unused-import lint on HERO_HITBOX_W — it's imported to keep the
 // renderer and engine in sync (both reference the same exported constant).
@@ -463,6 +466,10 @@ function BuildingView({
 export function RooftopChase({ onFinish }: RooftopChaseProps) {
   const { state, controls } = useChaseLoop(onFinish);
 
+  const soundEnabled  = useGameStore((s) => s.settings.soundEnabled);
+  const updateSettings = useGameStore((s) => s.updateSettings);
+  useChaseAudio(state, soundEnabled);
+
   // ── Derive display values ──────────────────────────────────────────────────
   const distance   = state.distance;
   const lead       = state.lead;
@@ -502,7 +509,7 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
   const chaserXPx    = HERO_X_PX - 50 - (1 - leadFrac) * 28;
   const chaserDanger = leadFrac < 0.3;
 
-  const spawnPct = Math.min(1, distance / 120); // CHASER_SPAWN_DISTANCE = 120
+  const spawnPct = Math.min(1, distance / CHASER_SPAWN_DISTANCE);
 
   // Visible buildings
   const viewEndX         = distance + VIEW_W / PX_PER_WU + 6;
@@ -731,16 +738,29 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
           </div>
         )}
 
+        {/* Sound mute toggle — top-left corner of play area */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation(); // don't trigger the jump click on the canvas
+            updateSettings({ soundEnabled: !soundEnabled });
+          }}
+          className="absolute top-1.5 left-2 z-10 select-none rounded px-1 py-0.5 font-display text-[11px] text-parchment-300/60 hover:text-parchment-100 transition-colors"
+          aria-label={soundEnabled ? 'Mute sound' : 'Unmute sound'}
+          title={soundEnabled ? 'Mute sound' : 'Unmute sound'}
+        >
+          {soundEnabled ? '🔊' : '🔇'}
+        </button>
+
         {/* Slide indicator */}
         {nowSliding && (
-          <div className="absolute top-2 left-2 font-display text-[10px] font-bold text-sky-300/90 pointer-events-none">
+          <div className="absolute top-2 left-8 font-display text-[10px] font-bold text-sky-300/90 pointer-events-none">
             SLIDING
           </div>
         )}
 
         {/* Dash indicator */}
         {nowDashing && (
-          <div className="absolute top-2 left-2 font-display text-[10px] font-black text-yellow-300/95 pointer-events-none"
+          <div className="absolute top-2 left-8 font-display text-[10px] font-black text-yellow-300/95 pointer-events-none"
             style={{ textShadow: '0 0 6px rgba(255,220,80,0.8)' }}>
             DASH!
           </div>

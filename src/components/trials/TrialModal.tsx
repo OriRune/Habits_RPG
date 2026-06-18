@@ -4,6 +4,7 @@
 import { useState, useCallback } from 'react';
 import { useGameStore } from '@/store/useGameStore';
 import { getTrial, scoreToStars, trialReward, type TrialId } from '@/engine/trials/trials';
+import { resume as sfxResume } from '@/lib/sfx';
 import { getStat } from '@/engine/stats';
 import { Button } from '@/components/ui/Button';
 import { Lockpicking } from './games/Lockpicking';
@@ -115,7 +116,15 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
                   <div className="h-2 flex-1 rounded-full border border-gold-deep/20 bg-parchment-300/50" />
                 </div>
               </div>
-              <Button onClick={() => setStage('playing')} className="w-full py-3 text-base">
+              <Button
+                onClick={() => {
+                  // Unlock the AudioContext from this user gesture before sounds
+                  // need to play mid-trial (browser autoplay policy).
+                  void sfxResume();
+                  setStage('playing');
+                }}
+                className="w-full py-3 text-base"
+              >
                 Begin Trial
               </Button>
             </div>

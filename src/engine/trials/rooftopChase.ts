@@ -428,6 +428,10 @@ export interface ChaseState {
   justDashed: boolean;
   /** True on the step the hero went over a gap and began falling. */
   justFell: boolean;
+  /** True on the step the hero jumped from the ground (first jump). */
+  justJumped: boolean;
+  /** True on the step the hero performed a double-jump (midair second jump). */
+  justDoubleJumped: boolean;
 
   // ── Terminal ───────────────────────────────────────────────────────────────
   done: boolean;
@@ -459,6 +463,8 @@ export function initChase(rng: () => number): ChaseState {
     justStumbled: false,
     justDashed: false,
     justFell: false,
+    justJumped: false,
+    justDoubleJumped: false,
     done: false,
     score: 0,
   };
@@ -502,13 +508,17 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
 
   // Jump — blocked while stumbling or sliding.
   const nowSliding = slideMs > 0 && groundedPrev;
+  let justJumped = false;
+  let justDoubleJumped = false;
   if (input.jumpPressed && !nowStumbling && !nowSliding) {
     if (groundedPrev) {
-      heroVy    = JUMP_VELOCITY;
-      jumpsUsed = 1;
+      heroVy         = JUMP_VELOCITY;
+      jumpsUsed      = 1;
+      justJumped     = true;
     } else if (jumpsUsed < MAX_JUMPS) {
-      heroVy = DOUBLE_JUMP_VELOCITY;
+      heroVy           = DOUBLE_JUMP_VELOCITY;
       jumpsUsed++;
+      justDoubleJumped = true;
     }
   }
 
@@ -562,6 +572,8 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
       justStomped: false,
       justStumbled: false,
       justDashed,
+      justJumped,
+      justDoubleJumped,
       justFell: true,
       done: true,
       score: chaseScore(newDist),
@@ -663,6 +675,8 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
     justStomped,
     justStumbled,
     justDashed,
+    justJumped,
+    justDoubleJumped,
     justFell:       false,
     done,
     score:          chaseScore(newDist),

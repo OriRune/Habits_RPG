@@ -318,6 +318,8 @@ export interface GameSettings {
   repeatMinigames: boolean;
   /** Render the app in dark mode (panel surfaces go dark, text goes light). */
   darkMode: boolean;
+  /** Enable sound effects and the adaptive tension drone during minigames. */
+  soundEnabled: boolean;
 }
 
 function freshSettings(): GameSettings {
@@ -331,6 +333,7 @@ function freshSettings(): GameSettings {
     tacticsSize: 'small',
     repeatMinigames: false,
     darkMode: false,
+    soundEnabled: true,
   };
 }
 
