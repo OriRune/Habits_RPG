@@ -736,10 +736,12 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
           />
         </div>
 
-        {/* Stomp flash */}
+        {/* Stomp flash — shows chain count when on a streak */}
         {showStompFlash && (
           <div className="absolute top-2 left-1/2 -translate-x-1/2 font-display text-xs font-black text-gold-bright bg-gold-bright/20 px-2 py-0.5 rounded whitespace-nowrap pointer-events-none">
-            STOMP! ⚔
+            {state.stompChain >= 2
+              ? `STOMP x${state.stompChain}! ⚔`
+              : 'STOMP! ⚔'}
           </div>
         )}
 

@@ -67,11 +67,24 @@ export const CHASER_GAIN_PER_SEC = 4.5;
 /** Lead lost on each stumble. */
 export const STUMBLE_LEAD_LOSS = 12;
 
-/** Lead gained on each stomp. */
-export const STOMP_LEAD_GAIN = 4;
+/**
+ * Lead gained on each stomp — raised from 4 to 9 (Phase 3 rebalance) so a
+ * well-timed stomp is genuinely competitive with a dash.
+ */
+export const STOMP_LEAD_GAIN = 9;
+
+/**
+ * Additional lead gained per consecutive stomp (chain-stomp bonus).
+ * First stomp in a chain: +0; second: +2; third: +4; etc.
+ * Chain resets when the hero lands on a roof.
+ */
+export const STOMP_CHAIN_BONUS = 2;
 
 /** Lead gained from a single dash burst. */
 export const DASH_LEAD_GAIN = 16;
+
+/** Lead gained from successfully sliding under a lowbar banner (clean slide). */
+export const SLIDE_LEAD_GAIN = 1;
 
 /**
  * Maximum world-unit distance between the chaser and the hero when lead is
@@ -498,6 +511,12 @@ export interface ChaseState {
   activeContactId: number | null;
   /** ID of the last successfully stomped prop, for the flash effect. */
   stompedPropId: number | null;
+  /**
+   * Consecutive stomp count — increments on each stomp, resets on landing.
+   * Used for the chain-stomp bonus: nth stomp in a chain gives +(n−1)×STOMP_CHAIN_BONUS
+   * extra lead on top of the base STOMP_LEAD_GAIN.
+   */
+  stompChain: number;
 
   // ── One-frame event flags (true for exactly one step, then cleared) ────────
   justLanded: boolean;
@@ -539,6 +558,7 @@ export function initChase(rng: () => number): ChaseState {
     chaserAirborne: false,
     activeContactId: null,
     stompedPropId: null,
+    stompChain: 0,
     justLanded: false,
     justStomped: false,
     justStumbled: false,
@@ -646,6 +666,7 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
       dashCooldownMs,
       stompFlashMs,
       stompedPropId,
+      stompChain: state.stompChain,
       lead: state.lead,
       chaserActive: state.chaserActive,
       chaserX: state.chaserX,
@@ -689,6 +710,7 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
   let leadEvent: 'stumble' | 'stomp' | 'dash' | undefined;
   let justStomped    = false;
   let justStumbled   = false;
+  let clearedLowbar  = false;
   let finalHeroVy    = finalVy;
   let finalJumpsUsed = jumpsUsed;
   let newStumbleMs   = stumbleMs;
@@ -726,6 +748,9 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
       newStumbleMs = STUMBLE_MS;
       justStumbled = true;
       if (!leadEvent) leadEvent = 'stumble';
+    } else if (result === 'clear' && foundPropData.prop.kind === 'lowbar' && activeSlideFinal) {
+      // Clean slide under a banner — award the small participation reward.
+      clearedLowbar = true;
     }
   } else if (!foundPropData) {
     activeContactId = null;
@@ -733,7 +758,26 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
 
   // ── 9. Update chaser lead ───────────────────────────────────────────────────
   const chaserActive = newDist >= CHASER_SPAWN_DISTANCE;
-  const newLead      = updateLead(state.lead, dtSec, chaserActive, leadEvent);
+  let newLead        = updateLead(state.lead, dtSec, chaserActive, leadEvent);
+
+  // Chain-stomp bonus: each consecutive stomp (without landing) adds extra lead.
+  // chainBonus uses the chain count *before* this stomp (state.stompChain).
+  const chainBonus = justStomped ? state.stompChain * STOMP_CHAIN_BONUS : 0;
+  if (chainBonus > 0) {
+    newLead = Math.min(LEAD_MAX, newLead + chainBonus);
+  }
+
+  // Clean slide reward: a tiny lead tick for navigating a banner skillfully.
+  if (clearedLowbar && chaserActive) {
+    newLead = Math.min(LEAD_MAX, newLead + SLIDE_LEAD_GAIN);
+  }
+
+  // Advance stomp chain counter: resets on landing, increments on stomp.
+  const newStompChain = justLanded
+    ? 0
+    : justStomped
+      ? state.stompChain + 1
+      : state.stompChain;
 
   // ── 9a. Compute chaser world position ──────────────────────────────────────
   // footX is the hero's foot centre; derived above in step 5.
@@ -764,6 +808,7 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
     chaserAirborne: chaserPos.airborne,
     activeContactId,
     stompedPropId,
+    stompChain:     newStompChain,
     justLanded,
     justStomped,
     justStumbled,
