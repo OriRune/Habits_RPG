@@ -935,6 +935,26 @@ export function commitRun(state: GameState, opts: CommitRunOpts): GameState {
 }
 
 // ---------------------------------------------------------------------------
+// Reward policy constants — change these to retune balance across all minigames.
+// ---------------------------------------------------------------------------
+
+/** Mine/forest: base stat-XP trickle per completed run. */
+export const CRAWLER_XP_BASE = 4;
+/** Mine/forest: additional stat XP per deepest floor/stage reached. */
+export const CRAWLER_XP_PER_DEPTH = 3;
+
+/** Arena/tactics: base stat-XP budget per tier. */
+export const MINIGAME_XP_BASE = 4;
+/** Arena/tactics: additional XP budget per tier level. */
+export const MINIGAME_XP_PER_TIER = 1;
+/** Arena/tactics: fraction of full budget awarded on a loss/retreat. */
+export const MINIGAME_XP_LOSS_FACTOR = 0.4;
+/** Arena: fraction of bossMaxHp at which budget is calculated (damage floor). */
+export const ARENA_XP_DAMAGE_FLOOR = 0.4;
+/** Arena: weight of actual damage progress on top of the floor. */
+export const ARENA_XP_DAMAGE_SCALE = 0.6;
+
+// ---------------------------------------------------------------------------
 // Per-mode commit wrappers — compute mode-specific opts and delegate to commitRun
 // ---------------------------------------------------------------------------
 
@@ -942,7 +962,7 @@ export function commitRun(state: GameState, opts: CommitRunOpts): GameState {
 export function commitMining(state: GameState, run: MineState): GameState {
   // Include gold haul in the final score so resource-gathering builds score alongside kills.
   const finalScore = run.score + (run.haul.gold ?? 0);
-  const trickle = 4 + 3 * run.deepest;
+  const trickle = CRAWLER_XP_BASE + CRAWLER_XP_PER_DEPTH * run.deepest;
   return commitRun(state, {
     runField: 'mining', reward: run.haul, statXp: { ST: trickle, EN: trickle },
     deepestField: 'deepestMineFloor', deepestValue: run.deepest,
@@ -958,7 +978,7 @@ export function commitMineDeath(state: GameState, run: MineState): GameState {
   const { kept } = splitHaul(run.haul, MINE_DEATH_KEEP);
   // Include kept gold in the final score even on death (mirrors commitMining).
   const finalScore = run.score + (kept.gold ?? 0);
-  const trickle = 4 + 3 * run.deepest;
+  const trickle = CRAWLER_XP_BASE + CRAWLER_XP_PER_DEPTH * run.deepest;
   return commitRun(state, {
     runField: 'mining', reward: kept, statXp: { ST: trickle, EN: trickle },
     deepestField: 'deepestMineFloor', deepestValue: run.deepest,
@@ -969,7 +989,7 @@ export function commitMineDeath(state: GameState, run: MineState): GameState {
 /** Bank a finished forest run's haul into the economy, clear the run, and reconcile level. */
 export function commitForest(state: GameState, run: ForestState): GameState {
   // The run's gold/materials, plus a modest Dexterity/Endurance trickle for the foraging trek.
-  const trickle = 4 + 3 * run.deepest;
+  const trickle = CRAWLER_XP_BASE + CRAWLER_XP_PER_DEPTH * run.deepest;
   return commitRun(state, {
     runField: 'forest', reward: run.haul, statXp: { DX: trickle, EN: trickle },
     deepestField: 'deepestForestStage', deepestValue: run.deepest,
@@ -984,7 +1004,7 @@ export function commitForest(state: GameState, run: ForestState): GameState {
 export function commitForestDeath(state: GameState, run: ForestState): GameState {
   const { kept } = splitHaul(run.haul, FOREST_DEATH_KEEP);
   // The trek still earns its Dexterity/Endurance trickle — only the haul is docked.
-  const trickle = 4 + 3 * run.deepest;
+  const trickle = CRAWLER_XP_BASE + CRAWLER_XP_PER_DEPTH * run.deepest;
   return commitRun(state, {
     runField: 'forest', reward: kept, statXp: { DX: trickle, EN: trickle },
     deepestField: 'deepestForestStage', deepestValue: run.deepest,
@@ -1002,7 +1022,10 @@ export function commitArena(state: GameState, run: ArenaState): GameState {
   const won = run.status === 'won';
   // Distribute XP across whichever stats the player actually used in this run.
   // Budget scales with tier and how much of the boss was worn down.
-  const budget = Math.round((4 + run.tier) * (0.4 + 0.6 * damageProgress(run)));
+  const budget = Math.round(
+    (MINIGAME_XP_BASE + MINIGAME_XP_PER_TIER * run.tier) *
+    (ARENA_XP_DAMAGE_FLOOR + ARENA_XP_DAMAGE_SCALE * damageProgress(run)),
+  );
   const usage = run.statUsage;
   const totalUsage = (Object.values(usage) as number[]).reduce((sum, n) => sum + n, 0);
   let statXp: Partial<Record<StatId, number>>;
@@ -1029,7 +1052,9 @@ export function commitArena(state: GameState, run: ArenaState): GameState {
  */
 export function commitTactics(state: GameState, run: HexBattleState): GameState {
   const won = run.status === 'won';
-  const trickle = Math.round((4 + run.tier) * (won ? 1 : 0.4));
+  const trickle = Math.round(
+    (MINIGAME_XP_BASE + MINIGAME_XP_PER_TIER * run.tier) * (won ? 1 : MINIGAME_XP_LOSS_FACTOR),
+  );
   return commitRun(state, {
     runField: 'tactics', reward: tacticsReward(run), statXp: { AG: trickle, DX: trickle, EN: trickle },
     deepestField: 'deepestTacticsTier', deepestValue: run.tier, gateOnWin: won,

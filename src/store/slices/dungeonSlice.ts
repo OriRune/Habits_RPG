@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand';
-import { type CombatStats, emptyCombatStats, combatXpForWin } from '@/engine/combatStats';
+import { type CombatStats, emptyCombatStats, combatXpForWin, dungeonCombatStatXp } from '@/engine/combatStats';
 import { type CombatAction, playerAction } from '@/engine/combat';
 import { getWeapon } from '@/engine/weapons';
 import { rollBoons, rollCurse } from '@/engine/relics';
@@ -199,10 +199,9 @@ export const createDungeonSlice: StateCreator<
             : { ...s.combatStats, defenseXp: s.combatStats.defenseXp + xp };
         // Also award habit stat XP toward the character level: the attack stat you fight with,
         // plus HP for enduring the fight.
-        const winXp = 8 + Math.round(b.bossMaxHp / 10);
         const atkStat = getWeapon(s.equippedWeapon).attackStat;
-        const toAtk = Math.round(winXp * 0.6);
-        statXpPatch = grantStatXp(s, { [atkStat]: toAtk, HP: winXp - toAtk });
+        const { atkShare, hpShare } = dungeonCombatStatXp(b.bossMaxHp);
+        statXpPatch = grantStatXp(s, { [atkStat]: atkShare, HP: hpShare });
         if (room.type === 'elite') {
           // Elites drop bonus gold and guarantee a boon.
           eliteWin = true;
