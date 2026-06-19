@@ -36,6 +36,7 @@ export interface ProfileSnapshot {
     deepestMineFloor?: number;
     deepestForestStage?: number;
     deepestArenaTier?: number;
+    deepestTacticsTier?: number;
     lastActiveISO?: string | null;
   };
 }

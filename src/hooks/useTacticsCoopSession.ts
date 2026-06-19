@@ -6,13 +6,7 @@ import { pushCoopNotice, leaveCoop, useCoopStore } from '@/net/coop/session';
 import { coopChannelName } from '@/net/coop/protocol';
 import type { CoopMessage, HeroJoin, TacticsState, TacticsIntent } from '@/net/coop/protocol';
 import type { HeroOpts, HexBattleState } from '@/engine/hexBattle';
-import {
-  movePlayer as tacticsMoveFn,
-  playerAttack as tacticsAttackFn,
-  playerCastSpell as tacticsCastFn,
-  endPlayerTurn as tacticsEndTurnFn,
-  holdOverwatch as tacticsHoldFn,
-} from '@/engine/hexBattle';
+import { resolveTacticsIntent } from '@/net/coop/reduce';
 
 /**
  * Co-op transport hook for Hex Tactics (event-driven, not 10 Hz).
@@ -144,28 +138,11 @@ export function useTacticsCoopSession(): void {
 
 /**
  * Apply a guest's TacticsIntent to the current battle state (host side only).
- * Calls the engine function directly for the specified heroId, then pushes the
- * result back into the store via coopApplyTactics (which triggers the broadcast
+ * Delegates to the pure `resolveTacticsIntent` reducer, then pushes the result
+ * back into the store via coopApplyTactics (which triggers the broadcast
  * subscription).
  */
 function applyTacticsIntent(intent: TacticsIntent, tactics: HexBattleState): void {
-  let next = tactics;
-  switch (intent.action) {
-    case 'move':
-      if (intent.to) next = tacticsMoveFn(tactics, intent.to, intent.heroId);
-      break;
-    case 'attack':
-      if (intent.to) next = tacticsAttackFn(tactics, intent.to, Math.random, intent.heroId);
-      break;
-    case 'cast':
-      if (intent.spellKey !== undefined) next = tacticsCastFn(tactics, intent.spellKey, intent.to ?? null, Math.random, intent.heroId);
-      break;
-    case 'hold':
-      next = tacticsHoldFn(tactics, Math.random, intent.heroId);
-      break;
-    case 'endTurn':
-      next = tacticsEndTurnFn(tactics, Math.random, intent.heroId);
-      break;
-  }
+  const next = resolveTacticsIntent(tactics, intent, Math.random);
   if (next !== tactics) useGameStore.getState().coopApplyTactics(next);
 }

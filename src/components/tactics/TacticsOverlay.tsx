@@ -358,12 +358,14 @@ export function TacticsOverlay() {
   }
 
   const allyHeroes = isCoopSession ? (tactics.players ?? []).filter((p) => p.id !== tactics.player.id) : [];
+  const allyName = allyHeroes[0]?.name ?? 'Ally';
 
   const unitsByDepth = [
     {
       key: 'player', hex: tactics.player.hex, displayHex: tactics.player.hex, glyph: '🧝',
       hp: tactics.player.hp, maxHp: tactics.player.maxHp, statuses: tactics.player.statuses,
-      friendly: true, name: 'You' as string | undefined, enemyId: undefined as number | undefined,
+      // Show the player's own name in co-op so both heroes are identifiable; hide in solo.
+      friendly: true, name: (isCoopSession ? (tactics.player.name ?? 'You') : undefined) as string | undefined, enemyId: undefined as number | undefined,
       aiArchetype: undefined as AIArchetype | undefined,
       weakTo: [] as StatId[], resistTo: [] as StatId[],
       slideMs: 200,
@@ -418,7 +420,7 @@ export function TacticsOverlay() {
               : 'bg-ember-deep/20 text-ember-bright',
             )}
           >
-            {tactics.status !== 'active' ? 'Skirmish over' : waitingForAlly ? 'Waiting…' : isPlayerTurn ? 'Your turn' : 'Enemy turn'}
+            {tactics.status !== 'active' ? 'Skirmish over' : waitingForAlly ? `Waiting for ${allyName}…` : isPlayerTurn ? 'Your turn' : 'Enemy turn'}
           </span>
           {isPlayerTurn && (
             <span className="flex items-center gap-1 font-display text-[11px] text-parchment-300">
@@ -432,7 +434,7 @@ export function TacticsOverlay() {
           )}
           {waitingForAlly && (
             <span className="rounded border border-parchment-300/25 bg-wood-800/50 px-1.5 py-0.5 font-display text-[9px] text-parchment-300/55">
-              Waiting for ally…
+              Waiting for {allyName}…
             </span>
           )}
           {/* Overlay toggles */}
@@ -910,6 +912,15 @@ function UnitSprite({
           </span>
         )}
       </div>
+      {/* Name tag — visible label for co-op heroes so each player knows who is who */}
+      {friendly && name && (
+        <div
+          className="pointer-events-none rounded bg-wood-950/75 px-1 py-px text-center font-display leading-tight"
+          style={{ fontSize: Math.round(7 * scale), color: '#c9b57a', whiteSpace: 'nowrap', maxWidth: Math.round(54 * scale) }}
+        >
+          {name}
+        </div>
+      )}
     </div>
   );
 }

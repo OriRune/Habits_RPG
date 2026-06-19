@@ -137,13 +137,13 @@ export const STOMP_BOUNCE_VELOCITY = 14;
 // ── Dash constants ─────────────────────────────────────────────────────────────
 
 /** How long the dash speed burst lasts (ms). */
-export const DASH_DURATION_MS = 380;
+export const DASH_DURATION_MS = 550;
 
 /** Cooldown between dashes (ms). */
 export const DASH_COOLDOWN_MS = 2600;
 
 /** Speed multiplier during a dash (base speed * (1 + DASH_SPEED_BONUS)). */
-export const DASH_SPEED_BONUS = 0.4;
+export const DASH_SPEED_BONUS = 0.9;
 
 // ── Course generation constants ────────────────────────────────────────────────
 
@@ -500,6 +500,23 @@ export function chaserWorldPos(
 }
 
 // ── Collision resolution ───────────────────────────────────────────────────────
+
+/**
+ * Find a prop by id across all buildings. Returns { prop, roofY } or null.
+ * Used to identify the type of a previously-touched prop when the hero exits
+ * the overlap zone (exit-frame detection for clean mook fly-overs).
+ */
+function propById(
+  buildings: readonly Building[],
+  id: number,
+): { prop: RoofProp; roofY: number } | null {
+  for (const b of buildings) {
+    for (const p of b.props) {
+      if (p.id === id) return { prop: p, roofY: b.roofY };
+    }
+  }
+  return null;
+}
 
 /**
  * Classify the hero's interaction with a prop on a rooftop.
@@ -883,7 +900,14 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
   const activeSlideFinal = grounded && slideMs > 0;
 
   // ── 8. Collision detection & resolution ────────────────────────────────────
-  let activeContactId = state.activeContactId;
+  //
+  // Mooks are rechecked EVERY overlap frame so a hero who first overlaps above
+  // the stomp window can still register a stomp as they descend into it.
+  // Hazards and lowbars use the original one-shot-per-new-contact approach.
+  // Clean mook fly-overs (justJumpedMook) are detected on the *exit* frame —
+  // when the hero stops overlapping a mook they neither stomped nor stumbled.
+  const prevContactId = state.activeContactId;
+  let activeContactId: number | null = prevContactId;
   let leadEvent: 'stumble' | 'stomp' | 'dash' | undefined;
   let justStomped    = false;
   let justStumbled   = false;
@@ -909,32 +933,59 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
     }
   }
 
-  if (foundPropData && foundPropId !== activeContactId) {
-    const result = resolveContact(
-      newY, finalHeroVy, activeSlideFinal,
-      foundPropData.prop, foundPropData.roofY,
-    );
+  if (foundPropData !== null) {
     activeContactId = foundPropId;
+    const { prop, roofY: propRoofY } = foundPropData;
+    const isNewContact = foundPropId !== prevContactId;
 
-    if (result === 'stomp') {
-      finalHeroVy    = STOMP_BOUNCE_VELOCITY;
-      finalJumpsUsed = 0;
-      justStomped    = true;
-      stompedPropId  = foundPropId;
-      // Chain stomps get a longer flash so the chain counter is readable.
-      stompFlashMs   = 500 + 150 * state.stompChain;
-      if (!leadEvent) leadEvent = 'stomp';
-    } else if (result === 'stumble') {
-      newStumbleMs = STUMBLE_MS;
-      justStumbled = true;
-      if (!leadEvent) leadEvent = 'stumble';
-    } else if (result === 'clear' && foundPropData.prop.kind === 'lowbar' && activeSlideFinal) {
-      justSlideClear = true;
-    } else if (result === 'clear' && foundPropData.prop.kind === 'mook') {
-      // Hero jumped cleanly over the guard without stomping.
-      justJumpedMook = true;
+    if (prop.kind === 'mook') {
+      // Stomp is re-evaluated every overlap frame so a descending hero clears the
+      // stomp window after the initial contact registers correctly.
+      const result = resolveContact(newY, finalHeroVy, activeSlideFinal, prop, propRoofY);
+      if (result === 'stomp') {
+        finalHeroVy    = STOMP_BOUNCE_VELOCITY;
+        finalJumpsUsed = 0;
+        justStomped    = true;
+        stompedPropId  = foundPropId;
+        // Chain stomps get a longer flash so the chain counter is readable.
+        stompFlashMs   = 500 + 150 * state.stompChain;
+        if (!leadEvent) leadEvent = 'stomp';
+      } else if (result === 'stumble' && isNewContact) {
+        // Grounded into a mook — stumble fires only once (first overlap frame).
+        newStumbleMs = STUMBLE_MS;
+        justStumbled = true;
+        if (!leadEvent) leadEvent = 'stumble';
+      }
+      // 'clear' while airborne: justJumpedMook is set on the exit frame below.
+    } else {
+      // Hazard / lowbar: one-shot resolution on first overlap frame only.
+      if (isNewContact) {
+        const result = resolveContact(newY, finalHeroVy, activeSlideFinal, prop, propRoofY);
+        if (result === 'stumble') {
+          newStumbleMs = STUMBLE_MS;
+          justStumbled = true;
+          if (!leadEvent) leadEvent = 'stumble';
+        } else if (result === 'clear' && prop.kind === 'lowbar' && activeSlideFinal) {
+          justSlideClear = true;
+        }
+      }
     }
-  } else if (!foundPropData) {
+
+  } else {
+    // No prop overlap this frame — check for mook fly-over exit: hero was touching
+    // a mook last frame but cleared it while airborne (neither stomped nor stumbled).
+    if (prevContactId !== null && !justStomped) {
+      const prevPropData = propById(state.buildings, prevContactId);
+      if (
+        prevPropData !== null &&
+        prevPropData.prop.kind === 'mook' &&
+        !state.defeatedPropIds.includes(prevContactId) &&
+        !justStumbled &&
+        !grounded
+      ) {
+        justJumpedMook = true;
+      }
+    }
     activeContactId = null;
   }
 

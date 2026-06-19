@@ -27,6 +27,8 @@ import {
   DASH_DURATION_MS,
   DASH_COOLDOWN_MS,
   STOMP_BOUNCE_VELOCITY,
+  OBSTACLE_HEIGHT,
+  STOMP_WINDOW,
   HERO_HITBOX_W,
   LANDING_SUPPORT_FRAC,
   LEDGE_CATCH_TOL,
@@ -783,5 +785,103 @@ describe('stepChase — chain-stomp integration', () => {
     const next = stepChase(withFlash, NO_INPUT, DT);
     expect(next.stompFlashMs).toBeLessThan(500);
     expect(next.stompFlashMs).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ── mook stomp integration — the main bug-fix suite ───────────────────────────
+//
+// These tests verify that a hero descending onto a mook from above correctly
+// registers a stomp even if the first overlap frame was above the stomp window
+// (previously the one-shot activeContactId guard prevented the re-check).
+
+describe('stepChase — mook stomp integration', () => {
+  /** Minimal two-building course with a single mook. */
+  function makeCourseMook(): Building[] {
+    return [
+      {
+        id: 0, x: 0, width: 30, roofY: 0,
+        props: [{ id: 0, kind: 'mook', x: 10, width: 2.5 }],
+      },
+    ];
+  }
+
+  it('registers a stomp when hero descends through the stomp window during overlap', () => {
+    // Hero: horizontally overlapping the mook (distance=10..12.2, mook=10..12.5),
+    // starting well above the stomp window (heroY=8 > mookTop+STOMP_WINDOW=6.5),
+    // descending fast enough to enter the window within ~6 frames.
+    // mookTop = roofY + OBSTACLE_HEIGHT = 0 + 4 = 4 wu
+    // stomp window ceiling = mookTop + STOMP_WINDOW = 4 + 2.5 = 6.5 wu
+    const mookId = 0;
+    const s0: ChaseState = {
+      ...fresh(),
+      buildings: makeCourseMook(),
+      distance:        10,
+      heroY:           8,    // above stomp window ceiling (6.5)
+      heroVy:          -15,  // descending — reaches 6.5 in ~6 frames at 60 fps
+      prevHeroY:       8.5,
+      heroRoofY:       0,
+      jumpsUsed:       1,
+      activeContactId: null,
+    };
+
+    let s = s0;
+    let stomped = false;
+    for (let i = 0; i < 40; i++) {
+      s = stepChase(s, NO_INPUT, DT);
+      if (s.justStomped) { stomped = true; break; }
+    }
+
+    expect(stomped).toBe(true);
+    expect(s.defeatedPropIds).toContain(mookId);
+    expect(s.heroVy).toBe(STOMP_BOUNCE_VELOCITY);
+  });
+
+  it('adds stomped mook to defeatedPropIds so it is skipped on subsequent frames', () => {
+    const s0: ChaseState = {
+      ...fresh(),
+      buildings: makeCourseMook(),
+      distance: 10, heroY: 8, heroVy: -15, prevHeroY: 8.5, heroRoofY: 0,
+      jumpsUsed: 1, activeContactId: null,
+    };
+    let s = s0;
+    for (let i = 0; i < 40; i++) {
+      s = stepChase(s, NO_INPUT, DT);
+      if (s.justStomped) break;
+    }
+    // Advance another frame after stomp — mook should be in defeatedPropIds
+    // and the scan must skip it (no re-stomp, no stumble).
+    const after = stepChase(s, NO_INPUT, DT);
+    expect(after.justStomped).toBe(false);
+    expect(after.justStumbled).toBe(false);
+  });
+
+  it('stumbling into a grounded mook fires justStumbled exactly once across many overlapping frames', () => {
+    // Hero grounded on the same roof as the mook — runs into it.
+    const s0: ChaseState = {
+      ...fresh(),
+      buildings: makeCourseMook(),
+      distance:        10,
+      heroY:           0,  // grounded at roofY
+      heroVy:          0,
+      prevHeroY:       0,
+      heroRoofY:       0,
+      jumpsUsed:       0,
+      activeContactId: null,
+    };
+
+    let s = s0;
+    let stumbleCount = 0;
+    for (let i = 0; i < 15; i++) {
+      s = stepChase(s, NO_INPUT, DT);
+      if (s.justStumbled) stumbleCount++;
+    }
+
+    // Stumble fires exactly once — never re-fired while the mook is still overlapping.
+    expect(stumbleCount).toBe(1);
+  });
+
+  it('OBSTACLE_HEIGHT and STOMP_WINDOW are positive constants', () => {
+    expect(OBSTACLE_HEIGHT).toBeGreaterThan(0);
+    expect(STOMP_WINDOW).toBeGreaterThan(0);
   });
 });

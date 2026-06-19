@@ -70,6 +70,7 @@ function buildPublicSnapshot(s: GameState) {
     deepestMineFloor: s.deepestMineFloor ?? 0,
     deepestForestStage: s.deepestForestStage ?? 0,
     deepestArenaTier: s.deepestArenaTier ?? 0,
+    deepestTacticsTier: s.deepestTacticsTier ?? 0,
     lastActiveISO: s.lastActiveISO ?? null,
   };
 }

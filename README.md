@@ -1,11 +1,12 @@
 # Habits RPG
 
-A life-progress RPG where real-life habits build your character, and a turn-based
-boss battle gates each level-up. Local-first web app (no account, no server) —
-all progress is saved to your browser's `localStorage`.
+A gamified habit tracker wrapped in a fantasy RPG progression system. Log
+real-life habits to earn XP, level up your character, spend Energy on minigames,
+and optionally play with friends in real-time co-op.
 
-Built from [`habits_rpg_gameplay_design.md`](./habits_rpg_gameplay_design.md),
-MVP scope (design Section 16).
+Built from [`habits_rpg_gameplay_design.md`](./habits_rpg_gameplay_design.md).
+Architecture and contribution rules: [`CLAUDE.md`](./CLAUDE.md).
+Full doc index: [`docs/INDEX.md`](./docs/INDEX.md).
 
 ## Run it
 
@@ -19,44 +20,88 @@ Other scripts:
 ```bash
 npm run build      # type-check + production build to dist/
 npm run preview    # serve the production build
-npm test           # run the Vitest suite
-npm run typecheck  # tsc --noEmit
+npm test           # run the Vitest suite (Node env, ~38 test files)
+npm run typecheck  # tsc --noEmit only
 ```
 
-## What's in the MVP
+## What's built
 
-- **Habits** — create yes/no or quantity habits, each assigned to one of 8 stats,
-  with difficulty (Easy/Normal/Hard/Epic), frequency, and tags.
-- **XP & stats** — completing habits grants XP (quantity scales by completion %,
-  capped at 150%; returning after a missed day gives a +10% recovery bonus).
-- **Leveling** — total XP across stats sets your *eligible* level
-  (`100 × level^1.5`), but you only level up by **winning a Level-Up Trial**.
-- **Boss battles** — turn-based combat (Attack / Skill / Defend / Item). Your
-  stats drive damage, crits, dodge, healing, and HP. Losing keeps your XP and eases
-  the boss after repeated losses (anti-frustration).
-- **Classes** — at level 10 your two highest stats decide your class from the 8×8
-  chart (ties let you choose). Discovered classes fill a **Class Codex**.
-- **Challenges** — local weekly challenges with goals, time limits, and partial
-  rewards (e.g. *The Scholar's Week*).
-- **Inventory & shop** — potions usable in battle, Streak Freeze to protect a
-  streak, buyable with gold from bosses/challenges.
-- **Mood & nudges** — character mood reflects recent consistency; a gentle warning
-  appears if you pile on too many daily habits.
+### Core loop
+- **Habits** — yes/no or quantity habits, each tied to one of 8 RPG stats
+  (DX/AG/ST/EN/WI/CH/KN/HP), with difficulty, frequency, tags, and suspension.
+- **XP & stats** — habit completions grant stat XP (quantity scales by %, capped
+  at 150%; recovery bonus after a missed day; gear multipliers apply).
+- **Leveling** — total XP drives eligible level (`100 × level^1.5`). Levels 1–4
+  auto-advance; level 5+ requires winning a boss battle (anti-frustration scaling
+  on repeated losses).
+- **Classes** — at level 10 your two highest stats pick from an 8×8 class chart
+  (ties prompt a choice). Discovered classes fill a **Class Codex**.
+- **Challenges** — local single-player weekly challenges (count/streak/rival/etc.),
+  custom-authored challenges with auto-balanced rewards, weekly rotation.
+- **Economy** — gold, materials, crafting, gear (armor/trinket/tool), weapons,
+  spells, and a shop.
+
+### Minigames (spend Energy earned from habits)
+| Minigame | Type | Co-op? |
+|---|---|---|
+| **Dungeon Delve** | Turn-based branching floor descent | No |
+| **Deep Mine** | Real-time grid crawler, dig ore, fight monsters | Yes (Mine) |
+| **Wild Forest** | Real-time grid crawler, forage, fight beasts | Yes (Forest) |
+| **The Arena** | Real-time hex boss duel | No |
+| **Hex Tactics** | Turn-based hex skirmish with height advantage | Yes (Tactics) |
+
+### Skill Trials
+Eight stat-specific daily microgames (free, once per calendar day):
+Lockpicking (DX), Rooftop Chase (AG), Armory Break (ST), Long March (EN),
+Spirit Grove (WI), Royal Court (CH), Ancient Library (KN), Last Stand (HP).
+
+### Optional multiplayer backend (Supabase)
+When `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` are set, the app adds:
+- **Accounts** — username/password auth (synthetic-email pattern, no email needed).
+- **Cloud save** — debounced CAS sync to Supabase; existing localStorage save is
+  always the fast path.
+- **Parties** — create/join (6-char invite code), party chat, shared party quests,
+  kick/rename controls, presence (online/activity labels).
+- **Leaderboard** — party or global, sorted by total XP.
+- **Real-time co-op** — Broadcast-channel sync for Deep Mine, Wild Forest, and
+  Hex Tactics (mine/forest = 10 Hz host-authoritative; tactics = event-driven).
+
+Without env vars the app is fully functional as a single-player, offline,
+localStorage-only app — no account, no server.
 
 ## Architecture
 
 ```
 src/
-  engine/   Pure, framework-free game rules (fully unit-tested)
-  store/    Zustand store (+ persist) orchestrating the engine
-  components/, views/   React UI (thin — no game math here)
+  engine/        Pure, framework-free game rules (deterministic, RNG-injected)
+  engine/__tests__/  Unit tests for all engine modules
+  content/       Static data tables (items, weapons, gear, spells, biomes, …)
+  store/         Single Zustand store orchestrating the engine; selectors
+  store/__tests__/   Store integration tests
+  hooks/         RAF timing loops (mining/forest/arena/chase) + network hooks
+  net/           Supabase layer — env, auth, cloudSave, party, coop/
+  views/         Tab-level React screens
+  components/    Feature-grouped UI components
+  lib/           Utilities: Tailwind class merging, sprite/art helpers, SFX
+  assets/        Pixel-art sprites + minigame tiles
 ```
 
-All numeric rules live in `src/engine/*` and are covered by tests under
-`src/engine/__tests__` and `src/store/__tests__`. Tech: React 18, TypeScript, Vite,
-Tailwind, Zustand, Vitest.
+Strict layering: `engine` (pure) → `content` (data) → `store` (orchestration)
+→ `hooks` (timing) → `views`/`components` (UI), with `net/` as the only layer
+that reads the environment or calls the network.
 
-## Not yet built (post-MVP backlog)
+Tech: React 18, TypeScript 5.6, Vite 5.4, Zustand 4.5, Tailwind 3.4, Vitest 2.1,
+Supabase (optional).
 
-Dungeon expeditions, party raids, skill trials, crafting, cosmetics art, seasonal
-content, story mode, prestige, and real multiplayer (needs a backend).
+## Backend setup (optional)
+
+1. Copy `.env.example` → `.env.local` and fill in your Supabase URL + anon key.
+2. Apply the SQL migrations **manually** in the Supabase dashboard SQL editor, in
+   order: `supabase/migrations/0001` → `0002` → `0003` → `0004` → `0005`.
+   (There is no migration runner — apply each file once.)
+3. `npm run dev` — the auth gate and multiplayer features will activate.
+
+## Deploy
+
+Vercel, static `dist/` with SPA rewrite (`vercel.json`). Set the two
+`VITE_SUPABASE_*` env vars in Vercel's project settings to enable the backend.

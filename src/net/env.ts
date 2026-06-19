@@ -3,8 +3,9 @@
  *
  * `src/net/` is the only layer allowed to touch the network / environment — the
  * pure engine never imports from here, and the store calls into `src/net/` rather
- * than reading `import.meta.env` directly. These accessors are scaffolding for
- * Phase 1 (Supabase auth + cloud save); they are unused until then.
+ * than reading `import.meta.env` directly. These accessors are the single place
+ * the codebase reads `VITE_SUPABASE_*` env vars; all of `src/net/` depends on
+ * them.
  *
  * Values come from `.env.local` in dev (see `.env.example`) and from the host's
  * build-time env vars in CI/production. Only `VITE_`-prefixed vars are exposed to

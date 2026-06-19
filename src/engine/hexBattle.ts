@@ -617,6 +617,12 @@ function recomputeHighlights(s: HexBattleState): void {
   }
 }
 
+/** Re-derive reachable/targetable for s.player + s.selected; mutates s in place.
+ *  Called by coopApplyTactics after re-keying the player field to the local client's hero. */
+export function recomputeClientHighlights(s: HexBattleState): void {
+  recomputeHighlights(s);
+}
+
 // --- Player actions -----------------------------------------------------------------------------
 /** Select an action (move / attack / spell) and refresh the highlight caches. */
 export function selectAction(state: HexBattleState, action: SelectedAction): HexBattleState {

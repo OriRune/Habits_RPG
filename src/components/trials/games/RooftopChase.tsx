@@ -496,9 +496,12 @@ function RooftopChaseRun({ onRunDone }: { onRunDone: (r: RunResult) => void }) {
   const spawnPct = Math.min(1, distance / CHASER_SPAWN_DISTANCE);
 
   // Visible buildings
-  const allBuildings     = state.buildings as Building[];
-  const viewEndX         = distance + VIEW_W / PX_PER_WU + 6;
-  const viewStartX       = distance - 4;
+  const allBuildings = state.buildings as Building[];
+  const viewEndX     = distance + VIEW_W / PX_PER_WU + 6;
+  // Left cull: keep buildings until their right edge scrolls past the actual screen
+  // left edge.  HERO_X_PX px from hero → x=0, plus a small margin for the chaser
+  // (up to CHASER_MAX_GAP ≈ 28 wu behind hero).
+  const viewStartX   = distance - (HERO_X_PX / PX_PER_WU) - 6;
   const visibleBuildings = allBuildings.filter(
     (b) => b.x + b.width >= viewStartX && b.x <= viewEndX,
   );
@@ -526,6 +529,13 @@ function RooftopChaseRun({ onRunDone }: { onRunDone: (r: RunResult) => void }) {
   }, []);
 
   // ── Run-done detection — fires after the appropriate animation delay ───────
+  //
+  // Dep array is [state.done] — intentionally narrow.  score / distance / justFell
+  // are final and stable the moment done flips to true (the RAF loop stops), so
+  // capturing them in one effect run is correct.  Without this, any re-render
+  // triggered by lingering state (dust puffs, nearMissAnim timers, etc.) would
+  // cancel and re-schedule the timeout, and the runDoneCalledRef guard would
+  // prevent rescheduling, so onRunDone would never fire.
   const runDoneCalledRef = useRef(false);
   useEffect(() => {
     if (!state.done || runDoneCalledRef.current) return;
@@ -537,7 +547,8 @@ function RooftopChaseRun({ onRunDone }: { onRunDone: (r: RunResult) => void }) {
       delay,
     );
     return () => clearTimeout(t);
-  });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.done]);
 
   // ── Near-miss flash (stretches one-frame event to 700 ms) ──────────────────
   const [nearMissAnim, setNearMissAnim] = useState(false);
