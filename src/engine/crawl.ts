@@ -289,6 +289,35 @@ export function manhattan(a: { r: number; c: number }, b: { r: number; c: number
 }
 
 // ---------------------------------------------------------------------------
+// Phase 1 — Dash + charge constants & stat-scaling formulas
+// ---------------------------------------------------------------------------
+
+/** Base cooldown between dashes (ms). Reduced by Agility via {@link dashCooldown}. */
+export const DASH_BASE_CD_MS = 2000;
+/** How many swing intervals (of 240 ms each) the attack button must be held to charge. */
+export const CHARGE_SWING_COUNT = 2;
+/** Damage multiplier applied to a charged/heavy swing. */
+export const CHARGE_DAMAGE_MULT = 1.75;
+/** How long a staggered monster is briefly frozen after a charged hit (ms). */
+export const STAGGER_MS = 500;
+
+/**
+ * Dash cooldown in ms, scaling down with Agility. A high-AG character can dash every
+ * ~800 ms (the cap); low-AG characters wait up to 2 seconds between dashes.
+ */
+export function dashCooldown(agLevel: number): number {
+  return Math.max(800, DASH_BASE_CD_MS - agLevel * 40);
+}
+
+/**
+ * Move cadence in ms, scaling down slightly with Agility. Capped at 100 ms so the
+ * player never moves so fast the viewport can't keep up.
+ */
+export function moveInterval(agLevel: number): number {
+  return Math.max(100, 150 - agLevel * 2);
+}
+
+// ---------------------------------------------------------------------------
 // Shared monster combat types (extended by MineMonsterDef / ForestBeastDef)
 // ---------------------------------------------------------------------------
 
@@ -303,4 +332,71 @@ export interface MonsterCombatStats {
   weakTo?: StatId[];
   /** Stats this monster resists (damage × 0.6). */
   resistTo?: StatId[];
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — In-run boon type
+// ---------------------------------------------------------------------------
+
+/**
+ * A permanent power-up for the current run only.  Boons are stored as key
+ * strings on run state (`activeBoons: string[]`); their effects are resolved by
+ * the pure reducers in `src/content/boons.ts` — no closures, fully serialisable.
+ * Keys must match entries in `BOONS` in that file.
+ */
+export interface CrawlBoon {
+  key: string;
+  name: string;
+  desc: string;
+  /** Glyph / emoji fallback; PNG art can be wired via minigameArt later. */
+  icon: string;
+  /** Which crawler this boon can appear in. */
+  game: 'mine' | 'forest' | 'both';
+  /** ×weapon damage (strike/act melee branch). */
+  meleeMult?: number;
+  /** Flat contact-damage reduction. */
+  defenseBonus?: number;
+  /** Move speed boost: moveIntervalMs = base / moveMult. */
+  moveMult?: number;
+  /** Dash-cooldown multiplier (≤1 = faster): dashCooldownMs = base * dashCdMult. */
+  dashCdMult?: number;
+  /** ×ore/chop/gather drop quantity. */
+  yieldMult?: number;
+  /** Forest sight radius (+N tiles). */
+  sightBonus?: number;
+  /** Charged swing needs N fewer hold-intervals (loop-side). */
+  chargeReduce?: number;
+  /** Flat +max HP on pickup; also instantly heals that amount. */
+  maxHpBonus?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 — Screen-shake helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Pure, deterministic shake-offset helper.
+ *
+ * Returns the (sx, sy) CSS-pixel offset to add to the world-container translate
+ * for one rAF frame of camera shake.  randX / randY must be in [0, 1] — callers
+ * pass `Math.random()` each frame; tests pass fixed values for assertions.
+ *
+ * Decay model: quadratic ease-out so the shake front-loads the energy and
+ * settles smoothly.  Y-axis is damped to 60 % of X so the camera feels natural
+ * (heavy horizontal bias).
+ */
+export function shakeOffset(
+  mag: number,
+  elapsed: number,
+  dur: number,
+  randX: number,
+  randY: number,
+): { sx: number; sy: number } {
+  if (mag <= 0 || dur <= 0 || elapsed >= dur) return { sx: 0, sy: 0 };
+  const k = 1 - elapsed / dur;        // linear falloff 1 → 0
+  const amp = mag * k * k;             // quadratic ease-out
+  return {
+    sx: (randX * 2 - 1) * amp,
+    sy: (randY * 2 - 1) * amp * 0.6,
+  };
 }

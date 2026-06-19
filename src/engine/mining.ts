@@ -21,7 +21,17 @@ import { mergeReward } from './dungeon';
 import { attackRoll, spellDamageRoll, spellHealAmount } from './combat';
 import { getSpell, SCHOOL_STAT } from './spells';
 import type { WeaponDef } from './weapons';
-import { MINE_ORES, MINE_MONSTERS, type MineOreDef } from '@/content/mining';
+import { MINE_ORES, MINE_MONSTERS, MINE_GUARDIAN_FLOORS, type MineOreDef } from '@/content/mining';
+import {
+  BOONS,
+  boonMeleeMult,
+  boonDefenseBonus,
+  boonYieldMult,
+  boonMoveMult,
+  boonDashCdMult,
+  rollBoonChoices,
+} from '@/content/boons';
+import { bandForFloor } from './crawlBiomes';
 import {
   type Dir,
   type RNG,
@@ -43,6 +53,11 @@ import {
   RING_DURATION_MS,
   STA_REGEN_MS,
   MP_REGEN_MS,
+  DASH_BASE_CD_MS,
+  STAGGER_MS,
+  CHARGE_DAMAGE_MULT,
+  dashCooldown,
+  moveInterval,
 } from './crawl';
 
 export type { Dir, RNG } from './crawl';
@@ -66,6 +81,8 @@ export const MINE_COLS = MINE_BASE_COLS;
 
 /** Run entry gate. */
 export const MINE_ENERGY_COST = 2;
+/** Fraction of the haul a fallen miner keeps on death; mirrors FOREST_DEATH_KEEP. */
+export const MINE_DEATH_KEEP = 0.5;
 
 /** Stamina spent per pick swing (rock / ore). */
 const STRIKE_STA_COST = 1;
@@ -82,7 +99,7 @@ const SPELL_CD_MS = 500;
 // Tile types
 // ---------------------------------------------------------------------------
 
-export type MineTileKind = 'floor' | 'rock' | 'ore' | 'bedrock' | 'shaft' | 'entrance';
+export type MineTileKind = 'floor' | 'rock' | 'ore' | 'bedrock' | 'shaft' | 'entrance' | 'boon';
 
 export interface MineTile {
   kind: MineTileKind;
@@ -133,6 +150,11 @@ export interface MineSnapshot {
   weapon: WeaponDef;
   knownSpells: string[];
   pickaxePower: number;
+  /** Agility level — drives dash cooldown and move speed. */
+  agLevel: number;
+  /** Active boon keys carried from the previous floor. Optional so callers that
+   *  construct a snapshot literal without boons (e.g. beginMining) don't break. */
+  activeBoons?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -171,10 +193,17 @@ export interface MineState {
   // Loot
   haul: Reward;
   // Status
-  status: 'active' | 'ended' | 'banking';
+  status: 'active' | 'ended' | 'banking' | 'choosing';
   lastHitAtMs: number;
   deepest: number;
   killsThisFloor: number;
+  /** Accumulated run score: +10×floor per kill, +100×floor on each descent. */
+  score: number;
+  // Phase 5: in-run boons
+  /** Keys of boons active for this run (empty at floor 1; carried across floors via snapshot). */
+  activeBoons: string[];
+  /** Keys of the 3 offered boon choices; null when no choice is pending. */
+  pendingBoonChoice: string[] | null;
   // Spell effects
   runes: CrawlRune[];
   ringOfFire: CrawlRingOfFire | null;
@@ -183,6 +212,17 @@ export interface MineState {
   lastSpellMs: number;
   // Running rune ID counter
   nextRuneId: number;
+  // Phase 1: dash + AG-derived timing
+  /** Timestamp of the last successful dash (ms). Negative = ready immediately. */
+  lastDashMs: number;
+  /** Dash cooldown computed from AG at run start (ms). */
+  dashCooldownMs: number;
+  /** Move cadence computed from AG at run start (ms). */
+  moveIntervalMs: number;
+  /** Agility level snapshot — preserved across floors. */
+  agLevel: number;
+  /** Position of the descent shaft on the current floor — for the HUD directional indicator. */
+  shaftPos?: { r: number; c: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -194,7 +234,9 @@ export function tileAt(state: MineState, r: number, c: number): MineTile | undef
 }
 
 export function isWalkable(tile: MineTile | undefined): boolean {
-  return !!tile && (tile.kind === 'floor' || tile.kind === 'entrance' || tile.kind === 'shaft');
+  return !!tile && (
+    tile.kind === 'floor' || tile.kind === 'entrance' || tile.kind === 'shaft' || tile.kind === 'boon'
+  );
 }
 
 export function monsterAt(state: MineState, r: number, c: number): MineMonster | undefined {
@@ -221,18 +263,33 @@ function nearestMonster(state: MineState): MineMonster | null {
   return best;
 }
 
-/** Kill-drop: loot pool scales with floor depth. */
+/** Kill-drop: loot pool scales with floor depth and biome band. */
 function monsterLootPool(floor: number): Array<{ kind: 'gold' } | { kind: 'material'; material: string }> {
   const pool: Array<{ kind: 'gold' } | { kind: 'material'; material: string }> = [{ kind: 'gold' }];
   pool.push({ kind: 'material', material: 'bronze_bar' });
   if (floor >= 3) pool.push({ kind: 'material', material: 'iron_bar' });
   if (floor >= 6) pool.push({ kind: 'material', material: 'crystals' });
+  if (floor >= 7) pool.push({ kind: 'material', material: 'frost_quartz' }); // frozen band
   if (floor >= 10) pool.push({ kind: 'material', material: 'gemstone' });
+  if (floor >= 15) pool.push({ kind: 'material', material: 'obsidian' }); // magma band
   return pool;
 }
 
+/** Flat score bonus awarded for killing a band-gate guardian. */
+const GUARDIAN_SCORE_BONUS = 500;
+
+/** Guaranteed treasure loot when a band-gate guardian is slain. */
+function guardianTreasure(floor: number, rng: RNG): Reward {
+  if (floor <= 7) {
+    // Stone Golem: Rocky → Frozen gate; reward previews Frozen-band materials.
+    return { gold: randInt(30, 50, rng), materials: { frost_quartz: 3, iron_bar: 2 } };
+  }
+  // Magma Colossus: Frozen → Magma gate; reward previews Magma-band materials.
+  return { gold: randInt(60, 100, rng), materials: { obsidian: 3, frost_quartz: 2 } };
+}
+
 function avgNodeDurability(floor: number): number {
-  const ores = Object.values(MINE_ORES).filter((o) => o.floorMin <= floor && o.weight > 0);
+  const ores = eligibleOres(floor).filter((o) => o.weight > 0);
   if (ores.length === 0) return 1;
   const totalWeight = ores.reduce((a, o) => a + o.weight, 0);
   return ores.reduce((a, o) => a + o.durability * o.weight, 0) / totalWeight;
@@ -251,7 +308,10 @@ export function oreYield(oreKey: string, rng: RNG): Reward {
 }
 
 function eligibleOres(floor: number): MineOreDef[] {
-  return Object.values(MINE_ORES).filter((o) => o.floorMin <= floor);
+  const bandId = bandForFloor(floor).id;
+  return Object.values(MINE_ORES).filter(
+    (o) => o.floorMin <= floor && (!o.band || o.band === bandId),
+  );
 }
 
 function weightedOre(floor: number, rng: RNG): MineOreDef {
@@ -275,6 +335,9 @@ function weightedOre(floor: number, rng: RNG): MineOreDef {
  * ore clusters, energy gems, and monsters on the open floor.
  */
 export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): MineState {
+  // Carry boons forward from the snapshot (absent on the very first call from beginMining).
+  const activeBoons: string[] = snapshot.activeBoons ?? [];
+
   const band = Math.floor((floor - 1) / MINE_SCALE_BAND);
   const rows = Math.min(MINE_MAX_ROWS, MINE_BASE_ROWS + band * MINE_SCALE_PER_BAND);
   const cols = Math.min(MINE_MAX_COLS, MINE_BASE_COLS + band * MINE_SCALE_PER_BAND);
@@ -474,7 +537,10 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
     const j = Math.floor(rng() * (i + 1));
     [mFloor[i], mFloor[j]] = [mFloor[j], mFloor[i]];
   }
-  const eligibleMon = Object.values(MINE_MONSTERS).filter((m) => m.floorMin <= floor);
+  const currentBandId = bandForFloor(floor).id;
+  const eligibleMon = Object.values(MINE_MONSTERS).filter(
+    (m) => !m.isGuardian && m.floorMin <= floor && (!m.band || m.band === currentBandId),
+  );
   const monCount = eligibleMon.length === 0 ? 0 : Math.min(10, 2 + Math.floor(floor * 0.6));
   const monsters: MineMonster[] = [];
   for (let i = 0; i < monCount && i < mFloor.length; i++) {
@@ -489,6 +555,60 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
       frozenUntilMs: 0,
       poisonDmg: 0, poisonNextTickMs: 0, poisonExpiresMs: 0,
     });
+  }
+
+  // --- Step 9: band-gate guardian (deterministic, once per boundary floor) ---
+  const guardianKey = MINE_GUARDIAN_FLOORS[floor];
+  if (guardianKey) {
+    const gDef = MINE_MONSTERS[guardianKey];
+    if (gDef) {
+      // Find a floor cell distant from both the entrance and the shaft.
+      const shaftCell = (() => {
+        for (let r = 0; r < rows; r++)
+          for (let c = 0; c < cols; c++)
+            if (floor_[r][c].kind === 'shaft') return { r, c };
+        return { r: rows - 3, c: Math.floor(cols / 2) };
+      })();
+      const guardianCells = mFloor.filter(
+        ([r, c]) =>
+          manhattan({ r, c }, { r: startR, c: startC }) > 8 &&
+          manhattan({ r, c }, shaftCell) > 4,
+      );
+      const placed = guardianCells[Math.floor(rng() * guardianCells.length)];
+      if (placed) {
+        const [gr, gc] = placed;
+        monsters.push({
+          id: `guardian-${floor}`,
+          key: guardianKey,
+          r: gr, c: gc,
+          hp: gDef.hp, maxHp: gDef.hp,
+          readyAtMs: 0,
+          frozenUntilMs: 0,
+          poisonDmg: 0, poisonNextTickMs: 0, poisonExpiresMs: 0,
+        });
+      }
+    }
+  }
+
+  // --- Step 10: boon cache (~1-in-3 chance on non-guardian floors) ---
+  // Placed on a floor cell far from the entrance and BFS-reachable.
+  if (!guardianKey && rng() < 0.34) {
+    const boonCands: [number, number][] = [];
+    for (let r = 1; r < rows - 1; r++) {
+      for (let c = 1; c < cols - 1; c++) {
+        if (
+          floor_[r][c].kind === 'floor' &&
+          manhattan({ r, c }, { r: startR, c: startC }) > 5 &&
+          reachable.has(`${r},${c}`)
+        ) {
+          boonCands.push([r, c]);
+        }
+      }
+    }
+    if (boonCands.length > 0) {
+      const [br, bc] = boonCands[Math.floor(rng() * boonCands.length)];
+      floor_[br][bc] = { kind: 'boon' };
+    }
   }
 
   return {
@@ -517,12 +637,22 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
     lastHitAtMs: -MINE_IFRAME_MS,
     deepest: floor,
     killsThisFloor: 0,
+    score: 0,
     runes: [],
     ringOfFire: null,
     ringNextHitMs: {},
     playerStatuses: [],
     lastSpellMs: -SPELL_CD_MS,
     nextRuneId: 1,
+    // Phase 1: dash + speed derived from AG; Phase 5: boon multipliers applied immediately
+    lastDashMs: -DASH_BASE_CD_MS,
+    dashCooldownMs: Math.round(dashCooldown(snapshot.agLevel) * boonDashCdMult(activeBoons)),
+    moveIntervalMs: Math.round(moveInterval(snapshot.agLevel) / boonMoveMult(activeBoons)),
+    agLevel: snapshot.agLevel,
+    // Phase 5: boons
+    activeBoons,
+    pendingBoonChoice: null,
+    shaftPos: { r: shaftR, c: shaftC },
   };
 }
 
@@ -542,25 +672,29 @@ export function mineSnapshot(state: MineState): MineSnapshot {
     weapon: state.weapon,
     knownSpells: state.knownSpells,
     pickaxePower: state.pickaxePower,
+    agLevel: state.agLevel,
+    activeBoons: state.activeBoons,
   };
 }
 
-/** Descend the shaft into a richer, deeper floor — carries HP/sta/mp/haul forward. */
+/** Descend the shaft into a richer, deeper floor — carries HP/sta/mp/haul/score forward. */
 export function descend(state: MineState, rng: RNG): MineState {
   if (!canDescend(state) || state.status !== 'active') return state;
-  const next = generateMine(state.floor + 1, mineSnapshot(state), rng);
+  const nextFloor = state.floor + 1;
+  const next = generateMine(nextFloor, mineSnapshot(state), rng);
   return {
     ...next,
     hp: state.hp,
     sta: Math.min(state.maxSta, state.sta + Math.round(state.maxSta * 0.25)), // partial refill
     mp: Math.min(state.maxMp, state.mp + Math.round(state.maxMp * 0.25)),
     haul: state.haul,
-    deepest: Math.max(state.deepest, state.floor + 1),
+    deepest: Math.max(state.deepest, nextFloor),
+    score: state.score + 100 * nextFloor,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Player movement
+// Player movement + dash (Phase 1)
 // ---------------------------------------------------------------------------
 
 /** Turn to face `dir`; step into the cell if walkable and unoccupied. */
@@ -576,31 +710,74 @@ export function tryMove(state: MineState, dir: Dir): MineState {
   };
 }
 
+/**
+ * Dash in `dir` — skips 1 or 2 cells (2 if clear, else 1), consuming the dash
+ * cooldown and briefly granting i-frame immunity by setting `lastHitAtMs`.
+ * No-ops when on cooldown or when there's nowhere to land.
+ */
+export function tryDash(state: MineState, dir: Dir, nowMs: number): MineState {
+  if (state.status !== 'active') return state;
+  const cd = state.dashCooldownMs ?? DASH_BASE_CD_MS;
+  if (nowMs - (state.lastDashMs ?? -cd) < cd) return state;
+
+  const [dr, dc] = DIRS[dir];
+  let destR = state.player.r;
+  let destC = state.player.c;
+
+  // Prefer 2-cell dash; fall back to 1 if blocked.
+  for (let steps = 2; steps >= 1; steps--) {
+    const r = state.player.r + dr * steps;
+    const c = state.player.c + dc * steps;
+    if (isWalkable(tileAt(state, r, c)) && !monsterAt(state, r, c)) {
+      destR = r;
+      destC = c;
+      break;
+    }
+  }
+
+  if (destR === state.player.r && destC === state.player.c) return state;
+
+  return {
+    ...state,
+    player: { r: destR, c: destC, facing: dir },
+    lastDashMs: nowMs,
+    lastHitAtMs: nowMs, // i-frame: no contact damage for MINE_IFRAME_MS after the dash
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Player attack (auto-context: weapon vs monster, pickaxe vs rock)
 // ---------------------------------------------------------------------------
 
 function killMonster(state: MineState, mon: MineMonster, rng: RNG): MineState {
-  const killBonus = state.killsThisFloor + 1;
-  const swingsToKill = Math.ceil(mon.maxHp / Math.max(1, state.meleePower));
-  const qty = Math.max(1, Math.round(swingsToKill / avgNodeDurability(state.floor)) + killBonus);
-  const pool = monsterLootPool(state.floor);
-  const pick = pool[Math.floor(rng() * pool.length)];
-  const drop: Reward =
-    pick.kind === 'gold' ? { gold: qty } : { materials: { [pick.material]: qty } };
-  return {
+  const def = MINE_MONSTERS[mon.key];
+  const isGuardian = !!def?.isGuardian;
+  let drop: Reward;
+  if (isGuardian) {
+    drop = guardianTreasure(state.floor, rng);
+  } else {
+    const killBonus = state.killsThisFloor + 1;
+    const swingsToKill = Math.ceil(mon.maxHp / Math.max(1, state.meleePower));
+    const qty = Math.max(1, Math.round(swingsToKill / avgNodeDurability(state.floor)) + killBonus);
+    const pool = monsterLootPool(state.floor);
+    const pick = pool[Math.floor(rng() * pool.length)];
+    drop = pick.kind === 'gold' ? { gold: qty } : { materials: { [pick.material]: qty } };
+  }
+  const afterKill: MineState = {
     ...state,
     monsters: state.monsters.filter((m) => m.id !== mon.id),
     haul: mergeReward(state.haul, drop),
     killsThisFloor: state.killsThisFloor + 1,
+    score: state.score + 10 * state.floor + (isGuardian ? GUARDIAN_SCORE_BONUS : 0),
   };
+  // Guardian kill: offer a boon choice (pauses the run via 'choosing' status).
+  if (isGuardian) {
+    const choices = rollBoonChoices('mine', afterKill.activeBoons, rng);
+    return { ...afterKill, pendingBoonChoice: choices, status: 'choosing' };
+  }
+  return afterKill;
 }
 
-/**
- * Swing the pick at the faced cell.  Auto-context:
- *   • monster → weapon attack (uses equipped weapon's stat, bonus, staminaCost)
- *   • rock/ore → pickaxe mining (uses pickaxePower; falls back to 1 if no pick)
- */
 /**
  * Co-op client helper: the id of the monster in the cell the player faces, or
  * null. A guest uses this to send a melee attack-intent to the host (which
@@ -611,7 +788,13 @@ export function facedMonsterId(state: MineState): string | null {
   return monsterAt(state, r, c)?.id ?? null;
 }
 
-export function strike(state: MineState, rng: RNG): MineState {
+/**
+ * Swing at the faced cell.  Auto-context: monster → weapon attack; rock/ore → pickaxe mining.
+ *
+ * @param nowMs  Current timestamp (ms); required for charged-swing stagger timing.
+ * @param charged  If true, applies {@link CHARGE_DAMAGE_MULT} and staggers hit monsters briefly.
+ */
+export function strike(state: MineState, rng: RNG, nowMs = 0, charged = false): MineState {
   if (state.status !== 'active') return state;
   const { r, c } = facedCell(state);
 
@@ -622,7 +805,10 @@ export function strike(state: MineState, rng: RNG): MineState {
     const staCost = state.weapon.staminaCost ?? MELEE_STA_FALLBACK;
     if (state.sta < 1) return state; // need at least 1 sta
     const full = state.sta >= staCost;
-    const power = state.weapon.attackStat === 'DX' ? state.rangedPower : state.meleePower;
+    const basePower = state.weapon.attackStat === 'DX' ? state.rangedPower : state.meleePower;
+    // Charged swing and Iron Arm boon multiply attack power.
+    const boonMult = boonMeleeMult(state.activeBoons);
+    const power = charged ? basePower * CHARGE_DAMAGE_MULT * boonMult : basePower * boonMult;
     const { dealt } = attackRoll(
       power,
       state.weapon.bonus,
@@ -638,11 +824,13 @@ export function strike(state: MineState, rng: RNG): MineState {
     if (newHp <= 0) {
       return killMonster({ ...state, sta: newSta }, mon, rng);
     }
-    return {
-      ...state,
-      sta: newSta,
-      monsters: state.monsters.map((m) => (m.id === mon.id ? { ...m, hp: newHp } : m)),
-    };
+    // Charged hit staggers the monster (brief freeze).
+    const updatedMonsters = state.monsters.map((m) => {
+      if (m.id !== mon.id) return m;
+      if (charged && nowMs > 0) return { ...m, hp: newHp, frozenUntilMs: nowMs + STAGGER_MS };
+      return { ...m, hp: newHp };
+    });
+    return { ...state, sta: newSta, monsters: updatedMonsters };
   }
 
   // --- Rock or ore: pickaxe mining ---
@@ -650,14 +838,36 @@ export function strike(state: MineState, rng: RNG): MineState {
   if (!tile || (tile.kind !== 'rock' && tile.kind !== 'ore')) return state;
   if (state.sta <= 0) return state;
 
-  const pickPower = state.pickaxePower > 0 ? state.pickaxePower : 1;
-  const dur = (tile.durability ?? 1) - pickPower;
+  // ST-scaled mining: +1 effective pick power per 8 Strength levels.
+  const stBonus = Math.floor(state.meleePower / 8);
+  const basePick = state.pickaxePower > 0 ? state.pickaxePower : 1;
+  // Charged swing also boosts mining speed — rounds up so even tier-1 rock is cleared in 1 swing.
+  const effectivePick = charged
+    ? Math.ceil((basePick + stBonus) * CHARGE_DAMAGE_MULT)
+    : basePick + stBonus;
+  const dur = (tile.durability ?? 1) - effectivePick;
   const tiles = state.tiles.map((row) => row.slice());
   let haul = state.haul;
   const oreBroke = dur <= 0 && tile.kind === 'ore';
 
   if (dur <= 0) {
-    if (tile.kind === 'ore' && tile.oreKey) haul = mergeReward(haul, oreYield(tile.oreKey, rng));
+    if (tile.kind === 'ore' && tile.oreKey) {
+      const yieldResult = oreYield(tile.oreKey, rng);
+      // Vein Sense boon: double ore quantity.
+      const yMult = boonYieldMult(state.activeBoons);
+      if (yMult !== 1) {
+        const scaled: typeof yieldResult = {};
+        if (yieldResult.gold) scaled.gold = Math.round(yieldResult.gold * yMult);
+        if (yieldResult.materials) {
+          scaled.materials = Object.fromEntries(
+            Object.entries(yieldResult.materials).map(([k, v]) => [k, Math.round((v ?? 0) * yMult)]),
+          );
+        }
+        haul = mergeReward(haul, scaled);
+      } else {
+        haul = mergeReward(haul, yieldResult);
+      }
+    }
     tiles[r][c] = { kind: 'floor' };
   } else {
     tiles[r][c] = { ...tile, durability: dur };
@@ -740,9 +950,10 @@ export function castSpell(state: MineState, spellKey: string, nowMs: number, rng
     return s;
   }
 
-  // Damage spell: hit nearest monster
+  // Damage spell: hit the monster the player is facing first, then fall back to nearest.
   if (spell.school === 'damage') {
-    const target = nearestMonster(s);
+    const { r: fr, c: fc } = facedCell(s);
+    const target = monsterAt(s, fr, fc) ?? nearestMonster(s);
     if (target) {
       const def = MINE_MONSTERS[target.key];
       const { dealt } = spellDamageRoll(
@@ -803,9 +1014,10 @@ export function castSpell(state: MineState, spellKey: string, nowMs: number, rng
     return s;
   }
 
-  // Illusion spell: apply debuff to nearest monster
+  // Illusion spell: debuff the monster the player is facing first, then fall back to nearest.
   if (spell.school === 'illusion' && spell.status) {
-    const target = nearestMonster(s);
+    const { r: fr2, c: fc2 } = facedCell(s);
+    const target = monsterAt(s, fr2, fc2) ?? nearestMonster(s);
     if (target) {
       const { key, magnitude, turns } = spell.status;
       const durationMs = (turns + Math.floor(s.illusionPower / 8)) * DOT_TICK_MS;
@@ -1003,7 +1215,7 @@ export function stepMonsters(
       const def = MINE_MONSTERS[toucher.key];
       const raw = def?.touchDamage ?? 1;
       const bless = activeStatus(s.playerStatuses, 'bless', nowMs);
-      const dealt = Math.max(1, raw - s.defense - (bless ? bless.magnitude : 0));
+      const dealt = Math.max(1, raw - s.defense - (bless ? bless.magnitude : 0) - boonDefenseBonus(s.activeBoons));
       hp = Math.max(0, hp - dealt);
       lastHitAtMs = nowMs;
       changed = true;
@@ -1085,7 +1297,7 @@ export function coopClientStep(state: MineState, nowMs: number): MineState {
     if (toucher) {
       const raw = MINE_MONSTERS[toucher.key]?.touchDamage ?? 1;
       const bless = activeStatus(s.playerStatuses, 'bless', nowMs);
-      const dealt = Math.max(1, raw - s.defense - (bless ? bless.magnitude : 0));
+      const dealt = Math.max(1, raw - s.defense - (bless ? bless.magnitude : 0) - boonDefenseBonus(s.activeBoons));
       hp = Math.max(0, hp - dealt);
       lastHitAtMs = nowMs;
     }
@@ -1115,5 +1327,35 @@ export function damageMonsterById(
   return {
     ...state,
     monsters: state.monsters.map((m) => (m.id === monsterId ? { ...m, hp: newHp } : m)),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5: boon choice resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the player's boon pick: appends the chosen key to `activeBoons`,
+ * clears `pendingBoonChoice`, restores `status:'active'`, and immediately
+ * recomputes `moveIntervalMs`/`dashCooldownMs` so the speed boon is felt on
+ * the current floor (not only after the next descent).
+ * No-ops if no choice is pending or the key is not in the offered set.
+ */
+export function applyBoonChoice(state: MineState, key: string): MineState {
+  if (state.status !== 'choosing') return state;
+  if (!state.pendingBoonChoice?.includes(key)) return state;
+  const boon = BOONS[key];
+  if (!boon) return state;
+  const activeBoons = [...state.activeBoons, key];
+  const hpBonus = boon.maxHpBonus ?? 0;
+  return {
+    ...state,
+    activeBoons,
+    pendingBoonChoice: null,
+    status: 'active',
+    moveIntervalMs: Math.round(moveInterval(state.agLevel) / boonMoveMult(activeBoons)),
+    dashCooldownMs: Math.round(dashCooldown(state.agLevel) * boonDashCdMult(activeBoons)),
+    maxHp: state.maxHp + hpBonus,
+    hp: Math.min(state.maxHp + hpBonus, state.hp + hpBonus),
   };
 }

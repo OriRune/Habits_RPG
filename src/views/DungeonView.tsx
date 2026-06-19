@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import { Heart, Sparkles, Coins, Zap, Wind, ChevronsDown, DoorOpen } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { ROOM_META, DUNGEON_ENERGY_COST } from '@/engine/dungeon';
@@ -102,6 +103,7 @@ export function DungeonView() {
   const energy = useGameStore((s) => s.character.energy);
   const level = useGameStore((s) => s.character.level);
   const deepestFloor = useGameStore((s) => s.deepestFloor);
+  const dungeonHistory = useGameStore((s) => s.dungeonHistory ?? []);
   const startDungeon = useGameStore((s) => s.startDungeon);
   const dungeonChoosePath = useGameStore((s) => s.dungeonChoosePath);
   const dungeonEncounterChoose = useGameStore((s) => s.dungeonEncounterChoose);
@@ -126,8 +128,10 @@ export function DungeonView() {
               Descend through floors of foes, branching encounters, and treasure. Clear a floor to
               reach a checkpoint, then choose: <span className="text-ink">Bank &amp; Leave</span> with your
               spoils, or <span className="text-ink">Descend Deeper</span> for richer loot and tougher danger.
-              Every fifth floor, a boss guards the way to a new region. Fall mid-floor and you lose
-              most of that floor's haul — so know when to walk away.
+              Every fifth floor, a boss guards the way to a new region.{' '}
+              <span className="text-ink">Fleeing combat</span> ends the run but keeps everything you
+              gathered. <span className="text-ember">Dying mid-floor</span> costs 75% of that floor's
+              gold and all its items — so know when to retreat.
             </div>
           </div>
 
@@ -147,6 +151,23 @@ export function DungeonView() {
             </div>
             <div className="mt-1 text-[11px] text-ink-muted">{milestoneHint(deepestFloor)}</div>
           </div>
+
+          {dungeonHistory.length > 0 && (
+            <div className="rounded-md border border-gold-deep/20 bg-parchment-100/50 p-3">
+              <div className="mb-2 font-display text-xs uppercase tracking-wider text-ink-muted">Recent Runs</div>
+              <div className="space-y-1">
+                {dungeonHistory.slice(0, 5).map((run, i) => (
+                  <div key={i} className="flex items-center justify-between text-xs">
+                    <span className={run.cleared ? 'text-stat-HP' : run.defeated ? 'text-ember' : 'text-ink-muted'}>
+                      {run.cleared ? 'Banked' : run.defeated ? 'Fallen' : 'Fled'}
+                    </span>
+                    <span className="text-ink">Floor {run.depth}</span>
+                    <span className="text-ink-light">{run.date}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <Button onClick={startDungeon} disabled={!canEnter} className="w-full py-2.5">
             {!unlocked
@@ -177,7 +198,9 @@ export function DungeonView() {
           <p className="text-sm text-ink-muted">
             {dungeon.cleared
               ? `You climb out at depth ${dungeon.depth}, laden with everything you banked.`
-              : `You go down at depth ${dungeon.depth}. You keep what you banked at the last checkpoint and a fraction of this floor's haul.`}
+              : dungeon.hp > 0
+                ? `You retreat from depth ${dungeon.depth} with all your gathered spoils intact.`
+                : `You fall at depth ${dungeon.depth}. Your banked spoils are safe, but 75% of that floor's gold is lost and all its items are left behind.`}
           </p>
           <div>
             <div className="mb-1 font-display text-xs uppercase tracking-wider text-ink-muted">Spoils</div>
@@ -196,7 +219,10 @@ export function DungeonView() {
     const nextDepth = dungeon.depth + 1;
     const nextIsBoss = nextDepth % 5 === 0;
     return (
-      <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
+      <div
+        className="mx-auto max-w-2xl space-y-4 px-4 py-5"
+        style={{ '--biome-tint': biome.tint } as CSSProperties}
+      >
         <SectionTitle tone="wood">Depth {dungeon.depth} · {biome.name}</SectionTitle>
         <Panel tone="parchment" className="space-y-4 p-5">
           <SceneArt sceneKey="dungeon:checkpoint" size="lg" caption="Floor cleared" />
@@ -230,7 +256,7 @@ export function DungeonView() {
             <DoorOpen className="h-4 w-4" /> Bank &amp; Leave
           </Button>
           <p className="text-center text-[11px] text-ink-light">
-            Falling on the next floor forfeits most of what you gather there — but not what's banked.
+            Dying on the next floor forfeits 75% of its gold and all its items — fleeing always keeps everything. What's banked here is always safe.
           </p>
         </Panel>
       </div>
@@ -243,7 +269,10 @@ export function DungeonView() {
   const inActiveCombat = inBattle && dungeon.battle?.status === 'active';
 
   return (
-    <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
+    <div
+      className="mx-auto max-w-2xl space-y-4 px-4 py-5"
+      style={{ '--biome-tint': biome.tint } as CSSProperties}
+    >
       <div className="flex items-center justify-between gap-2">
         <SectionTitle tone="wood" className="flex-1">
           Depth {dungeon.depth} · {biome.name}
@@ -266,6 +295,8 @@ export function DungeonView() {
         </Panel>
       )}
 
+      {/* key on nodeId so every room entry triggers the fade-in animation */}
+      <div key={dungeon.nodeId ?? 'path'} className="animate-fade-in">
       {choosingPath ? (
         <FloorMap map={dungeon.map} choices={dungeon.choices} path={dungeon.path} onChoose={dungeonChoosePath} />
       ) : inBattle ? (
@@ -315,6 +346,7 @@ export function DungeonView() {
           onAdvance={dungeonAdvance}
         />
       )}
+      </div>
     </div>
   );
 }
@@ -377,29 +409,43 @@ function EncounterRoom({
     );
   }
   const node = def.nodes[enc.nodeId];
+  if (!node) {
+    return (
+      <Panel tone="parchment" className="space-y-3 p-5">
+        <div className="text-sm text-ink-muted">The passage is quiet.</div>
+        <Button onClick={onAdvance} className="w-full py-2.5">Continue Deeper →</Button>
+      </Panel>
+    );
+  }
 
   return (
     <Panel tone="parchment" className="space-y-3 p-5">
       <SceneArt sceneKey="room:encounter" caption={def.title} />
+
+      {/* Outcome of the last choice — shown before the next prompt so it reads naturally */}
+      {enc.lastText && (
+        <div
+          className={cn(
+            'rounded-md border p-2.5',
+            enc.lastOutcome === 'fail'
+              ? 'border-ember/40 bg-ember/5'
+              : enc.lastOutcome === 'success'
+                ? 'border-gold-deep/40 bg-parchment-300/50'
+                : 'border-gold-deep/20 bg-parchment-100/60',
+          )}
+        >
+          <div className="mb-0.5 font-display text-[10px] uppercase tracking-wider text-ink-muted">
+            {enc.lastOutcome === 'fail' ? 'Outcome — failure' : enc.lastOutcome === 'success' ? 'Outcome — success' : 'Outcome'}
+          </div>
+          <p className="text-sm text-ink">{enc.lastText}</p>
+        </div>
+      )}
+
+      {/* Next narrative node */}
       <div>
         <div className="font-display text-base font-bold text-ink">{def.title}</div>
         <p className="mt-1 text-sm text-ink-muted">{node.text}</p>
       </div>
-
-      {enc.lastText && (
-        <div
-          className={cn(
-            'rounded-md border p-2.5 text-sm',
-            enc.lastOutcome === 'fail'
-              ? 'border-ember/40 bg-ember/5 text-ink'
-              : enc.lastOutcome === 'success'
-                ? 'border-gold-deep/40 bg-parchment-300/50 text-ink'
-                : 'border-gold-deep/20 bg-parchment-100/60 text-ink-muted',
-          )}
-        >
-          {enc.lastText}
-        </div>
-      )}
 
       {enc.done ? (
         <Button onClick={onAdvance} className="w-full py-2.5">

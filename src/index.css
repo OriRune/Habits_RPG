@@ -136,6 +136,18 @@ body {
   100% { opacity: 0;    transform: scale(2.1); }
 }
 
+/* Boon cache tile: pulsing golden glow to distinguish it from rune tiles. */
+@keyframes mine-boon-pulse {
+  0%, 100% { box-shadow: 0 0 6px 2px rgba(255,200,0,0.35), inset 0 0 8px rgba(255,200,0,0.12); }
+  50%       { box-shadow: 0 0 18px 6px rgba(255,200,0,0.70), inset 0 0 16px rgba(255,200,0,0.28); }
+}
+
+/* Shaft tile: slow breathing glow to signal "exit here". */
+@keyframes mine-shaft-pulse {
+  0%, 100% { opacity: 0.7; transform: scale(0.85); }
+  50%       { opacity: 1;   transform: scale(1.05); }
+}
+
 @keyframes loot-float {
   0%   { opacity: 0; transform: translateX(-50%) translateY(0) scale(0.85); }
   15%  { opacity: 1; transform: translateX(-50%) translateY(-6px) scale(1.05); }
@@ -155,6 +167,20 @@ body {
 @keyframes forest-shaft-pulse {
   0%, 100% { opacity: 0.35; }
   50%       { opacity: 1; }
+}
+
+/* Forest: boon card deal-in (staggered per card). */
+@keyframes boon-deal-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.92); }
+  to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+
+/* Forest: guardian arrival flash — fades in, holds briefly, fades out. */
+@keyframes forest-guardian-alert {
+  0%   { opacity: 0; }
+  12%  { opacity: 1; }
+  65%  { opacity: 1; }
+  100% { opacity: 0; }
 }
 
 /* Mine: fine dust particles slowly falling. */
@@ -229,6 +255,22 @@ body {
   100% { opacity: 0;    transform: translate(-50%, -50%) scale(1.6); }
 }
 
+/* Arena: boss death — flash bright white then collapse and fade out. */
+@keyframes arena-boss-die {
+  0%   { transform: scale(1);    filter: brightness(1)   saturate(1); opacity: 1; }
+  18%  { transform: scale(1.55); filter: brightness(4)   saturate(0); opacity: 1; }
+  45%  { transform: scale(1.25); filter: brightness(2)   saturate(0); opacity: 0.8; }
+  100% { transform: scale(0.4);  filter: brightness(0.3) saturate(0); opacity: 0; }
+}
+
+/* Arena: boss phase transition — swell with a color shift then return to normal. */
+@keyframes arena-boss-phase {
+  0%   { transform: scale(1);   filter: brightness(1); }
+  22%  { transform: scale(1.4); filter: brightness(3.5) saturate(2) hue-rotate(160deg); }
+  55%  { transform: scale(1.1); filter: brightness(1.8); }
+  100% { transform: scale(1);   filter: brightness(1); }
+}
+
 /* ── Hex Tactics effects ──────────────────────────────────────────────────
    Driven by the engine's effect queue; the overlay sets --dx/--dy/--rot for
    the arrow so a single keyframe translates along the shot. */
@@ -296,8 +338,51 @@ body {
   100% { opacity: 0;   transform: translate(-50%, -40%) scale(0.6); }
 }
 
+/* Damage / heal floater — number rises and fades above the struck unit. */
+@keyframes tactics-floater {
+  0%   { opacity: 1;   transform: translate(-50%, -100%) scale(1); }
+  60%  { opacity: 1;   transform: translate(-50%, -200%) scale(1.15); }
+  100% { opacity: 0;   transform: translate(-50%, -280%) scale(0.9); }
+}
+
+/* Live unit — gentle opacity pulse so alive units feel present; dead units are removed
+   from the array entirely, so this fires only on living enemies and the player. */
+@keyframes tactics-idle-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.72; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   [style*='tactics-'] { animation-duration: 1ms !important; }
+}
+
+/* ── Phase 6 — Crawler visual juice ────────────────────────────────────────── */
+
+/* Per-entity hit flash: quick brightness flare + red glow on the entity wrapper. */
+@keyframes crawler-hit {
+  0%,20% { filter: brightness(3) drop-shadow(0 0 8px rgba(239,68,68,0.95)); }
+  60%    { filter: brightness(1.6) drop-shadow(0 0 4px rgba(239,68,68,0.50)); }
+  100%   { filter: none; }
+}
+.crawler-hit-flash {
+  animation: crawler-hit 0.22s ease-out forwards;
+}
+
+/* Floor/stage descent transition: a fast colour-tinted flash. The overlay
+   sets background-color to the band's accent hue via inline style. */
+@keyframes crawl-wipe {
+  0%    { opacity: 0.55; transform: scale(1.015); }
+  30%   { opacity: 0.55; }
+  100%  { opacity: 0;    transform: scale(1); }
+}
+
+/* Reduced-motion guards for Phase 6 effects. */
+@media (prefers-reduced-motion: reduce) {
+  .crawler-hit-flash                    { animation-duration: 1ms !important; }
+  [style*='crawl-wipe'],
+  [style*='arena-hit'],
+  [style*='arena-boss-die'],
+  [style*='arena-boss-phase']           { animation-duration: 1ms !important; }
 }
 
 /* Lockpicking — pick-snap violent jolt */
@@ -325,6 +410,20 @@ body {
   20%  { opacity: 1; transform: translate(-50%, -50%) scale(1.2); }
   60%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
   100% { opacity: 0; transform: translate(-50%, -50%) scale(0.9) translateY(-8px); }
+}
+
+/* Lockpicking — hint text pops in when it changes (applied via key= remount) */
+@keyframes hint-pop {
+  0%   { opacity: 0.4; transform: scale(0.82); }
+  55%  { transform: scale(1.07); }
+  100% { opacity: 1;   transform: scale(1); }
+}
+
+/* Lockpicking — brief gold-green glow burst on the plate when a lock opens */
+@keyframes lock-plate-open {
+  0%   { box-shadow: 0 4px 16px rgba(0,0,0,0.7), inset 0 1px 2px rgba(255,200,80,0.12); }
+  28%  { box-shadow: 0 4px 16px rgba(0,0,0,0.7), inset 0 1px 2px rgba(255,200,80,0.12), 0 0 44px 18px rgba(74,222,128,0.45); }
+  100% { box-shadow: 0 4px 16px rgba(0,0,0,0.7), inset 0 1px 2px rgba(255,200,80,0.12); }
 }
 
 /* ── Rooftop Chase ────────────────────────────────────────────────────────── */
@@ -393,6 +492,12 @@ body {
   10%  { opacity: 1;    transform: scaleX(1) scaleY(1.4); }
   100% { opacity: 0;    transform: scaleX(1) scaleY(0.6) translateX(-220px); }
 }
+/* Stomped guard topples and fades off the roof */
+@keyframes rooftop-mook-defeat {
+  0%   { transform: translateY(0)    rotate(0deg);     opacity: 1; }
+  30%  { transform: translateY(-6px) rotate(-18deg);   opacity: 1; }
+  100% { transform: translateY(22px) rotate(-100deg);  opacity: 0; }
+}
 /* Hero fall-tumble when dropping into a gap */
 @keyframes rooftop-fall {
   0%   { transform: translateY(0) rotate(0deg); opacity: 1; }
@@ -403,6 +508,19 @@ body {
 @keyframes rooftop-cloud {
   from { transform: translateX(0); }
   to   { transform: translateX(-50%); }
+}
+/* Chaser pounce — plays when the hero is caught */
+@keyframes rooftop-pounce {
+  0%   { transform: translateX(0)    translateY(0)    scale(1)    rotate(0deg); }
+  35%  { transform: translateX(8px)  translateY(-14px) scale(1.25) rotate(-10deg); }
+  65%  { transform: translateX(20px) translateY(4px)   scale(1.35) rotate(8deg); }
+  100% { transform: translateX(20px) translateY(0px)   scale(1.25) rotate(5deg); }
+}
+/* Slide streak — faint horizontal smear emitted while sliding */
+@keyframes rooftop-slide-streak {
+  0%   { opacity: 0;    transform: scaleX(0.2); }
+  20%  { opacity: 0.65; transform: scaleX(1); }
+  100% { opacity: 0;    transform: scaleX(1) translateX(-28px); }
 }
 @media (prefers-reduced-motion: reduce) {
   [class*="rooftop-"] { animation: none !important; }

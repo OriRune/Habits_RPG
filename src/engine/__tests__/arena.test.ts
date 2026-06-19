@@ -61,7 +61,7 @@ function freshRun(f = fighter(), b = boss()): ArenaState {
 }
 
 function minionAt(s: ArenaState, pos: { x: number; y: number }, hp = 8): Minion {
-  const m: Minion = { id: s.seq++, pos, hp, maxHp: hp, attack: 6, nextMoveMs: 0, nextHitMs: 0, frozenUntilMs: 0, poisonDmg: 0, poisonNextTickMs: 0, poisonExpiresMs: 0 };
+  const m: Minion = { id: s.seq++, pos, hp, maxHp: hp, attack: 6, variant: 'bat', nextMoveMs: 0, nextHitMs: 0, frozenUntilMs: 0, poisonDmg: 0, poisonNextTickMs: 0, poisonExpiresMs: 0 };
   s.minions.push(m);
   return m;
 }
@@ -500,5 +500,154 @@ describe('arena setup & speed rolls', () => {
     const slow = createArena(fighter(), boss(), { knownSpells: [], inventory: {}, tier: 5, startMs: 0, radius: 5, speed: 1 });
     const fast = createArena(fighter(), boss(), { knownSpells: [], inventory: {}, tier: 5, startMs: 0, radius: 5, speed: 2 });
     expect(fast.nextSummonMs).toBeLessThan(slow.nextSummonMs);
+  });
+});
+
+// ── Phase 0 — correctness & quick-win tests ─────────────────────────────────
+
+describe('usage-based stat tracking', () => {
+  it('melee increments ST and EN', () => {
+    const s = freshRun();
+    s.player.pos = { x: 0, y: -ARENA_RADIUS + 1 };
+    const hit = arenaMelee(s, 1000, HALF);
+    expect(hit.statUsage.ST).toBe(1);
+    expect(hit.statUsage.EN).toBe(1);
+    expect(hit.statUsage.DX).toBeUndefined();
+  });
+
+  it('ranged increments DX and EN', () => {
+    const s = freshRun();
+    s.player.pos = { x: 0, y: 0 };
+    s.bossPos = { x: 0, y: -2 };
+    s.player.facing = 'up';
+    const fired = arenaRanged(s, 1000, HALF);
+    expect(fired.statUsage.DX).toBe(1);
+    expect(fired.statUsage.EN).toBe(1);
+    expect(fired.statUsage.ST).toBeUndefined();
+  });
+
+  it('damage spell increments WI', () => {
+    const s = freshRun();
+    const cast = arenaCast(s, 'sparks', 1000, HALF);
+    expect(cast.statUsage.WI).toBe(1);
+    expect(cast.statUsage.KN).toBeUndefined();
+  });
+
+  it('support spell increments KN', () => {
+    const s = freshRun();
+    const cast = arenaCast(s, 'mend', 1000, HALF);
+    expect(cast.statUsage.KN).toBe(1);
+    expect(cast.statUsage.WI).toBeUndefined();
+  });
+
+  it('illusion spell increments CH', () => {
+    const s = freshRun();
+    const cast = arenaCast(s, 'hex', 1000, HALF);
+    expect(cast.statUsage.CH).toBe(1);
+  });
+
+  it('successful dodge increments AG and sets lastDodgedAtMs', () => {
+    const s = freshRun();
+    s.dodge = 1.0; // always dodge
+    s.player.pos = { x: 0, y: 0 };
+    s.telegraphs.push({
+      id: 1, kind: 'slam', tiles: [{ x: 0, y: 0 }],
+      startedAtMs: 0, firesAtMs: 100, raw: 20, school: 'physical',
+    });
+    const after = arenaTick(s, 150, HALF);
+    expect(after.hp).toBe(100); // not damaged
+    expect(after.statUsage.AG).toBe(1);
+    expect(after.lastDodgedAtMs).toBe(150);
+  });
+
+  it('accumulates usage across multiple actions', () => {
+    const s = freshRun();
+    s.player.pos = { x: 0, y: -ARENA_RADIUS + 1 };
+    const a1 = arenaMelee(s, 1000, HALF);
+    // Let cooldown pass
+    a1.player.pos = { x: 0, y: -ARENA_RADIUS + 1 };
+    const a2 = arenaMelee(a1, 2000, HALF);
+    expect(a2.statUsage.ST).toBe(2);
+    expect(a2.statUsage.EN).toBe(2);
+  });
+});
+
+describe('independent spell cooldown', () => {
+  it('a spell cast does NOT block a subsequent attack', () => {
+    const s = freshRun();
+    s.player.pos = { x: 0, y: -ARENA_RADIUS + 1 };
+    const after_cast = arenaCast(s, 'sparks', 1000, HALF);
+    // Immediately try a melee swing — attack cooldown is independent
+    after_cast.player.pos = { x: 0, y: -ARENA_RADIUS + 1 };
+    const after_melee = arenaMelee(after_cast, 1001, HALF);
+    expect(after_melee).not.toBe(after_cast); // accepted — not blocked
+    expect(after_melee.bossHp).toBeLessThan(after_cast.bossHp);
+  });
+
+  it('a melee attack does NOT block a subsequent spell cast', () => {
+    const s = freshRun();
+    s.player.pos = { x: 0, y: -ARENA_RADIUS + 1 };
+    const after_melee = arenaMelee(s, 1000, HALF);
+    // Immediately try a spell — spell cooldown is independent of attack cooldown
+    const after_cast = arenaCast(after_melee, 'sparks', 1001, HALF);
+    expect(after_cast).not.toBe(after_melee); // accepted — not blocked
+    expect(after_cast.mp).toBeLessThan(after_melee.mp);
+  });
+
+  it('two spells within the spell cooldown window are blocked', () => {
+    const s = freshRun();
+    const first = arenaCast(s, 'sparks', 1000, HALF);
+    const second = arenaCast(first, 'sparks', 1100, HALF); // within 520ms spell CD
+    expect(second).toBe(first); // rejected — unchanged reference
+  });
+});
+
+describe('phase transition minion rescaling', () => {
+  it('minions spawned in phase 2 use phase-2 stats', () => {
+    const scaledBoss = boss({ phases: [
+      { hp: 10, attack: 10, defense: 0, weakTo: [] },
+      { hp: 100, attack: 100, defense: 0, weakTo: [] },
+    ] });
+    const s = freshRun(fighter(), scaledBoss);
+    // Advance to phase 2 by killing phase 1
+    s.player.pos = { x: 0, y: -ARENA_RADIUS + 1 };
+    const transitioned = arenaMelee(s, 1000, HALF); // 15 dmg > 10 hp
+    expect(transitioned.phaseIndex).toBe(1);
+    // minionHp and minionAttack should now reflect phase-2 stats
+    const expectedHp = Math.max(1, Math.round(100 * 0.18));
+    const expectedAtk = Math.max(1, Math.round(100 * 0.35));
+    expect(transitioned.minionHp).toBe(expectedHp);
+    expect(transitioned.minionAttack).toBe(expectedAtk);
+  });
+});
+
+describe('projectile defense applied per-target', () => {
+  it('a bolt against a defended boss deals less damage than against a minion', () => {
+    const defendedBoss = boss({ baseHp: 100, attack: 10, defense: 5, weakTo: [] });
+
+    // vs boss (defense 5)
+    const sb = freshRun(fighter(), defendedBoss);
+    sb.player.pos = { x: 0, y: 0 };
+    sb.bossPos = { x: 0, y: -2 };
+    sb.player.facing = 'up';
+    const firedB = arenaRanged(sb, 1000, HALF);
+    const afterB = arenaTick(firedB, 1400, HALF);
+    const bossDmg = 100 - afterB.bossHp; // 8 pre-defense − 5 = 3
+
+    // vs minion (no defense) same attack roll
+    const sm = freshRun(fighter(), defendedBoss);
+    sm.player.pos = { x: 0, y: 0 };
+    sm.bossPos = { x: 0, y: -ARENA_RADIUS };
+    sm.player.facing = 'up';
+    const m = minionAt(sm, { x: 0, y: -2 }, 50);
+    sm.player.facing = 'up';
+    const firedM = arenaRanged(sm, 1000, HALF);
+    const afterM = arenaTick(firedM, 1400, HALF);
+    const minionHp = afterM.minions.find((x) => x.id === m.id)?.hp ?? 50;
+    const minionDmg = 50 - minionHp; // 8 pre-defense, minion has 0 defense
+
+    expect(bossDmg).toBeLessThan(minionDmg);
+    expect(bossDmg).toBe(Math.max(1, 8 - 5)); // 3
+    expect(minionDmg).toBe(8);                 // full 8
   });
 });

@@ -18,6 +18,8 @@ export interface EnemyTemplate {
   resistTo?: StatId[];
   /** Visual archetype used by Phase 2 battle-stage art. */
   archetype?: 'undead' | 'beast' | 'elemental' | 'construct';
+  /** Distinct emoji glyph shown as the unit sprite on the tactics board. */
+  glyph?: string;
   /** Move pool telegraphed during combat. Omit for a plain basic-attack foe. */
   moveset?: EnemyMove[];
 }
@@ -31,7 +33,7 @@ export const ENEMIES: Record<string, EnemyTemplate> = {
     flavor: 'Bones held together by spite.',
     hp: 34, attack: 7, defense: 2, ward: 0,
     attackSchool: 'physical', weakTo: ['ST', 'WI'], resistTo: ['DX'],
-    archetype: 'undead',
+    archetype: 'undead', glyph: '💀',
     moveset: [
       { kind: 'attack', weight: 3, label: 'swings its rusted blade', icon: '⚔️' },
       { kind: 'heavy',  weight: 1, mult: 1.8, label: 'winds up a crushing overhead blow', icon: '💥' },
@@ -43,7 +45,7 @@ export const ENEMIES: Record<string, EnemyTemplate> = {
     flavor: 'A drifting spirit that sears the mind.',
     hp: 26, attack: 7, defense: 0, ward: 3,
     attackSchool: 'magic', weakTo: ['DX'], resistTo: ['WI'],
-    archetype: 'undead',
+    archetype: 'undead', glyph: '👻',
     moveset: [
       { kind: 'attack',  weight: 2, label: 'lashes out with spectral energy', icon: '⚔️' },
       { kind: 'inflict', weight: 2, inflictKey: 'blind',  inflictTurns: 2, inflictMag: 1,    label: 'wails shrilly, clouding your sight', icon: '🌀' },
@@ -55,7 +57,7 @@ export const ENEMIES: Record<string, EnemyTemplate> = {
     flavor: 'It feeds on the careless and the slow.',
     hp: 38, attack: 8, defense: 1, ward: 1,
     attackSchool: 'physical', weakTo: ['WI', 'CH'], resistTo: ['ST'],
-    archetype: 'undead',
+    archetype: 'undead', glyph: '🧟',
     moveset: [
       { kind: 'attack',  weight: 2, label: 'lunges with raking claws', icon: '⚔️' },
       { kind: 'drain',   weight: 2, drainRatio: 0.4, label: 'latches on and drains your life', icon: '🩸' },
@@ -69,7 +71,7 @@ export const ENEMIES: Record<string, EnemyTemplate> = {
     flavor: 'A wiry scavenger with a rusted dagger.',
     hp: 26, attack: 6, defense: 0, ward: 0,
     attackSchool: 'physical', weakTo: ['ST'],
-    archetype: 'beast',
+    archetype: 'beast', glyph: '👺',
     moveset: [
       { kind: 'attack', weight: 3, label: 'stabs with its rusty dagger', icon: '⚔️' },
       { kind: 'multi',  weight: 2, hits: 2, label: 'flurries with rapid dirty strikes', icon: '🗡️' },
@@ -80,7 +82,7 @@ export const ENEMIES: Record<string, EnemyTemplate> = {
     flavor: 'Too many legs, too many eyes.',
     hp: 30, attack: 7, defense: 1, ward: 1,
     attackSchool: 'physical', weakTo: ['DX', 'WI'],
-    archetype: 'beast',
+    archetype: 'beast', glyph: '🕷️',
     moveset: [
       { kind: 'attack',  weight: 2, label: 'bites with its venomous fangs', icon: '⚔️' },
       { kind: 'inflict', weight: 2, inflictKey: 'poison', inflictTurns: 3, inflictMag: 3, label: 'injects venom', icon: '☠️' },
@@ -92,7 +94,7 @@ export const ENEMIES: Record<string, EnemyTemplate> = {
     flavor: 'It hunts in the ruins where walls have fallen.',
     hp: 36, attack: 9, defense: 1, ward: 0,
     attackSchool: 'physical', weakTo: ['DX'], resistTo: ['CH'],
-    archetype: 'beast',
+    archetype: 'beast', glyph: '🐺',
     moveset: [
       { kind: 'attack', weight: 2, label: 'mauls with savage jaws', icon: '⚔️' },
       { kind: 'multi',  weight: 2, hits: 3, label: 'savages with rapid bites', icon: '🗡️' },
@@ -104,7 +106,7 @@ export const ENEMIES: Record<string, EnemyTemplate> = {
     flavor: 'A bramble given a cruel, grasping will.',
     hp: 32, attack: 6, defense: 2, ward: 2,
     attackSchool: 'physical', weakTo: ['WI'], resistTo: ['ST'],
-    archetype: 'construct',
+    archetype: 'construct', glyph: '🌿',
     moveset: [
       { kind: 'attack',  weight: 2, label: 'lashes with thorned vines', icon: '⚔️' },
       { kind: 'guard',   weight: 2, bonus: 4, label: 'hardens its bark into a shell', icon: '🛡️' },
@@ -118,7 +120,7 @@ export const ENEMIES: Record<string, EnemyTemplate> = {
     flavor: 'A squat guardian of the depths.',
     hp: 46, attack: 8, defense: 3, ward: 2,
     attackSchool: 'physical', weakTo: ['WI'], resistTo: ['ST', 'DX'],
-    archetype: 'construct',
+    archetype: 'construct', glyph: '🪨',
     moveset: [
       { kind: 'attack', weight: 2, label: 'smashes with a stone fist', icon: '⚔️' },
       { kind: 'guard',  weight: 3, bonus: 5, label: 'fortifies its stone shell', icon: '🛡️' },
@@ -130,7 +132,7 @@ export const ENEMIES: Record<string, EnemyTemplate> = {
     flavor: 'Cold radiates from its hollow gaze.',
     hp: 32, attack: 9, defense: 1, ward: 4,
     attackSchool: 'magic', weakTo: ['ST'], resistTo: ['WI'],
-    archetype: 'undead',
+    archetype: 'undead', glyph: '☃️',
     moveset: [
       { kind: 'attack',  weight: 2, label: 'strikes with an icy touch', icon: '⚔️' },
       { kind: 'inflict', weight: 2, inflictKey: 'freeze',  inflictTurns: 1, inflictMag: 1,    label: 'breathes a blast of freezing air', icon: '❄️' },
@@ -142,7 +144,7 @@ export const ENEMIES: Record<string, EnemyTemplate> = {
     flavor: 'A churning storm of sleet and shard.',
     hp: 40, attack: 9, defense: 2, ward: 3,
     attackSchool: 'magic', weakTo: ['ST', 'DX'], resistTo: ['WI'],
-    archetype: 'elemental',
+    archetype: 'elemental', glyph: '🧊',
     moveset: [
       { kind: 'attack',  weight: 2, label: 'buffets with a wave of sleet', icon: '⚔️' },
       { kind: 'heavy',   weight: 2, mult: 1.8, label: 'charges a concentrated shard storm', icon: '💥' },

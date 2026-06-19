@@ -20,7 +20,18 @@ import { mergeReward } from './dungeon';
 import { attackRoll, spellDamageRoll, spellHealAmount } from './combat';
 import { getSpell, SCHOOL_STAT } from './spells';
 import type { WeaponDef } from './weapons';
-import { FOREST_NODES, FOREST_BEASTS, SHRINE_EVENTS, type ForestNodeDef } from '@/content/forest';
+import { FOREST_NODES, FOREST_BEASTS, FOREST_GUARDIAN_STAGES, SHRINE_EVENTS, type ForestNodeDef } from '@/content/forest';
+import {
+  BOONS,
+  boonMeleeMult,
+  boonDefenseBonus,
+  boonYieldMult,
+  boonMoveMult,
+  boonDashCdMult,
+  boonSightBonus,
+  rollBoonChoices,
+} from '@/content/boons';
+import { bandForStage } from './crawlBiomes';
 import {
   type Dir,
   type RNG,
@@ -42,6 +53,11 @@ import {
   RING_DURATION_MS,
   STA_REGEN_MS,
   MP_REGEN_MS,
+  DASH_BASE_CD_MS,
+  STAGGER_MS,
+  CHARGE_DAMAGE_MULT,
+  dashCooldown,
+  moveInterval,
 } from './crawl';
 
 export type { Dir, RNG } from './crawl';
@@ -89,7 +105,7 @@ const SPELL_CD_MS = 500;
 // Tile types
 // ---------------------------------------------------------------------------
 
-export type ForestTileKind = 'trail' | 'thicket' | 'tree' | 'clearing' | 'entrance' | 'treeline' | 'node' | 'shrine';
+export type ForestTileKind = 'trail' | 'thicket' | 'tree' | 'clearing' | 'entrance' | 'treeline' | 'node' | 'shrine' | 'boon';
 
 export interface ForestTile {
   kind: ForestTileKind;
@@ -151,6 +167,11 @@ export interface ForestSnapshot {
   knownSpells: string[];
   /** Equipped tool's chopping power (1 = one swing per durability, 2 = one-shots tier-2 trees, etc.). */
   chopPower: number;
+  /** Agility level — drives dash cooldown and move speed. */
+  agLevel: number;
+  /** Active boon keys carried from the previous stage. Optional so callers that
+   *  construct a snapshot literal without boons (e.g. beginForest) don't break. */
+  activeBoons?: string[];
 }
 
 export interface ForestState {
@@ -187,10 +208,17 @@ export interface ForestState {
   // Loot
   haul: Reward;
   // Status
-  status: 'active' | 'ended' | 'banking';
+  status: 'active' | 'ended' | 'banking' | 'choosing';
   lastHitAtMs: number;
   deepest: number;
   killsThisStage: number;
+  /** Accumulated run score: +10×stage per kill, +100×stage on each advance. */
+  score: number;
+  // Phase 5: in-run boons
+  /** Keys of boons active for this run (empty at stage 1; carried across stages via snapshot). */
+  activeBoons: string[];
+  /** Keys of the 3 offered boon choices; null when no choice is pending. */
+  pendingBoonChoice: string[] | null;
   // Spell effects
   runes: CrawlRune[];
   ringOfFire: CrawlRingOfFire | null;
@@ -200,6 +228,15 @@ export interface ForestState {
   nextRuneId: number;
   /** Transient: where the last ranged shot travelled — used to render a tracer in the overlay. */
   lastShot?: { fromR: number; fromC: number; toR: number; toC: number; at: number } | null;
+  // Phase 1: dash + AG-derived timing
+  /** Timestamp of the last successful dash (ms). Negative = ready immediately. */
+  lastDashMs: number;
+  /** Dash cooldown computed from AG at run start (ms). */
+  dashCooldownMs: number;
+  /** Move cadence computed from AG at run start (ms). */
+  moveIntervalMs: number;
+  /** Agility level snapshot — preserved across stages. */
+  agLevel: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -214,7 +251,7 @@ export function isWalkable(tile: ForestTile | undefined): boolean {
   return (
     !!tile &&
     (tile.kind === 'trail' || tile.kind === 'entrance' || tile.kind === 'clearing' ||
-     tile.kind === 'treeline' || tile.kind === 'shrine')
+     tile.kind === 'treeline' || tile.kind === 'shrine' || tile.kind === 'boon')
   );
 }
 
@@ -243,11 +280,12 @@ export function canAdvance(state: ForestState): boolean {
   return tileAt(state, state.player.r, state.player.c)?.kind === 'treeline';
 }
 
-/** Current sight radius — wider when standing in a clearing. */
+/** Current sight radius — wider in clearings and expanded by the Lantern boon. */
 export function sightRadiusFor(state: ForestState): number {
-  return tileAt(state, state.player.r, state.player.c)?.kind === 'clearing'
+  const base = tileAt(state, state.player.r, state.player.c)?.kind === 'clearing'
     ? CLEARING_SIGHT_RADIUS
     : SIGHT_RADIUS;
+  return base + boonSightBonus(state.activeBoons);
 }
 
 /** Circular sight test (≈ a disc so the lit area reads like a torch glow). */
@@ -258,6 +296,20 @@ function withinSight(dr: number, dc: number, rad: number): boolean {
 /** Whether a cell is inside the player's *current* sight (drives beast visibility). */
 export function isVisible(state: ForestState, r: number, c: number): boolean {
   return withinSight(r - state.player.r, c - state.player.c, sightRadiusFor(state));
+}
+
+export type PendingActKind = 'advance' | 'attack' | 'shrine' | 'harvest' | 'chop' | 'none';
+
+/** Returns what the next Act press will do — used by the overlay for a context hint label. */
+export function pendingActKind(state: ForestState): PendingActKind {
+  if (canAdvance(state)) return 'advance';
+  const { r, c } = facedCell(state);
+  if (beastAt(state, r, c)) return 'attack';
+  if (isOnShrine(state)) return 'shrine';
+  const tile = tileAt(state, r, c);
+  if (tile?.kind === 'node') return 'harvest';
+  if (tile?.kind === 'tree') return 'chop';
+  return 'none';
 }
 
 /** Re-light the fog: mark every tile within the current sight radius as seen. */
@@ -291,7 +343,10 @@ function nearestBeast(state: ForestState): ForestBeast | null {
 // ---------------------------------------------------------------------------
 
 function eligibleNodes(stage: number): ForestNodeDef[] {
-  return Object.values(FOREST_NODES).filter((n) => n.stageMin <= stage);
+  const bandId = bandForStage(stage).id;
+  return Object.values(FOREST_NODES).filter(
+    (n) => n.stageMin <= stage && (!n.band || n.band === bandId),
+  );
 }
 
 function weightedNode(stage: number, rng: RNG): ForestNodeDef {
@@ -317,28 +372,54 @@ export function nodeYield(nodeKey: string, rng: RNG): Reward {
   return { materials: { [def.grants.material]: amt } };
 }
 
+/** Flat score bonus awarded for killing a band-gate guardian. */
+const GUARDIAN_SCORE_BONUS = 500;
+
+/** Guaranteed treasure loot when a band-gate guardian is slain. */
+function guardianTreasure(stage: number, rng: RNG): Reward {
+  if (stage <= 4) {
+    // Grove Sentinel: Thicket → Deepwood gate; reward previews Deepwood-band materials.
+    return { gold: randInt(20, 40, rng), materials: { crystals: 3, herbs: 2 } };
+  }
+  // Ancient Guardian: Deepwood → Ancient gate; reward previews Ancient-band materials.
+  return { gold: randInt(40, 70, rng), materials: { amber_resin: 3, crystals: 2 } };
+}
+
 // ---------------------------------------------------------------------------
 // Kill-loot helper
 // ---------------------------------------------------------------------------
 
 function killBeast(state: ForestState, beast: ForestBeast, rng: RNG): ForestState {
   const def = FOREST_BEASTS[beast.key];
-  const gold = def ? randInt(def.bounty[0], def.bounty[1], rng) : 0;
-  // Prey carry a custom material/amount; predators default to leather scaled by kill streak.
-  const matKey = def?.dropMaterial ?? 'leather';
-  const qty = def?.dropAmount
-    ? randInt(def.dropAmount[0], def.dropAmount[1], rng)
-    : Math.max(1, Math.round(beast.maxHp / 10) + state.killsThisStage);
-  const drop: Reward = mergeReward(
-    { materials: { [matKey]: qty } },
-    gold > 0 ? { gold } : {},
-  );
-  return {
+  const isGuardian = !!def?.isGuardian;
+  let drop: Reward;
+  if (isGuardian) {
+    drop = guardianTreasure(state.stage, rng);
+  } else {
+    const gold = def ? randInt(def.bounty[0], def.bounty[1], rng) : 0;
+    // Prey carry a custom material/amount; predators default to leather scaled by kill streak.
+    const matKey = def?.dropMaterial ?? 'leather';
+    const qty = def?.dropAmount
+      ? randInt(def.dropAmount[0], def.dropAmount[1], rng)
+      : Math.max(1, Math.round(beast.maxHp / 10) + state.killsThisStage);
+    drop = mergeReward(
+      { materials: { [matKey]: qty } },
+      gold > 0 ? { gold } : {},
+    );
+  }
+  const afterKill: ForestState = {
     ...state,
     beasts: state.beasts.filter((b) => b.id !== beast.id),
     haul: mergeReward(state.haul, drop),
     killsThisStage: state.killsThisStage + 1,
+    score: state.score + 10 * state.stage + (isGuardian ? GUARDIAN_SCORE_BONUS : 0),
   };
+  // Guardian kill: offer a boon choice (pauses the run via 'choosing' status).
+  if (isGuardian) {
+    const choices = rollBoonChoices('forest', afterKill.activeBoons, rng);
+    return { ...afterKill, pendingBoonChoice: choices, status: 'choosing' };
+  }
+  return afterKill;
 }
 
 // ---------------------------------------------------------------------------
@@ -376,6 +457,9 @@ function fleeStep(
  * Size scales with depth: ~33×33 at stage 1, growing every few stages.
  */
 export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG): ForestState {
+  // Carry boons forward from the snapshot (absent on the very first call from beginForest).
+  const activeBoons: string[] = snapshot.activeBoons ?? [];
+
   const band = Math.floor((stage - 1) / FOREST_SCALE_BAND);
   // Ensure dimensions are odd so the lattice carve works cleanly.
   const rawRows = Math.min(FOREST_MAX_ROWS, FOREST_BASE_ROWS + band * FOREST_SCALE_PER_BAND);
@@ -472,7 +556,10 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
   // Each room is centred on a through-corridor lattice cell and contains a cluster
   // of nodes, dormant beasts, and corner trees.  The centre is already a trail cell
   // so the room is always connected to the maze.
-  const eligibleBeasts = Object.values(FOREST_BEASTS).filter((b) => b.stageMin <= stage);
+  const currentBandId = bandForStage(stage).id;
+  const eligibleBeasts = Object.values(FOREST_BEASTS).filter(
+    (b) => !b.isGuardian && b.stageMin <= stage && (!b.band || b.band === currentBandId),
+  );
   const beasts: ForestBeast[] = [];
   let beastId = 0;
 
@@ -557,12 +644,20 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
       }
     }
 
-    // ~40% chance: turn the clearing centre into an activatable shrine.
-    // The centre is always connected via the room's edge cells, so walkable
-    // shrine tiles preserve maze reachability.
-    if (rng() < 0.4 && tiles[cr][cc].kind === 'clearing') {
-      const ev = weightedShrine(stage, rng);
-      tiles[cr][cc] = { kind: 'shrine', shrineKey: ev.key };
+    // One rng() call decides the clearing centre fate:
+    //   0–24%: boon cache tile (Phase 5)
+    //   25–64%: shrine (existing behaviour)
+    //   65–99%: plain clearing
+    // Using one call preserves the RNG sequence and doesn't burn extra rolls.
+    if (tiles[cr][cc].kind === 'clearing') {
+      const centreRoll = rng();
+      if (centreRoll < 0.25) {
+        tiles[cr][cc] = { kind: 'boon' };
+      } else if (centreRoll < 0.65) {
+        const ev = weightedShrine(stage, rng);
+        tiles[cr][cc] = { kind: 'shrine', shrineKey: ev.key };
+      }
+      // else: leave as clearing
     }
   }
 
@@ -606,6 +701,33 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
     });
   }
 
+  // --- Band-gate guardian (deterministic, once per boundary stage) ---
+  const guardianKey = FOREST_GUARDIAN_STAGES[stage];
+  if (guardianKey) {
+    const gDef = FOREST_BEASTS[guardianKey];
+    if (gDef) {
+      // Place guardian on a trail cell far from the entrance (row 0) and treeline (last row).
+      const treeline = tiles[rows - 2]?.findIndex((t) => t.kind === 'treeline') ?? -1;
+      const treelineC = treeline >= 0 ? treeline : Math.floor(cols / 2);
+      const guardianCells = trailCells.filter(
+        ([r, c]) =>
+          r > 3 &&
+          r < rows - 4 &&
+          manhattan({ r, c }, { r: 0, c: startC }) > 8 &&
+          manhattan({ r, c }, { r: rows - 2, c: treelineC }) > 4,
+      );
+      const placed = guardianCells[Math.floor(rng() * guardianCells.length)];
+      if (placed) {
+        const [gr, gc] = placed;
+        beasts.push({
+          id: `guardian-${stage}`, key: guardianKey,
+          r: gr, c: gc, hp: gDef.hp, maxHp: gDef.hp,
+          readyAtMs: 0, asleep: true,
+        });
+      }
+    }
+  }
+
   const seen: boolean[][] = Array.from({ length: rows }, () => new Array(cols).fill(false));
 
   return reveal({
@@ -639,6 +761,7 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
     lastHitAtMs: -FOREST_IFRAME_MS,
     deepest: stage,
     killsThisStage: 0,
+    score: 0,
     runes: [],
     ringOfFire: null,
     ringNextHitMs: {},
@@ -646,6 +769,14 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
     lastSpellMs: -SPELL_CD_MS,
     nextRuneId: 1,
     lastShot: null,
+    // Phase 1: dash + speed derived from AG; Phase 5: boon multipliers applied immediately
+    lastDashMs: -DASH_BASE_CD_MS,
+    dashCooldownMs: Math.round(dashCooldown(snapshot.agLevel) * boonDashCdMult(activeBoons)),
+    moveIntervalMs: Math.round(moveInterval(snapshot.agLevel) / boonMoveMult(activeBoons)),
+    agLevel: snapshot.agLevel,
+    // Phase 5: boons
+    activeBoons,
+    pendingBoonChoice: null,
   });
 }
 
@@ -666,12 +797,15 @@ export function forestSnapshot(state: ForestState): ForestSnapshot {
     weapon: state.weapon,
     knownSpells: state.knownSpells,
     chopPower: state.chopPower,
+    agLevel: state.agLevel,
+    activeBoons: state.activeBoons,
   };
 }
 
 export function advance(state: ForestState, rng: RNG): ForestState {
   if (!canAdvance(state) || state.status !== 'active') return state;
-  const next = generateForest(state.stage + 1, forestSnapshot(state), rng);
+  const nextStage = state.stage + 1;
+  const next = generateForest(nextStage, forestSnapshot(state), rng);
   const staRefill = Math.round(state.maxSta * 0.25);
   const mpRefill = Math.round(state.maxMp * 0.25);
   return {
@@ -680,7 +814,8 @@ export function advance(state: ForestState, rng: RNG): ForestState {
     sta: Math.min(state.maxSta, state.sta + staRefill),
     mp: Math.min(state.maxMp, state.mp + mpRefill),
     haul: state.haul,
-    deepest: Math.max(state.deepest, state.stage + 1),
+    deepest: Math.max(state.deepest, nextStage),
+    score: state.score + 100 * nextStage,
   };
 }
 
@@ -699,6 +834,41 @@ export function tryMove(state: ForestState, dir: Dir): ForestState {
   return reveal({ ...state, player: { r, c, facing: dir } });
 }
 
+/**
+ * Dash in `dir` — skips 1 or 2 cells (2 if clear, else 1), consuming the dash cooldown
+ * and briefly granting i-frame immunity by setting `lastHitAtMs`.  This is the counter to
+ * the {@link FOREST_WINDUP_MS} telegraph: sidestep during the wind-up window to cancel it.
+ * No-ops when on cooldown or when there's nowhere to land.
+ */
+export function tryDash(state: ForestState, dir: Dir, nowMs: number): ForestState {
+  if (state.status !== 'active') return state;
+  const cd = state.dashCooldownMs ?? DASH_BASE_CD_MS;
+  if (nowMs - (state.lastDashMs ?? -cd) < cd) return state;
+
+  const [dr, dc] = DIRS[dir];
+  let destR = state.player.r;
+  let destC = state.player.c;
+
+  for (let steps = 2; steps >= 1; steps--) {
+    const r = state.player.r + dr * steps;
+    const c = state.player.c + dc * steps;
+    if (isWalkable(tileAt(state, r, c)) && !beastAt(state, r, c)) {
+      destR = r;
+      destC = c;
+      break;
+    }
+  }
+
+  if (destR === state.player.r && destC === state.player.c) return state;
+
+  return reveal({
+    ...state,
+    player: { r: destR, c: destC, facing: dir },
+    lastDashMs: nowMs,
+    lastHitAtMs: nowMs, // i-frame: no contact damage for FOREST_IFRAME_MS after the dash
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Context-sensitive act: beast → weapon attack, node → gather
 // ---------------------------------------------------------------------------
@@ -709,8 +879,11 @@ export function tryMove(state: ForestState, dir: Dir): ForestState {
  *     (walls / trees / nodes block the shot; falls through to gather/chop if no target)
  *   • beast → weapon attack (costs stamina)
  *   • node  → gather instantly (free; stamina nodes refill)
+ *
+ * @param nowMs   Current timestamp (ms); required for charged-swing stagger timing.
+ * @param charged If true, applies {@link CHARGE_DAMAGE_MULT} and staggers hit beasts briefly.
  */
-export function act(state: ForestState, rng: RNG): ForestState {
+export function act(state: ForestState, rng: RNG, nowMs = 0, charged = false): ForestState {
   if (state.status !== 'active') return state;
 
   // --- Ranged shot: scan the faced direction ---
@@ -767,7 +940,10 @@ export function act(state: ForestState, rng: RNG): ForestState {
     if (state.sta < 1) return state;
     const def = FOREST_BEASTS[beast.key];
     const isRanged = state.weapon.attackStat === 'DX';
-    const power = isRanged ? state.rangedPower : state.meleePower;
+    const basePower = isRanged ? state.rangedPower : state.meleePower;
+    // Charged swing and Iron Arm boon multiply attack power.
+    const boonMult = boonMeleeMult(state.activeBoons);
+    const power = charged ? basePower * CHARGE_DAMAGE_MULT * boonMult : basePower * boonMult;
     const full = state.sta >= (state.weapon.staminaCost ?? SLASH_STA_COST);
     const { dealt: dmg } = attackRoll(
       power,
@@ -784,11 +960,13 @@ export function act(state: ForestState, rng: RNG): ForestState {
     if (newHp <= 0) {
       return killBeast({ ...state, sta: Math.max(0, state.sta - staCost) }, beast, rng);
     }
-    return {
-      ...state,
-      sta: Math.max(0, state.sta - staCost),
-      beasts: state.beasts.map((b) => (b.id === beast.id ? { ...b, hp: newHp } : b)),
-    };
+    // Charged hit staggers the beast (brief freeze).
+    const updatedBeasts = state.beasts.map((b) => {
+      if (b.id !== beast.id) return b;
+      if (charged && nowMs > 0) return { ...b, hp: newHp, frozenUntilMs: nowMs + STAGGER_MS };
+      return { ...b, hp: newHp };
+    });
+    return { ...state, sta: Math.max(0, state.sta - staCost), beasts: updatedBeasts };
   }
 
   const tile = tileAt(state, r, c);
@@ -797,16 +975,23 @@ export function act(state: ForestState, rng: RNG): ForestState {
   // --- Chop a tree (costs stamina, yields wood) ---
   if (tile.kind === 'tree') {
     if (state.sta <= 0) return state;
-    const chopPower = state.chopPower > 0 ? state.chopPower : 1;
+    // ST-scaled chopping: +1 effective chop power per 8 Strength levels.
+    const stBonus = Math.floor(state.meleePower / 8);
+    const baseChop = state.chopPower > 0 ? state.chopPower : 1;
+    const effectiveChop = charged
+      ? Math.ceil((baseChop + stBonus) * CHARGE_DAMAGE_MULT)
+      : baseChop + stBonus;
     const maxDur = tile.maxDurability ?? 1;
-    const dur = (tile.durability ?? 1) - chopPower;
+    const dur = (tile.durability ?? 1) - effectiveChop;
     const tiles = state.tiles.map((row) => row.slice());
     let haul = state.haul;
     const newSta = Math.max(0, state.sta - CHOP_STA_COST);
     if (dur <= 0) {
       // Tree felled — opens a dead-end pocket (routing-safe by construction).
       tiles[r][c] = { kind: 'trail' };
-      const woodAmt = randInt(maxDur, Math.min(3, maxDur + 1), rng);
+      const woodBase = randInt(maxDur, Math.min(3, maxDur + 1), rng);
+      // Forager boon: double chop yield.
+      const woodAmt = Math.round(woodBase * boonYieldMult(state.activeBoons));
       haul = mergeReward(haul, { materials: { wood: woodAmt } });
     } else {
       tiles[r][c] = { ...tile, durability: dur };
@@ -823,7 +1008,20 @@ export function act(state: ForestState, rng: RNG): ForestState {
       const restore = randInt(nodeDef.grants.amount[0], nodeDef.grants.amount[1], rng);
       return { ...state, tiles, sta: Math.min(state.maxSta, state.sta + restore) };
     }
-    return { ...state, tiles, haul: mergeReward(state.haul, nodeYield(tile.nodeKey, rng)) };
+    const baseYield = nodeYield(tile.nodeKey, rng);
+    // Forager boon: double gather yield.
+    const yMult = boonYieldMult(state.activeBoons);
+    if (yMult !== 1) {
+      const scaled: typeof baseYield = {};
+      if (baseYield.gold) scaled.gold = Math.round(baseYield.gold * yMult);
+      if (baseYield.materials) {
+        scaled.materials = Object.fromEntries(
+          Object.entries(baseYield.materials).map(([k, v]) => [k, Math.round((v ?? 0) * yMult)]),
+        );
+      }
+      return { ...state, tiles, haul: mergeReward(state.haul, scaled) };
+    }
+    return { ...state, tiles, haul: mergeReward(state.haul, baseYield) };
   }
 
   return state;
@@ -1204,8 +1402,9 @@ export function stepBeasts(
       const def = FOREST_BEASTS[striker.key];
       const rawDmg = def?.touchDamage ?? 0;
       // Defense (from support-spell bless) mitigates contact damage.
+      // Stone Skin boon applies unconditionally (it's an owned effect, not spell-gated).
       const blessedDefense = activeStatus(s.playerStatuses, 'bless', nowMs) ? s.defense : 0;
-      const dealt = Math.max(1, rawDmg - blessedDefense - s.ward);
+      const dealt = Math.max(1, rawDmg - blessedDefense - s.ward - boonDefenseBonus(s.activeBoons));
       const hp = Math.max(0, s.hp - dealt);
       // Reset windupUntilMs so the next hit also telegraphs.
       s = {
@@ -1272,7 +1471,7 @@ export function coopClientStep(state: ForestState, nowMs: number): ForestState {
     if (toucher) {
       const def = FOREST_BEASTS[toucher.key];
       const blessedDefense = activeStatus(s.playerStatuses, 'bless', nowMs) ? s.defense : 0;
-      const dealt = Math.max(1, (def?.touchDamage ?? 0) - blessedDefense - s.ward);
+      const dealt = Math.max(1, (def?.touchDamage ?? 0) - blessedDefense - s.ward - boonDefenseBonus(s.activeBoons));
       hp = Math.max(0, hp - dealt);
       lastHitAtMs = nowMs;
     }
@@ -1395,4 +1594,34 @@ export function activateShrine(state: ForestState, nowMs: number, rng: RNG): For
   }
 
   return s;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5: boon choice resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the player's boon pick: appends the chosen key to `activeBoons`,
+ * clears `pendingBoonChoice`, restores `status:'active'`, and immediately
+ * recomputes `moveIntervalMs`/`dashCooldownMs` so the speed boon is felt on
+ * the current stage (not only after the next advance).
+ * No-ops if no choice is pending or the key is not in the offered set.
+ */
+export function applyBoonChoice(state: ForestState, key: string): ForestState {
+  if (state.status !== 'choosing') return state;
+  if (!state.pendingBoonChoice?.includes(key)) return state;
+  const boon = BOONS[key];
+  if (!boon) return state;
+  const activeBoons = [...state.activeBoons, key];
+  const hpBonus = boon.maxHpBonus ?? 0;
+  return {
+    ...state,
+    activeBoons,
+    pendingBoonChoice: null,
+    status: 'active',
+    moveIntervalMs: Math.round(moveInterval(state.agLevel) / boonMoveMult(activeBoons)),
+    dashCooldownMs: Math.round(dashCooldown(state.agLevel) * boonDashCdMult(activeBoons)),
+    maxHp: state.maxHp + hpBonus,
+    hp: Math.min(state.maxHp + hpBonus, state.hp + hpBonus),
+  };
 }

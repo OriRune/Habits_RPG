@@ -11,6 +11,13 @@ import { SectionTitle } from '@/components/ui/Divider';
 import { Panel } from '@/components/ui/Panel';
 import { TrialModal } from '@/components/trials/TrialModal';
 
+function formatShortDate(iso: string): string {
+  const parts = iso.split('-');
+  if (parts.length !== 3) return iso;
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${months[parseInt(parts[1], 10) - 1]} ${parseInt(parts[2], 10)}`;
+}
+
 function StarRow({ count }: { count: 0 | 1 | 2 | 3 }) {
   if (count === 0) return null;
   return (
@@ -102,11 +109,20 @@ export function TrialsView() {
               {/* Blurb */}
               <p className="text-[11px] text-ink-muted leading-snug mb-2">{trial.blurb}</p>
 
-              {/* Best score stars */}
+              {/* Best score stars + percentage */}
               {bestStars > 0 ? (
-                <StarRow count={bestStars as 1 | 2 | 3} />
+                <div className="flex items-center gap-2">
+                  <StarRow count={bestStars as 1 | 2 | 3} />
+                  <span className="text-[10px] text-ink-muted font-display">{Math.round(best * 100)}%</span>
+                </div>
               ) : (
                 <div className="text-[10px] text-ink-muted/60 font-display">No record yet</div>
+              )}
+              {/* Last-cleared date (shown when cleared on a previous day) */}
+              {trialsClearedOn[trial.id] && !clearedToday && (
+                <div className="text-[10px] text-ink-muted/50 font-display mt-0.5">
+                  Last: {formatShortDate(trialsClearedOn[trial.id])}
+                </div>
               )}
             </button>
           );

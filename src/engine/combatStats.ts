@@ -32,3 +32,18 @@ export function combatLevel(xp: number): number {
 export function combatXpForWin(enemyMaxHp: number): number {
   return 12 + Math.round(enemyMaxHp / 6);
 }
+
+/**
+ * Habit stat XP awarded to the player character for winning a dungeon combat.
+ * Scales with enemy HP (harder enemies = more effort). 60 % goes to the weapon's
+ * attack stat; 40 % goes to HP (endurance of the fight).
+ */
+export const DUNGEON_COMBAT_STAT_XP_BASE = 8;
+export const DUNGEON_COMBAT_STAT_XP_PER_HP = 1 / 10;
+export const DUNGEON_COMBAT_STAT_ATK_SHARE = 0.6;
+
+export function dungeonCombatStatXp(enemyMaxHp: number): { total: number; atkShare: number; hpShare: number } {
+  const total = DUNGEON_COMBAT_STAT_XP_BASE + Math.round(enemyMaxHp * DUNGEON_COMBAT_STAT_XP_PER_HP);
+  const atkShare = Math.round(total * DUNGEON_COMBAT_STAT_ATK_SHARE);
+  return { total, atkShare, hpShare: total - atkShare };
+}

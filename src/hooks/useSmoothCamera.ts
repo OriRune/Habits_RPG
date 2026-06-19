@@ -40,6 +40,7 @@
  */
 
 import { useEffect, useRef } from 'react';
+import { shakeOffset } from '@/engine/crawl';
 
 export interface SmoothCameraLayout {
   /** Top-left row of the rendered tile window (baseR0 = cameraR0 − MARGIN). */
@@ -103,13 +104,19 @@ function snapPx(v: number, dpr: number): number {
  * @param layoutRef  Updated every render by the overlay with current state.
  * @param options    CELL, VIEW, and optional glide cadences.
  */
+/** Opaque handle for triggering camera shake from overlays. */
+export interface CameraControls {
+  /** Trigger a decaying camera shake. mag is peak pixel offset; durMs defaults to 300. */
+  shake: (mag: number, durMs?: number) => void;
+}
+
 export function useSmoothCamera(
   worldRef: React.RefObject<HTMLDivElement | null>,
   playerRef: React.RefObject<HTMLDivElement | null>,
   moverRefs: React.RefObject<Map<string, HTMLDivElement | null>>,
   layoutRef: React.RefObject<SmoothCameraLayout>,
   options: Options,
-): void {
+): CameraControls {
   const { CELL, VIEW, glideMs = 150, moverGlideMs = 120 } = options;
   const BOARD_PX = VIEW * CELL;
 
@@ -121,6 +128,16 @@ export function useSmoothCamera(
   const lastSnapKeyRef = useRef<number | string | symbol>(Symbol('init'));
   // Timestamp of the previous rAF tick — for delta-time computation.
   const lastTimeRef = useRef<number>(-1);
+
+  // --- Phase 6: Screen shake ---
+  // Stores current shake parameters. Written by the stable `shake` callback below;
+  // read every rAF frame. Using a ref avoids triggering re-renders.
+  const shakeStateRef = useRef({ mag: 0, t0: 0, dur: 1 });
+  // Stable shake trigger — the inline arrow is only created once (useRef initializer
+  // runs once) and closes over shakeStateRef, which is also stable.
+  const shake = useRef((mag: number, durMs = 300) => {
+    shakeStateRef.current = { mag, t0: performance.now(), dur: durMs };
+  }).current;
 
   useEffect(() => {
     const prefersReduced =
@@ -175,8 +192,16 @@ export function useSmoothCamera(
       const camY = Math.max(half, Math.min(rows * CELL - half, pp.y + CELL / 2));
 
       // --- World container translate (snapped to device pixels) ---
-      const wx = snapPx(half - camX + baseC0 * CELL, dpr);
-      const wy = snapPx(half - camY + baseR0 * CELL, dpr);
+      // Phase 6: add decaying shake offset when active (zero when mag=0 or elapsed≥dur).
+      const { sx, sy } = shakeOffset(
+        shakeStateRef.current.mag,
+        now - shakeStateRef.current.t0,
+        shakeStateRef.current.dur,
+        Math.random(),
+        Math.random(),
+      );
+      const wx = snapPx(half - camX + baseC0 * CELL + (prefersReduced ? 0 : sx), dpr);
+      const wy = snapPx(half - camY + baseR0 * CELL + (prefersReduced ? 0 : sy), dpr);
       worldEl.style.transform = `translate3d(${wx}px,${wy}px,0)`;
 
       // --- Player sprite translate (world-container space, device-pixel snapped) ---
@@ -232,4 +257,6 @@ export function useSmoothCamera(
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [CELL, VIEW, BOARD_PX, glideMs, moverGlideMs, worldRef, playerRef, moverRefs, layoutRef]);
+
+  return { shake };
 }

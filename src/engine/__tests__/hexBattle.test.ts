@@ -11,16 +11,20 @@ import {
   movePlayer,
   playerAttack,
   playerCastSpell,
+  holdOverwatch,
   endPlayerTurn,
   generateSkirmish,
+  isTacticsLoadoutSpell,
   tacticsReward,
   TACTICS_SIZE_RADIUS,
+  TACTICS_GRANTED_SPELLS,
   OCCLUSION_RISE,
   COVER_DEFENSE,
   HAZARD_DMG,
   type HexBattleState,
   type PlayerUnit,
   type EnemyUnit,
+  type TacticsObjective,
   type Tile,
 } from '../hexBattle';
 import { hexBoard, hexKey, hexDistance, type Hex } from '../hex';
@@ -63,7 +67,7 @@ function setTile(tiles: Record<string, Tile>, h: Hex, over: Partial<Tile>): void
 function makePlayer(hex: Hex, over: Partial<PlayerUnit> = {}): PlayerUnit {
   return {
     hex, hp: 100, maxHp: 100, mp: 30, maxMp: 30, sta: 20, maxSta: 20,
-    movesLeft: 4, hasActed: false, ag: 8,
+    movesLeft: 4, hasActed: false, overwatch: false, ag: 8,
     meleePower: 10, rangedPower: 8, damageSpell: 6, supportSpell: 6, illusionPower: 0,
     defense: 0, ward: 0, dodge: 0, statuses: [], ...over,
   };
@@ -71,9 +75,10 @@ function makePlayer(hex: Hex, over: Partial<PlayerUnit> = {}): PlayerUnit {
 
 function makeEnemy(id: number, hex: Hex, over: Partial<EnemyUnit> = {}): EnemyUnit {
   return {
-    id, templateId: 'goblin', name: `Foe${id}`, icon: '👹', hex,
+    id, templateId: 'goblin', name: `Foe${id}`, icon: '👹', aiArchetype: 'charger', hex,
     hp: 30, maxHp: 30, attack: 8, defense: 0, ward: 0, attackSchool: 'physical',
-    weakTo: [], resistTo: [], range: 1, moveTiles: 3, climb: 1, statuses: [], ...over,
+    weakTo: [], resistTo: [], range: 1, moveTiles: 3, climb: 1, statuses: [],
+    guardBonus: 0, ...over,
   };
 }
 
@@ -86,7 +91,8 @@ function makeState(over: Partial<HexBattleState> = {}): HexBattleState {
     enemies: over.enemies ?? [],
     turn: 'player', selected: null, reachable: [], targetable: [], effects: [],
     log: [], status: 'active', tier: 5, knownSpells: ['sparks', 'mend', 'dazzle'],
-    weapon: SWORD, seq: 100, ...over,
+    weapon: SWORD, seq: 100, threatHexes: [], intentPlan: [],
+    objective: null, turnCount: 1, ...over,
   };
 }
 
@@ -409,6 +415,8 @@ describe('generateSkirmish', () => {
     // Mechanic spells are filtered out of the action set.
     expect(s.knownSpells).not.toContain('fire_rune');
     expect(s.knownSpells).toContain('sparks');
+    // Positional spells are always granted regardless of inventory.
+    for (const k of TACTICS_GRANTED_SPELLS) expect(s.knownSpells).toContain(k);
     // Every enemy spawn is reachable from the player spawn (board not walled off).
     const reachable = new Set<string>([hexKey(s.player.hex)]);
     let frontier = [s.player.hex];
@@ -427,6 +435,19 @@ describe('generateSkirmish', () => {
       frontier = next;
     }
     for (const key of occupied) expect(reachable.has(key)).toBe(true);
+  });
+
+  it('always grants push/blink/cleave even when the player has no spellbooks', () => {
+    // A brand-new character has only starter spells — no positional spellbooks found.
+    const noBooks = generateSkirmish(fighter(), 8, 4, ['sparks', 'mend'], { rng: seeded(1) });
+    for (const k of TACTICS_GRANTED_SPELLS) expect(noBooks.knownSpells).toContain(k);
+    // Arena-only mechanics still filtered out even if somehow in inventory.
+    const withRune = generateSkirmish(fighter(), 8, 4, ['fire_rune', 'chaotic_blink'], { rng: seeded(2) });
+    expect(withRune.knownSpells).not.toContain('fire_rune');
+    expect(withRune.knownSpells).not.toContain('chaotic_blink');
+    // Deduplication: if the player already owned push/blink/cleave, no duplicates.
+    const withAll = generateSkirmish(fighter(), 8, 4, ['push', 'blink', 'cleave', 'sparks'], { rng: seeded(3) });
+    expect(withAll.knownSpells.filter((k) => k === 'push')).toHaveLength(1);
   });
 
   it('maps sizes to radii and scales the board + enemy count up with size', () => {
@@ -464,5 +485,375 @@ describe('generateSkirmish', () => {
         if (b) expect(tile.elevation - b.elevation).toBeLessThanOrEqual(OCCLUSION_RISE);
       }
     }
+  });
+});
+
+// --- Phase E: spell loadout -----------------------------------------------------------------------
+describe('isTacticsLoadoutSpell', () => {
+  it('excludes the three always-granted positional spells', () => {
+    for (const key of TACTICS_GRANTED_SPELLS) {
+      expect(isTacticsLoadoutSpell(key)).toBe(false);
+    }
+  });
+
+  it('accepts standard damage/support spells', () => {
+    // 'sparks' is a standard damage spell with no mechanic override.
+    expect(isTacticsLoadoutSpell('sparks')).toBe(true);
+  });
+
+  it('rejects unknown spell keys', () => {
+    expect(isTacticsLoadoutSpell('not_a_real_spell')).toBe(false);
+  });
+});
+
+describe('generateSkirmish spell loadout', () => {
+  it('always includes the three granted spells regardless of loadout', () => {
+    const s = generateSkirmish(fighter(), 8, 5, [], { rng: seeded(1) });
+    for (const key of TACTICS_GRANTED_SPELLS) {
+      expect(s.knownSpells).toContain(key);
+    }
+  });
+
+  it('limits knownSpells to loadout ∪ granted when a subset is passed', () => {
+    // Pass only 'sparks' as the loadout; the match should have sparks + the 3 granted spells.
+    const s = generateSkirmish(fighter(), 8, 5, ['sparks'], { rng: seeded(2) });
+    expect(s.knownSpells).toContain('sparks');
+    for (const key of TACTICS_GRANTED_SPELLS) {
+      expect(s.knownSpells).toContain(key);
+    }
+    // 'mend' was not in the loadout, so it must not appear.
+    expect(s.knownSpells).not.toContain('mend');
+  });
+
+  it('empty loadout produces exactly the three granted spells', () => {
+    const s = generateSkirmish(fighter(), 8, 5, [], { rng: seeded(3) });
+    const expected = [...TACTICS_GRANTED_SPELLS].sort();
+    expect([...s.knownSpells].sort()).toEqual(expected);
+  });
+});
+
+// --- Phase F: overwatch Hold action ---------------------------------------------------------------
+describe('holdOverwatch', () => {
+  it('sets player.overwatch and ends the player turn', () => {
+    const enemy = makeEnemy(1, { q: 0, r: -3 }); // far away, won't trigger reaction
+    const s0 = makeState({ enemies: [enemy] });
+    const s1 = holdOverwatch(s0, seeded(42));
+    expect(s1.player.overwatch).toBe(false); // expired after enemy phase, player's turn again
+    // Turn should have been handed back to the player.
+    expect(s1.turn).toBe('player');
+    expect(s1.player.hasActed).toBe(false);
+    // Log should contain the overwatch message.
+    expect(s1.log.some((l) => l.toLowerCase().includes('overwatch'))).toBe(true);
+  });
+
+  it('is rejected when the player has already acted', () => {
+    const s0 = makeState({ player: makePlayer({ q: 0, r: 0 }, { hasActed: true }) });
+    const s1 = holdOverwatch(s0);
+    expect(s1).toBe(s0); // no-op — reference equality
+  });
+
+  it('fires a reaction shot when an enemy steps into melee range', () => {
+    // Player at center with a melee weapon; enemy starts adjacent so enemyAct
+    // will try to attack from its current position — that keeps it adjacent, triggering overwatch.
+    const enemy = makeEnemy(1, { q: 0, r: 1 }, { hp: 200, maxHp: 200 }); // high HP so it survives
+    const s0 = makeState({ enemies: [enemy] });
+    const s1 = holdOverwatch(s0, seeded(1));
+    // The reaction log line should mention the enemy name.
+    expect(s1.log.some((l) => l.includes('Foe1'))).toBe(true);
+    // Overwatch should be cleared (was consumed).
+    expect(s1.player.overwatch).toBe(false);
+    // Enemy should have taken some damage.
+    const enemy1 = s1.enemies.find((e) => e.id === 1);
+    expect(enemy1).toBeDefined();
+    if (enemy1) expect(enemy1.hp).toBeLessThan(200);
+  });
+
+  it('disarms the overwatch stance when no enemy enters range', () => {
+    // Enemy on the far side of the board (r = -3) won't reach melee range in one move.
+    const enemy = makeEnemy(1, { q: 0, r: -3 }, { hp: 50, maxHp: 50 });
+    const s0 = makeState({ enemies: [enemy] });
+    const s1 = holdOverwatch(s0, seeded(7));
+    expect(s1.player.overwatch).toBe(false); // expired at start of next player turn
+  });
+});
+
+// --- Phase G: secondary objectives ---------------------------------------------------------------
+describe('objective: beacon', () => {
+  function beaconState(streak: number, enemyOnBeacon: boolean): HexBattleState {
+    const beaconHex: Hex = { q: 0, r: 0 };
+    const objective: TacticsObjective = {
+      kind: 'beacon', label: 'Hold the Beacon', desc: '', target: 5, progress: streak,
+      beaconHex, complete: false, failed: false,
+    };
+    const enemy = makeEnemy(1, enemyOnBeacon ? beaconHex : { q: 0, r: -3 }, { hp: 200, maxHp: 200 });
+    return makeState({ enemies: [enemy], objective });
+  }
+
+  it('increments streak when beacon tile is clear', () => {
+    const s = beaconState(2, false /* enemy not on beacon */);
+    const s1 = endPlayerTurn(s, seeded(1));
+    expect(s1.objective?.progress).toBe(3);
+    expect(s1.objective?.complete).toBe(false);
+  });
+
+  it('resets streak when an enemy occupies the beacon tile', () => {
+    const s = beaconState(3, true /* enemy ON beacon */);
+    const s1 = endPlayerTurn(s, seeded(1));
+    expect(s1.objective?.progress).toBe(0);
+  });
+
+  it('marks complete when streak reaches target', () => {
+    const s = beaconState(4, false); // one more tick → progress=5=target
+    const s1 = endPlayerTurn(s, seeded(1));
+    expect(s1.objective?.complete).toBe(true);
+  });
+});
+
+describe('objective: swift', () => {
+  it('is complete when the match is won within the turn budget', () => {
+    const objective: TacticsObjective = {
+      kind: 'swift', label: 'Swift Strike', desc: '', target: 3, progress: 0,
+      complete: false, failed: false,
+    };
+    // Kill the enemy directly to trigger checkOutcome with turnCount=1.
+    const enemy = makeEnemy(1, { q: 1, r: 0 }, { hp: 1 });
+    const s0 = makeState({ enemies: [enemy], objective, turnCount: 1 });
+    const s1 = playerAttack(s0, { q: 1, r: 0 }, seeded(1));
+    expect(s1.status).toBe('won');
+    expect(s1.objective?.complete).toBe(true);
+  });
+
+  it('is NOT complete when the match is won after the turn budget expires', () => {
+    const objective: TacticsObjective = {
+      kind: 'swift', label: 'Swift Strike', desc: '', target: 2, progress: 0,
+      complete: false, failed: false,
+    };
+    const enemy = makeEnemy(1, { q: 1, r: 0 }, { hp: 1 });
+    // turnCount = 3 > target of 2
+    const s0 = makeState({ enemies: [enemy], objective, turnCount: 3 });
+    const s1 = playerAttack(s0, { q: 1, r: 0 }, seeded(1));
+    expect(s1.status).toBe('won');
+    expect(s1.objective?.complete).toBe(false);
+  });
+});
+
+describe('objective: flawless', () => {
+  it('fails when player HP drops below the threshold during the enemy phase', () => {
+    const objective: TacticsObjective = {
+      kind: 'flawless', label: 'Unscathed', desc: '', target: 50, progress: 100,
+      complete: false, failed: false,
+    };
+    // Enemy adjacent, strong enough to hurt the player (100 HP; any damage is the test).
+    const enemy = makeEnemy(1, { q: 0, r: 1 }, { hp: 200, maxHp: 200, attack: 50 });
+    const player = makePlayer({ q: 0, r: 0 }, { hp: 60, maxHp: 100 }); // 60 HP (> 50%)
+    const s0 = makeState({ enemies: [enemy], objective, player });
+    const s1 = endPlayerTurn(s0, seeded(1));
+    // Player took ≥10 damage → HP < 50% threshold → failed.
+    if (s1.player.hp < 50) {
+      expect(s1.objective?.failed).toBe(true);
+    }
+    // If for some reason the enemy missed (dodge), the test still passes — we just confirm
+    // the failed flag is set iff HP actually dropped below threshold.
+    if (s1.player.hp >= 50) {
+      expect(s1.objective?.failed).toBe(false);
+    }
+  });
+});
+
+describe('tacticsReward with objective', () => {
+  it('awards +60% gold when the objective is complete', () => {
+    const baseGold = Math.round(40 * (1 + 5 * 0.15)); // tier 5 base
+    const objective: TacticsObjective = {
+      kind: 'swift', label: '', desc: '', target: 3, progress: 0, complete: true, failed: false,
+    };
+    const s = makeState({
+      status: 'won', tier: 5, objective,
+      enemies: [], player: makePlayer({ q: 0, r: 0 }),
+    });
+    const reward = tacticsReward(s);
+    expect(reward.gold).toBe(Math.round(baseGold * 1.6));
+    expect(reward.items).toContain('healing_potion');
+  });
+
+  it('does not award bonus when objective is incomplete', () => {
+    const baseGold = Math.round(40 * (1 + 5 * 0.15));
+    const objective: TacticsObjective = {
+      kind: 'swift', label: '', desc: '', target: 3, progress: 0, complete: false, failed: false,
+    };
+    const s = makeState({
+      status: 'won', tier: 5, objective,
+      enemies: [], player: makePlayer({ q: 0, r: 0 }),
+    });
+    const reward = tacticsReward(s);
+    expect(reward.gold).toBe(baseGold);
+  });
+
+  it('pays standard reward when no objective exists', () => {
+    const baseGold = Math.round(40 * (1 + 5 * 0.15));
+    const s = makeState({
+      status: 'won', tier: 5, objective: null,
+      enemies: [], player: makePlayer({ q: 0, r: 0 }),
+    });
+    const reward = tacticsReward(s);
+    expect(reward.gold).toBe(baseGold);
+  });
+});
+
+// ── Multi-hero (co-op) engine tests ─────────────────────────────────────────────────────────────
+
+import {
+  livingHeroes,
+  nearestHero,
+  type HeroOpts,
+} from '../hexBattle';
+
+/** Minimal Fighter for generateSkirmish tests. */
+function heroFighter(): Fighter {
+  return fighter({ maxHp: 80, meleePower: 8, defense: 2, dodge: 0 });
+}
+
+describe('multi-hero: generateSkirmish with 2 heroes', () => {
+  const hero0: HeroOpts = { fighter: heroFighter(), ag: 8, knownSpells: [], id: 'p0', name: 'Alice' };
+  const hero1: HeroOpts = { fighter: heroFighter(), ag: 8, knownSpells: [], id: 'p1', name: 'Bob' };
+
+  it('populates players[] with 2 distinct heroes on separate hexes', () => {
+    const s = generateSkirmish(hero0.fighter, hero0.ag, 1, [], {
+      rng: seeded(42), heroes: [hero0, hero1],
+    });
+    expect(s.players).toHaveLength(2);
+    expect(s.players![0].id).toBe('p0');
+    expect(s.players![1].id).toBe('p1');
+    // Heroes must not occupy the same tile.
+    const k0 = hexKey(s.players![0].hex);
+    const k1 = hexKey(s.players![1].hex);
+    expect(k0).not.toBe(k1);
+  });
+
+  it('sets activeHeroId and s.player points to the first hero', () => {
+    const s = generateSkirmish(hero0.fighter, hero0.ag, 1, [], {
+      rng: seeded(7), heroes: [hero0, hero1],
+    });
+    expect(s.activeHeroId).toBe('p0');
+    expect(s.player).toBe(s.players![0]); // exact reference equality (alias)
+  });
+
+  it('scales enemy count upward compared to a solo skirmish at the same tier', () => {
+    const solo = generateSkirmish(hero0.fighter, hero0.ag, 1, [], { rng: seeded(3) });
+    const duo  = generateSkirmish(hero0.fighter, hero0.ag, 1, [], {
+      rng: seeded(3), heroes: [hero0, hero1],
+    });
+    // Duo should have at least as many enemies as solo (scaled by hero count).
+    expect(duo.enemies.length).toBeGreaterThanOrEqual(solo.enemies.length);
+  });
+
+  it('1-hero roster behaves identically to the legacy single-fighter path', () => {
+    const f = heroFighter();
+    const single = generateSkirmish(f, 8, 3, [], { rng: seeded(99) });
+    const singleViaRoster = generateSkirmish(f, 8, 3, [], {
+      rng: seeded(99), heroes: [{ fighter: f, ag: 8, knownSpells: [], id: 'p0' }],
+    });
+    // Both have no players[] (undefined — 1-hero roster is treated as solo).
+    expect(single.players).toBeUndefined();
+    expect(singleViaRoster.players).toBeUndefined();
+    // Same enemy count.
+    expect(single.enemies.length).toBe(singleViaRoster.enemies.length);
+  });
+});
+
+describe('multi-hero: livingHeroes and nearestHero helpers', () => {
+  it('livingHeroes falls back to [s.player] when no players[] exists', () => {
+    const s = makeState({ player: makePlayer({ q: 0, r: 0 }) });
+    expect(livingHeroes(s)).toHaveLength(1);
+    expect(livingHeroes(s)[0]).toBe(s.player);
+  });
+
+  it('livingHeroes filters dead heroes from players[]', () => {
+    const p0 = makePlayer({ q: 0, r: 0 }, { id: 'p0', hp: 50 });
+    const p1 = makePlayer({ q: 1, r: 0 }, { id: 'p1', hp: 0 }); // dead
+    const s = makeState({ player: p0, players: [p0, p1], activeHeroId: 'p0' });
+    const alive = livingHeroes(s);
+    expect(alive).toHaveLength(1);
+    expect(alive[0].id).toBe('p0');
+  });
+
+  it('nearestHero returns the closest living hero to a given hex', () => {
+    const p0 = makePlayer({ q: 0, r: 0 }, { id: 'p0' }); // distance 2 from q:2,r:0
+    const p1 = makePlayer({ q: 1, r: 0 }, { id: 'p1' }); // distance 1 from q:2,r:0
+    const s = makeState({ player: p0, players: [p0, p1], activeHeroId: 'p0' });
+    const nearest = nearestHero(s, { q: 2, r: 0 });
+    expect(nearest.id).toBe('p1');
+  });
+
+  it('nearestHero ignores dead heroes', () => {
+    const p0 = makePlayer({ q: 0, r: 0 }, { id: 'p0' }); // closer
+    const p1 = makePlayer({ q: 2, r: 0 }, { id: 'p1', hp: 0 }); // dead — farther but irrelevant
+    const s = makeState({ player: p0, players: [p0, p1], activeHeroId: 'p0' });
+    const nearest = nearestHero(s, { q: 2, r: 0 });
+    expect(nearest.id).toBe('p0'); // only living option
+  });
+});
+
+describe('multi-hero: turn sequencing — enemy phase waits for all heroes', () => {
+  /**
+   * Build a 2-hero state. Includes one unkillable enemy far away (moveTiles:1, melee) so
+   * checkOutcome never fires 'won' prematurely — without enemies the battle ends immediately.
+   */
+  function dualHeroState(): HexBattleState {
+    const p0 = makePlayer({ q: 0, r: 2 }, { id: 'p0', movesLeft: 0, hasActed: true });
+    const p1 = makePlayer({ q: 1, r: 1 }, { id: 'p1', movesLeft: 0, hasActed: true });
+    // Enemy at the far edge (distance ≥ 4) with moveTiles:1, range:1 — can't reach heroes in one turn.
+    const distant = makeEnemy(1, { q: 0, r: -2 }, { hp: 9999, maxHp: 9999, attack: 1, moveTiles: 1, range: 1 });
+    return makeState({ player: p0, players: [p0, p1], activeHeroId: 'p0', enemies: [distant] });
+  }
+
+  it('after hero p0 ends turn, turn stays "player" (p1 still needs to go)', () => {
+    const s0 = dualHeroState();
+    const s1 = endPlayerTurn(s0, HALF, 'p0');
+    // p0 ended but p1 has not → still player phase.
+    expect(s1.turn).toBe('player');
+  });
+
+  it('after both heroes end turn, the turn advances', () => {
+    const s0 = dualHeroState();
+    const s1 = endPlayerTurn(s0, HALF, 'p0');
+    const s2 = endPlayerTurn(s1, HALF, 'p1');
+    // Both ended → enemy phase ran (no enemies, so goes back to player) → turn count bumped.
+    expect(s2.turnCount).toBe(2);
+  });
+
+  it('both heroes have their movesLeft and hasActed reset after a full round', () => {
+    const s0 = dualHeroState();
+    const s1 = endPlayerTurn(s0, HALF, 'p0');
+    const s2 = endPlayerTurn(s1, HALF, 'p1');
+    for (const p of s2.players!) {
+      expect(p.hasActed).toBe(false);
+      expect(p.movesLeft).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('multi-hero: loss condition — only when ALL heroes are down', () => {
+  it('battle continues when one of two heroes dies', () => {
+    const p0 = makePlayer({ q: 0, r: 0 }, { id: 'p0', hp: 50 });
+    const p1 = makePlayer({ q: 1, r: 0 }, { id: 'p1', hp: 1, dodge: 0 });
+    // Enemy adjacent to p1 with lethal damage.
+    const enemy = makeEnemy(1, { q: 1, r: 1 }, { attack: 200, range: 1 });
+    const s0 = makeState({ player: p0, players: [p0, p1], activeHeroId: 'p0', enemies: [enemy] });
+    const s1 = endPlayerTurn(s0, HIGH, 'p0');
+    const s2 = endPlayerTurn(s1, HIGH, 'p1');
+    // p1 died from the enemy attack but p0 is still alive — should NOT be lost.
+    expect(s2.status).toBe('active');
+  });
+
+  it('status = lost only when every hero is dead', () => {
+    const p0 = makePlayer({ q: 0, r: 0 }, { id: 'p0', hp: 1, dodge: 0 });
+    const p1 = makePlayer({ q: 1, r: 0 }, { id: 'p1', hp: 1, dodge: 0 });
+    // Two enemies, each adjacent and lethal.
+    const e0 = makeEnemy(1, { q: 0, r: 1 }, { attack: 200, range: 1 });
+    const e1 = makeEnemy(2, { q: 1, r: 1 }, { attack: 200, range: 1 });
+    const s0 = makeState({ player: p0, players: [p0, p1], activeHeroId: 'p0', enemies: [e0, e1] });
+    const s1 = endPlayerTurn(s0, HIGH, 'p0');
+    const s2 = endPlayerTurn(s1, HIGH, 'p1');
+    expect(s2.status).toBe('lost');
   });
 });

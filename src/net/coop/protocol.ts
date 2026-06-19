@@ -1,5 +1,7 @@
 import type { Dir, MineTile } from '@/engine/mining';
 import type { ForestTile } from '@/engine/forest';
+import type { HexBattleState, HeroOpts } from '@/engine/hexBattle';
+import type { Hex } from '@/engine/hex';
 
 /**
  * Co-op wire protocol (Phase 3) — the messages broadcast over the Supabase
@@ -11,10 +13,14 @@ import type { ForestTile } from '@/engine/forest';
  *  - EACH player owns its own body and broadcasts a PlayerSlice; the host feeds
  *    the other players' positions into stepMonsters for nearest-player targeting.
  *
+ * For Hex Tactics (turn-based), the protocol is event-driven rather than 10 Hz:
+ *  - Guest sends HeroJoin once on connect; host broadcasts TacticsState after
+ *    every resolved action. No interval timer needed.
+ *
  * Keep these payloads small — broadcast Hz is the dominant free-tier cost.
  */
 
-export type CoopGame = 'mine' | 'forest';
+export type CoopGame = 'mine' | 'forest' | 'tactics';
 
 /** Minimal per-monster state needed to render + target. */
 export interface MonsterSlice {
@@ -83,7 +89,39 @@ export interface ByeIntent {
   username: string;
 }
 
-export type CoopMessage = WorldSlice | PlayerSlice | AttackIntent | TileSlice | ByeIntent;
+/** Guest → host: the guest's combat snapshot so the host can add their hero to the board. */
+export interface HeroJoin {
+  type: 'hero-join';
+  userId: string;
+  username: string;
+  /** Full HeroOpts (fighter + ag + knownSpells) for the guest's hero. */
+  heroOpts: HeroOpts;
+}
+
+/** Host → everyone: the full authoritative tactics battle state after each resolved action. */
+export interface TacticsState {
+  type: 'tactics-state';
+  /** Host clock (ms) when produced — used to drop stale messages. */
+  t: number;
+  state: HexBattleState;
+}
+
+/**
+ * Guest → host: a tactical action intent to be resolved authoritatively by the host.
+ * The `heroId` field is the guest's own hero ID; the host validates ownership before applying.
+ */
+export interface TacticsIntent {
+  type: 'tactics-intent';
+  userId: string;
+  heroId: string;
+  action: 'move' | 'attack' | 'cast' | 'hold' | 'endTurn';
+  /** Destination hex (move) or target hex (attack / cast). */
+  to?: Hex;
+  /** Spell key — for cast actions only. */
+  spellKey?: string;
+}
+
+export type CoopMessage = WorldSlice | PlayerSlice | AttackIntent | TileSlice | ByeIntent | HeroJoin | TacticsState | TacticsIntent;
 
 /** The Realtime channel name for a session's world sync. */
 export function coopChannelName(sessionId: string): string {

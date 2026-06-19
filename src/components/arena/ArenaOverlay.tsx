@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { Heart, Zap, Sparkles, Swords, Crosshair, LogOut, Skull, Trophy, FlaskRound } from 'lucide-react';
+import { Heart, Zap, Sparkles, Swords, Crosshair, LogOut, Skull, Trophy, FlaskRound, Volume2, VolumeX } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { useArenaLoop } from '@/hooks/useArenaLoop';
-import type { ArenaStatusEffect, TelegraphKind, ArenaRune } from '@/engine/arena';
+import type { ArenaState, ArenaStatusEffect, TelegraphKind, ArenaRune } from '@/engine/arena';
+import { previewRuneTarget } from '@/engine/arena';
 import { boardPixelSize, board, cellEquals, cellToPixel, step, neighbors, inBoard, type Cell, type Dir } from '@/engine/grid';
 import { getSpell, type StatusKey } from '@/engine/spells';
 import { getItem } from '@/engine/items';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/cn';
+import * as sfx from '@/lib/sfx';
 import { ArenaControls } from './ArenaControls';
 
 /** Cell size (px) shrinks as the board grows so every size fits the same width. */
@@ -25,15 +27,11 @@ function centerFor(h: Cell, radius: number): { x: number; y: number } {
 }
 
 const STATUS_GLYPH: Record<StatusKey, string> = { bless: '🛡️', burn: '🔥', weaken: '🔻', blind: '💫', freeze: '❄️', poison: '☠️' };
-const TELEGRAPH_GLYPH: Record<TelegraphKind, string> = { slam: '💥', line: '➡️', nova: '✸', volley: '⁂' };
+const TELEGRAPH_LABEL: Record<TelegraphKind, string> = { slam: 'SLAM', line: 'LINE', nova: 'NOVA', volley: 'VOL' };
 const RUNE_GLYPH: Record<ArenaRune['kind'], string> = { fire: '🔥', ice: '❄️', poison: '☠️' };
+const MINION_GLYPH: Record<string, string> = { bat: '🦇', archer: '🐺' };
 const RUNE_COLOR: Record<ArenaRune['kind'], string> = { fire: 'rgba(239,68,68,0.35)', ice: 'rgba(96,165,250,0.35)', poison: 'rgba(134,239,172,0.30)' };
 
-function bossGlyph(id: string): string {
-  if (id.includes('slime')) return '🫧';
-  if (id.includes('golem')) return '🗿';
-  return '👹';
-}
 function obstacleGlyph(h: Cell): string {
   const x = Math.abs((Math.imul(h.x, 73856093) ^ Math.imul(h.y, 19349663)) >>> 0);
   return ['🪨', '🌲', '🪵'][x % 3];
@@ -91,46 +89,109 @@ type Float = { key: string; x: number; y: number; text: string; color: string; a
 // A slot action — identifies what fires when a board-click slot is used.
 type SlotKey = 'melee' | 'ranged' | `spell:${string}` | `item:${string}`;
 
+/** If the slot is a rune spell, returns the rune kind; otherwise null. */
+function runeKindFromSlot(slot: SlotKey): ArenaRune['kind'] | null {
+  if (!slot.startsWith('spell:')) return null;
+  const spell = getSpell(slot.slice(6));
+  if (spell?.mechanic === 'rune-fire') return 'fire';
+  if (spell?.mechanic === 'rune-ice') return 'ice';
+  if (spell?.mechanic === 'rune-poison') return 'poison';
+  return null;
+}
+
 export function ArenaOverlay() {
   const controls = useArenaLoop();
   const arena = useGameStore((s) => s.arena);
   const endArena = useGameStore((s) => s.endArena);
   const beginArenaBanking = useGameStore((s) => s.beginArenaBanking);
+  // Slot bindings: persisted across runs via settings so players don't have to rebind each time.
+  const arenaBindLeft = useGameStore((s) => s.settings.arenaBindLeft);
+  const arenaBindRight = useGameStore((s) => s.settings.arenaBindRight);
+  const soundEnabled = useGameStore((s) => s.settings.soundEnabled);
+  const updateSettings = useGameStore((s) => s.updateSettings);
+  const leftSlot = arenaBindLeft as SlotKey;
+  const rightSlot = arenaBindRight as SlotKey;
+  const setLeftSlot = (key: SlotKey) => updateSettings({ arenaBindLeft: key });
+  const setRightSlot = (key: SlotKey) => updateSettings({ arenaBindRight: key });
 
   const [floats, setFloats] = useState<Float[]>([]);
   const [hitAt, setHitAt] = useState(0);
   const [castAt, setCastAt] = useState(0);
-
-  // Click-to-aim slot assignments (not persisted — reset each run).
-  const [leftSlot, setLeftSlot] = useState<SlotKey>('melee');
-  const [rightSlot, setRightSlot] = useState<SlotKey>('ranged');
+  const [hoverCell, setHoverCell] = useState<Cell | null>(null);
 
   const boardRef = useRef<HTMLDivElement>(null);
-  const prev = useRef<{ bossHp: number; hp: number; mp: number } | null>(null);
+  const prev = useRef<{ bossHp: number; hp: number; mp: number; dodgedAt: number; status: ArenaState['status']; phaseIndex: number } | null>(null);
+  const prevMinionPos = useRef<Map<number, Cell>>(new Map());
+
+  // Sync mute state with the master sfx module whenever the setting changes.
+  useEffect(() => { sfx.setMuted(!soundEnabled); }, [soundEnabled]);
 
   useEffect(() => {
-    if (!arena) { prev.current = null; return; }
+    if (!arena) {
+      prev.current = null;
+      prevMinionPos.current.clear();
+      return;
+    }
     const p = prev.current;
-    prev.current = { bossHp: arena.bossHp, hp: arena.hp, mp: arena.mp };
-    if (!p) return;
-    const now = Date.now();
     const R = arena.radius;
+    const now = Date.now();
     const next: Float[] = [];
+
+    // Minion death tracking — must run before updating prev so we can compare.
+    if (p) {
+      const prevIds = new Set(prevMinionPos.current.keys());
+      const currIds = new Set(arena.minions.map((m) => m.id));
+      prevIds.forEach((id) => {
+        if (!currIds.has(id)) {
+          const pos = prevMinionPos.current.get(id);
+          if (pos) {
+            const c = centerFor(pos, R);
+            next.push({ key: `mn-${id}-${now}`, x: c.x, y: c.y - 8, text: '💨', color: 'rgba(190,220,255,0.85)', at: now });
+            sfx.play('hit');
+          }
+        }
+      });
+    }
+    prevMinionPos.current.clear();
+    arena.minions.forEach((m) => prevMinionPos.current.set(m.id, m.pos));
+
+    prev.current = { bossHp: arena.bossHp, hp: arena.hp, mp: arena.mp, dodgedAt: arena.lastDodgedAtMs, status: arena.status, phaseIndex: arena.phaseIndex };
+    if (!p) return;
+
+    // Boss damage floater + hit SFX
     const bossDmg = p.bossHp - arena.bossHp;
     if (bossDmg > 0) {
       const c = centerFor(arena.bossPos, R);
       next.push({ key: `b-${now}-${Math.random()}`, x: c.x, y: c.y - 16, text: `-${Math.round(bossDmg)}`, color: '#fbbf24', at: now });
+      sfx.play('hit');
     }
+    // Player damage/heal floater + SFX
     const playerDmg = p.hp - arena.hp;
     if (playerDmg > 0) {
       const c = centerFor(arena.player.pos, R);
       next.push({ key: `p-${now}-${Math.random()}`, x: c.x, y: c.y - 16, text: `-${Math.round(playerDmg)}`, color: '#f87171', at: now });
       setHitAt(now);
+      sfx.play('playerHurt');
     } else if (playerDmg < 0) {
       const c = centerFor(arena.player.pos, R);
       next.push({ key: `h-${now}-${Math.random()}`, x: c.x, y: c.y - 16, text: `+${Math.round(-playerDmg)}`, color: '#34d399', at: now });
     }
+    // Dodge floater + SFX — lastDodgedAtMs set by strikePlayer on successful evade.
+    if (arena.lastDodgedAtMs !== p.dodgedAt && arena.lastDodgedAtMs > 0) {
+      const c = centerFor(arena.player.pos, R);
+      next.push({ key: `dg-${now}-${Math.random()}`, x: c.x, y: c.y - 24, text: 'Dodge!', color: '#67e8f9', at: now });
+      sfx.play('arenaDodge');
+    }
+    // Cast ring trigger
     if (p.mp - arena.mp >= 2) setCastAt(now);
+    // Phase-transition SFX
+    if (arena.phaseIndex > p.phaseIndex) sfx.play('arenaBossPhase');
+    // Outcome SFX
+    if (arena.status !== p.status) {
+      if (arena.status === 'won') sfx.play('victory');
+      else if (arena.status === 'ended') sfx.play('defeat');
+    }
+
     if (next.length > 0) {
       setFloats((fs) => [...fs.filter((f) => now - f.at < 850), ...next]);
       setTimeout(() => setFloats((fs) => fs.filter((f) => Date.now() - f.at < 850)), 900);
@@ -179,10 +240,13 @@ export function ArenaOverlay() {
 
   // Fire the action bound to a slot, aimed in the given direction.
   const fireSlot = (slot: SlotKey, dir: Dir, clickX: number, clickY: number) => {
+    void sfx.resume();
     if (slot === 'melee') {
       controls.melee(dir);
+      sfx.play('swing');
     } else if (slot === 'ranged') {
       controls.ranged(dir);
+      sfx.play('arrowFly');
     } else if (slot.startsWith('spell:')) {
       const spellKey = slot.slice(6);
       const spell = getSpell(spellKey);
@@ -193,12 +257,14 @@ export function ArenaOverlay() {
       } else {
         controls.cast(spellKey, { dir });
       }
+      sfx.play('cast');
     } else if (slot.startsWith('item:')) {
       controls.useItem(slot.slice(5));
     }
   };
 
   const handleBoardClick = (clientX: number, clientY: number, isRight: boolean) => {
+    void sfx.resume();
     if (!arena || arena.status !== 'active' || !boardRef.current) return;
     const rect = boardRef.current.getBoundingClientRect();
     const clickX = clientX - rect.left;
@@ -210,6 +276,19 @@ export function ArenaOverlay() {
     const dir = pixelDir(ddx, ddy);
     fireSlot(isRight ? rightSlot : leftSlot, dir, clickX, clickY);
   };
+
+  const handleBoardPointerMove = (e: React.PointerEvent) => {
+    if (!boardRef.current) return;
+    const rect = boardRef.current.getBoundingClientRect();
+    const h = pixelToCell(e.clientX - rect.left, e.clientY - rect.top, BOARD.width, BOARD.height, SIZE);
+    setHoverCell(inBoard(h, R) ? h : null);
+  };
+
+  // Rune preview: if either active slot is a rune spell, show where it'll land on hover.
+  const activeRuneKind = runeKindFromSlot(leftSlot) ?? runeKindFromSlot(rightSlot);
+  const runePreviewCell = arena.status === 'active' && activeRuneKind && hoverCell
+    ? previewRuneTarget(arena, hoverCell)
+    : null;
 
   return (
     <div className="texture-wood fixed inset-0 z-50 flex flex-col items-center gap-3 overflow-auto px-4 py-4">
@@ -223,6 +302,9 @@ export function ArenaOverlay() {
         <div className="flex items-center justify-between">
           <span className="font-display text-sm font-bold text-gold-bright">{arena.bossName}</span>
           <div className="flex items-center gap-2">
+            {arena.minions.length > 0 && (
+              <span className="font-display text-[10px] text-amber-400">{MINION_GLYPH[arena.minionVariant] ?? '🦇'}×{arena.minions.length}</span>
+            )}
             {arena.totalPhases > 1 && (
               <span className="flex gap-0.5">
                 {Array.from({ length: arena.totalPhases }).map((_, i) => (
@@ -240,6 +322,21 @@ export function ArenaOverlay() {
         <div className="h-3 w-full overflow-hidden rounded-full border border-gold-deep/50 bg-wood-900">
           <div className="h-full rounded-full bg-ember-bright transition-all" style={{ width: `${bossPct}%` }} />
         </div>
+        {/* Weakness / resistance badges — surface hidden multipliers so players can act on them */}
+        {(arena.weakTo.length > 0 || arena.resistTo.length > 0) && (
+          <div className="flex flex-wrap items-center gap-1">
+            {arena.weakTo.map((stat) => (
+              <span key={stat} className="rounded-sm bg-emerald-900/70 px-1.5 font-display text-[10px] text-emerald-300">
+                ⚡ Weak: {stat}
+              </span>
+            ))}
+            {arena.resistTo.map((stat) => (
+              <span key={stat} className="rounded-sm bg-red-900/60 px-1.5 font-display text-[10px] text-red-300">
+                🛡 Resists: {stat}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* HUD: player gauges */}
@@ -256,6 +353,8 @@ export function ArenaOverlay() {
         style={{ width: BOARD.width, height: BOARD.height }}
         onPointerDown={(e) => { if (e.button === 0) handleBoardClick(e.clientX, e.clientY, false); }}
         onContextMenu={(e) => { e.preventDefault(); handleBoardClick(e.clientX, e.clientY, true); }}
+        onPointerMove={handleBoardPointerMove}
+        onPointerLeave={() => setHoverCell(null)}
       >
         {/* Floor cells */}
         {board(R).map((h) => {
@@ -298,6 +397,19 @@ export function ArenaOverlay() {
           </div>
         ))}
 
+        {/* Rune placement preview — shown on hover when a rune spell is the active slot */}
+        {runePreviewCell && activeRuneKind && (
+          <div
+            className="pointer-events-none"
+            style={{
+              ...cellBox(runePreviewCell),
+              backgroundColor: RUNE_COLOR[activeRuneKind],
+              boxShadow: `inset 0 0 0 2px ${activeRuneKind === 'fire' ? '#ef4444' : activeRuneKind === 'ice' ? '#60a5fa' : '#4ade80'}`,
+              opacity: 0.75,
+            }}
+          />
+        )}
+
         {/* Ring of fire — glowing ring on 8 adjacent cells around player */}
         {ringActive && neighbors(arena.player.pos).filter((h) => inBoard(h, R)).map((h) => (
           <div
@@ -312,24 +424,36 @@ export function ArenaOverlay() {
           />
         ))}
 
-        {/* Telegraphs — danger zones that brighten as the blow lands */}
-        {arena.telegraphs.map((t) => (
-          <div key={`tg-${t.id}`} className="pointer-events-none">
-            {t.tiles.map((h, i) => (
-              <div
-                key={i}
-                style={{
-                  ...cellBox(h),
-                  backgroundColor: t.school === 'magic' ? '#a855f7' : '#ef4444',
-                  animation: `arena-telegraph ${Math.max(120, t.firesAtMs - t.startedAtMs)}ms ease-in forwards`,
-                }}
-              />
-            ))}
-            <div className="pointer-events-none z-[7] flex items-center justify-center opacity-80" style={spriteBox(t.tiles[0] ?? arena.bossPos, CELL)}>
-              <span className="text-[14px]">{TELEGRAPH_GLYPH[t.kind]}</span>
+        {/* Telegraphs — danger zones that brighten as the blow lands.
+            Outlined tiles make the AOE boundary clear; a text label names the pattern. */}
+        {arena.telegraphs.map((t) => {
+          const tColor = t.school === 'magic' ? '#a855f7' : '#ef4444';
+          const windupMs = Math.max(120, t.firesAtMs - t.startedAtMs);
+          return (
+            <div key={`tg-${t.id}`} className="pointer-events-none">
+              {t.tiles.map((h, i) => (
+                <div
+                  key={i}
+                  style={{
+                    ...cellBox(h),
+                    backgroundColor: tColor,
+                    boxShadow: `inset 0 0 0 2px ${tColor}`,
+                    animation: `arena-telegraph ${windupMs}ms ease-in forwards`,
+                  }}
+                />
+              ))}
+              {/* Pattern name label on the first tile — clearer than cryptic emoji */}
+              {t.tiles[0] && (
+                <div
+                  className="pointer-events-none absolute z-[7] flex items-center justify-center"
+                  style={{ ...cellBox(t.tiles[0]), color: '#fff', fontSize: 8, fontWeight: 700, fontFamily: 'monospace', letterSpacing: '0.02em', textShadow: '0 1px 2px rgba(0,0,0,0.9)' }}
+                >
+                  {TELEGRAPH_LABEL[t.kind]}
+                </div>
+              )}
             </div>
-          </div>
-        ))}
+          );
+        })}
 
         {/* Player ranged bolts */}
         {arena.projectiles.map((p) => (
@@ -357,7 +481,7 @@ export function ArenaOverlay() {
             <div key={`mn-${m.id}`}>
               <div className="pointer-events-none z-[8] flex items-center justify-center" style={spriteBox(m.pos, CELL * 0.62)}>
                 <span style={{ fontSize: SIZE * 0.9, lineHeight: 1, filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.85))', opacity: frozen ? 0.6 : 1 }}>
-                  {frozen ? '🧊' : '🦇'}
+                  {frozen ? '🧊' : (MINION_GLYPH[m.variant] ?? '🦇')}
                 </span>
               </div>
               {m.hp < m.maxHp && (
@@ -377,11 +501,24 @@ export function ArenaOverlay() {
           );
         })}
 
-        {/* Boss + its debuff badges */}
+        {/* Boss + its debuff badges. The keyed inner div restarts the CSS animation
+            each time the phase changes or the boss dies. */}
         <div className="pointer-events-none z-[8] flex items-center justify-center" style={spriteBox(arena.bossPos, CELL)}>
-          <span className="leading-none" style={{ fontSize: SIZE * 1.15, filter: 'drop-shadow(0 2px 3px rgba(0,0,0,0.85))', opacity: won ? 0.25 : 1 }}>
-            {won ? '💥' : bossGlyph(arena.bossId)}
-          </span>
+          <div
+            key={`boss-${won ? 'dead' : arena.phaseIndex}`}
+            className="flex h-full w-full items-center justify-center"
+            style={{
+              animation: won
+                ? 'arena-boss-die 0.65s ease-out forwards'
+                : arena.phaseIndex > 0
+                  ? 'arena-boss-phase 0.55s ease-out forwards'
+                  : undefined,
+            }}
+          >
+            <span className="leading-none" style={{ fontSize: SIZE * 1.15, filter: 'drop-shadow(0 2px 3px rgba(0,0,0,0.85))', opacity: won ? 0.25 : 1 }}>
+              {won ? '💥' : arena.bossGlyph}
+            </span>
+          </div>
         </div>
         <StatusBadges statuses={arena.enemyStatuses} x={center(arena.bossPos).x} y={center(arena.bossPos).y - CELL / 2} />
 
@@ -420,6 +557,8 @@ export function ArenaOverlay() {
                   ? 'Carried out with half of what you earned this bout.'
                   : 'Withdraw with the share you earned so far.'}
             </p>
+            {/* Run summary — statUsage and damageDealt are available on ArenaState until endArena clears it */}
+            <RunSummary arena={arena} />
             <Button variant="primary" onClick={endArena} className="mt-1 px-4 py-2 text-sm">
               {won ? 'Claim Reward' : 'Leave the Arena'}
             </Button>
@@ -478,8 +617,8 @@ export function ArenaOverlay() {
             );
           })}
         </div>
-        <p className="text-center text-[9px] text-parchment-300/50">
-          Left-click a button to bind it to left-click · Right-click to bind to right-click · Click the board to aim and fire
+        <p className="text-center text-[10px] text-parchment-300/60">
+          <span className="font-semibold text-parchment-200/80">L-click</span> a spell to fire &amp; bind left · <span className="font-semibold text-parchment-200/80">R-click</span> to bind right · then <span className="font-semibold text-parchment-200/80">click the board</span> to aim · keys <span className="font-semibold text-parchment-200/80">1–{arena.knownSpells.length + items.length}</span> quick-fire
         </p>
       </div>
 
@@ -488,16 +627,47 @@ export function ArenaOverlay() {
         <ArenaControls controls={controls} />
       </div>
 
-      {/* Retreat */}
+      {/* Retreat + mute toggle */}
       {arena.status === 'active' && (
-        <Button variant="danger" onClick={beginArenaBanking} className="flex items-center gap-1.5 px-3 py-1.5 text-xs">
-          <LogOut className="h-4 w-4" /> Retreat
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="danger" onClick={beginArenaBanking} className="flex items-center gap-1.5 px-3 py-1.5 text-xs">
+            <LogOut className="h-4 w-4" /> Retreat
+          </Button>
+          <button
+            onClick={() => { void sfx.resume(); updateSettings({ soundEnabled: !soundEnabled }); }}
+            className="rounded-md border border-gold-deep/50 p-1.5 text-parchment-300/70 transition-colors hover:border-gold/60 hover:text-parchment-200"
+            title={soundEnabled ? 'Mute sounds' : 'Unmute sounds'}
+          >
+            {soundEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+          </button>
+        </div>
       )}
 
       <p className="max-w-md text-center text-[10px] text-parchment-300/50">
-        Move: W/A/S/D or arrows — hold two for diagonals (or use the pad). Space attacks. Click the board to fire in that direction.
+        Move: W/A/S/D or arrows — hold two for diagonals (or use the pad). Space/Enter attacks. 1–9 quick-fire spells &amp; items.
       </p>
+    </div>
+  );
+}
+
+/** Compact run-stats row shown in the outcome modal. */
+function RunSummary({ arena }: { arena: ArenaState }) {
+  const totalUsage = (Object.values(arena.statUsage) as number[]).reduce((s, n) => s + n, 0);
+  const dodges = arena.statUsage.AG ?? 0;
+  const elapsedSec = arena.startedAtMs > 0 ? Math.max(0, Math.round((arena.lastTickMs - arena.startedAtMs) / 1000)) : 0;
+  const mins = Math.floor(elapsedSec / 60);
+  const secs = elapsedSec % 60;
+  const topEntry = (Object.entries(arena.statUsage) as [string, number][])
+    .filter(([k]) => k !== 'AG') // AG = dodges, separate display
+    .sort((a, b) => b[1] - a[1])[0];
+  const focusStat = topEntry ? topEntry[0] : null;
+  return (
+    <div className="flex flex-wrap justify-center gap-x-3 gap-y-0.5 font-display text-[10px] text-parchment-300/80">
+      <span>⚔️ {Math.round(arena.damageDealt ?? 0)} dmg</span>
+      <span>🎯 {totalUsage} actions</span>
+      {dodges > 0 && <span>💨 {dodges} dodge{dodges !== 1 ? 's' : ''}</span>}
+      {focusStat && <span>📊 Focus: {focusStat}</span>}
+      {elapsedSec > 0 && <span>⏱ {mins > 0 ? `${mins}m ` : ''}{secs}s</span>}
     </div>
   );
 }

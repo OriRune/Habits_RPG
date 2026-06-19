@@ -6,32 +6,35 @@
 //   Space / ↑ / Jump button   → jump (double-jump allowed midair)
 //   ↓ / S / Slide button      → slide under lowbar banners (grounded only)
 //   Shift / D / Dash button   → speed burst that shoves chaser back (cooldown)
+//
+// Outer RooftopChase manages run lifecycle (restart / accept score).
+// Inner RooftopChaseRun owns hooks + rendering; remounts cleanly on restart via key.
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import {
-  generateCourse,
-  buildingAt,
-  hasFallen,
   chaseScore,
   speedAt,
-  updateLead,
-  resolveContact,
   CHASE_TARGET_DISTANCE,
-  GRAVITY,
-  JUMP_VELOCITY,
-  DOUBLE_JUMP_VELOCITY,
-  MAX_JUMPS,
-  STUMBLE_MS,
-  SLIDE_MS,
-  DASH_DURATION_MS,
-  DASH_COOLDOWN_MS,
-  DASH_SPEED_BONUS,
   CHASER_SPAWN_DISTANCE,
-  LEAD_START,
+  SURGE_DURATION_MS,
+  DASH_COOLDOWN_MS,
   LEAD_MAX,
-  STOMP_BOUNCE_VELOCITY,
+  MOOK_JUMP_LEAD_GAIN,
+  SLIDE_LEAD_GAIN,
   type Building,
 } from '@/engine/trials/rooftopChase';
+import { scoreToStars } from '@/engine/trials/trials';
+import { useChaseLoop } from '@/hooks/useChaseLoop';
+import { useChaseAudio } from '@/hooks/useChaseAudio';
+import { useGameStore } from '@/store/useGameStore';
+
+type RunOutcome = 'escaped' | 'caught' | 'fell';
+
+interface RunResult {
+  score: number;
+  finalDistance: number;
+  outcome: RunOutcome;
+}
 
 interface RooftopChaseProps {
   onFinish: (score01: number) => void;
@@ -39,36 +42,34 @@ interface RooftopChaseProps {
 
 // ── Display constants ──────────────────────────────────────────────────────────
 
-const VIEW_W = 320;
-const VIEW_H = 210;
+const VIEW_W = 500;
+const VIEW_H = 260;
 /** Screen Y of the roof surface at elevation 0 (measured from top of play area). */
-const ROOF_BASE_PX = 158;
+const ROOF_BASE_PX = 196;
 /** Height below the roof base to the bottom of the view (street + parapet). */
 const BELOW_ROOF_PX = VIEW_H - ROOF_BASE_PX;
-/** Pixel scale: 1 world-unit = 7 px. */
-const PX_PER_WU = 7;
-/** Hero's fixed screen X (world scrolls past). */
-const HERO_X_PX = 72;
-/**
- * Hero hitbox width in world-units.
- * Slightly narrower than the visual sprite for fairness.
- */
-const HERO_W_WU = 2.2;
+/** Pixel scale: 1 world-unit = 8 px. */
+const PX_PER_WU = 8;
+/** Hero's fixed screen X — left edge of the hitbox in pixels. */
+const HERO_X_PX = 150;
+/** Sprite offset so the visual boot aligns with the hitbox right edge. */
+const HERO_SPRITE_OFFSET_X = 3;
 
-/** Convert a world-unit roof elevation to screen Y (from top of view). */
 function screenYForElev(elev: number): number {
   return ROOF_BASE_PX - elev * PX_PER_WU;
 }
 
 // ── Parallax layer constants ──────────────────────────────────────────────────
 
-const FAR_FACTOR = 0.06;
-const MID_FACTOR = 0.22;
+const FAR_FACTOR   = 0.06;
+const MID_FACTOR   = 0.22;
 const DECOR_FACTOR = 1.35;
+const CLOUD_FACTOR = 0.03;
 
-const FAR_TILE_W = 480;
-const MID_TILE_W = 320;
+const FAR_TILE_W   = 480;
+const MID_TILE_W   = 320;
 const DECOR_TILE_W = 240;
+const CLOUD_TILE_W = 500;
 
 // ── Procedural art data ───────────────────────────────────────────────────────
 
@@ -107,6 +108,14 @@ const CHIMNEYS: ReadonlyArray<[number, number, number, number]> = [
   [190, 8, 12, 28],
 ];
 
+// Cloud blobs — [x, y, w, h] in px within one CLOUD_TILE_W tile.
+const CLOUDS: ReadonlyArray<[number, number, number, number]> = [
+  [40,  18, 70, 22],
+  [160, 28, 55, 18],
+  [280, 15, 80, 24],
+  [400, 32, 60, 20],
+];
+
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
 function HeroSprite({
@@ -116,18 +125,26 @@ function HeroSprite({
   landing,
   falling,
 }: {
-  airborne: boolean;
-  sliding: boolean;
+  airborne:  boolean;
+  sliding:   boolean;
   stumbling: boolean;
-  landing: boolean;
-  falling: boolean;
+  landing:   boolean;
+  falling:   boolean;
 }) {
-  const opacity = stumbling ? 0.35 : 1;
+  const opacity  = stumbling ? 0.35 : 1;
   const fallAnim = falling ? 'rooftop-fall 0.6s ease-in forwards' : undefined;
 
   if (sliding) {
     return (
       <div style={{ width: 34, height: 18, position: 'relative', opacity, animation: fallAnim }}>
+        {/* Slide streak — horizontal smear on slide entry */}
+        <div style={{
+          position: 'absolute', top: 0, left: -26, width: 26, height: 16,
+          background: 'linear-gradient(to right, transparent, rgba(130,90,210,0.4))',
+          borderRadius: '2px',
+          animation: 'rooftop-slide-streak 0.45s ease-out forwards',
+          pointerEvents: 'none',
+        }} />
         <div style={{
           position: 'absolute', bottom: 2, left: 0, width: 28, height: 12,
           background: 'linear-gradient(90deg, #2d1b5e, #4a2890)',
@@ -135,28 +152,24 @@ function HeroSprite({
         }} />
         <div style={{
           position: 'absolute', bottom: 3, left: 4, width: 22, height: 10,
-          backgroundColor: '#c85a2a',
-          borderRadius: '3px 2px 2px 3px',
+          backgroundColor: '#c85a2a', borderRadius: '3px 2px 2px 3px',
         }} />
         <div style={{
           position: 'absolute', bottom: 5, right: 0, width: 12, height: 12,
-          backgroundColor: '#e0b070',
-          borderRadius: '50% 50% 40% 40%',
+          backgroundColor: '#e0b070', borderRadius: '50% 50% 40% 40%',
         }} />
         <div style={{
           position: 'absolute', bottom: 12, right: 0, width: 14, height: 7,
-          backgroundColor: '#9a7530',
-          borderRadius: '3px 3px 0 0',
-          borderBottom: '2px solid #7a5520',
+          backgroundColor: '#9a7530', borderRadius: '3px 3px 0 0', borderBottom: '2px solid #7a5520',
         }} />
-        <div style={{ position: 'absolute', bottom: 0, left: 6, width: 5, height: 5, backgroundColor: '#5a3520', borderRadius: '0 0 3px 3px' }} />
+        <div style={{ position: 'absolute', bottom: 0, left: 6,  width: 5, height: 5, backgroundColor: '#5a3520', borderRadius: '0 0 3px 3px' }} />
         <div style={{ position: 'absolute', bottom: 0, left: 13, width: 5, height: 5, backgroundColor: '#4a2810', borderRadius: '0 0 3px 3px' }} />
       </div>
     );
   }
 
-  const runAnim = airborne ? undefined : 'rooftop-run 0.32s linear infinite';
-  const landAnim = landing ? 'rooftop-land 0.18s ease-out forwards' : undefined;
+  const runAnim  = airborne ? undefined : 'rooftop-run 0.32s linear infinite';
+  const landAnim = landing  ? 'rooftop-land 0.18s ease-out forwards' : undefined;
   const bodyAnim = fallAnim ?? landAnim ?? runAnim;
 
   return (
@@ -169,104 +182,71 @@ function HeroSprite({
       }} />
       <div style={{
         position: 'absolute', bottom: 14, left: 4, width: 16, height: 16,
-        backgroundColor: '#c85a2a',
-        borderRadius: '2px',
+        backgroundColor: '#c85a2a', borderRadius: '2px',
       }} />
-      <div style={{
-        position: 'absolute', bottom: 14, left: 4, width: 16, height: 3,
-        backgroundColor: '#7a5020',
-      }} />
+      <div style={{ position: 'absolute', bottom: 14, left: 4, width: 16, height: 3, backgroundColor: '#7a5020' }} />
       <div style={{
         position: 'absolute', bottom: 28, left: 5, width: 14, height: 13,
-        backgroundColor: '#e0b070',
-        borderRadius: '50% 50% 40% 40%',
+        backgroundColor: '#e0b070', borderRadius: '50% 50% 40% 40%',
       }} />
       <div style={{
         position: 'absolute', bottom: 36, left: 4, width: 16, height: 8,
-        backgroundColor: '#9a7530',
-        borderRadius: '3px 3px 0 0',
-        borderBottom: '2px solid #7a5520',
+        backgroundColor: '#9a7530', borderRadius: '3px 3px 0 0', borderBottom: '2px solid #7a5520',
       }} />
-      <div style={{
-        position: 'absolute', bottom: 32, left: 10, width: 4, height: 6,
-        backgroundColor: '#7a5520',
-      }} />
+      <div style={{ position: 'absolute', bottom: 32, left: 10, width: 4, height: 6, backgroundColor: '#7a5520' }} />
       <div style={{
         position: 'absolute', bottom: 0, left: 6, width: 6, height: 16,
-        backgroundColor: '#5a3520',
-        borderRadius: '0 0 3px 3px',
+        backgroundColor: '#5a3520', borderRadius: '0 0 3px 3px',
         transformOrigin: 'top center',
         animation: airborne || fallAnim ? undefined : 'rooftop-leg-f 0.32s linear infinite',
         transform: airborne ? 'rotate(15deg)' : undefined,
       }} />
       <div style={{
         position: 'absolute', bottom: 0, left: 13, width: 6, height: 16,
-        backgroundColor: '#4a2510',
-        borderRadius: '0 0 3px 3px',
+        backgroundColor: '#4a2510', borderRadius: '0 0 3px 3px',
         transformOrigin: 'top center',
         animation: airborne || fallAnim ? undefined : 'rooftop-leg-b 0.32s linear infinite',
         transform: airborne ? 'rotate(-15deg)' : undefined,
       }} />
-      <div style={{ position: 'absolute', bottom: 0, left: 4, width: 8, height: 5, backgroundColor: '#3a1a08', borderRadius: '0 0 3px 3px' }} />
+      <div style={{ position: 'absolute', bottom: 0, left:  4, width: 8, height: 5, backgroundColor: '#3a1a08', borderRadius: '0 0 3px 3px' }} />
       <div style={{ position: 'absolute', bottom: 0, left: 13, width: 8, height: 5, backgroundColor: '#2a1008', borderRadius: '0 0 3px 3px' }} />
       {airborne && !fallAnim && (
         <div style={{
           position: 'absolute', bottom: 10, right: -4, width: 10, height: 3,
-          backgroundColor: '#c85a2a',
-          borderRadius: '2px',
-          transform: 'rotate(-20deg)',
+          backgroundColor: '#c85a2a', borderRadius: '2px', transform: 'rotate(-20deg)',
         }} />
       )}
     </div>
   );
 }
 
-function ChaserSprite({ danger }: { danger: boolean }) {
-  const eyeGlow = danger ? '0 0 8px #ff2200' : '0 0 4px #cc4400';
-  const eyeColor = danger ? '#ff3300' : '#cc5500';
+function ChaserSprite({ danger, airborne = false, pouncing = false }: {
+  danger:    boolean;
+  airborne?: boolean;
+  pouncing?: boolean;
+}) {
+  const eyeGlow  = danger ? '0 0 8px #ff2200' : '0 0 4px #cc4400';
+  const eyeColor = danger ? '#ff3300'         : '#cc5500';
+  const bodyAnim = pouncing
+    ? 'rooftop-pounce 0.5s ease-in forwards'
+    : airborne ? undefined : 'rooftop-chaser 0.28s linear infinite';
+  const bodyTransform = !pouncing && airborne ? 'rotate(-18deg)' : undefined;
   return (
-    <div style={{ width: 38, height: 30, position: 'relative', animation: 'rooftop-chaser 0.28s linear infinite' }}>
-      <div style={{
-        position: 'absolute', bottom: 10, left: 0, width: 30, height: 16,
-        background: 'linear-gradient(90deg, #100808, #1e1010)',
-        borderRadius: '8px 3px 3px 8px',
-      }} />
-      <div style={{
-        position: 'absolute', bottom: 22, left: 6, width: 16, height: 10,
-        backgroundColor: '#1a0c0c',
-        borderRadius: '50%',
-      }} />
-      <div style={{
-        position: 'absolute', bottom: 14, right: 0, width: 18, height: 15,
-        backgroundColor: '#1e1010',
-        borderRadius: '40% 50% 40% 30%',
-      }} />
-      <div style={{
-        position: 'absolute', bottom: 12, right: 0, width: 10, height: 8,
-        backgroundColor: '#241414',
-        borderRadius: '30% 50% 50% 20%',
-      }} />
+    <div style={{ width: 38, height: 30, position: 'relative', animation: bodyAnim, transform: bodyTransform, transformOrigin: 'bottom center' }}>
+      <div style={{ position: 'absolute', bottom: 10, left: 0, width: 30, height: 16, background: 'linear-gradient(90deg, #100808, #1e1010)', borderRadius: '8px 3px 3px 8px' }} />
+      <div style={{ position: 'absolute', bottom: 22, left: 6, width: 16, height: 10, backgroundColor: '#1a0c0c', borderRadius: '50%' }} />
+      <div style={{ position: 'absolute', bottom: 14, right: 0, width: 18, height: 15, backgroundColor: '#1e1010', borderRadius: '40% 50% 40% 30%' }} />
+      <div style={{ position: 'absolute', bottom: 12, right: 0, width: 10, height: 8, backgroundColor: '#241414', borderRadius: '30% 50% 50% 20%' }} />
       <div style={{ position: 'absolute', bottom: 12, right: 1, width: 3, height: 4, backgroundColor: '#e8e0d0', borderRadius: '0 0 2px 1px' }} />
       <div style={{ position: 'absolute', bottom: 12, right: 5, width: 2, height: 3, backgroundColor: '#e8e0d0', borderRadius: '0 0 2px 1px' }} />
-      <div style={{ position: 'absolute', bottom: 26, right: 3, width: 6, height: 9, backgroundColor: '#1e1010', clipPath: 'polygon(50% 0%,100% 100%,0% 100%)' }} />
+      <div style={{ position: 'absolute', bottom: 26, right:  3, width: 6, height: 9, backgroundColor: '#1e1010', clipPath: 'polygon(50% 0%,100% 100%,0% 100%)' }} />
       <div style={{ position: 'absolute', bottom: 26, right: 10, width: 5, height: 7, backgroundColor: '#1e1010', clipPath: 'polygon(50% 0%,100% 100%,0% 100%)' }} />
-      <div style={{
-        position: 'absolute', bottom: 20, right: 4, width: 6, height: 6,
-        backgroundColor: eyeColor,
-        borderRadius: '50%',
-        boxShadow: eyeGlow,
-      }} />
-      <div style={{
-        position: 'absolute', bottom: 16, left: 2, width: 10, height: 4,
-        backgroundColor: '#1a0c0c',
-        borderRadius: '0 2px 2px 0',
-        transform: 'rotate(-20deg)',
-        transformOrigin: 'right center',
-      }} />
-      <div style={{ position: 'absolute', bottom: 0, right: 4, width: 4, height: 12, backgroundColor: '#1a0a0a', borderRadius: '0 0 3px 3px', transformOrigin: 'top center', animation: 'rooftop-claws-f 0.28s linear infinite' }} />
-      <div style={{ position: 'absolute', bottom: 0, right: 10, width: 4, height: 12, backgroundColor: '#1a0a0a', borderRadius: '0 0 3px 3px', transformOrigin: 'top center', animation: 'rooftop-claws-b 0.28s linear infinite' }} />
-      <div style={{ position: 'absolute', bottom: 0, left: 6, width: 4, height: 12, backgroundColor: '#1a0a0a', borderRadius: '0 0 3px 3px', transformOrigin: 'top center', animation: 'rooftop-claws-b 0.28s linear infinite' }} />
-      <div style={{ position: 'absolute', bottom: 0, left: 12, width: 4, height: 12, backgroundColor: '#1a0a0a', borderRadius: '0 0 3px 3px', transformOrigin: 'top center', animation: 'rooftop-claws-f 0.28s linear infinite' }} />
+      <div style={{ position: 'absolute', bottom: 20, right: 4, width: 6, height: 6, backgroundColor: eyeColor, borderRadius: '50%', boxShadow: eyeGlow }} />
+      <div style={{ position: 'absolute', bottom: 16, left: 2, width: 10, height: 4, backgroundColor: '#1a0c0c', borderRadius: '0 2px 2px 0', transform: 'rotate(-20deg)', transformOrigin: 'right center' }} />
+      <div style={{ position: 'absolute', bottom: 0, right:  4, width: 4, height: 12, backgroundColor: '#1a0a0a', borderRadius: '0 0 3px 3px', transformOrigin: 'top center', animation: pouncing ? undefined : 'rooftop-claws-f 0.28s linear infinite' }} />
+      <div style={{ position: 'absolute', bottom: 0, right: 10, width: 4, height: 12, backgroundColor: '#1a0a0a', borderRadius: '0 0 3px 3px', transformOrigin: 'top center', animation: pouncing ? undefined : 'rooftop-claws-b 0.28s linear infinite' }} />
+      <div style={{ position: 'absolute', bottom: 0, left:  6, width: 4, height: 12, backgroundColor: '#1a0a0a', borderRadius: '0 0 3px 3px', transformOrigin: 'top center', animation: pouncing ? undefined : 'rooftop-claws-b 0.28s linear infinite' }} />
+      <div style={{ position: 'absolute', bottom: 0, left: 12, width: 4, height: 12, backgroundColor: '#1a0a0a', borderRadius: '0 0 3px 3px', transformOrigin: 'top center', animation: pouncing ? undefined : 'rooftop-claws-f 0.28s linear infinite' }} />
     </div>
   );
 }
@@ -276,24 +256,26 @@ function HazardSprite({ widthPx }: { widthPx: number }) {
   return (
     <div style={{ width: widthPx, height: 40, position: 'relative' }}>
       <div style={{
-        position: 'absolute', bottom: 0, left: cx - 7, width: 14, height: 36,
-        background: 'linear-gradient(180deg, #9a7050, #6a4830)',
-        border: '1px solid #4a2820',
-        borderRadius: '2px 2px 0 0',
+        position: 'absolute', bottom: 0, left: cx - 6, width: 12, height: 34,
+        background: 'linear-gradient(180deg, #1e1828, #141020)',
+        border: '1px solid rgba(255,130,20,0.55)', borderRadius: '1px 1px 0 0',
+        boxShadow: '0 0 5px rgba(255,130,20,0.25)',
       }} />
       <div style={{
-        position: 'absolute', bottom: 34, left: cx - 10, width: 20, height: 7,
-        background: 'linear-gradient(180deg, #b08060, #8a6040)',
-        border: '1px solid #5a3020',
-        borderRadius: '2px 2px 0 0',
+        position: 'absolute', bottom: 9, left: cx - 6, width: 12, height: 5,
+        background: 'repeating-linear-gradient(90deg, #f97316 0px, #f97316 3px, #141020 3px, #141020 6px)',
       }} />
       <div style={{
-        position: 'absolute', bottom: 40, left: cx - 3, width: 6, height: 6,
-        backgroundColor: 'rgba(200,190,180,0.4)',
-        borderRadius: '50%',
+        position: 'absolute', bottom: 25, left: cx - 11, width: 22, height: 4,
+        background: 'linear-gradient(180deg, #28222e, #18141e)',
+        border: '1px solid rgba(255,130,20,0.35)', borderRadius: '1px',
       }} />
-      <div style={{ position: 'absolute', bottom: 10, left: cx - 7, width: 14, height: 1, backgroundColor: '#5a3820', opacity: 0.6 }} />
-      <div style={{ position: 'absolute', bottom: 20, left: cx - 7, width: 14, height: 1, backgroundColor: '#5a3820', opacity: 0.6 }} />
+      <div style={{
+        position: 'absolute', bottom: 34, left: cx - 4, width: 0, height: 0,
+        borderLeft: '6px solid transparent', borderRight: '6px solid transparent',
+        borderBottom: '8px solid #f97316',
+        filter: 'drop-shadow(0 0 4px rgba(249,115,22,0.75))',
+      }} />
     </div>
   );
 }
@@ -302,30 +284,16 @@ function MookSprite() {
   return (
     <div style={{ width: 26, height: 42, position: 'relative' }}>
       <div style={{ position: 'absolute', bottom: 0, right: 3, width: 2, height: 42, backgroundColor: '#8a6040' }} />
-      <div style={{
-        position: 'absolute', bottom: 40, right: 2, width: 4, height: 8,
-        backgroundColor: '#d0c080',
-        clipPath: 'polygon(50% 0%, 100% 100%, 0% 100%)',
-      }} />
-      <div style={{ position: 'absolute', bottom: 0, left: 4, width: 6, height: 16, backgroundColor: '#5a6878', borderRadius: '0 0 3px 3px' }} />
-      <div style={{ position: 'absolute', bottom: 0, left: 12, width: 6, height: 16, backgroundColor: '#4a5868', borderRadius: '0 0 3px 3px' }} />
-      <div style={{ position: 'absolute', bottom: 0, left: 2, width: 9, height: 5, backgroundColor: '#302018', borderRadius: '0 0 3px 3px' }} />
-      <div style={{ position: 'absolute', bottom: 0, left: 10, width: 9, height: 5, backgroundColor: '#201808', borderRadius: '0 0 3px 3px' }} />
-      <div style={{
-        position: 'absolute', bottom: 14, left: 2, width: 18, height: 16,
-        background: 'linear-gradient(180deg, #8090a8, #60708a)',
-        border: '1px solid #405060',
-        borderRadius: '2px 2px 0 0',
-      }} />
+      <div style={{ position: 'absolute', bottom: 40, right: 2, width: 4, height: 8, backgroundColor: '#d0c080', clipPath: 'polygon(50% 0%, 100% 100%, 0% 100%)' }} />
+      <div style={{ position: 'absolute', bottom:  0, left:  4, width: 6, height: 16, backgroundColor: '#5a6878', borderRadius: '0 0 3px 3px' }} />
+      <div style={{ position: 'absolute', bottom:  0, left: 12, width: 6, height: 16, backgroundColor: '#4a5868', borderRadius: '0 0 3px 3px' }} />
+      <div style={{ position: 'absolute', bottom:  0, left:  2, width: 9, height:  5, backgroundColor: '#302018', borderRadius: '0 0 3px 3px' }} />
+      <div style={{ position: 'absolute', bottom:  0, left: 10, width: 9, height:  5, backgroundColor: '#201808', borderRadius: '0 0 3px 3px' }} />
+      <div style={{ position: 'absolute', bottom: 14, left: 2, width: 18, height: 16, background: 'linear-gradient(180deg, #8090a8, #60708a)', border: '1px solid #405060', borderRadius: '2px 2px 0 0' }} />
       <div style={{ position: 'absolute', bottom: 28, left: 8, width: 8, height: 4, backgroundColor: '#a0b0c0' }} />
-      <div style={{
-        position: 'absolute', bottom: 30, left: 3, width: 18, height: 13,
-        background: 'linear-gradient(180deg, #90a0b8, #708098)',
-        border: '1px solid #405060',
-        borderRadius: '3px 3px 0 0',
-      }} />
+      <div style={{ position: 'absolute', bottom: 30, left: 3, width: 18, height: 13, background: 'linear-gradient(180deg, #90a0b8, #708098)', border: '1px solid #405060', borderRadius: '3px 3px 0 0' }} />
       <div style={{ position: 'absolute', bottom: 34, left: 6, width: 12, height: 3, backgroundColor: '#202830', borderRadius: '1px' }} />
-      <div style={{ position: 'absolute', bottom: 34, left: 7, width: 3, height: 2, backgroundColor: '#ff6040', borderRadius: '50%', opacity: 0.9 }} />
+      <div style={{ position: 'absolute', bottom: 34, left:  7, width: 3, height: 2, backgroundColor: '#ff6040', borderRadius: '50%', opacity: 0.9 }} />
       <div style={{ position: 'absolute', bottom: 34, left: 14, width: 3, height: 2, backgroundColor: '#ff6040', borderRadius: '50%', opacity: 0.9 }} />
       <div style={{ position: 'absolute', bottom: 42, left: 8, width: 8, height: 5, backgroundColor: '#c02020', borderRadius: '2px 2px 0 0' }} />
     </div>
@@ -336,38 +304,18 @@ function LowbarSprite({ widthPx }: { widthPx: number }) {
   const ROPE_Y = 30;
   return (
     <div style={{ width: widthPx, height: 48, position: 'relative', bottom: 0 }}>
-      <div style={{
-        position: 'absolute', bottom: 0, left: 0, width: 5, height: ROPE_Y + 10,
-        background: 'linear-gradient(180deg, #8a6040, #6a4820)',
-        borderRadius: '2px 2px 0 0',
-      }} />
-      <div style={{
-        position: 'absolute', bottom: 0, right: 0, width: 5, height: ROPE_Y + 10,
-        background: 'linear-gradient(180deg, #8a6040, #6a4820)',
-        borderRadius: '2px 2px 0 0',
-      }} />
-      <div style={{
-        position: 'absolute', bottom: ROPE_Y, left: 0, right: 0, height: 3,
-        background: 'linear-gradient(90deg, #c8a040, #e8c060, #c8a040)',
-        boxShadow: '0 0 5px rgba(200,160,60,0.6)',
-      }} />
+      <div style={{ position: 'absolute', bottom: 0, left: 0, width: 5, height: ROPE_Y + 10, background: 'linear-gradient(180deg, #8a6040, #6a4820)', borderRadius: '2px 2px 0 0' }} />
+      <div style={{ position: 'absolute', bottom: 0, right: 0, width: 5, height: ROPE_Y + 10, background: 'linear-gradient(180deg, #8a6040, #6a4820)', borderRadius: '2px 2px 0 0' }} />
+      <div style={{ position: 'absolute', bottom: ROPE_Y, left: 0, right: 0, height: 3, background: 'linear-gradient(90deg, #c8a040, #e8c060, #c8a040)', boxShadow: '0 0 5px rgba(200,160,60,0.6)' }} />
       <div style={{
         position: 'absolute', bottom: ROPE_Y - 12, left: '8%', right: '8%', height: 13,
-        backgroundColor: '#a01818',
-        borderRadius: '0 0 3px 3px',
-        animation: 'rooftop-banner 1.6s ease-in-out infinite',
-        transformOrigin: 'top center',
+        backgroundColor: '#a01818', borderRadius: '0 0 3px 3px',
+        animation: 'rooftop-banner 1.6s ease-in-out infinite', transformOrigin: 'top center',
       }} />
       <div style={{
         position: 'absolute', bottom: ROPE_Y - 10, left: 0, right: 0,
-        textAlign: 'center',
-        fontSize: 8,
-        color: 'rgba(255,230,180,0.9)',
-        lineHeight: 1,
-        pointerEvents: 'none',
-      }}>
-        ⚠
-      </div>
+        textAlign: 'center', fontSize: 8, color: 'rgba(255,230,180,0.9)', lineHeight: 1, pointerEvents: 'none',
+      }}>⚠</div>
     </div>
   );
 }
@@ -378,66 +326,58 @@ function BuildingView({
   building,
   distance,
   decorScrollPx,
+  defeatedMookIds,
+  nextRoofY,
 }: {
-  building: Building;
-  distance: number;
-  decorScrollPx: number;
+  building:        Building;
+  distance:        number;
+  decorScrollPx:   number;
+  defeatedMookIds: Set<number>;
+  nextRoofY?:      number;
 }) {
   const roofScreenY = screenYForElev(building.roofY);
-  const leftPx = (building.x - distance) * PX_PER_WU + HERO_X_PX;
-  const widthPx = building.width * PX_PER_WU;
-  const facadeH = VIEW_H - roofScreenY; // from roof top down to bottom of view
+  const leftPx      = (building.x - distance) * PX_PER_WU + HERO_X_PX;
+  const widthPx     = building.width * PX_PER_WU;
+  const facadeH     = VIEW_H - roofScreenY;
 
-  // Lit windows pattern — a couple per building
   const windowPositions = [0.25, 0.65].map((frac) => Math.floor(frac * widthPx));
-  const hasWindows = widthPx > 40;
+  const hasWindows      = widthPx > 40;
+
+  const showTelegraph = nextRoofY !== undefined && nextRoofY !== building.roofY;
+  const telegraphColor = showTelegraph && nextRoofY! > building.roofY ? '#f97316' : '#38bdf8';
 
   return (
     <div key={building.id}>
-      {/* Facade (wall below roofline) */}
+      {/* Facade */}
       <div
         className="absolute"
         style={{
-          left: leftPx,
-          top: roofScreenY,
-          width: widthPx,
-          height: facadeH,
+          left: leftPx, top: roofScreenY, width: widthPx, height: facadeH,
           background: 'linear-gradient(180deg, #4a2e18 0%, #3a2010 40%, #2a1808 100%)',
-          borderLeft: '1px solid #5a3820',
-          borderRight: '1px solid #5a3820',
+          borderLeft: '1px solid #5a3820', borderRight: '1px solid #5a3820',
         }}
       >
-        {/* Stone course lines */}
         {[20, 40, 60, 80].map((yOff) =>
           yOff < facadeH - 4 ? (
-            <div key={yOff} style={{
-              position: 'absolute', top: yOff, left: 0, right: 0, height: 1,
-              backgroundColor: '#5a3820', opacity: 0.4,
-            }} />
+            <div key={yOff} style={{ position: 'absolute', top: yOff, left: 0, right: 0, height: 1, backgroundColor: '#5a3820', opacity: 0.4 }} />
           ) : null
         )}
-        {/* Lit windows */}
         {hasWindows && windowPositions.map((wx, wi) => (
           wx + 10 < widthPx - 4 ? (
             <div key={wi} style={{
               position: 'absolute', top: 12, left: wx, width: 10, height: 12,
-              backgroundColor: 'rgba(255,200,80,0.25)',
-              border: '1px solid rgba(200,140,40,0.5)',
-              borderRadius: '1px 1px 0 0',
-              boxShadow: 'inset 0 0 6px rgba(255,180,60,0.3)',
+              backgroundColor: 'rgba(255,200,80,0.25)', border: '1px solid rgba(200,140,40,0.5)',
+              borderRadius: '1px 1px 0 0', boxShadow: 'inset 0 0 6px rgba(255,180,60,0.3)',
             }} />
           ) : null
         ))}
       </div>
 
-      {/* Rooftop cap (shingle surface) */}
+      {/* Rooftop cap */}
       <div
         className="absolute"
         style={{
-          left: leftPx - 2,          // slight overhang (eave)
-          top: roofScreenY - 4,      // 4px above facade top = cap height
-          width: widthPx + 4,
-          height: 8,
+          left: leftPx - 2, top: roofScreenY - 4, width: widthPx + 4, height: 8,
           background: 'linear-gradient(180deg, #7a5030 0%, #5a3820 60%, #4a2e18 100%)',
           backgroundImage: `linear-gradient(180deg, #7a5030 0%, #5a3820 60%, #4a2e18 100%),
             repeating-linear-gradient(90deg, #6a4228 0px, #6a4228 13px, #5a3220 13px, #5a3220 15px)`,
@@ -448,36 +388,24 @@ function BuildingView({
         }}
       />
       {/* Ridge highlight */}
-      <div
-        className="absolute"
-        style={{
-          left: leftPx - 2,
-          top: roofScreenY - 5,
-          width: widthPx + 4,
-          height: 2,
-          backgroundColor: '#a06840',
-          opacity: 0.7,
-          zIndex: 2,
-        }}
-      />
-      {/* Left eave drip */}
-      <div className="absolute" style={{
-        left: leftPx - 4, top: roofScreenY - 1, width: 4, height: 5,
-        backgroundColor: '#6a4228',
-        borderRadius: '0 0 0 3px',
-        zIndex: 2,
-      }} />
-      {/* Right eave drip */}
-      <div className="absolute" style={{
-        left: leftPx + widthPx + 2, top: roofScreenY - 1, width: 4, height: 5,
-        backgroundColor: '#6a4228',
-        borderRadius: '0 0 3px 0',
-        zIndex: 2,
-      }} />
+      <div className="absolute" style={{ left: leftPx - 2, top: roofScreenY - 5, width: widthPx + 4, height: 2, backgroundColor: '#a06840', opacity: 0.7, zIndex: 2 }} />
+      {/* Eave drips */}
+      <div className="absolute" style={{ left: leftPx - 4,           top: roofScreenY - 1, width: 4, height: 5, backgroundColor: '#6a4228', borderRadius: '0 0 0 3px', zIndex: 2 }} />
+      <div className="absolute" style={{ left: leftPx + widthPx + 2, top: roofScreenY - 1, width: 4, height: 5, backgroundColor: '#6a4228', borderRadius: '0 0 3px 0', zIndex: 2 }} />
 
-      {/* Props sitting on this roof */}
+      {/* Height-change telegraph — colored nub on the right edge signals elevation shift */}
+      {showTelegraph && (
+        <div className="absolute" style={{
+          left: leftPx + widthPx - 3, top: roofScreenY - 8,
+          width: 4, height: 8,
+          backgroundColor: telegraphColor,
+          opacity: 0.85, zIndex: 4, borderRadius: '2px 2px 0 0',
+        }} />
+      )}
+
+      {/* Props */}
       {building.props.map((prop) => {
-        const propLeftPx = (prop.x - distance) * PX_PER_WU + HERO_X_PX;
+        const propLeftPx  = (prop.x - distance) * PX_PER_WU + HERO_X_PX;
         const propWidthPx = Math.max(prop.width * PX_PER_WU, 24);
         return (
           <div
@@ -490,7 +418,15 @@ function BuildingView({
             }}
           >
             {prop.kind === 'hazard' && <HazardSprite widthPx={propWidthPx} />}
-            {prop.kind === 'mook'   && <MookSprite />}
+            {prop.kind === 'mook' && (
+              <div style={
+                defeatedMookIds.has(prop.id)
+                  ? { animation: 'rooftop-mook-defeat 0.5s ease-in forwards' }
+                  : undefined
+              }>
+                <MookSprite />
+              </div>
+            )}
             {prop.kind === 'lowbar' && <LowbarSprite widthPx={propWidthPx} />}
           </div>
         );
@@ -499,295 +435,207 @@ function BuildingView({
   );
 }
 
-// ── Component ──────────────────────────────────────────────────────────────────
+// ── Inner component — owns hooks and rendering ─────────────────────────────────
 
-export function RooftopChase({ onFinish }: RooftopChaseProps) {
-  // ── Stable course ────────────────────────────────────────────────────────────
-  const buildingsRef = useRef<Building[]>(generateCourse(Math.random));
+function RooftopChaseRun({ onRunDone }: { onRunDone: (r: RunResult) => void }) {
+  const { state, controls } = useChaseLoop();
 
-  // ── Physics refs (written & read inside RAF only) ─────────────────────────
-  const heroYRef        = useRef(0);   // absolute world-y above baseline (0 = ground/roofY)
-  const heroVyRef       = useRef(0);   // world-units/sec (+up, -down)
-  const distanceRef     = useRef(0);   // world-units traveled (hero's world-x left edge)
-  const leadRef         = useRef(LEAD_START);
-  const stumbleUntilRef = useRef(0);   // perf.now() when stumble ends
-  const slidingUntilRef = useRef(0);   // perf.now() when slide ends
-  const dashUntilRef    = useRef(0);   // perf.now() when dash burst ends
-  const dashReadyAtRef  = useRef(0);   // perf.now() when dash cooldown expires
-  const jumpsUsedRef    = useRef(0);
-  const prevHeroYRef    = useRef(0);
-  const activeContactRef = useRef<number | null>(null);
-  const dashLeadEventRef = useRef(false); // true for one frame after dash starts
-  const doneRef         = useRef(false);
-  const rafRef          = useRef<number | null>(null);
-  const lastTsRef       = useRef<number | null>(null);
-  const landingTsRef    = useRef(0);
+  const soundEnabled   = useGameStore((s) => s.settings.soundEnabled);
+  const updateSettings = useGameStore((s) => s.updateSettings);
+  useChaseAudio(state, soundEnabled);
 
-  // ── Render state ─────────────────────────────────────────────────────────
-  const [heroYPx, setHeroYPx]             = useState(0);
-  const [distance, setDistance]           = useState(0);
-  const [lead, setLead]                   = useState(LEAD_START);
-  const [chaserActive, setChaserActive]   = useState(false);
-  const [stumbling, setStumbling]         = useState(false);
-  const [sliding, setSliding]             = useState(false);
-  const [airborne, setAirborne]           = useState(false);
-  const [landing, setLanding]             = useState(false);
-  const [falling, setFalling]             = useState(false);
-  const [visibleBuildings, setVisibleBuildings] = useState<Building[]>([]);
-  const [stompedPropId, setStompedPropId] = useState<number | null>(null);
-  const [stompFlashEnd, setStompFlashEnd] = useState(0);
-  const [dustPuffs, setDustPuffs]         = useState<number[]>([]);
-  const [dashing, setDashing]             = useState(false);
-  const [dashCooldownFrac, setDashCooldownFrac] = useState(1); // 1 = ready, 0 = just used
-  const [heroRoofY, setHeroRoofY]         = useState(0); // elevation of current building
+  // Stable ref so the done effect captures the current callback without re-registering.
+  const onRunDoneRef = useRef(onRunDone);
+  onRunDoneRef.current = onRunDone;
 
-  // ── Finish ───────────────────────────────────────────────────────────────
-  const finish = useCallback((dist: number) => {
-    if (doneRef.current) return;
-    doneRef.current = true;
-    onFinish(chaseScore(dist));
-  }, [onFinish]);
-
-  // ── RAF loop ─────────────────────────────────────────────────────────────
-  useEffect(() => {
-    const loop = (ts: number) => {
-      if (doneRef.current) return;
-      if (lastTsRef.current === null) lastTsRef.current = ts;
-      const dt = Math.min((ts - lastTsRef.current) / 1000, 0.05);
-      lastTsRef.current = ts;
-
-      const buildings = buildingsRef.current;
-      const prevY = prevHeroYRef.current;
-
-      // 1. Advance distance (with optional dash speed boost)
-      const nowDashing = ts < dashUntilRef.current;
-      const dist = distanceRef.current;
-      const scrollSpeed = speedAt(dist) * (nowDashing ? 1 + DASH_SPEED_BONUS : 1);
-      const newDist = dist + scrollSpeed * dt;
-      distanceRef.current = newDist;
-
-      // 2. Find the building underfoot and its roof elevation
-      const footX = newDist + HERO_W_WU / 2;
-      const underfoot = buildingAt(buildings, footX);
-      const currentRoofY = underfoot ? underfoot.roofY : 0; // fallback, fall check overrides
-
-      // 3. Hero vertical physics relative to ground (which can be elevated)
-      let vy = heroVyRef.current - GRAVITY * dt;
-      let y  = heroYRef.current + vy * dt;
-
-      // Check fall (over a gap and dropped below next building's top)
-      const fallen = hasFallen(buildings, footX, y);
-      if (fallen && !doneRef.current) {
-        // Trigger fall animation briefly then end
-        doneRef.current = true;
-        setFalling(true);
-        setDistance(newDist);
-        setTimeout(() => {
-          onFinish(chaseScore(newDist));
-        }, 600);
-        return;
-      }
-
-      // Land on roof surface
-      if (underfoot && y <= currentRoofY) {
-        const justLanded = prevY > currentRoofY;
-        if (justLanded) {
-          jumpsUsedRef.current = 0;
-          landingTsRef.current = ts;
-          setDustPuffs((ps) => [...ps.slice(-3), ts]);
-          setLanding(true);
-          setTimeout(() => setLanding(false), 200);
-        }
-        y = currentRoofY;
-        vy = 0;
-      }
-      heroYRef.current  = y;
-      heroVyRef.current = vy;
-      prevHeroYRef.current = y;
-
-      // 4. Sliding state
-      const nowSliding = ts < slidingUntilRef.current && y <= currentRoofY + 0.05;
-
-      // 5. Visible buildings for rendering
-      const viewEndX   = newDist + VIEW_W / PX_PER_WU + 6;
-      const viewStartX = newDist - 4;
-      const visible = buildings.filter(
-        (b) => b.x + b.width >= viewStartX && b.x <= viewEndX,
-      );
-
-      // 6. Collision: find overlapping prop across all visible buildings
-      let overlappingPropId: number | null = null;
-      let overlappingProp: { prop: typeof buildings[0]['props'][0]; roofY: number } | null = null;
-      for (const b of visible) {
-        for (const p of b.props) {
-          if (newDist < p.x + p.width && newDist + HERO_W_WU > p.x) {
-            overlappingPropId = p.id;
-            overlappingProp = { prop: p, roofY: b.roofY };
-            break;
-          }
-        }
-        if (overlappingProp) break;
-      }
-
-      let leadEvent: 'stumble' | 'stomp' | 'dash' | undefined;
-
-      // Consume pending dash lead event (one-frame)
-      if (dashLeadEventRef.current) {
-        leadEvent = 'dash';
-        dashLeadEventRef.current = false;
-      }
-
-      if (overlappingProp && overlappingPropId !== activeContactRef.current) {
-        const result = resolveContact(
-          y, vy, nowSliding, overlappingProp.prop, overlappingProp.roofY,
-        );
-        activeContactRef.current = overlappingPropId;
-
-        if (result === 'stomp') {
-          heroVyRef.current = STOMP_BOUNCE_VELOCITY;
-          jumpsUsedRef.current = 0;
-          leadEvent = leadEvent ?? 'stomp';
-          setStompedPropId(overlappingPropId);
-          setStompFlashEnd(ts + 500);
-        } else if (result === 'stumble') {
-          stumbleUntilRef.current = ts + STUMBLE_MS;
-          leadEvent = leadEvent ?? 'stumble';
-        }
-      } else if (!overlappingProp) {
-        activeContactRef.current = null;
-      }
-
-      // 7. Lead update (chaser active only after spawn distance)
-      const active = newDist >= CHASER_SPAWN_DISTANCE;
-      const newLead = updateLead(leadRef.current, dt, active, leadEvent);
-      leadRef.current = newLead;
-
-      // 8. End conditions
-      if (newLead <= 0 || newDist >= CHASE_TARGET_DISTANCE) {
-        setDistance(newDist);
-        setLead(newLead);
-        finish(newDist);
-        return;
-      }
-
-      // 9. Dash cooldown fraction for UI
-      const cdFrac = dashReadyAtRef.current <= ts
-        ? 1
-        : 1 - (dashReadyAtRef.current - ts) / DASH_COOLDOWN_MS;
-
-      // 10. Push render state
-      setHeroYPx(Math.round((y - currentRoofY) * PX_PER_WU));
-      setHeroRoofY(currentRoofY);
-      setDistance(newDist);
-      setLead(newLead);
-      setChaserActive(active);
-      setStumbling(ts < stumbleUntilRef.current);
-      setSliding(nowSliding);
-      setAirborne(y > currentRoofY + 0.05);
-      setVisibleBuildings(visible);
-      setDashing(nowDashing);
-      setDashCooldownFrac(Math.max(0, Math.min(1, cdFrac)));
-
-      rafRef.current = requestAnimationFrame(loop);
-    };
-
-    rafRef.current = requestAnimationFrame(loop);
-    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, [finish, onFinish]);
-
-  // ── Jump ──────────────────────────────────────────────────────────────────
-  const jump = useCallback(() => {
-    if (doneRef.current) return;
-    const nowStumbling = performance.now() < stumbleUntilRef.current;
-    const nowSliding   = performance.now() < slidingUntilRef.current;
-    if (nowStumbling || nowSliding) return;
-
-    const buildings = buildingsRef.current;
-    const footX = distanceRef.current + HERO_W_WU / 2;
-    const underfoot = buildingAt(buildings, footX);
-    const currentRoofY = underfoot ? underfoot.roofY : heroYRef.current;
-    const grounded = heroYRef.current <= currentRoofY + 0.05;
-
-    if (grounded) {
-      heroVyRef.current = JUMP_VELOCITY;
-      jumpsUsedRef.current = 1;
-    } else if (jumpsUsedRef.current < MAX_JUMPS) {
-      heroVyRef.current = DOUBLE_JUMP_VELOCITY;
-      jumpsUsedRef.current++;
-      setDustPuffs((ps) => [...ps.slice(-3), performance.now()]);
-    }
-  }, []);
-
-  // ── Slide ─────────────────────────────────────────────────────────────────
-  const slide = useCallback(() => {
-    if (doneRef.current) return;
-    const buildings = buildingsRef.current;
-    const footX = distanceRef.current + HERO_W_WU / 2;
-    const underfoot = buildingAt(buildings, footX);
-    const currentRoofY = underfoot ? underfoot.roofY : 0;
-    const grounded     = heroYRef.current <= currentRoofY + 0.05;
-    const nowStumbling = performance.now() < stumbleUntilRef.current;
-    if (!grounded || nowStumbling) return;
-    slidingUntilRef.current = performance.now() + SLIDE_MS;
-  }, []);
-
-  // ── Dash ──────────────────────────────────────────────────────────────────
-  const dash = useCallback(() => {
-    if (doneRef.current) return;
-    const now = performance.now();
-    if (now < dashReadyAtRef.current) return; // cooldown active
-    const nowStumbling = now < stumbleUntilRef.current;
-    if (nowStumbling) return;
-    dashUntilRef.current  = now + DASH_DURATION_MS;
-    dashReadyAtRef.current = now + DASH_COOLDOWN_MS;
-    dashLeadEventRef.current = true;
-    setDustPuffs((ps) => [...ps.slice(-3), now]);
-  }, []);
-
-  // ── Keyboard ──────────────────────────────────────────────────────────────
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.code === 'Space' || e.code === 'ArrowUp')          { e.preventDefault(); jump(); }
-      if (e.code === 'ArrowDown' || e.code === 'KeyS')         { e.preventDefault(); slide(); }
-      if (e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyD') {
-        e.preventDefault(); dash();
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [jump, slide, dash]);
-
-  // ── Derived display values ────────────────────────────────────────────────
+  // ── Derive display values ──────────────────────────────────────────────────
+  const distance   = state.distance;
+  const lead       = state.lead;
   const leadFrac   = lead / LEAD_MAX;
   const leadColor  = leadFrac > 0.5 ? '#4ade80' : leadFrac > 0.25 ? '#fbbf24' : '#f87171';
   const leadLabel  = leadFrac > 0.6 ? 'Safe' : leadFrac > 0.3 ? 'Close!' : '⚠ Danger!';
   const scorePct   = Math.round(chaseScore(distance) * 100);
-  const dashReady  = dashCooldownFrac >= 1;
 
-  // Chaser screen X: far off-screen left initially, encroaches as lead shrinks
-  const chaserXPx     = HERO_X_PX - 50 - (1 - leadFrac) * 28;
-  const chaserDanger  = leadFrac < 0.3;
+  const nowStumbling = state.stumbleMs > 0;
+  const nowSliding   = state.slideMs   > 0;
+  const nowDashing   = state.dashMs    > 0;
+  const airborne     = state.heroY > state.heroRoofY + 0.05;
+  const falling      = state.justFell && state.done;
 
-  const showStompFlash = stompedPropId !== null && performance.now() < stompFlashEnd;
+  const dashCooldownFrac = state.dashCooldownMs > 0
+    ? 1 - state.dashCooldownMs / DASH_COOLDOWN_MS
+    : 1;
+  const dashReady = dashCooldownFrac >= 1;
+
+  const heroYPx          = Math.round((state.heroY - state.heroRoofY) * PX_PER_WU);
+  const heroScreenBottom = BELOW_ROOF_PX + state.heroRoofY * PX_PER_WU;
+
+  const showStompFlash = state.stompFlashMs > 0;
 
   const curSpeed    = speedAt(distance);
-  const speedFrac   = (curSpeed - 6) / (22 - 6);
-  const streakCount = Math.floor(speedFrac * 7) + (dashing ? 3 : 0);
+  const speedFrac   = (curSpeed - 4) / (10 - 4);
+  const streakCount  = Math.floor(speedFrac * 7) + (nowDashing ? 3 : 0);
   const streakOpacity = 0.15 + speedFrac * 0.55;
 
-  // Parallax offsets (px)
+  // Parallax offsets
   const farScrollPx   = distance * FAR_FACTOR   * PX_PER_WU;
   const midScrollPx   = distance * MID_FACTOR   * PX_PER_WU;
   const decorScrollPx = distance * DECOR_FACTOR * PX_PER_WU;
+  const cloudScrollPx = distance * CLOUD_FACTOR * PX_PER_WU;
 
   const skyBottom = `hsl(${220 - speedFrac * 40}, 55%, ${20 - speedFrac * 6}%)`;
 
-  // Hero screen Y (roofY already baked into heroYPx as offset above that roof)
-  const heroScreenBottom = BELOW_ROOF_PX + heroRoofY * PX_PER_WU;
+  const chaserXPx          = (state.chaserX - distance) * PX_PER_WU + HERO_X_PX;
+  const chaserScreenBottom  = BELOW_ROOF_PX + state.chaserY * PX_PER_WU;
+  const chaserDanger        = leadFrac < 0.3;
+  const chaserPouncing      = state.done && state.lead <= 0 && !state.justFell;
 
-  // Spawn distance progress for "chaser incoming" message
+  const surgeFrac  = state.surgeMs > 0 ? 1 - state.surgeMs / SURGE_DURATION_MS : 0;
+  const surgeFlash = state.surgeMs > 0 ? Math.sin(Math.PI * surgeFrac) : 0;
+
   const spawnPct = Math.min(1, distance / CHASER_SPAWN_DISTANCE);
 
+  // Visible buildings
+  const allBuildings = state.buildings as Building[];
+  const viewEndX     = distance + VIEW_W / PX_PER_WU + 6;
+  // Left cull: keep buildings until their right edge scrolls past the actual screen
+  // left edge.  HERO_X_PX px from hero → x=0, plus a small margin for the chaser
+  // (up to CHASER_MAX_GAP ≈ 28 wu behind hero).
+  const viewStartX   = distance - (HERO_X_PX / PX_PER_WU) - 6;
+  const visibleBuildings = allBuildings.filter(
+    (b) => b.x + b.width >= viewStartX && b.x <= viewEndX,
+  );
+
+  // Index map for fast nextRoofY lookup
+  const buildingIndexById = useMemo(
+    () => new Map(allBuildings.map((b, i) => [b.id, i])),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.buildings],
+  );
+
+  const defeatedMookIds = useMemo(
+    () => new Set(state.defeatedPropIds),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.defeatedPropIds],
+  );
+
+  // ── Opening tip (fades after 2.5s, unmounts at 3s) ────────────────────────
+  const [showTip,    setShowTip]    = useState(true);
+  const [tipVisible, setTipVisible] = useState(true);
+  useEffect(() => {
+    const t1 = setTimeout(() => setTipVisible(false), 2500);
+    const t2 = setTimeout(() => setShowTip(false),    3000);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, []);
+
+  // ── Run-done detection — fires after the appropriate animation delay ───────
+  //
+  // Dep array is [state.done] — intentionally narrow.  score / distance / justFell
+  // are final and stable the moment done flips to true (the RAF loop stops), so
+  // capturing them in one effect run is correct.  Without this, any re-render
+  // triggered by lingering state (dust puffs, nearMissAnim timers, etc.) would
+  // cancel and re-schedule the timeout, and the runDoneCalledRef guard would
+  // prevent rescheduling, so onRunDone would never fire.
+  const runDoneCalledRef = useRef(false);
+  useEffect(() => {
+    if (!state.done || runDoneCalledRef.current) return;
+    runDoneCalledRef.current = true;
+    const outcome: RunOutcome = state.score >= 1 ? 'escaped' : state.justFell ? 'fell' : 'caught';
+    const delay = outcome === 'fell' ? 650 : outcome === 'caught' ? 450 : 200;
+    const t = setTimeout(
+      () => onRunDoneRef.current({ score: state.score, finalDistance: state.distance, outcome }),
+      delay,
+    );
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.done]);
+
+  // ── Near-miss flash (stretches one-frame event to 700 ms) ──────────────────
+  const [nearMissAnim, setNearMissAnim] = useState(false);
+  const prevJustNearMiss = useRef(false);
+  useEffect(() => {
+    if (state.justNearMiss && !prevJustNearMiss.current) {
+      setNearMissAnim(true);
+      const t = setTimeout(() => setNearMissAnim(false), 700);
+      return () => clearTimeout(t);
+    }
+    prevJustNearMiss.current = state.justNearMiss;
+  });
+
+  // ── Slide-clear flash ──────────────────────────────────────────────────────
+  const [slideClearAnim, setSlideClearAnim] = useState(false);
+  const prevJustSlideClear = useRef(false);
+  useEffect(() => {
+    if (state.justSlideClear && !prevJustSlideClear.current) {
+      setSlideClearAnim(true);
+      const t = setTimeout(() => setSlideClearAnim(false), 700);
+      return () => clearTimeout(t);
+    }
+    prevJustSlideClear.current = state.justSlideClear;
+  });
+
+  // ── Jump-mook flash ────────────────────────────────────────────────────────
+  const [jumpMookAnim, setJumpMookAnim] = useState(false);
+  const prevJustJumpedMook = useRef(false);
+  useEffect(() => {
+    if (state.justJumpedMook && !prevJustJumpedMook.current) {
+      setJumpMookAnim(true);
+      const t = setTimeout(() => setJumpMookAnim(false), 700);
+      return () => clearTimeout(t);
+    }
+    prevJustJumpedMook.current = state.justJumpedMook;
+  });
+
+  // ── Ledge-catch flash ──────────────────────────────────────────────────────
+  const [ledgeCatchAnim, setLedgeCatchAnim] = useState(false);
+  const prevJustLedgeCaught = useRef(false);
+  useEffect(() => {
+    if (state.justLedgeCaught && !prevJustLedgeCaught.current) {
+      setLedgeCatchAnim(true);
+      const t = setTimeout(() => setLedgeCatchAnim(false), 500);
+      return () => clearTimeout(t);
+    }
+    prevJustLedgeCaught.current = state.justLedgeCaught;
+  });
+
+  // ── Landing animation (stretches one-frame event to 200 ms) ────────────────
+  const [landingAnim, setLandingAnim] = useState(false);
+  const prevJustLanded = useRef(false);
+  useEffect(() => {
+    if (state.justLanded && !prevJustLanded.current) {
+      setLandingAnim(true);
+      const t = setTimeout(() => setLandingAnim(false), 200);
+      return () => clearTimeout(t);
+    }
+    prevJustLanded.current = state.justLanded;
+  });
+
+  // ── Dust puffs (triggered by landing, stomping, or dashing) ───────────────
+  const [dustPuffs, setDustPuffs] = useState<number[]>([]);
+  const prevJustStomped = useRef(false);
+  const prevJustDashed  = useRef(false);
+  useEffect(() => {
+    const now = performance.now();
+    if (state.justLanded  && !prevJustLanded.current)  setDustPuffs((ps) => [...ps.slice(-3), now]);
+    if (state.justStomped && !prevJustStomped.current) setDustPuffs((ps) => [...ps.slice(-3), now]);
+    if (state.justDashed  && !prevJustDashed.current)  setDustPuffs((ps) => [...ps.slice(-3), now]);
+    prevJustLanded.current  = state.justLanded;
+    prevJustStomped.current = state.justStomped;
+    prevJustDashed.current  = state.justDashed;
+  });
+
+  // ── Chaser landing dust ────────────────────────────────────────────────────
+  const [chaserDustPuffs, setChaserDustPuffs] = useState<number[]>([]);
+  const prevChaserAirborne = useRef(false);
+  useEffect(() => {
+    if (prevChaserAirborne.current && !state.chaserAirborne && state.chaserActive) {
+      const now = performance.now();
+      setChaserDustPuffs((ps) => [...ps.slice(-2), now]);
+    }
+    prevChaserAirborne.current = state.chaserAirborne;
+  });
+
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col items-center gap-3 px-2">
       <p className="text-center text-xs text-ink-muted">
@@ -796,15 +644,15 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
         <strong className="text-ink">Dash</strong> (Shift/D) outrun the beast
       </p>
 
-      {/* ── Play area ─────────────────────────────────────────────────────── */}
+      {/* ── Play area ───────────────────────────────────────────────────────── */}
       <div
         className="relative overflow-hidden rounded-lg border-2 border-gold-deep/50 select-none cursor-pointer"
         style={{ width: VIEW_W, height: VIEW_H }}
-        onClick={jump}
+        onClick={controls.jump}
         role="button"
         aria-label="Jump"
       >
-        {/* ── Layer 0: Sky gradient ──────────────────────────────────────── */}
+        {/* Sky gradient */}
         <div className="absolute inset-0" style={{
           background: `linear-gradient(to bottom, #0d0820 0%, #1a0a3a 35%, #3d1260 65%, ${skyBottom} 100%)`,
         }} />
@@ -812,13 +660,29 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
         {/* Moon */}
         <div className="absolute" style={{
           top: 12, right: 40 + Math.sin(distance * 0.01) * 4, width: 18, height: 18,
-          backgroundColor: '#f8f0d0',
-          borderRadius: '50%',
+          backgroundColor: '#f8f0d0', borderRadius: '50%',
           boxShadow: '0 0 16px 6px rgba(248,240,200,0.25)',
         }} />
 
-        {/* ── Layer 1: Far castle silhouette ─────────────────────────────── */}
-        {[0, 1].map((copy) => (
+        {/* Cloud layer — very slow parallax (3%) */}
+        {[0, 1].map((copy) =>
+          CLOUDS.map(([cx, cy, cw, ch], i) => (
+            <div
+              key={`cl${copy}-${i}`}
+              className="absolute pointer-events-none"
+              style={{
+                left: cx - (cloudScrollPx % CLOUD_TILE_W) + copy * CLOUD_TILE_W,
+                top: cy, width: cw, height: ch,
+                backgroundColor: 'rgba(210,190,255,0.07)',
+                borderRadius: '50%',
+                boxShadow: '0 0 10px 4px rgba(210,190,255,0.05)',
+              }}
+            />
+          ))
+        )}
+
+        {/* Far castle silhouette */}
+        {[0, 1, 2].map((copy) => (
           <div key={copy} className="absolute" style={{
             bottom: BELOW_ROOF_PX,
             left: -(farScrollPx % FAR_TILE_W) + copy * FAR_TILE_W,
@@ -845,7 +709,7 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
           </div>
         ))}
 
-        {/* ── Layer 2: Mid rooftop ridgeline ─────────────────────────────── */}
+        {/* Mid rooftop ridgeline */}
         {[0, 1, 2].map((copy) => (
           <div key={copy} className="absolute" style={{
             bottom: BELOW_ROOF_PX,
@@ -867,63 +731,57 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
           </div>
         ))}
 
-        {/* ── Layer 3: Gap sky (dark streets between buildings) ──────────── */}
-        {/* Full-width dark band at baseline level shows through gaps automatically since
-            buildings' facades only cover their own width */}
+        {/* Gap street between buildings */}
         <div className="absolute left-0 right-0" style={{
-          top: ROOF_BASE_PX,
-          height: BELOW_ROOF_PX,
+          top: ROOF_BASE_PX, height: BELOW_ROOF_PX,
           background: 'linear-gradient(180deg, #0a0518 0%, #050210 100%)',
         }} />
 
-        {/* ── Layer 4: Buildings (facades + rooftops + props) ────────────── */}
-        {visibleBuildings.map((b) => (
-          <BuildingView
-            key={b.id}
-            building={b}
-            distance={distance}
-            decorScrollPx={decorScrollPx}
-          />
-        ))}
+        {/* Buildings */}
+        {visibleBuildings.map((b) => {
+          const idx      = buildingIndexById.get(b.id) ?? -1;
+          const nextRoofY = idx >= 0 && idx + 1 < allBuildings.length
+            ? allBuildings[idx + 1].roofY
+            : undefined;
+          return (
+            <BuildingView
+              key={b.id}
+              building={b}
+              distance={distance}
+              decorScrollPx={decorScrollPx}
+              defeatedMookIds={defeatedMookIds}
+              nextRoofY={nextRoofY}
+            />
+          );
+        })}
 
-        {/* ── Layer 5: Foreground decor tile — chimneys on far-left buildings */}
-        {[0, 1, 2].map((copy) => (
+        {/* Foreground chimneys */}
+        {[0, 1, 2, 3].map((copy) => (
           <div key={copy} className="absolute" style={{
             bottom: BELOW_ROOF_PX,
             left: -(decorScrollPx % DECOR_TILE_W) + copy * DECOR_TILE_W,
-            width: DECOR_TILE_W, height: 40,
-            pointerEvents: 'none',
+            width: DECOR_TILE_W, height: 40, pointerEvents: 'none',
           }}>
             {CHIMNEYS.map(([cx, bw, cw, ch], i) => (
               <div key={i} style={{ position: 'absolute', bottom: 0, left: cx }}>
-                <div style={{
-                  position: 'absolute', bottom: 0, left: Math.floor((cw - bw) / 2), width: bw, height: ch,
-                  background: 'linear-gradient(180deg, #7a5030, #5a3820)',
-                  borderLeft: '1px solid #4a2818', borderRight: '1px solid #4a2818',
-                }} />
-                <div style={{
-                  position: 'absolute', bottom: ch - 1, left: 0, width: cw, height: 5,
-                  backgroundColor: '#8a6040', borderTop: '1px solid #a07050',
-                }} />
+                <div style={{ position: 'absolute', bottom: 0, left: Math.floor((cw - bw) / 2), width: bw, height: ch, background: 'linear-gradient(180deg, #7a5030, #5a3820)', borderLeft: '1px solid #4a2818', borderRight: '1px solid #4a2818' }} />
+                <div style={{ position: 'absolute', bottom: ch - 1, left: 0, width: cw, height: 5, backgroundColor: '#8a6040', borderTop: '1px solid #a07050' }} />
               </div>
             ))}
           </div>
         ))}
 
-        {/* ── Layer 6: Speed lines ───────────────────────────────────────── */}
+        {/* Speed lines */}
         {streakCount > 0 && (
           <div className="absolute inset-0 pointer-events-none overflow-hidden">
             {Array.from({ length: streakCount }, (_, i) => {
-              const yFrac = 0.12 + (i / streakCount) * 0.72;
-              const lenPx = 20 + i * 8;
-              const isDash = dashing && i >= streakCount - 3;
+              const yFrac  = 0.12 + (i / streakCount) * 0.72;
+              const lenPx  = 20 + i * 8;
+              const isDash = nowDashing && i >= streakCount - 3;
               return (
                 <div key={i} style={{
-                  position: 'absolute',
-                  top: `${yFrac * 100}%`,
-                  left: HERO_X_PX - lenPx,
-                  width: lenPx,
-                  height: isDash ? 2 : 1,
+                  position: 'absolute', top: `${yFrac * 100}%`, left: HERO_X_PX - lenPx,
+                  width: lenPx, height: isDash ? 2 : 1,
                   background: isDash
                     ? `linear-gradient(to left, rgba(255,220,100,${streakOpacity + 0.3}), transparent)`
                     : `linear-gradient(to left, rgba(180,160,255,${streakOpacity}), transparent)`,
@@ -938,97 +796,190 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
           </div>
         )}
 
-        {/* ── Layer 7: Dust puffs ──────────────────────────────────────── */}
+        {/* Dust puffs */}
         {dustPuffs.map((ts) => (
           <div key={ts} className="absolute pointer-events-none" style={{
-            left: HERO_X_PX + 12,
-            bottom: heroScreenBottom,
-            width: 18, height: 10,
-            borderRadius: '50%',
+            left: HERO_X_PX + 12, bottom: heroScreenBottom,
+            width: 18, height: 10, borderRadius: '50%',
             backgroundColor: 'rgba(180,140,90,0.55)',
             animation: 'rooftop-dust 0.5s ease-out forwards',
-          }}
-            onAnimationEnd={() => setDustPuffs((ps) => ps.filter((t) => t !== ts))}
-          />
+          }} onAnimationEnd={() => setDustPuffs((ps) => ps.filter((t) => t !== ts))} />
         ))}
 
-        {/* ── Layer 8: Chaser (only once active) ─────────────────────────── */}
-        {chaserActive && (
-          <div className="absolute" style={{
-            left: Math.max(-42, chaserXPx),
-            bottom: BELOW_ROOF_PX, // chaser runs at baseline for now (stylistic)
-          }}>
-            <ChaserSprite danger={chaserDanger} />
+        {/* Chaser landing dust */}
+        {chaserDustPuffs.map((ts) => (
+          <div key={ts} className="absolute pointer-events-none" style={{
+            left: Math.max(-24, chaserXPx) + 16, bottom: chaserScreenBottom,
+            width: 16, height: 8, borderRadius: '50%',
+            backgroundColor: 'rgba(160,100,70,0.45)',
+            animation: 'rooftop-dust 0.5s ease-out forwards',
+          }} onAnimationEnd={() => setChaserDustPuffs((ps) => ps.filter((t) => t !== ts))} />
+        ))}
+
+        {/* Chaser */}
+        {state.chaserActive && (
+          <div className="absolute" style={{ left: Math.max(-42, chaserXPx), bottom: chaserScreenBottom }}>
+            <ChaserSprite danger={chaserDanger} airborne={state.chaserAirborne} pouncing={chaserPouncing} />
           </div>
         )}
 
-        {/* ── Layer 9: Hero ───────────────────────────────────────────────── */}
+        {/* Hero */}
         <div className="absolute" style={{
-          left: HERO_X_PX,
+          left: HERO_X_PX - HERO_SPRITE_OFFSET_X,
           bottom: heroScreenBottom,
           transform: `translateY(${-heroYPx}px)`,
         }}>
           <HeroSprite
             airborne={airborne}
-            sliding={sliding}
-            stumbling={stumbling}
-            landing={landing}
+            sliding={nowSliding}
+            stumbling={nowStumbling}
+            landing={landingAnim}
             falling={falling}
           />
         </div>
 
-        {/* ── Stomp flash ──────────────────────────────────────────────── */}
-        {showStompFlash && (
-          <div className="absolute top-2 left-1/2 -translate-x-1/2 font-display text-xs font-black text-gold-bright bg-gold-bright/20 px-2 py-0.5 rounded whitespace-nowrap pointer-events-none">
-            STOMP! ⚔
+        {/* Dash cooldown pip — amber bar just below the hero's feet */}
+        {state.chaserActive && !dashReady && (
+          <div className="absolute pointer-events-none" style={{
+            left: HERO_X_PX - HERO_SPRITE_OFFSET_X,
+            bottom: heroScreenBottom - 5,
+            width: 28, height: 3,
+            backgroundColor: 'rgba(180,130,30,0.25)',
+            borderRadius: 2,
+          }}>
+            <div style={{
+              height: '100%', width: `${dashCooldownFrac * 100}%`,
+              backgroundColor: '#f59e0b', borderRadius: 2,
+            }} />
           </div>
         )}
 
+        {/* Surge vignette */}
+        {surgeFlash > 0.05 && (
+          <div className="absolute inset-0 pointer-events-none" style={{
+            boxShadow: `inset 0 0 ${Math.round(surgeFlash * 28)}px ${Math.round(surgeFlash * 14)}px rgba(200,30,10,${(surgeFlash * 0.35).toFixed(2)})`,
+          }} />
+        )}
+
+        {/* Near-miss flash */}
+        {nearMissAnim && (
+          <div className="absolute top-8 left-1/2 -translate-x-1/2 font-display text-[11px] font-black whitespace-nowrap pointer-events-none animate-pulse"
+            style={{ color: '#fbbf24', textShadow: '0 0 8px rgba(251,191,36,0.8)' }}>
+            CLOSE CALL! ⚡
+          </div>
+        )}
+
+        {/* Slide-clear flash */}
+        {slideClearAnim && (
+          <div className="absolute pointer-events-none font-display text-[11px] font-black whitespace-nowrap"
+            style={{ top: 52, left: HERO_X_PX + 22, color: '#38bdf8', textShadow: '0 0 6px rgba(56,189,248,0.7)', zIndex: 5 }}>
+            SLIDE! +{SLIDE_LEAD_GAIN}
+          </div>
+        )}
+
+        {/* Jump-over-mook flash */}
+        {jumpMookAnim && (
+          <div className="absolute pointer-events-none font-display text-[11px] font-black whitespace-nowrap"
+            style={{ top: 52, left: HERO_X_PX + 22, color: '#4ade80', textShadow: '0 0 6px rgba(74,222,128,0.7)', zIndex: 5 }}>
+            JUMP CLEAR! +{MOOK_JUMP_LEAD_GAIN}
+          </div>
+        )}
+
+        {/* Ledge-catch flash */}
+        {ledgeCatchAnim && (
+          <div className="absolute pointer-events-none font-display text-[11px] font-black whitespace-nowrap"
+            style={{ top: 68, left: HERO_X_PX + 22, color: '#fbbf24', textShadow: '0 0 6px rgba(251,191,36,0.7)', zIndex: 5 }}>
+            GRAB!
+          </div>
+        )}
+
+        {/* Stomp flash — font scales with chain count */}
+        {showStompFlash && (
+          <div className={`absolute top-2 left-1/2 -translate-x-1/2 font-display font-black text-gold-bright bg-gold-bright/20 px-2 py-0.5 rounded whitespace-nowrap pointer-events-none ${state.stompChain >= 2 ? 'text-sm' : 'text-xs'}`}>
+            {state.stompChain >= 2 ? `STOMP x${state.stompChain}! ⚔` : 'STOMP! ⚔'}
+          </div>
+        )}
+
+        {/* Sound mute toggle */}
+        <button
+          onClick={(e) => { e.stopPropagation(); updateSettings({ soundEnabled: !soundEnabled }); }}
+          className="absolute top-1.5 left-2 z-10 select-none rounded px-1 py-0.5 font-display text-[11px] text-parchment-300/60 hover:text-parchment-100 transition-colors"
+          aria-label={soundEnabled ? 'Mute sound' : 'Unmute sound'}
+          title={soundEnabled ? 'Mute sound' : 'Unmute sound'}
+        >
+          {soundEnabled ? '🔊' : '🔇'}
+        </button>
+
         {/* Slide indicator */}
-        {sliding && (
-          <div className="absolute top-2 left-2 font-display text-[10px] font-bold text-sky-300/90 pointer-events-none">
+        {nowSliding && (
+          <div className="absolute top-2 left-8 font-display text-[10px] font-bold text-sky-300/90 pointer-events-none">
             SLIDING
           </div>
         )}
 
         {/* Dash indicator */}
-        {dashing && (
-          <div className="absolute top-2 left-2 font-display text-[10px] font-black text-yellow-300/95 pointer-events-none"
+        {nowDashing && (
+          <div className="absolute top-2 left-8 font-display text-[10px] font-black text-yellow-300/95 pointer-events-none"
             style={{ textShadow: '0 0 6px rgba(255,220,80,0.8)' }}>
             DASH!
           </div>
         )}
 
         {/* Chaser incoming warning */}
-        {!chaserActive && spawnPct > 0.7 && (
+        {!state.chaserActive && spawnPct > 0.7 && (
           <div className="absolute bottom-8 left-1/2 -translate-x-1/2 font-display text-[10px] font-bold text-red-400/80 pointer-events-none animate-pulse whitespace-nowrap">
             ⚠ Something stalks you…
           </div>
         )}
 
-        {/* ── HUD ──────────────────────────────────────────────────────── */}
+        {/* HUD */}
         <div className="absolute top-2 right-2 font-display text-[10px] font-bold text-parchment-100/70">
           {Math.round(distance)}/{CHASE_TARGET_DISTANCE}m
         </div>
-        <div
-          className="absolute bottom-1 right-2 font-display text-[9px] font-bold"
-          style={{ color: `rgba(180,160,255,${0.3 + speedFrac * 0.5})` }}
-        >
+        <div className="absolute bottom-1 right-2 font-display text-[9px] font-bold"
+          style={{ color: `rgba(180,160,255,${0.3 + speedFrac * 0.5})` }}>
           {speedFrac > 0.15 ? `${Math.round(curSpeed * 10) / 10} wu/s` : ''}
         </div>
+
+        {/* Opening tip — fades after 2.5s */}
+        {showTip && (
+          <div
+            className="absolute inset-0 flex items-end justify-center pb-10 pointer-events-none z-10"
+            style={{ opacity: tipVisible ? 1 : 0, transition: 'opacity 0.5s ease-out' }}
+          >
+            <div className="font-display text-[10px] text-parchment-200/75 bg-black/35 rounded px-3 py-1.5">
+              Space/↑ Jump · ↓/S Slide · Shift/D Dash
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* ── Chaser lead meter (only shows once active) ──────────────────────── */}
-      {chaserActive ? (
+      {/* ── Chaser lead meter ──────────────────────────────────────────────────── */}
+      {state.chaserActive ? (
         <div className="w-full max-w-xs space-y-1">
           <div className="flex items-center justify-between px-0.5">
             <span className="font-display text-[10px] text-ink-muted">🐺 Chaser</span>
-            <span className="font-display text-[10px] font-bold" style={{ color: leadColor }}>
+            <span
+              className={leadFrac < 0.25 ? 'animate-pulse font-display text-[10px] font-bold' : 'font-display text-[10px] font-bold'}
+              style={{ color: leadColor }}
+            >
               {leadLabel}
             </span>
           </div>
-          <div className="h-2.5 w-full overflow-hidden rounded-full border border-gold-deep/30 bg-parchment-300/20">
-            <div className="h-full rounded-full transition-none" style={{ width: `${leadFrac * 100}%`, backgroundColor: leadColor }} />
+          <div
+            className="relative h-2.5 w-full overflow-visible rounded-full border bg-parchment-300/20"
+            style={{
+              borderColor: leadFrac < 0.25 ? 'rgba(248,113,113,0.55)' : 'rgba(161,127,66,0.3)',
+              boxShadow: leadFrac < 0.25 ? `0 0 6px rgba(248,113,113,${0.3 + (0.25 - leadFrac) * 2})` : undefined,
+            }}
+          >
+            <div className="h-full overflow-hidden rounded-full transition-none" style={{ width: `${leadFrac * 100}%`, backgroundColor: leadColor }} />
+            <div
+              className="absolute top-1/2 -translate-y-1/2 text-[9px] leading-none pointer-events-none select-none"
+              style={{ left: `calc(${leadFrac * 100}% - 6px)` }}
+            >
+              🐺
+            </div>
           </div>
         </div>
       ) : (
@@ -1036,36 +987,37 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
           <div className="h-2.5 w-full overflow-hidden rounded-full border border-gold-deep/20 bg-parchment-300/10">
             <div className="h-full rounded-full bg-parchment-300/20 transition-none" style={{ width: `${spawnPct * 100}%` }} />
           </div>
-          <p className="text-center font-display text-[9px] text-ink-muted/60 mt-0.5">Keep running…</p>
+          <p className="text-center font-display text-[9px] text-ink-muted/60 mt-0.5">
+            Beast in {Math.max(0, Math.ceil(CHASER_SPAWN_DISTANCE - distance))}m
+          </p>
         </div>
       )}
 
-      {/* ── Controls ───────────────────────────────────────────────────────── */}
+      {/* ── Controls ──────────────────────────────────────────────────────────── */}
       <div className="flex w-full max-w-xs items-center gap-2">
         <div className="text-center font-display text-xs text-ink-muted">
           Score: <strong className="text-gold-deep">{scorePct}%</strong>
         </div>
         <button
-          onClick={jump}
+          onClick={controls.jump}
           className="flex-1 select-none rounded-lg border-2 border-gold-deep bg-gradient-to-b from-gold-bright to-gold-deep py-2.5 font-display text-sm font-black text-wood-900 shadow-gold transition-transform active:scale-95"
         >
           ↑ Jump
         </button>
         <button
-          onClick={slide}
+          onClick={controls.slide}
           className="flex-1 select-none rounded-lg border-2 border-sky-600 bg-gradient-to-b from-sky-400 to-sky-600 py-2.5 font-display text-sm font-black text-white shadow transition-transform active:scale-95"
         >
           ↓ Slide
         </button>
         <div className="relative flex-1">
           <button
-            onClick={dash}
+            onClick={controls.dash}
             disabled={!dashReady}
             className="w-full select-none rounded-lg border-2 border-amber-600 bg-gradient-to-b from-amber-400 to-amber-600 py-2.5 font-display text-sm font-black text-white shadow transition-transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             ⚡ Dash
           </button>
-          {/* Cooldown fill overlay */}
           {!dashReady && (
             <div className="absolute inset-0 rounded-lg overflow-hidden pointer-events-none">
               <div
@@ -1076,6 +1028,77 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Outer component — manages run lifecycle ────────────────────────────────────
+
+export function RooftopChase({ onFinish }: RooftopChaseProps) {
+  const [runKey,    setRunKey]    = useState(0);
+  const [runResult, setRunResult] = useState<RunResult | null>(null);
+
+  const handleRestart = () => {
+    setRunResult(null);
+    setRunKey((k) => k + 1);
+  };
+
+  const handleAccept = () => {
+    if (runResult) onFinish(runResult.score);
+  };
+
+  const stars = runResult ? scoreToStars(runResult.score) : 0;
+
+  const outcomeLabel: Record<RunOutcome, string> = {
+    escaped: 'ESCAPED!',
+    caught:  'CAUGHT!',
+    fell:    'FELL!',
+  };
+  const outcomeColor: Record<RunOutcome, string> = {
+    escaped: '#4ade80',
+    caught:  '#f87171',
+    fell:    '#60a5fa',
+  };
+
+  return (
+    <div className="relative">
+      <RooftopChaseRun key={runKey} onRunDone={setRunResult} />
+
+      {/* Result overlay — appears after the run ends (outer stays mounted for restart) */}
+      {runResult && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/55 rounded-lg">
+          <div className="bg-[#1a0e2e] rounded-xl p-5 text-center space-y-3 shadow-2xl border-2 border-gold-deep/50 min-w-[200px]">
+            <div
+              className="font-display text-2xl font-black"
+              style={{ color: outcomeColor[runResult.outcome], textShadow: `0 0 14px ${outcomeColor[runResult.outcome]}80` }}
+            >
+              {outcomeLabel[runResult.outcome]}
+            </div>
+            <div className="font-display text-sm text-parchment-300/80">
+              {Math.round(runResult.finalDistance)}/{CHASE_TARGET_DISTANCE}m
+            </div>
+            <div className="text-xl tracking-widest">
+              {Array.from({ length: 3 }, (_, i) => (
+                <span key={i} style={{ color: i < stars ? '#f59e0b' : 'rgba(255,255,255,0.2)' }}>★</span>
+              ))}
+            </div>
+            <div className="flex gap-2 justify-center pt-1">
+              <button
+                onClick={handleRestart}
+                className="rounded-lg border-2 border-sky-500/60 bg-sky-500/10 px-4 py-2 font-display text-sm font-bold text-sky-400 hover:bg-sky-500/20 transition-colors"
+              >
+                Run Again
+              </button>
+              <button
+                onClick={handleAccept}
+                className="rounded-lg border-2 border-gold-deep bg-gradient-to-b from-gold-bright to-gold-deep px-4 py-2 font-display text-sm font-black text-wood-900 shadow-gold"
+              >
+                Accept Score
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

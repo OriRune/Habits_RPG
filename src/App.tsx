@@ -23,6 +23,7 @@ import { useAuthStore } from '@/net/auth';
 import { useCloudSync } from '@/hooks/useCloudSync';
 import { useParty, usePartyQuestReporter } from '@/hooks/useParty';
 import { useCoopSession } from '@/hooks/useCoopSession';
+import { useTacticsCoopSession } from '@/hooks/useTacticsCoopSession';
 
 // Minigame/combat overlays are heavy (each pulls in its engine: mining/forest/
 // arena/combat). Code-split them so the initial bundle stays lean — each chunk
@@ -68,6 +69,7 @@ export default function App() {
   useParty();
   usePartyQuestReporter();
   useCoopSession();
+  useTacticsCoopSession();
 
   // Single apply path: re-skin the app whenever the selected palette or dark
   // mode changes (and once on mount, after the store has hydrated from localStorage).

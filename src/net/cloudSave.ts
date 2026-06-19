@@ -21,12 +21,22 @@ const STORAGE_KEY = 'habits-rpg-save';
 const DEBOUNCE_MS = 10_000;
 
 // Transient run objects are not durable — mirror what migrate() nulls.
-const TRANSIENT_KEYS = ['battle', 'dungeon', 'mining', 'forest', 'arena'] as const;
+const TRANSIENT_KEYS = ['battle', 'dungeon', 'mining', 'forest', 'arena', 'tactics'] as const;
 
 type PersistEnvelope = { state: Record<string, unknown>; version: number };
 
 /** The CAS counter from the row we last read/wrote; null = no cloud row yet. */
 let lastPulledVersion: number | null = null;
+
+/**
+ * Returns true when any transient minigame run is currently in progress.
+ * A rehydrate during a live run would overwrite the in-memory board with
+ * a stale snapshot, ejecting the player or resetting the match to turn 1.
+ */
+function hasActiveRun(): boolean {
+  const s = useGameStore.getState();
+  return !!(s.battle || s.dungeon || s.mining || s.forest || s.arena || s.tactics);
+}
 
 function currentUserId(): string | null {
   return useAuthStore.getState().session?.user?.id ?? null;
@@ -60,6 +70,7 @@ function buildPublicSnapshot(s: GameState) {
     deepestMineFloor: s.deepestMineFloor ?? 0,
     deepestForestStage: s.deepestForestStage ?? 0,
     deepestArenaTier: s.deepestArenaTier ?? 0,
+    deepestTacticsTier: s.deepestTacticsTier ?? 0,
     lastActiveISO: s.lastActiveISO ?? null,
   };
 }
@@ -71,6 +82,11 @@ function buildPublicSnapshot(s: GameState) {
  */
 export async function pullCloudSave(): Promise<void> {
   if (!supabase) return;
+  // Never rehydrate the store while a minigame run is in progress — it would
+  // clobber the live in-memory board with a stale cloud snapshot, resetting or
+  // ejecting the player mid-match.  The CAS conflict that triggered this re-pull
+  // will be resolved on the next push once the run has finished and the store is safe to overwrite.
+  if (hasActiveRun()) return;
   const uid = currentUserId();
   if (!uid) return;
 

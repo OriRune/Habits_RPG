@@ -2,9 +2,11 @@
 // to fire the store's discrete mining actions (move / strike / cast / monster tick) based on a
 // requestAnimationFrame clock and which keys/buttons are held. All rules live in the pure
 // engine (src/engine/mining.ts); this is purely the "when".
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type MutableRefObject } from 'react';
 import { useGameStore } from '@/store/useGameStore';
 import { canDescend, facedCell, facedMonsterId, type Dir } from '@/engine/mining';
+import { CHARGE_SWING_COUNT, DASH_BASE_CD_MS } from '@/engine/crawl';
+import { boonChargeReduce } from '@/content/boons';
 import { useCoopStore } from '@/net/coop/session';
 import { useAuthStore } from '@/net/auth';
 
@@ -13,7 +15,7 @@ const KEY_DIRS: Record<string, Dir> = {
   w: 'up', s: 'down', a: 'left', d: 'right',
 };
 
-/** How often a held direction advances one cell (ms) — the tile-step cadence. */
+/** Fallback move cadence when run state has no moveIntervalMs (old saves). */
 const MOVE_INTERVAL_MS = 150;
 /** Minimum gap between pick swings (ms) so holding the key doesn't burn stamina at 60fps. */
 const SWING_INTERVAL_MS = 240;
@@ -27,8 +29,12 @@ export interface MiningControls {
   release: (dir: Dir) => void;
   /** Queue a single pick swing. */
   swing: () => void;
+  /** Queue a dash in the currently-faced direction. */
+  dash: () => void;
   /** Cast a spell by key (from ability bar buttons). */
   castSpell: (key: string) => void;
+  /** Live charge progress for the overlay's charge-pip indicator. Read-only ref, updated every rAF frame. */
+  chargeRef: MutableRefObject<{ active: boolean; swings: number; max: number }>;
 }
 
 /** Drives an active Deep Mine run. Mount once inside the run overlay. */
@@ -36,7 +42,13 @@ export function useMiningLoop(): MiningControls {
   const held = useRef<Set<Dir>>(new Set());
   const lastDir = useRef<Dir | null>(null);
   const strikeQueued = useRef(false);
+  const dashQueued = useRef(false);
   const spellQueue = useRef<string | null>(null);
+  // Charge tracking: timestamp when Space was first pressed (reset on each new press).
+  const spaceDownAt = useRef<number | null>(null);
+  const chargeConsumed = useRef(false);
+  // Exposed to the overlay for the charge-progress indicator.
+  const chargeProgressRef = useRef<{ active: boolean; swings: number; max: number }>({ active: false, swings: 0, max: 2 });
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -48,7 +60,18 @@ export function useMiningLoop(): MiningControls {
         return;
       }
       if (e.key === ' ' || e.key === 'Enter') {
-        strikeQueued.current = true;
+        if (spaceDownAt.current === null) {
+          // First press this hold: record timestamp and queue a normal swing.
+          spaceDownAt.current = performance.now();
+          chargeConsumed.current = false;
+          strikeQueued.current = true;
+        }
+        e.preventDefault();
+        return;
+      }
+      // Shift + held direction → dash
+      if (e.key === 'Shift') {
+        dashQueued.current = true;
         e.preventDefault();
         return;
       }
@@ -66,7 +89,11 @@ export function useMiningLoop(): MiningControls {
     };
     const onKeyUp = (e: KeyboardEvent) => {
       const dir = KEY_DIRS[e.key];
-      if (dir) held.current.delete(dir);
+      if (dir) { held.current.delete(dir); return; }
+      if (e.key === ' ' || e.key === 'Enter') {
+        spaceDownAt.current = null;
+        chargeConsumed.current = false;
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
@@ -79,12 +106,26 @@ export function useMiningLoop(): MiningControls {
       raf = requestAnimationFrame(loop);
       const store = useGameStore.getState();
       const run = store.mining;
-      if (!run || run.status !== 'active' || document.hidden) return;
+      if (!run || run.status !== 'active' || document.hidden) {
+        chargeProgressRef.current = { active: false, swings: 0, max: 2 };
+        return;
+      }
 
       // Spell cast (instant, gated by spell's own SPELL_CD_MS in the engine)
       if (spellQueue.current) {
         store.mineCast(spellQueue.current);
         spellQueue.current = null;
+      }
+
+      // Dash — fires once on Shift press in the current facing direction.
+      if (dashQueued.current) {
+        dashQueued.current = false;
+        const dir = lastDir.current ?? run.player.facing;
+        const cd = run.dashCooldownMs ?? DASH_BASE_CD_MS;
+        const lastDash = run.lastDashMs ?? -cd;
+        if (now - lastDash >= cd) {
+          store.mineDash(dir, now);
+        }
       }
 
       // Co-op role for this frame (solo when not joined to a session).
@@ -93,6 +134,48 @@ export function useMiningLoop(): MiningControls {
       const myId = useAuthStore.getState().session?.user?.id;
       const isHost = inCoop && coop.session!.host_id === myId;
       const isGuest = inCoop && !isHost;
+
+      // Charge detection: if Space is still held for effectiveChargeCount intervals, fire a charged swing.
+      // The Overcharge boon reduces the required hold count by 1 (minimum 1).
+      const chargeReduce = run.activeBoons ? boonChargeReduce(run.activeBoons) : 0;
+      const effectiveChargeCount = Math.max(1, CHARGE_SWING_COUNT - chargeReduce);
+
+      // Update charge-progress ref for the overlay indicator.
+      {
+        const chargeActive = spaceDownAt.current !== null && !chargeConsumed.current;
+        chargeProgressRef.current = {
+          active: chargeActive,
+          swings: chargeActive
+            ? Math.min(effectiveChargeCount, Math.floor((now - (spaceDownAt.current ?? now)) / SWING_INTERVAL_MS))
+            : 0,
+          max: effectiveChargeCount,
+        };
+      }
+      if (
+        spaceDownAt.current !== null &&
+        !chargeConsumed.current &&
+        now - spaceDownAt.current >= effectiveChargeCount * SWING_INTERVAL_MS &&
+        now - lastSwing >= SWING_INTERVAL_MS
+      ) {
+        chargeConsumed.current = true;
+        lastSwing = now;
+        if (canDescend(run) && (!inCoop || isHost)) {
+          store.mineDescend();
+        } else if (isGuest && facedMonsterId(run)) {
+          const dmg = (run.weapon.attackStat === 'DX' ? run.rangedPower : run.meleePower) * 1.75;
+          coop.send?.({ type: 'attack', userId: myId ?? 'anon', monsterId: facedMonsterId(run)!, dmg });
+        } else {
+          const { r, c } = facedCell(run);
+          const before = run.tiles[r]?.[c];
+          store.mineStrikeCharged();
+          if (inCoop) {
+            const after = useGameStore.getState().mining?.tiles[r]?.[c];
+            if (after && after !== before) {
+              coop.send?.({ type: 'tile', userId: myId ?? 'anon', floor: run.floor, r, c, tile: after });
+            }
+          }
+        }
+      }
 
       if (strikeQueued.current && now - lastSwing >= SWING_INTERVAL_MS) {
         strikeQueued.current = false;
@@ -121,7 +204,10 @@ export function useMiningLoop(): MiningControls {
           }
         }
       }
-      if (held.current.size && now - lastMove >= MOVE_INTERVAL_MS) {
+
+      // AG-scaled move interval from run state (falls back to constant for old saves).
+      const moveMs = run.moveIntervalMs ?? MOVE_INTERVAL_MS;
+      if (held.current.size && now - lastMove >= moveMs) {
         // Favour the most recently pressed direction when several are held.
         const dir =
           lastDir.current && held.current.has(lastDir.current)
@@ -164,9 +250,15 @@ export function useMiningLoop(): MiningControls {
     release: (dir) => held.current.delete(dir),
     swing: () => {
       strikeQueued.current = true;
+      if (spaceDownAt.current === null) {
+        spaceDownAt.current = performance.now();
+        chargeConsumed.current = false;
+      }
     },
+    dash: () => { dashQueued.current = true; },
     castSpell: (key) => {
       spellQueue.current = key;
     },
+    chargeRef: chargeProgressRef,
   };
 }

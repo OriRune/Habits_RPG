@@ -1,37 +1,52 @@
 // Long March trial — EN.
 // Navigate MARCH_TILES terrain tiles by choosing a pace for each tile.
 
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
+import { play as sfxPlay } from '@/lib/sfx';
 import {
   generateTerrain,
   marchStep,
   marchScore,
+  marchStartStamina,
   MARCH_TILES,
-  MARCH_START_STA,
   MARCH_MAX_STA,
+  PACE_COSTS,
   type MarchPace,
+  type TerrainTile,
 } from '@/engine/trials/longMarch';
-import { Button } from '@/components/ui/Button';
 
 interface LongMarchProps {
+  enLevel: number;
   onFinish: (score01: number) => void;
 }
 
-interface LogEntry {
-  tileIndex: number;
-  pace: MarchPace;
-  message: string;
-  distanceDelta: number;
-  staminaDelta: number;
+function newRun(enLevel: number) {
+  return {
+    terrain: generateTerrain(Math.random),
+    stamina: marchStartStamina(enLevel),
+  };
 }
 
-export function LongMarch({ onFinish }: LongMarchProps) {
-  const terrain = useMemo(() => generateTerrain(Math.random), []);
+export function LongMarch({ enLevel, onFinish }: LongMarchProps) {
+  const startStamina = marchStartStamina(enLevel);
+  const [terrain, setTerrain] = useState<TerrainTile[]>(() => generateTerrain(Math.random));
   const [tileIndex, setTileIndex] = useState(0);
-  const [stamina, setStamina] = useState(MARCH_START_STA);
+  const [stamina, setStamina] = useState(startStamina);
   const [distance, setDistance] = useState(0);
-  const [log, setLog] = useState<LogEntry[]>([]);
+  const [lastMessage, setLastMessage] = useState('');
   const [done, setDone] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+
+  const reset = () => {
+    const run = newRun(enLevel);
+    setTerrain(run.terrain);
+    setTileIndex(0);
+    setStamina(run.stamina);
+    setDistance(0);
+    setLastMessage('');
+    setDone(false);
+    setCollapsed(false);
+  };
 
   const choosePace = (pace: MarchPace) => {
     if (done) return;
@@ -40,25 +55,32 @@ export function LongMarch({ onFinish }: LongMarchProps) {
     const newSta = Math.min(MARCH_MAX_STA, Math.max(0, stamina + result.staminaDelta));
     const newDist = Math.max(0, distance + result.distanceDelta);
     const newTile = tileIndex + 1;
+    const exhausted = newSta <= 0;
+    const finished = exhausted || newTile >= MARCH_TILES;
 
     setStamina(newSta);
     setDistance(newDist);
-    setLog((prev) => [
-      ...prev,
-      { tileIndex, pace, message: result.message, distanceDelta: result.distanceDelta, staminaDelta: result.staminaDelta },
-    ]);
+    setLastMessage(result.message);
+    setTileIndex(newTile);
 
-    if (newSta <= 0 || newTile >= MARCH_TILES) {
-      setTileIndex(newTile);
+    if (finished) {
+      setCollapsed(exhausted);
       setDone(true);
-      onFinish(marchScore(newTile));
-    } else {
-      setTileIndex(newTile);
+      onFinish(marchScore(newTile, newDist));
     }
+
+    // Fire one SFX cue per step. End-state and spring take priority over pace.
+    if (finished && exhausted)       sfxPlay('marchCollapse');
+    else if (finished)               sfxPlay('marchComplete');
+    else if (tile.kind === 'spring') sfxPlay('marchSpring');
+    else if (pace === 'rest')        sfxPlay('marchRest');
+    else if (pace === 'walk')        sfxPlay('marchWalk');
+    else                             sfxPlay('marchPush');
   };
 
   const tile = terrain[tileIndex];
-  const staminaPct = (stamina / MARCH_MAX_STA) * 100;
+  const staminaPct = (stamina / startStamina) * 100;
+  const isCritical = staminaPct <= 25;
 
   return (
     <div className="flex flex-col items-center gap-4 px-2">
@@ -66,7 +88,7 @@ export function LongMarch({ onFinish }: LongMarchProps) {
       <div className="w-full max-w-xs">
         <div className="mb-1 flex justify-between text-xs font-display text-ink-muted">
           <span>Progress: {tileIndex} / {MARCH_TILES}</span>
-          <span>Distance: {distance}</span>
+          <span>{distance} leagues</span>
         </div>
         <div className="h-2 w-full overflow-hidden rounded-full border border-gold-deep/30 bg-parchment-300/50">
           <div
@@ -76,58 +98,121 @@ export function LongMarch({ onFinish }: LongMarchProps) {
         </div>
       </div>
 
+      {/* Terrain strip — completed tiles + current + next tile revealed; future = dots */}
+      <div className="w-full max-w-xs flex gap-0.5 overflow-x-auto">
+        {terrain.map((t, i) => {
+          const isCompleted = i < tileIndex;
+          const isCurrent = i === tileIndex && !done;
+          const isNext = i === tileIndex + 1 && !done;
+          return (
+            <div
+              key={i}
+              className={`flex-1 flex items-center justify-center h-5 rounded-sm text-[10px] leading-none ${
+                isCurrent
+                  ? 'ring-1 ring-gold-bright/70 bg-gold-bright/10'
+                  : ''
+              }`}
+            >
+              {isCompleted ? (
+                <span className="opacity-55">{t.emoji}</span>
+              ) : isCurrent ? (
+                <span>{t.emoji}</span>
+              ) : isNext ? (
+                <span className="opacity-40">{t.emoji}</span>
+              ) : (
+                <span className="text-ink-muted/40">·</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
       {/* Stamina bar */}
       <div className="w-full max-w-xs">
         <div className="mb-1 flex justify-between text-xs font-display text-ink-muted">
           <span>Stamina</span>
-          <span>{stamina} / {MARCH_MAX_STA}</span>
+          <span>{stamina} / {startStamina}</span>
         </div>
         <div className="h-3 w-full overflow-hidden rounded-full border border-gold-deep/30 bg-parchment-300/50">
           <div
             className={`h-full transition-all duration-300 ${
-              staminaPct > 50 ? 'bg-emerald-500/70' : staminaPct > 25 ? 'bg-amber-400/70' : 'bg-rose-500/70'
+              staminaPct > 50
+                ? 'bg-emerald-500/70'
+                : staminaPct > 25
+                  ? 'bg-amber-400/70'
+                  : `bg-rose-500/70 ${isCritical ? 'animate-pulse' : ''}`
             }`}
             style={{ width: `${staminaPct}%` }}
           />
         </div>
       </div>
 
-      {/* Current tile */}
+      {/* Current tile (key forces fade-in on each new tile) */}
       {!done && tile && (
-        <div className="w-full max-w-xs rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3 text-center">
+        <div
+          key={tileIndex}
+          className="w-full max-w-xs rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3 text-center animate-fade-in"
+        >
           <div className="text-2xl">{tile.emoji}</div>
           <div className="font-display text-sm font-bold text-ink">{tile.label}</div>
         </div>
       )}
 
-      {/* Last log entry */}
-      {log.length > 0 && (
-        <p className="max-w-xs text-center text-xs italic text-ink-muted">
-          {log[log.length - 1].message}
-        </p>
+      {/* Narrative message */}
+      {lastMessage && (
+        <p className="max-w-xs text-center text-xs italic text-ink-muted">{lastMessage}</p>
       )}
 
-      {/* Choices */}
+      {/* Pace buttons */}
       {!done ? (
         <div className="flex w-full max-w-xs flex-col gap-2">
-          <Button variant="secondary" onClick={() => choosePace('rest')} className="text-left">
-            😴 Rest <span className="text-xs opacity-70 ml-2">(+2 stamina, 0 progress)</span>
-          </Button>
-          <Button onClick={() => choosePace('walk')} className="text-left">
-            🚶 Walk <span className="text-xs opacity-70 ml-2">(-1 stamina, +1 progress)</span>
-          </Button>
-          <Button variant="danger" onClick={() => choosePace('push')} className="text-left">
-            💨 Push <span className="text-xs opacity-70 ml-2">(-3 stamina, +2 progress)</span>
-          </Button>
+          {(['rest', 'walk', 'push'] as MarchPace[]).map((pace) => {
+            const { sta, dist } = PACE_COSTS[pace][tile.kind];
+            const staSign = sta > 0 ? `+${sta}` : `${sta}`;
+            const distStr = dist === 0 ? '0 dist' : `+${dist} dist`;
+            const label = pace === 'rest' ? '😴 Rest' : pace === 'walk' ? '🚶 Walk' : '💨 Push';
+            const hint = `(${staSign} sta, ${distStr})`;
+
+            return (
+              <button
+                key={pace}
+                onClick={() => choosePace(pace)}
+                className={`w-full rounded-md px-4 py-2 font-display text-sm font-semibold tracking-wide transition-colors text-left flex items-center justify-between disabled:cursor-not-allowed disabled:opacity-40 ${
+                  pace === 'rest'
+                    ? 'bg-emerald-700/80 text-parchment-100 border border-emerald-600 hover:bg-emerald-600/80'
+                    : pace === 'walk'
+                      ? 'bg-gradient-to-b from-gold-bright to-gold-deep text-wood-900 border border-gold-deep hover:from-gold hover:to-gold-deep shadow-[inset_0_1px_0_rgba(255,255,255,0.5)]'
+                      : 'bg-gradient-to-b from-amber-500 to-amber-600 text-parchment-100 border border-amber-600 hover:from-amber-400 hover:to-amber-500'
+                }`}
+              >
+                <span>{label}</span>
+                <span className="text-xs opacity-70">{hint}</span>
+              </button>
+            );
+          })}
         </div>
       ) : (
-        <div className="text-center">
-          <p className="font-display text-sm text-ink">
-            {stamina <= 0 ? '⚡ You collapsed from exhaustion!' : '🏆 You completed the march!'}
-          </p>
-          <p className="text-xs text-ink-muted mt-1">
+        <div className="text-center space-y-3">
+          {collapsed ? (
+            <>
+              <div className="text-3xl">💀</div>
+              <p className="font-display text-sm font-bold text-rose-400">You collapsed from exhaustion!</p>
+            </>
+          ) : (
+            <>
+              <div className="text-3xl">🏆</div>
+              <p className="font-display text-sm font-bold text-emerald-400">March complete!</p>
+            </>
+          )}
+          <p className="text-xs text-ink-muted">
             Covered {distance} leagues across {tileIndex} tiles.
           </p>
+          <button
+            onClick={reset}
+            className="mt-1 rounded-md border border-gold-deep/50 bg-parchment-100/60 px-4 py-1.5 font-display text-xs font-semibold text-ink-muted hover:text-ink transition-colors"
+          >
+            March Again
+          </button>
         </div>
       )}
     </div>

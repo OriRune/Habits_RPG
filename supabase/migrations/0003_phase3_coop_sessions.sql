@@ -11,7 +11,7 @@
 create table if not exists public.coop_sessions (
   id         uuid primary key default gen_random_uuid(),
   party_id   uuid not null references public.parties (id) on delete cascade,
-  game       text not null default 'mine',     -- 'mine' (MVP); 'forest'|'arena' reserved
+  game       text not null default 'mine',     -- 'mine'|'forest'|'tactics' (see CHECK in 0004; arena is not co-op)
   seed       bigint not null,                  -- shared map seed (mulberry32)
   host_id    uuid not null references auth.users (id) on delete cascade,
   status     text not null default 'lobby',    -- 'lobby' | 'active' | 'ended'

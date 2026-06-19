@@ -26,4 +26,8 @@ export const MATERIALS: Record<string, MaterialDef> = {
   wood: { key: 'wood', name: 'Wood', glyph: 'W', color: '#7a5a30' },
   game_meat: { key: 'game_meat', name: 'Game Meat', glyph: 'M', color: '#a8443a' },
   pelt: { key: 'pelt', name: 'Soft Pelt', glyph: 'P', color: '#caa06a' },
+  // Band-themed materials (Phase 3)
+  frost_quartz: { key: 'frost_quartz', name: 'Frost Quartz', glyph: '❄', color: '#60c8e8' },
+  obsidian:     { key: 'obsidian',     name: 'Obsidian',     glyph: '▲', color: '#2a1a3a' },
+  amber_resin:  { key: 'amber_resin',  name: 'Amber Resin',  glyph: '◉', color: '#e8a020' },
 };

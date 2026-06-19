@@ -38,6 +38,11 @@ export interface ForestNodeDef {
     | { kind: 'gold'; amount: [number, number] }
     | { kind: 'material'; material: string; amount: [number, number] }
     | { kind: 'stamina'; amount: [number, number] };
+  /**
+   * If set, this node only spawns in the named biome band.
+   * Omit for band-agnostic nodes (eligible in any band at or above stageMin).
+   */
+  band?: import('@/engine/crawlBiomes').ForestBandId;
 }
 
 export interface ForestBeastDef {
@@ -63,6 +68,18 @@ export interface ForestBeastDef {
   dropMaterial?: string;
   /** Override the default drop amount formula [min, max]. */
   dropAmount?: [number, number];
+  /**
+   * If set, this beast only spawns in the named biome band.
+   * Omit for band-agnostic beasts (eligible in any band at or above stageMin).
+   */
+  band?: import('@/engine/crawlBiomes').ForestBandId;
+  /**
+   * Band-gate guardian. Excluded from the random spawn pool; placed once by
+   * generateForest on the exact stage matching guardianStage.
+   */
+  isGuardian?: true;
+  /** The exact stage this guardian appears on (required when isGuardian is set). */
+  guardianStage?: number;
 }
 
 export const FOREST_NODES: Record<string, ForestNodeDef> = {
@@ -89,6 +106,18 @@ export const FOREST_NODES: Record<string, ForestNodeDef> = {
   ancient_spring: {
     key: 'ancient_spring', name: 'Ancient Spring', glyph: '🌊', color: '#06b6d4',
     stageMin: 4, weight: 0, grants: { kind: 'stamina', amount: [20, 25] },
+  },
+  // --- Deepwood Grove band (stages 4–7) ---
+  glowcap: {
+    key: 'glowcap', name: 'Glowcap Mushroom', glyph: '🍄', color: '#a070d0',
+    stageMin: 4, weight: 2, band: 'deepwood',
+    grants: { kind: 'material', material: 'crystals', amount: [1, 2] },
+  },
+  // --- Ancient Heart band (stages 8+) ---
+  heart_bloom: {
+    key: 'heart_bloom', name: 'Heartwood Bloom', glyph: '🌺', color: '#e8a020',
+    stageMin: 8, weight: 1.5, band: 'ancient',
+    grants: { kind: 'material', material: 'amber_resin', amount: [1, 2] },
   },
 };
 
@@ -132,8 +161,35 @@ export const FOREST_BEASTS: Record<string, ForestBeastDef> = {
   },
   ancient_guardian: {
     key: 'ancient_guardian', name: 'Ancient Guardian', glyph: '🌳', color: '#2a6a3a',
-    stageMin: 10, hp: 55, touchDamage: 18, moveCadenceMs: 600, aggroRadius: 2, bounty: [20, 35],
+    stageMin: 8, hp: 55, touchDamage: 18, moveCadenceMs: 600, aggroRadius: 2, bounty: [20, 35],
     defense: 5, resistTo: ['DX'], weakTo: ['ST'],
+    isGuardian: true, guardianStage: 8,
+  },
+  // --- Stage 3 elite (ramps difficulty before the first guardian fight at Stage 4) ---
+  alpha_boar: {
+    key: 'alpha_boar', name: 'Alpha Boar', glyph: '🐗', color: '#5a3010',
+    stageMin: 3, hp: 22, touchDamage: 8, moveCadenceMs: 480, aggroRadius: 4, bounty: [6, 12],
+    weakTo: ['ST'],
+  },
+  // --- Band-gate guardians (placed once per run; excluded from random pool) ---
+  grove_sentinel: {
+    key: 'grove_sentinel', name: 'Grove Sentinel', glyph: '🦁', color: '#5a8a3a',
+    stageMin: 4, hp: 40, touchDamage: 12, moveCadenceMs: 550, aggroRadius: 2, bounty: [14, 28],
+    defense: 2, resistTo: ['DX'], weakTo: ['ST'],
+    isGuardian: true, guardianStage: 4,
+  },
+  // --- Deepwood Grove band (stages 4–7) ---
+  shadow_lynx: {
+    key: 'shadow_lynx', name: 'Shadow Lynx', glyph: '🐈', color: '#6a4a9a',
+    stageMin: 4, hp: 18, touchDamage: 9, moveCadenceMs: 300, aggroRadius: 4, bounty: [6, 14],
+    band: 'deepwood', weakTo: ['DX'], resistTo: ['ST'],
+  },
+  // --- Ancient Heart band (stages 8+) ---
+  grove_wraith: {
+    key: 'grove_wraith', name: 'Grove Wraith', glyph: '👻', color: '#c8a030',
+    stageMin: 8, hp: 28, touchDamage: 12, moveCadenceMs: 420, aggroRadius: 5, bounty: [14, 28],
+    band: 'ancient', defense: 2, weakTo: ['WI'], resistTo: ['DX'],
+    dropMaterial: 'amber_resin', dropAmount: [1, 2],
   },
 };
 
@@ -178,6 +234,12 @@ export const SHRINE_EVENTS: Record<string, ShrineEventDef> = {
 
 export const FOREST_NODE_KEYS = Object.keys(FOREST_NODES);
 export const FOREST_BEAST_KEYS = Object.keys(FOREST_BEASTS);
+
+/** Maps exact guardian stage → beast key. Consumed by generateForest for deterministic placement. */
+export const FOREST_GUARDIAN_STAGES: Record<number, string> = {
+  4: 'grove_sentinel',
+  8: 'ancient_guardian',
+};
 
 export function getForestNode(key: string): ForestNodeDef | undefined {
   return FOREST_NODES[key];

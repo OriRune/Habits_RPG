@@ -1,4 +1,4 @@
-import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Pickaxe } from 'lucide-react';
+import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Pickaxe, Zap } from 'lucide-react';
 import type { Dir } from '@/engine/mining';
 import type { MiningControls } from '@/hooks/useMiningLoop';
 import { cn } from '@/lib/cn';
@@ -40,20 +40,36 @@ export function MineControls({ controls }: { controls: MiningControls }) {
         {blank}
       </div>
 
-      <button
-        onPointerDown={(e) => {
-          e.preventDefault();
-          controls.swing();
-        }}
-        aria-label="Swing pick"
-        className={cn(
-          pad,
-          'h-20 w-20 flex-col gap-0.5 rounded-full font-display text-xs uppercase tracking-wider',
-        )}
-      >
-        <Pickaxe className="h-7 w-7" />
-        Mine
-      </button>
+      <div className="flex flex-col items-center gap-2">
+        <button
+          onPointerDown={(e) => {
+            e.preventDefault();
+            controls.swing();
+          }}
+          aria-label="Swing pick"
+          className={cn(
+            pad,
+            'h-20 w-20 flex-col gap-0.5 rounded-full font-display text-xs uppercase tracking-wider',
+          )}
+        >
+          <Pickaxe className="h-7 w-7" />
+          Mine
+        </button>
+        <button
+          onPointerDown={(e) => {
+            e.preventDefault();
+            controls.dash();
+          }}
+          aria-label="Dash"
+          className={cn(
+            pad,
+            'h-10 w-20 flex-row gap-1 rounded-full font-display text-xs uppercase tracking-wider',
+          )}
+        >
+          <Zap className="h-4 w-4" />
+          Dash
+        </button>
+      </div>
     </div>
   );
 }

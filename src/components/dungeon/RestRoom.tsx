@@ -18,15 +18,20 @@ export function RestRoom() {
         <p className="mt-1 text-sm text-ink-muted">A moment's safety. Tend your wounds, or attune to the deep.</p>
       </div>
       <div className="space-y-2">
-        <Button
-          variant="secondary"
-          onClick={() => rest('heal')}
-          disabled={hp >= maxHp}
-          className="w-full justify-between px-3 py-2 text-left text-sm"
-        >
-          <span>Rest and recover</span>
-          <span className="text-[11px] tabular-nums text-stat-HP">+{heal} HP</span>
-        </Button>
+        {hp >= maxHp ? (
+          <div className="rounded-md border border-gold-deep/20 bg-parchment-100/50 px-3 py-2 text-sm text-ink-muted">
+            Fully healed — attune to the deep instead.
+          </div>
+        ) : (
+          <Button
+            variant="secondary"
+            onClick={() => rest('heal')}
+            className="w-full justify-between px-3 py-2 text-left text-sm"
+          >
+            <span>Rest and recover</span>
+            <span className="text-[11px] tabular-nums text-stat-HP">+{heal} HP</span>
+          </Button>
+        )}
         <Button variant="secondary" onClick={() => rest('fortify')} className="w-full justify-between px-3 py-2 text-left text-sm">
           <span>Attune to the deep</span>
           <span className="text-[11px] text-gold-deep">a minor boon</span>

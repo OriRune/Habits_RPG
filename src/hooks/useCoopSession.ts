@@ -16,11 +16,16 @@ import {
   COOP_PLAYER_TIMEOUT_MS,
   coopChannelName,
   type CoopMessage,
-  type PlayerSlice,
-  type WorldSlice,
 } from '@/net/coop/protocol';
 import type { MineTile } from '@/engine/mining';
 import type { ForestTile } from '@/engine/forest';
+import {
+  applyPlayerSlice,
+  applyBye,
+  pruneStalePlayers,
+  buildPlayerSlice,
+  buildWorldSlice,
+} from '@/net/coop/reduce';
 
 /**
  * Co-op transport (Phase 3), mounted once in App.
@@ -72,7 +77,9 @@ export function useCoopSession(): void {
   const game = coopSession?.game ?? 'mine';
 
   useEffect(() => {
-    if (!supabase || !sessionId || !joined) return;
+    // Tactics co-op is handled by useTacticsCoopSession — skip here to avoid
+    // both hooks competing for the same channel.
+    if (!supabase || !sessionId || !joined || game === 'tactics') return;
     const sb = supabase;
     const username = useAuthStore.getState().username ?? 'Adventurer';
     const channel = sb.channel(coopChannelName(sessionId), {
@@ -83,23 +90,18 @@ export function useCoopSession(): void {
       const msg = payload as CoopMessage;
       if (msg.type === 'player') {
         if (msg.userId === userId) return;
-        // First slice from a player → they just joined the raid.
-        const known = !!useCoopStore.getState().remotePlayers[msg.userId];
-        useCoopStore.setState((st) => ({
-          remotePlayers: { ...st.remotePlayers, [msg.userId]: { ...msg, lastSeen: performance.now() } },
-        }));
-        if (!known) pushCoopNotice(`${msg.username} joined the raid`);
+        useCoopStore.setState((st) => {
+          const { roster, isNew } = applyPlayerSlice(st.remotePlayers, msg, performance.now());
+          if (isNew) pushCoopNotice(`${msg.username} joined the raid`);
+          return { remotePlayers: roster };
+        });
       } else if (msg.type === 'bye') {
         if (msg.userId === userId) return;
-        const rp = useCoopStore.getState().remotePlayers[msg.userId];
-        if (rp) {
-          pushCoopNotice(`${msg.username} retreated from the ${coopGameName(game)}`);
-          useCoopStore.setState((st) => {
-            const next = { ...st.remotePlayers };
-            delete next[msg.userId];
-            return { remotePlayers: next };
-          });
-        }
+        useCoopStore.setState((st) => {
+          const roster = applyBye(st.remotePlayers, msg.userId);
+          if (roster !== st.remotePlayers) pushCoopNotice(`${msg.username} retreated from the ${coopGameName(game)}`);
+          return { remotePlayers: roster };
+        });
       } else if (msg.type === 'world') {
         if (!isHost) {
           if (game === 'forest') useGameStore.getState().coopApplyForestWorld(msg);
@@ -132,55 +134,16 @@ export function useCoopSession(): void {
       const st = useGameStore.getState();
       const run = game === 'forest' ? st.forest : st.mining;
       if (!run) return;
-      // floor (mine) / stage (forest) both carry the run's depth on the wire.
-      const depth = 'floor' in run ? run.floor : run.stage;
-      const entities = 'monsters' in run ? run.monsters : run.beasts;
 
-      send({
-        type: 'player',
-        userId,
-        username,
-        r: run.player.r,
-        c: run.player.c,
-        facing: run.player.facing,
-        hp: run.hp,
-        maxHp: run.maxHp,
-        floor: depth,
-      } satisfies PlayerSlice);
-
-      if (isHost) {
-        send({
-          type: 'world',
-          t: performance.now(),
-          floor: depth,
-          status: run.status,
-          monsters: entities.map((m) => ({
-            id: m.id,
-            key: m.key,
-            r: m.r,
-            c: m.c,
-            hp: m.hp,
-            readyAtMs: m.readyAtMs,
-            // Forest beasts carry an `asleep` flag the guest needs for HP-bar/dim render.
-            asleep: (m as { asleep?: boolean }).asleep,
-          })),
-        } satisfies WorldSlice);
-      }
+      send(buildPlayerSlice(run, { userId, username }));
+      if (isHost) send(buildWorldSlice(run));
 
       // Drop players we haven't heard from in a while (disconnect / left).
-      const now = performance.now();
-      const rp = useCoopStore.getState().remotePlayers;
-      const next: typeof rp = {};
-      let changed = false;
-      for (const k of Object.keys(rp)) {
-        if (now - rp[k].lastSeen < COOP_PLAYER_TIMEOUT_MS) next[k] = rp[k];
-        else {
-          changed = true;
-          // Timed out without a clean 'bye' (disconnect / tab close).
-          pushCoopNotice(`${rp[k].username} left the ${coopGameName(game)}`);
-        }
-      }
-      if (changed) useCoopStore.setState({ remotePlayers: next });
+      useCoopStore.setState((cst) => {
+        const { roster, timedOut } = pruneStalePlayers(cst.remotePlayers, performance.now(), COOP_PLAYER_TIMEOUT_MS);
+        timedOut.forEach((name) => pushCoopNotice(`${name} left the ${coopGameName(game)}`));
+        return timedOut.length > 0 ? { remotePlayers: roster } : cst;
+      });
     }, COOP_BROADCAST_MS);
 
     return () => {
@@ -191,10 +154,11 @@ export function useCoopSession(): void {
   }, [sessionId, joined, isHost, userId, game]);
 
   // Auto-leave the session when the local run ends (banked / died / quit).
+  // Tactics sessions are watched by useTacticsCoopSession — skip here.
   useEffect(() => {
     const unsub = useGameStore.subscribe((s) => {
       const { joined: stillJoined, session } = useCoopStore.getState();
-      if (!stillJoined || !session) return;
+      if (!stillJoined || !session || session.game === 'tactics') return;
       const run = session.game === 'forest' ? s.forest : s.mining;
       if (!run) void leaveCoop(session.host_id === userId);
     });

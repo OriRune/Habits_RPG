@@ -1,24 +1,29 @@
 import { Pickaxe, Zap } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { MINE_ENERGY_COST } from '@/engine/mining';
+import { selectMineStats } from '@/store/selectors';
+import * as sfx from '@/lib/sfx';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
 
-/** What the next depth milestone unlocks (mirrors content/mining floorMin gates). */
+/** What the next depth milestone unlocks (mirrors content/mining floorMin gates + biome bands). */
 function milestoneHint(deepest: number): string {
-  if (deepest < 3) return 'Reach Floor 3 for Iron veins.';
-  if (deepest < 4) return 'Reach Floor 4 for Gold veins.';
-  if (deepest < 6) return 'Reach Floor 6 for Crystal nodes.';
-  if (deepest < 10) return 'Reach Floor 10 for Gemstones.';
-  return 'All veins unlocked — chase a new record.';
+  if (deepest < 3)  return 'Reach Floor 3 for Iron veins.';
+  if (deepest < 4)  return 'Reach Floor 4 for Gold veins.';
+  if (deepest < 7)  return 'Reach Floor 7 — defeat the Stone Golem to enter the Frozen Depths.';
+  if (deepest < 10) return 'Reach Floor 10 for Gemstones & Ice Crawlers.';
+  if (deepest < 15) return 'Reach Floor 15 — defeat the Magma Colossus to enter the Magma Core.';
+  return 'The Magma Core — chase a new record.';
 }
 
 /** Entrance screen for the Deep Mine (the active run renders in MineRunOverlay). */
 export function MiningView() {
   const energy = useGameStore((s) => s.character.energy);
   const deepestMineFloor = useGameStore((s) => s.deepestMineFloor);
+  const bestMineScore = useGameStore((s) => s.bestMineScore);
   const beginMining = useGameStore((s) => s.beginMining);
+  const mineStats = useGameStore(selectMineStats);
 
   const canEnter = energy >= MINE_ENERGY_COST;
 
@@ -41,7 +46,8 @@ export function MiningView() {
           <span className="text-ink">gold and crafting materials</span>. Cave monsters roam — bonk them
           with your pick before they wear you down. Find the{' '}
           <span className="text-ink">shaft</span> to descend to deeper, richer floors. Leave whenever you
-          like — your haul is always kept.
+          like, but{' '}
+          <span className="text-ink">fall to a monster and you'll forfeit half your haul</span>.
         </p>
 
         <div className="flex items-center justify-between rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3">
@@ -51,17 +57,45 @@ export function MiningView() {
           <span className="text-sm text-ink-muted">You have {energy} ⚡</span>
         </div>
 
-        <div className="rounded-md border border-gold-deep/30 bg-parchment-300/40 p-3 text-sm">
+        <div className="rounded-md border border-gold-deep/30 bg-parchment-300/40 p-3 text-sm space-y-1">
           <div className="flex items-center justify-between">
             <span className="font-display text-ink">Deepest dig</span>
             <span className="font-display font-bold text-gold-deep">
               {deepestMineFloor > 0 ? `Floor ${deepestMineFloor}` : '—'}
             </span>
           </div>
-          <div className="mt-1 text-[11px] text-ink-muted">{milestoneHint(deepestMineFloor)}</div>
+          {bestMineScore > 0 && (
+            <div className="flex items-center justify-between">
+              <span className="text-ink-muted">Best run score</span>
+              <span className="font-mono text-xs text-ink">{bestMineScore.toLocaleString()}</span>
+            </div>
+          )}
+          <div className="text-[11px] text-ink-muted">{milestoneHint(deepestMineFloor)}</div>
         </div>
 
-        <Button onClick={() => beginMining()} disabled={!canEnter} className="w-full py-2.5">
+        <div className="rounded-md border border-gold-deep/30 bg-parchment-300/40 p-3 text-sm space-y-1.5">
+          <div className="font-display text-xs uppercase tracking-wide text-ink-muted mb-1">Your mining profile</div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="text-ink-muted">Strike power</span>
+              <span className="font-mono text-ink">{mineStats.meleePower}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-ink-muted">Agility</span>
+              <span className="font-mono text-ink">{mineStats.agLevel}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-ink-muted">Defense</span>
+              <span className="font-mono text-ink">{mineStats.defense}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-ink-muted">HP / Stamina</span>
+              <span className="font-mono text-ink">{mineStats.maxHp} / {mineStats.maxSta}</span>
+            </div>
+          </div>
+        </div>
+
+        <Button onClick={() => { void sfx.resume(); beginMining(); }} disabled={!canEnter} className="w-full py-2.5">
           {canEnter ? 'Enter the Mine' : `Need ${MINE_ENERGY_COST} energy (complete habits)`}
         </Button>
       </Panel>

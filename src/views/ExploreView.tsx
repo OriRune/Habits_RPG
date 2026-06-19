@@ -1,10 +1,35 @@
-import { useState } from 'react';
+import { Component, useState, type ReactNode } from 'react';
 import { DoorOpen, Pickaxe, Trees } from 'lucide-react';
 import { HubGrid, type HubCard } from '@/components/layout/HubGrid';
 import { SubModeFrame } from '@/components/layout/SubModeFrame';
 import { DungeonView } from '@/views/DungeonView';
 import { MiningView } from '@/views/MiningView';
 import { ForestView } from '@/views/ForestView';
+
+class DungeonErrorBoundary extends Component<
+  { onReset: () => void; children: ReactNode },
+  { crashed: boolean }
+> {
+  state = { crashed: false };
+  static getDerivedStateFromError() { return { crashed: true }; }
+  componentDidCatch(err: Error) { console.error('[DungeonView] render error:', err); }
+  render() {
+    if (this.state.crashed) {
+      return (
+        <div className="flex flex-col items-center gap-4 p-8 text-center">
+          <p className="text-sm text-ink-muted">Something went wrong in the dungeon.</p>
+          <button
+            className="rounded bg-ember px-4 py-2 text-sm font-bold text-parchment-100"
+            onClick={() => { this.setState({ crashed: false }); this.props.onReset(); }}
+          >
+            Back to Explore
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 type ExploreMode = 'delve' | 'mine' | 'forest';
 
@@ -48,7 +73,11 @@ export function ExploreView() {
 
   return (
     <SubModeFrame backLabel="Back to Explore" onBack={() => setMode(null)}>
-      {mode === 'delve'  && <DungeonView />}
+      {mode === 'delve'  && (
+        <DungeonErrorBoundary onReset={() => setMode(null)}>
+          <DungeonView />
+        </DungeonErrorBoundary>
+      )}
       {mode === 'mine'   && <MiningView />}
       {mode === 'forest' && <ForestView />}
     </SubModeFrame>

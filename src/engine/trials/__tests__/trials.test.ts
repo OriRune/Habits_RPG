@@ -1,6 +1,22 @@
 import { describe, it, expect } from 'vitest';
 import { trialReward, scoreToStars, TRIALS, TRIALS_UNLOCK_LEVEL, emptyTrialsClearedOn, emptyBestTrialScore } from '../trials';
 import {
+  generateAttacks,
+  lastStandScore,
+  reactionSpeed,
+  reactionRating,
+  blockWindowForWave,
+  seededRng as lastStandRng,
+  TOTAL_WAVES,
+  ATTACKS_PER_WAVE,
+  BLOCK_WINDOW_BY_WAVE,
+  SPAWN_AHEAD_MS,
+  WAVE_INTERVAL_MS,
+  DIRECTIONS,
+  REACTION_PERFECT,
+  REACTION_GOOD,
+} from '../lastStand';
+import {
   lockpickingScore,
   generateLocks,
   allowedTurn,
@@ -38,9 +54,13 @@ import {
   MAX_JUMPS,
   SLIDE_MS,
 } from '../rooftopChase';
-import { armoryScore, armoryAccuracy, ARMORY_LOCKS, SWEET_ZONE_START } from '../armoryBreak';
-import { marchStep, marchScore, generateTerrain, MARCH_TILES } from '../longMarch';
-import { generateSequence, libraryScore, LIBRARY_MAX_ROUNDS, GLYPHS } from '../ancientLibrary';
+import { armoryScore, armoryAccuracy, ARMORY_LOCKS, SWEET_ZONE_START, SWEET_ZONE_END, SWEET_ZONE_WIDTH } from '../armoryBreak';
+import { marchStep, marchScore, marchStartStamina, generateTerrain, MARCH_TILES, MARCH_START_STA, MARCH_MAX_DISTANCE } from '../longMarch';
+import {
+  generateSequence, libraryScore, buildShowSchedule, glyphShowMs, seededRng as alSeededRng, dailySeed,
+  LIBRARY_MAX_ROUNDS, LIBRARY_START_LENGTH, GLYPH_SHOW_MS_BASE, GLYPH_SHOW_MS_MIN,
+  KN_HINT_THRESHOLD, KN_HINT_THRESHOLD_2, GLYPHS,
+} from '../ancientLibrary';
 
 // ── Deterministic RNG helpers ──────────────────────────────────────────────────
 
@@ -205,17 +225,29 @@ describe('lockpicking', () => {
 
   it('breakTime is longer closer to sweet spot', () => {
     const lock = { sweetSpotDeg: 90, toleranceDeg: 20, openToleranceDeg: 6 };
-    const close = breakTime(97, lock);  // just outside open zone
-    const far = breakTime(115, lock);   // well outside tolerance
+    const close = breakTime(97, lock, 0);  // just outside open zone
+    const far = breakTime(115, lock, 0);   // well outside tolerance
     expect(close).toBeGreaterThan(far);
+  });
+
+  it('lockTolerance widens with DX level', () => {
+    const noDx = lockTolerance(0, 1, 0);
+    const withDx = lockTolerance(0, 1, 10);
+    expect(withDx.toleranceDeg).toBeGreaterThan(noDx.toleranceDeg);
+    expect(withDx.openToleranceDeg).toBeGreaterThan(noDx.openToleranceDeg);
   });
 
   it('lockpickingScore: all locks + full picks = 1.0', () => {
     expect(lockpickingScore(NUM_LOCKS, PICK_BUDGET)).toBe(1);
   });
 
-  it('lockpickingScore: all locks + 1 pick left ≈ 0.5', () => {
-    expect(lockpickingScore(NUM_LOCKS, 1)).toBeCloseTo(0.5, 5);
+  it('lockpickingScore: all locks + 0 picks = 0.5 (floor)', () => {
+    expect(lockpickingScore(NUM_LOCKS, 0)).toBeCloseTo(0.5, 5);
+  });
+
+  it('lockpickingScore: all locks + 1 pick = linear interpolation above 0.5', () => {
+    const s = lockpickingScore(NUM_LOCKS, 1);
+    expect(s).toBeCloseTo(0.5 + 0.5 * 1 / PICK_BUDGET, 5);
   });
 
   it('lockpickingScore: all locks + some picks ∈ (0.5, 1)', () => {
@@ -344,21 +376,23 @@ describe('rooftopChase', () => {
   it('hasFallen is false when standing on a building', () => {
     const bs = generateCourse(seededRng());
     const mid = bs[0].x + bs[0].width / 2;
-    expect(hasFallen(bs, mid, bs[0].roofY)).toBe(false);
+    expect(hasFallen(bs, mid, bs[0].roofY, 0)).toBe(false); // vy=0: standing
   });
 
   it('hasFallen is false when airborne over a gap but above the next roof', () => {
     const bs = generateCourse(seededRng());
     const gapX = bs[0].x + bs[0].width + 0.5;
     const nextRoof = bs[1].roofY;
-    expect(hasFallen(bs, gapX, nextRoof + 1)).toBe(false); // above next roof top
+    expect(hasFallen(bs, gapX, nextRoof + 1, -5)).toBe(false); // above next roof top
   });
 
   it('hasFallen is true when over a gap and below the next roof top', () => {
     const bs = generateCourse(seededRng());
     const gapX = bs[0].x + bs[0].width + 0.5;
     const nextRoof = bs[1].roofY;
-    expect(hasFallen(bs, gapX, nextRoof - 0.5)).toBe(true); // below next roof top
+    // gapX is 0.5wu into the gap; leading edge = gapX + HERO_HITBOX_W is still short
+    // of bs[1].x (gapMin = 3 > HERO_HITBOX_W), so no ledge-catch fires.
+    expect(hasFallen(bs, gapX, nextRoof - 0.5, -5)).toBe(true); // below next roof top
   });
 
   // ── speedAt ─────────────────────────────────────────────────────────────────
@@ -515,8 +549,10 @@ describe('rooftopChase', () => {
 // ── Armory Break ───────────────────────────────────────────────────────────────
 
 describe('armoryBreak', () => {
-  it('armoryAccuracy is 1 at release = 1.0', () => {
-    expect(armoryAccuracy(1.0)).toBeCloseTo(1, 5);
+  const centre = SWEET_ZONE_START + SWEET_ZONE_WIDTH / 2;
+
+  it('armoryAccuracy is 1 at zone centre', () => {
+    expect(armoryAccuracy(centre)).toBeCloseTo(1, 5);
   });
 
   it('armoryAccuracy is 0 below the zone', () => {
@@ -524,8 +560,18 @@ describe('armoryBreak', () => {
     expect(armoryAccuracy(0)).toBe(0);
   });
 
+  it('armoryAccuracy is 0 above the zone (overshoot = miss)', () => {
+    expect(armoryAccuracy(SWEET_ZONE_END + 0.01)).toBe(0);
+    expect(armoryAccuracy(1.0)).toBe(0);
+  });
+
+  it('armoryAccuracy is 0 at zone edges', () => {
+    expect(armoryAccuracy(SWEET_ZONE_START)).toBeCloseTo(0, 5);
+    expect(armoryAccuracy(SWEET_ZONE_END)).toBeCloseTo(0, 5);
+  });
+
   it('armoryAccuracy is between 0 and 1 inside the zone', () => {
-    const acc = armoryAccuracy(SWEET_ZONE_START + 0.05);
+    const acc = armoryAccuracy(centre - SWEET_ZONE_WIDTH * 0.2);
     expect(acc).toBeGreaterThan(0);
     expect(acc).toBeLessThan(1);
   });
@@ -585,28 +631,69 @@ describe('longMarch', () => {
     expect(result.distanceDelta).toBe(0);
   });
 
-  it('marchScore: full completion = 1', () => {
-    expect(marchScore(MARCH_TILES)).toBe(1);
+  it('rest gives +6 stamina on spring (not full restore)', () => {
+    const result = marchStep({ kind: 'spring', label: 'Mountain Spring', emoji: '✨' }, 'rest');
+    expect(result.staminaDelta).toBe(6);
+    expect(result.distanceDelta).toBe(0);
   });
 
-  it('marchScore: half = 0.5', () => {
-    expect(marchScore(MARCH_TILES / 2)).toBeCloseTo(0.5, 5);
+  it('walk on spring gives positive stamina', () => {
+    const result = marchStep({ kind: 'spring', label: 'Mountain Spring', emoji: '✨' }, 'walk');
+    expect(result.staminaDelta).toBeGreaterThan(0);
+    expect(result.distanceDelta).toBe(1);
+  });
+
+  it('push on spring gives positive stamina', () => {
+    const result = marchStep({ kind: 'spring', label: 'Mountain Spring', emoji: '✨' }, 'push');
+    expect(result.staminaDelta).toBeGreaterThan(0);
+    expect(result.distanceDelta).toBe(2);
+  });
+
+  it('marchScore: full completion + max distance = 1', () => {
+    expect(marchScore(MARCH_TILES, MARCH_MAX_DISTANCE)).toBe(1);
+  });
+
+  it('marchScore: full completion + zero distance = 0.70', () => {
+    expect(marchScore(MARCH_TILES, 0)).toBeCloseTo(0.7, 5);
+  });
+
+  it('marchScore: half tiles + half distance = 0.5', () => {
+    expect(marchScore(MARCH_TILES / 2, MARCH_MAX_DISTANCE / 2)).toBeCloseTo(0.5, 5);
   });
 
   it('marchScore: capped at 1', () => {
-    expect(marchScore(MARCH_TILES + 5)).toBe(1);
+    expect(marchScore(MARCH_TILES + 5, MARCH_MAX_DISTANCE + 10)).toBe(1);
+  });
+
+  it('marchStartStamina: EN 0 returns base', () => {
+    expect(marchStartStamina(0)).toBe(MARCH_START_STA);
+  });
+
+  it('marchStartStamina: EN 3 returns base + 1', () => {
+    expect(marchStartStamina(3)).toBe(MARCH_START_STA + 1);
+  });
+
+  it('marchStartStamina: high EN caps at base + 6', () => {
+    expect(marchStartStamina(100)).toBe(MARCH_START_STA + 6);
   });
 });
 
 // ── Ancient Library ────────────────────────────────────────────────────────────
 
 describe('ancientLibrary', () => {
+  const maxLen = LIBRARY_START_LENGTH + LIBRARY_MAX_ROUNDS - 1;
+
   it('generateSequence produces max-length array of valid glyphs', () => {
-    const maxLen = 3 + LIBRARY_MAX_ROUNDS - 1;
     const seq = generateSequence(seededRng());
     expect(seq).toHaveLength(maxLen);
     const validSet = new Set(GLYPHS);
     for (const g of seq) expect(validSet.has(g)).toBe(true);
+  });
+
+  it('generateSequence is deterministic for the same seed', () => {
+    const a = generateSequence(seededRng(123));
+    const b = generateSequence(seededRng(123));
+    expect(a).toEqual(b);
   });
 
   it('libraryScore: all rounds = 1', () => {
@@ -625,9 +712,290 @@ describe('ancientLibrary', () => {
     expect(libraryScore(LIBRARY_MAX_ROUNDS / 2)).toBeCloseTo(0.5, 5);
   });
 
-  it('generateSequence is deterministic for the same seed', () => {
-    const a = generateSequence(seededRng(123));
-    const b = generateSequence(seededRng(123));
+  // ── glyphShowMs ──────────────────────────────────────────────────────────────
+
+  it('glyphShowMs: round 0 returns GLYPH_SHOW_MS_BASE', () => {
+    expect(glyphShowMs(0)).toBe(GLYPH_SHOW_MS_BASE);
+  });
+
+  it('glyphShowMs: final round returns GLYPH_SHOW_MS_MIN', () => {
+    expect(glyphShowMs(LIBRARY_MAX_ROUNDS - 1)).toBe(GLYPH_SHOW_MS_MIN);
+  });
+
+  it('glyphShowMs: monotonically non-increasing', () => {
+    for (let r = 1; r < LIBRARY_MAX_ROUNDS; r++) {
+      expect(glyphShowMs(r)).toBeLessThanOrEqual(glyphShowMs(r - 1));
+    }
+  });
+
+  it('glyphShowMs: stays at minimum beyond max rounds', () => {
+    expect(glyphShowMs(LIBRARY_MAX_ROUNDS + 5)).toBe(GLYPH_SHOW_MS_MIN);
+  });
+
+  // ── buildShowSchedule ────────────────────────────────────────────────────────
+
+  it('buildShowSchedule: no KN returns identity schedule', () => {
+    const sched = buildShowSchedule(5, 0, seededRng());
+    expect(sched).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it('buildShowSchedule: KN below threshold returns identity schedule', () => {
+    const sched = buildShowSchedule(5, KN_HINT_THRESHOLD - 1, seededRng());
+    expect(sched).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it('buildShowSchedule: KN at threshold adds one duplicate', () => {
+    const sched = buildShowSchedule(5, KN_HINT_THRESHOLD, seededRng());
+    expect(sched).toHaveLength(6);
+    // Every original index is still present
+    for (let i = 0; i < 5; i++) expect(sched).toContain(i);
+  });
+
+  it('buildShowSchedule: KN at second threshold adds two duplicates', () => {
+    const sched = buildShowSchedule(6, KN_HINT_THRESHOLD_2, seededRng());
+    expect(sched).toHaveLength(8);
+    for (let i = 0; i < 6; i++) expect(sched).toContain(i);
+  });
+
+  it('buildShowSchedule: short sequence returns identity regardless of KN', () => {
+    const sched = buildShowSchedule(2, KN_HINT_THRESHOLD_2, seededRng());
+    expect(sched).toEqual([0, 1]);
+  });
+
+  it('buildShowSchedule: hints come from the back half of the sequence', () => {
+    // All duplicated indices should be >= midpoint
+    const len = 6;
+    const midpoint = Math.floor(len / 2);
+    const sched = buildShowSchedule(len, KN_HINT_THRESHOLD, seededRng(42));
+    const counts = new Array(len).fill(0);
+    sched.forEach(i => counts[i]++);
+    const duplicated = counts.map((c, i) => c > 1 ? i : -1).filter(i => i >= 0);
+    expect(duplicated.every(i => i >= midpoint)).toBe(true);
+  });
+
+  // ── seededRng + dailySeed ────────────────────────────────────────────────────
+
+  it('seededRng: same seed produces identical sequence', () => {
+    const a = alSeededRng(99);
+    const b = alSeededRng(99);
+    const na = Array.from({ length: 10 }, () => a());
+    const nb = Array.from({ length: 10 }, () => b());
+    expect(na).toEqual(nb);
+  });
+
+  it('seededRng: different seeds produce different sequences', () => {
+    const a = alSeededRng(1);
+    const b = alSeededRng(2);
+    expect(a()).not.toBe(b());
+  });
+
+  it('seededRng: values are in [0, 1)', () => {
+    const rng = alSeededRng(7);
+    for (let i = 0; i < 20; i++) {
+      const v = rng();
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThan(1);
+    }
+  });
+
+  it('dailySeed: same date string returns same value', () => {
+    expect(dailySeed('2026-06-18')).toBe(dailySeed('2026-06-18'));
+  });
+
+  it('dailySeed: different dates return different values', () => {
+    expect(dailySeed('2026-06-18')).not.toBe(dailySeed('2026-06-19'));
+  });
+
+  it('dailySeed: produces a stable numeric seed from a known date', () => {
+    expect(dailySeed('2026-06-18')).toBe(20260618);
+  });
+});
+
+// ── Last Stand ─────────────────────────────────────────────────────────────────
+
+describe('lastStand / lastStandRng', () => {
+  it('returns values in [0, 1)', () => {
+    const rng = lastStandRng(42);
+    for (let i = 0; i < 100; i++) {
+      const v = rng();
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThan(1);
+    }
+  });
+
+  it('is deterministic for the same seed', () => {
+    const a = lastStandRng(99);
+    const b = lastStandRng(99);
+    for (let i = 0; i < 20; i++) expect(a()).toBeCloseTo(b(), 10);
+  });
+
+  it('produces different sequences for different seeds', () => {
+    expect(lastStandRng(1)()).not.toEqual(lastStandRng(2)());
+  });
+});
+
+describe('lastStand / generateAttacks', () => {
+  it(`produces ${TOTAL_WAVES * ATTACKS_PER_WAVE} attacks`, () => {
+    expect(generateAttacks(lastStandRng(1))).toHaveLength(TOTAL_WAVES * ATTACKS_PER_WAVE);
+  });
+
+  it('all directions are valid', () => {
+    const valid = new Set(DIRECTIONS);
+    for (const a of generateAttacks(lastStandRng(7))) {
+      expect(valid.has(a.dir)).toBe(true);
+    }
+  });
+
+  it('all results start null', () => {
+    for (const a of generateAttacks(lastStandRng(3))) {
+      expect(a.result).toBeNull();
+    }
+  });
+
+  it('landing times are strictly increasing', () => {
+    const attacks = generateAttacks(lastStandRng(5));
+    for (let i = 1; i < attacks.length; i++) {
+      expect(attacks[i].landMs).toBeGreaterThan(attacks[i - 1].landMs);
+    }
+  });
+
+  it('first attack lands at SPAWN_AHEAD_MS', () => {
+    expect(generateAttacks(lastStandRng(0))[0].landMs).toBe(SPAWN_AHEAD_MS);
+  });
+
+  it('last attack lands at the expected maximum time', () => {
+    const expectedLast = (TOTAL_WAVES - 1) * WAVE_INTERVAL_MS
+      + (ATTACKS_PER_WAVE - 1) * (WAVE_INTERVAL_MS / ATTACKS_PER_WAVE)
+      + SPAWN_AHEAD_MS;
+    const attacks = generateAttacks(lastStandRng(42));
+    expect(attacks[attacks.length - 1].landMs).toBe(expectedLast);
+  });
+
+  it('each wave contains exactly ATTACKS_PER_WAVE attacks', () => {
+    const attacks = generateAttacks(lastStandRng(9));
+    for (let w = 0; w < TOTAL_WAVES; w++) {
+      expect(attacks.filter(a => a.wave === w)).toHaveLength(ATTACKS_PER_WAVE);
+    }
+  });
+
+  it('every wave has two different directions (variety guarantee)', () => {
+    for (let seed = 0; seed < 50; seed++) {
+      const attacks = generateAttacks(lastStandRng(seed));
+      for (let w = 0; w < TOTAL_WAVES; w++) {
+        const dirs = attacks.filter(a => a.wave === w).map(a => a.dir);
+        expect(new Set(dirs).size).toBe(ATTACKS_PER_WAVE);
+      }
+    }
+  });
+
+  it('is deterministic for the same seed', () => {
+    const a = generateAttacks(lastStandRng(55));
+    const b = generateAttacks(lastStandRng(55));
     expect(a).toEqual(b);
+  });
+
+  it('attack ids are unique and sequential from 0', () => {
+    const attacks = generateAttacks(lastStandRng(2));
+    attacks.forEach((a, i) => expect(a.id).toBe(i));
+  });
+});
+
+describe('lastStand / blockWindowForWave', () => {
+  it('returns the correct value for each defined wave index', () => {
+    BLOCK_WINDOW_BY_WAVE.forEach((expected, i) => {
+      expect(blockWindowForWave(i)).toBe(expected);
+    });
+  });
+
+  it('clamps to the last entry for out-of-bounds wave indexes', () => {
+    const last = BLOCK_WINDOW_BY_WAVE[BLOCK_WINDOW_BY_WAVE.length - 1];
+    expect(blockWindowForWave(999)).toBe(last);
+  });
+
+  it('block window never widens across waves', () => {
+    for (let i = 1; i < BLOCK_WINDOW_BY_WAVE.length; i++) {
+      expect(BLOCK_WINDOW_BY_WAVE[i]).toBeLessThanOrEqual(BLOCK_WINDOW_BY_WAVE[i - 1]);
+    }
+  });
+});
+
+describe('lastStand / reactionSpeed', () => {
+  // landMs = 1400; SPAWN_AHEAD_MS = 1400 → spawn at ms 0
+  const land = SPAWN_AHEAD_MS; // 1400
+
+  it('blocked at spawn → 1.0', () => {
+    expect(reactionSpeed(land, 0)).toBeCloseTo(1, 5);
+  });
+
+  it('blocked at landing → 0.0', () => {
+    expect(reactionSpeed(land, land)).toBeCloseTo(0, 5);
+  });
+
+  it('blocked at midpoint → 0.5', () => {
+    expect(reactionSpeed(land, land / 2)).toBeCloseTo(0.5, 5);
+  });
+
+  it('clamps to 0 if blocked past landing', () => {
+    expect(reactionSpeed(land, land + 100)).toBe(0);
+  });
+
+  it('clamps to 1 if block time before spawn (negative margin would exceed SPAWN_AHEAD_MS)', () => {
+    expect(reactionSpeed(land, -100)).toBe(1);
+  });
+});
+
+describe('lastStand / reactionRating', () => {
+  it('speed >= REACTION_PERFECT → "perfect"', () => {
+    expect(reactionRating(REACTION_PERFECT)).toBe('perfect');
+    expect(reactionRating(1.0)).toBe('perfect');
+  });
+
+  it('speed >= REACTION_GOOD but < REACTION_PERFECT → "good"', () => {
+    expect(reactionRating(REACTION_GOOD)).toBe('good');
+    expect(reactionRating(REACTION_PERFECT - 0.01)).toBe('good');
+  });
+
+  it('speed < REACTION_GOOD → "late"', () => {
+    expect(reactionRating(0)).toBe('late');
+    expect(reactionRating(REACTION_GOOD - 0.01)).toBe('late');
+  });
+});
+
+describe('lastStand / lastStandScore', () => {
+  it('zero resolved → 0 (no divide-by-zero)', () => expect(lastStandScore([], 0)).toBe(0));
+  it('no blocks but attacks resolved → 0', () => expect(lastStandScore([], 16)).toBe(0));
+
+  it('all blocked at spawn → 1', () => {
+    // 16 attacks all blocked with speed 1.0; sum = 16; resolved = 16 → 1.
+    const speeds = Array(16).fill(1);
+    expect(lastStandScore(speeds, 16)).toBe(1);
+  });
+
+  it('all blocked at landing → 0', () => {
+    const speeds = Array(16).fill(0);
+    expect(lastStandScore(speeds, 16)).toBe(0);
+  });
+
+  it('mixed speeds average correctly', () => {
+    // 8 blocks at speed 1.0, 8 misses (contribute 0 via denominator).
+    // Expected: 8 * 1 / 16 = 0.5
+    const speeds = Array(8).fill(1);
+    expect(lastStandScore(speeds, 16)).toBeCloseTo(0.5, 5);
+  });
+
+  it('misses lower the score even when everything blocked is fast', () => {
+    // 4 fast blocks out of 8 resolved — same as half-blocked at full speed.
+    expect(lastStandScore(Array(4).fill(1), 8)).toBeCloseTo(0.5, 5);
+  });
+
+  it('uses resolved count as denominator so dying early does not penalise unplayed attacks', () => {
+    // Died early with 4 perfect blocks out of 8 resolved (8 attacks never played).
+    // Score should be 0.5, not 0.25.
+    expect(lastStandScore(Array(4).fill(1), 8)).toBeCloseTo(0.5, 5);
+  });
+
+  it('clamps above 1', () => {
+    // Floating-point edge: sum of speeds slightly above resolved count.
+    expect(lastStandScore(Array(16).fill(1.1), 16)).toBe(1);
   });
 });

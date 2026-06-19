@@ -10,7 +10,7 @@
 // just decides *when* to call these. Damage math is shared with turn-based combat (attackRoll /
 // spellDamageRoll / spellHealAmount / variance in src/engine/combat.ts) so the numbers match.
 import type { StatId } from './stats';
-import type { BossDef, BossPhase } from './bosses';
+import type { BossDef, BossPhase, MinionVariant } from './bosses';
 import type { WeaponDef } from './weapons';
 import type { Fighter } from './combat';
 import { attackRoll, spellDamageRoll, spellHealAmount, variance } from './combat';
@@ -47,7 +47,7 @@ const SPELL_CD_MS = 520;
 const ITEM_CD_MS = 700;
 const IFRAME_MS = 550;
 const STA_REGEN_PER_SEC = 3;
-const MP_REGEN_PER_SEC = 1.2;
+const MP_REGEN_PER_SEC = 1.8; // raised from 1.2 so spells can interleave with attacks
 const PROJECTILE_STEP_MS = 60;
 const TURN_MS = 1100;
 const BASE_ATTACK_STA = 2;
@@ -113,11 +113,14 @@ export interface Projectile {
   id: number;
   pos: Cell;
   dir: Dir;
+  /** Pre-defense damage. Defense is applied on impact (boss: bossDefense; minions: 0). */
   dealt: number;
-  weak: boolean;
-  resist: boolean;
   nextStepAtMs: number;
+  /** 'minion' projectiles damage the player; 'player' (default) damage enemies. */
+  source?: 'player' | 'minion';
 }
+
+export type { MinionVariant };
 
 export interface Minion {
   id: number;
@@ -125,6 +128,7 @@ export interface Minion {
   hp: number;
   maxHp: number;
   attack: number;
+  variant: MinionVariant;
   nextMoveMs: number;
   nextHitMs: number;
   frozenUntilMs: number;
@@ -152,6 +156,8 @@ export interface ArenaState {
   bossId: string;
   bossName: string;
   bossFlavor: string;
+  /** Emoji glyph for the boss sprite — sourced from BossDef.glyph, falls back to '👹'. */
+  bossGlyph: string;
   bossPos: Cell;
   bossMaxHp: number;
   bossHp: number;
@@ -170,6 +176,7 @@ export interface ArenaState {
   minions: Minion[];
   minionHp: number;
   minionAttack: number;
+  minionVariant: MinionVariant;
 
   // Player snapshot (derived once at entry, mirrors deriveCombatant fields)
   player: { pos: Cell; facing: Dir };
@@ -210,11 +217,25 @@ export interface ArenaState {
   // Difficulty / modes
   speed: number;
   invincible: boolean;
+  /** Per-phase attack recovery delay (ms); lower = faster cadence. Set by applyArenaPhase. */
+  bossRecoverMs: number;
+
+  // Per-stat usage tallies (incremented by player actions for usage-based XP)
+  statUsage: Partial<Record<StatId, number>>;
+
+  // Run-level stats (for the outcome summary)
+  damageDealt: number;
+  startedAtMs: number;
 
   // Clocks
   lastTickMs: number;
   lastHitAtMs: number;
+  /** Timestamp of the most recent successful dodge (for "Dodge!" UI floater). */
+  lastDodgedAtMs: number;
   cooldownUntilMs: number;
+  /** Independent cooldown clock for spells — separate from attack cooldown so casts
+   *  can interleave with melee/ranged attacks without blocking each other. */
+  spellCooldownUntilMs: number;
   itemCooldownUntilMs: number;
   bossNextActionMs: number;
   bossNextMoveMs: number;
@@ -349,6 +370,41 @@ export function arenaSpeedFactor(setting: ArenaSpeed, level: number): number {
   }
 }
 
+/**
+ * Hand-authored obstacle layouts keyed by board radius.
+ * Each entry is a list of obstacle sets; one is chosen at random.
+ * All layouts are verified to leave a clear path between player (0,R) and boss (0,-R).
+ */
+const AUTHORED_LAYOUTS: Partial<Record<number, Cell[][]>> = {
+  3: [
+    // "Sentinel Posts" — 4 symmetric pillars, open center
+    [{ x: 1, y: 1 }, { x: 1, y: -1 }, { x: -1, y: 1 }, { x: -1, y: -1 }],
+    // "Gauntlet" — side walls with approach cover near each spawn
+    [{ x: 2, y: 0 }, { x: -2, y: 0 }, { x: 1, y: 2 }, { x: -1, y: 2 }, { x: 1, y: -2 }, { x: -1, y: -2 }],
+  ],
+  4: [
+    // "Barrier Wings" — two vertical walls creating three lanes; center is clear
+    [{ x: 2, y: 1 }, { x: 2, y: 0 }, { x: 2, y: -1 }, { x: -2, y: 1 }, { x: -2, y: 0 }, { x: -2, y: -1 }],
+    // "Corner Islands" — cover clusters in the far corners, open mid
+    [{ x: 3, y: 3 }, { x: 3, y: 2 }, { x: -3, y: 3 }, { x: -3, y: 2 }, { x: 3, y: -3 }, { x: 3, y: -2 }, { x: -3, y: -3 }, { x: -3, y: -2 }],
+  ],
+  5: [
+    // "The Cross" — center + shape; routes around via x=±3..5 lanes
+    [{ x: 2, y: 0 }, { x: 1, y: 0 }, { x: -1, y: 0 }, { x: -2, y: 0 }, { x: 0, y: 2 }, { x: 0, y: -2 }],
+    // "Dual Pillars" — two tall walls at x=±3, leaving wide center and edge lanes
+    [{ x: 3, y: 2 }, { x: 3, y: 1 }, { x: 3, y: -1 }, { x: 3, y: -2 }, { x: -3, y: 2 }, { x: -3, y: 1 }, { x: -3, y: -1 }, { x: -3, y: -2 }],
+  ],
+};
+
+/** Pick obstacles: ~30 % authored layout, rest random. */
+function chooseObstacles(radius: number, density: ObstacleDensity, rng: RNG, playerStart: Cell, bossStart: Cell): Cell[] {
+  const authored = AUTHORED_LAYOUTS[radius];
+  if (authored && authored.length > 0 && rng() < 0.30) {
+    return authored[Math.floor(rng() * authored.length)].map((h) => ({ ...h }));
+  }
+  return genObstacles(radius, density, rng, [playerStart], bossStart);
+}
+
 function genObstacles(radius: number, density: ObstacleDensity, rng: RNG, start: Cell[], boss: Cell): Cell[] {
   const cells = board(radius);
   const target = Math.floor(cells.length * DENSITY_FRAC[density]);
@@ -392,6 +448,8 @@ function applyArenaPhase(s: ArenaState, phase: BossPhase): void {
   s.attackSchool = phase.attackSchool ?? 'physical';
   s.weakTo = phase.weakTo;
   s.resistTo = phase.resistTo ?? [];
+  s.bossRecoverMs = phase.recoverMs ?? BOSS_RECOVER_MS;
+  s.minionVariant = phase.minionVariant ?? 'bat';
 }
 
 function occupiedKeys(s: ArenaState): Set<string> {
@@ -416,6 +474,7 @@ function spawnMinion(s: ArenaState, now: number, rng: RNG): void {
     hp: s.minionHp,
     maxHp: s.minionHp,
     attack: s.minionAttack,
+    variant: s.minionVariant,
     nextMoveMs: now + scaled(s, MINION_MOVE_CD_MS),
     nextHitMs: now + scaled(s, MINION_HIT_CD_MS),
     frozenUntilMs: 0,
@@ -456,10 +515,11 @@ export function createArena(
   }
   const s: ArenaState = {
     radius,
-    obstacles: genObstacles(radius, opts.density ?? 'light', rng, [playerStart], bossStart),
+    obstacles: chooseObstacles(radius, opts.density ?? 'light', rng, playerStart, bossStart),
     bossId: boss.id,
     bossName: boss.name,
     bossFlavor: boss.flavor,
+    bossGlyph: boss.glyph ?? '👹',
     bossPos: bossStart,
     bossMaxHp: 0,
     bossHp: 0,
@@ -476,6 +536,7 @@ export function createArena(
     minions: [],
     minionHp: Math.max(1, Math.round(phases[0].hp * MINION_HP_FRAC)),
     minionAttack: Math.max(1, Math.round(phases[0].attack * MINION_ATK_FRAC)),
+    minionVariant: phases[0].minionVariant ?? 'bat',
     player: { pos: { ...playerStart }, facing: 'up' },
     hp: c.maxHp,
     maxHp: c.maxHp,
@@ -505,9 +566,15 @@ export function createArena(
     ringNextHitMs: {},
     speed,
     invincible: opts.invincible ?? false,
+    bossRecoverMs: BOSS_RECOVER_MS,
+    statUsage: {},
+    damageDealt: 0,
+    startedAtMs: startMs,
     lastTickMs: startMs,
     lastHitAtMs: -Infinity,
+    lastDodgedAtMs: -Infinity,
     cooldownUntilMs: 0,
+    spellCooldownUntilMs: 0,
     itemCooldownUntilMs: 0,
     bossNextActionMs: startMs + BOSS_OPENING_GRACE_MS,
     bossNextMoveMs: startMs + BOSS_OPENING_GRACE_MS,
@@ -538,6 +605,7 @@ function clone(s: ArenaState): ArenaState {
     ringNextHitMs: { ...s.ringNextHitMs },
     buffs: { ...s.buffs },
     inventory: { ...s.inventory },
+    statUsage: { ...s.statUsage },
   };
 }
 
@@ -551,6 +619,9 @@ function resolveBossDown(s: ArenaState, now: number, rng: RNG): void {
   if (s.phaseIndex < s.phases.length - 1) {
     s.phaseIndex += 1;
     applyArenaPhase(s, s.phases[s.phaseIndex]);
+    // Recompute minion stats from the new phase so later-phase minions scale correctly.
+    s.minionHp = Math.max(1, Math.round(s.phases[s.phaseIndex].hp * MINION_HP_FRAC));
+    s.minionAttack = Math.max(1, Math.round(s.phases[s.phaseIndex].attack * MINION_ATK_FRAC));
     s.enemyStatuses = [];
     s.telegraphs = [];
     s.projectiles = [];
@@ -559,7 +630,8 @@ function resolveBossDown(s: ArenaState, now: number, rng: RNG): void {
     s.bossNextActionMs = now + BOSS_OPENING_GRACE_MS;
     s.bossNextMoveMs = now + BOSS_OPENING_GRACE_MS;
     const summons = s.radius >= 5 ? 2 : s.radius >= 4 ? 1 : 0;
-    for (let i = 0; i < summons; i++) spawnMinion(s, now, rng);
+    const extra = s.phases[s.phaseIndex].spawnOnEntry ?? 0;
+    for (let i = 0; i < summons + extra; i++) spawnMinion(s, now, rng);
   } else {
     s.bossHp = 0;
     s.status = 'won';
@@ -576,6 +648,7 @@ function enemyAt(s: ArenaState, h: Cell): EnemyRef | null {
 }
 
 function hurtEnemy(s: ArenaState, ref: EnemyRef, dmg: number, now: number, rng: RNG): void {
+  s.damageDealt += dmg;
   if (ref.kind === 'boss') {
     s.bossHp -= dmg;
     if (s.bossHp <= 0) resolveBossDown(s, now, rng);
@@ -626,6 +699,9 @@ export function arenaMelee(state: ArenaState, now: number, rng: RNG = Math.rando
   );
   hurtEnemy(s, target, dealt, now, rng);
   s.cooldownUntilMs = now + ATTACK_CD_MS;
+  // Usage tracking for usage-based XP
+  s.statUsage.ST = (s.statUsage.ST ?? 0) + 1;
+  s.statUsage.EN = (s.statUsage.EN ?? 0) + 1;
   return s;
 }
 
@@ -638,19 +714,21 @@ export function arenaRanged(state: ArenaState, now: number, rng: RNG = Math.rand
   const staCost = s.weapon.attackStat === 'DX' ? s.weapon.staminaCost : BASE_ATTACK_STA;
   const full = s.sta >= staCost;
   s.sta = Math.max(0, s.sta - staCost);
-  const { dealt, weak, resist } = attackRoll(
-    s.rangedPower, bonus, 'DX', s.weakTo, s.resistTo, full, s.bossDefense, rng,
+  // Store pre-defense damage so the correct target's defense can be applied on impact.
+  const { dealt } = attackRoll(
+    s.rangedPower, bonus, 'DX', s.weakTo, s.resistTo, full, 0, rng,
   );
   s.projectiles.push({
     id: s.seq++,
     pos: step(s.player.pos, s.player.facing),
     dir: s.player.facing,
     dealt,
-    weak,
-    resist,
     nextStepAtMs: now + PROJECTILE_STEP_MS,
   });
   s.cooldownUntilMs = now + ATTACK_CD_MS;
+  // Usage tracking for usage-based XP
+  s.statUsage.DX = (s.statUsage.DX ?? 0) + 1;
+  s.statUsage.EN = (s.statUsage.EN ?? 0) + 1;
   return s;
 }
 
@@ -689,6 +767,17 @@ function clampRuneTarget(s: ArenaState, desired: Cell | undefined, rng: RNG): Ce
   return opts[Math.floor(rng() * opts.length)];
 }
 
+/**
+ * Preview where a rune will land for a desired cell without randomness.
+ * Returns null if the resolved cell is blocked or out of board (random fallback skipped — UI can
+ * show nothing in that case rather than an unpredictable highlight).
+ */
+export function previewRuneTarget(s: ArenaState, desired: Cell): Cell | null {
+  const clamped = distance(desired, s.player.pos) <= 1 ? desired : step(s.player.pos, stepToward(s.player.pos, desired));
+  if (inBoard(clamped, s.radius) && !isBlocked(s, clamped)) return clamped;
+  return null;
+}
+
 /** Cast a known spell. Optional dir pre-sets facing; optional target is used for rune placement. */
 export function arenaCast(
   state: ArenaState,
@@ -697,15 +786,25 @@ export function arenaCast(
   rng: RNG = Math.random,
   opts?: { dir?: Dir; target?: Cell },
 ): ArenaState {
-  if (state.status !== 'active' || now < state.cooldownUntilMs) return state;
+  if (state.status !== 'active' || now < state.spellCooldownUntilMs) return state;
   if (!state.knownSpells.includes(spellKey)) return state;
   const spell = getSpell(spellKey);
   if (!spell || state.mp < spell.mpCost) return state;
   const s = clone(state);
   if (opts?.dir) s.player.facing = opts.dir;
   s.mp -= spell.mpCost;
-  s.cooldownUntilMs = now + SPELL_CD_MS;
+  s.spellCooldownUntilMs = now + SPELL_CD_MS;
   const schoolStat = SCHOOL_STAT[spell.school];
+  // Usage tracking (damage/rune/ring scale with WI; support with KN; illusion with CH)
+  if (spell.school === 'damage' || spell.mechanic === 'rune-fire' || spell.mechanic === 'rune-ice'
+      || spell.mechanic === 'rune-poison' || spell.mechanic === 'ring-of-fire') {
+    s.statUsage.WI = (s.statUsage.WI ?? 0) + 1;
+  } else if (spell.school === 'support' || spell.mechanic === 'teleport') {
+    s.statUsage.KN = (s.statUsage.KN ?? 0) + 1;
+  } else {
+    // illusion school
+    s.statUsage.CH = (s.statUsage.CH ?? 0) + 1;
+  }
 
   // --- Rune placement mechanics ---
   if (spell.mechanic === 'rune-fire' || spell.mechanic === 'rune-ice' || spell.mechanic === 'rune-poison') {
@@ -808,7 +907,11 @@ function mitigatedBossHit(s: ArenaState, raw: number, school: 'physical' | 'magi
 function strikePlayer(s: ArenaState, raw: number, school: 'physical' | 'magic', now: number, rng: RNG): void {
   if (s.invincible) return;
   if (now - s.lastHitAtMs < IFRAME_MS) return;
-  if (rng() < s.dodge) return;
+  if (rng() < s.dodge) {
+    s.lastDodgedAtMs = now;
+    s.statUsage.AG = (s.statUsage.AG ?? 0) + 1;
+    return;
+  }
   const dealt = mitigatedBossHit(s, raw, school, now);
   s.hp -= dealt;
   s.lastHitAtMs = now;
@@ -821,8 +924,23 @@ function stepProjectiles(s: ArenaState, now: number, rng: RNG): void {
     let done = false;
     while (now >= p.nextStepAtMs && !done) {
       if (isBlocked(s, p.pos) || !inBoard(p.pos, s.radius)) { done = true; break; }
-      const here = enemyAt(s, p.pos);
-      if (here) { hurtEnemy(s, here, p.dealt, now, rng); done = true; break; }
+      if (p.source === 'minion') {
+        // Minion projectile — damages the player on contact.
+        if (cellEquals(p.pos, s.player.pos)) {
+          if (!s.invincible) strikePlayer(s, p.dealt, 'physical', now, rng);
+          done = true;
+          break;
+        }
+      } else {
+        // Player projectile — damages the first enemy hit.
+        const here = enemyAt(s, p.pos);
+        if (here) {
+          const dmg = here.kind === 'boss' ? Math.max(1, p.dealt - s.bossDefense) : p.dealt;
+          hurtEnemy(s, here, dmg, now, rng);
+          done = true;
+          break;
+        }
+      }
       p.pos = step(p.pos, p.dir);
       p.nextStepAtMs += PROJECTILE_STEP_MS;
     }
@@ -921,19 +1039,57 @@ function stepMinions(s: ArenaState, now: number, field: Map<string, number>, rng
       if (m.hp <= 0) { s.minions = s.minions.filter((x) => x.id !== m.id); continue; }
     }
     if (now < m.frozenUntilMs) continue; // frozen — skip move and attack
+
+    const dist = distance(m.pos, s.player.pos);
+
     if (now >= m.nextMoveMs) {
-      if (distance(m.pos, s.player.pos) > 1) {
-        const others = s.minions.filter((o) => o.id !== m.id).map((o) => o.pos);
-        const blocked = blockedKeys(s, [s.bossPos, s.player.pos, ...others]);
-        const next = flowStep(m.pos, field, s.radius, blocked);
-        if (next) m.pos = next;
+      if (m.variant === 'archer') {
+        // Archers kite: close to within 3 cells, but back off if the player gets adjacent.
+        if (dist > 3) {
+          const others = s.minions.filter((o) => o.id !== m.id).map((o) => o.pos);
+          const blocked = blockedKeys(s, [s.bossPos, s.player.pos, ...others]);
+          const next = flowStep(m.pos, field, s.radius, blocked);
+          if (next) m.pos = next;
+        } else if (dist <= 1) {
+          // Too close — step away from the player.
+          const others = s.minions.filter((o) => o.id !== m.id).map((o) => o.pos);
+          const blocked = blockedKeys(s, [s.bossPos, ...others]);
+          const retreatCandidates = DIRS
+            .map((d) => step(m.pos, d))
+            .filter((n) => inBoard(n, s.radius) && !blocked.has(cellKey(n)) && distance(n, s.player.pos) > dist);
+          if (retreatCandidates.length > 0)
+            m.pos = retreatCandidates[Math.floor(rng() * retreatCandidates.length)];
+        }
+      } else {
+        // Bat: close in for melee.
+        if (dist > 1) {
+          const others = s.minions.filter((o) => o.id !== m.id).map((o) => o.pos);
+          const blocked = blockedKeys(s, [s.bossPos, s.player.pos, ...others]);
+          const next = flowStep(m.pos, field, s.radius, blocked);
+          if (next) m.pos = next;
+        }
       }
       m.nextMoveMs = now + scaled(s, MINION_MOVE_CD_MS);
     }
-    if (distance(m.pos, s.player.pos) <= 1 && now >= m.nextHitMs) {
-      strikePlayer(s, variance(m.attack, rng), 'physical', now, rng);
-      m.nextHitMs = now + scaled(s, MINION_HIT_CD_MS);
-      if (s.status !== 'active') return;
+
+    if (now >= m.nextHitMs) {
+      if (m.variant === 'archer' && dist <= 4) {
+        // Fire a projectile toward the player.
+        const dir = stepToward(m.pos, s.player.pos);
+        s.projectiles.push({
+          id: s.seq++,
+          pos: step(m.pos, dir),
+          dir,
+          dealt: variance(m.attack, rng),
+          nextStepAtMs: now + PROJECTILE_STEP_MS,
+          source: 'minion',
+        });
+        m.nextHitMs = now + scaled(s, MINION_HIT_CD_MS);
+      } else if (m.variant !== 'archer' && dist <= 1) {
+        strikePlayer(s, variance(m.attack, rng), 'physical', now, rng);
+        m.nextHitMs = now + scaled(s, MINION_HIT_CD_MS);
+        if (s.status !== 'active') return;
+      }
     }
   }
 }
@@ -1033,7 +1189,7 @@ function bossThink(s: ArenaState, now: number, field: Map<string, number>, rng: 
     raw: variance(s.bossAttack * spec.dmgMult, rng),
     school: s.attackSchool,
   });
-  s.bossNextActionMs = now + windup + scaled(s, BOSS_RECOVER_MS);
+  s.bossNextActionMs = now + windup + scaled(s, s.bossRecoverMs);
   s.bossNextMoveMs = now + windup;
 }
 

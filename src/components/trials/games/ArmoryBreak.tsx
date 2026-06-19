@@ -1,16 +1,27 @@
 // Armory Break trial — ST.
-// Hold to charge a power needle; release near the peak to crack the lock.
+// Hold to charge a power needle; release in the golden zone to crack the lock.
+// Three locks of rising difficulty; the zone sits mid-meter with an overshoot penalty.
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { armoryAccuracy, armoryScore, ARMORY_LOCKS, SWEET_ZONE_START } from '@/engine/trials/armoryBreak';
+import { armoryAccuracy, armoryScore, ARMORY_LOCKS, SWEET_ZONE_START, SWEET_ZONE_WIDTH } from '@/engine/trials/armoryBreak';
+import { play as sfxPlay } from '@/lib/sfx';
 import { MashMeter } from '../MashMeter';
+import { cn } from '@/lib/cn';
 
 interface ArmoryBreakProps {
   onFinish: (score01: number) => void;
 }
 
-const RISE_SPEED = 0.85; // 0→1 in ~1.2s while held
-const FALL_SPEED = 0.5;  // 1→0 in ~2s when released
+// Per-lock difficulty: rise speed increases and zone narrows on lock 3.
+const LOCK_CONFIG = [
+  { riseSpeed: 0.70, zoneWidth: SWEET_ZONE_WIDTH },         // lock 1 — forgiving
+  { riseSpeed: 1.00, zoneWidth: SWEET_ZONE_WIDTH },         // lock 2 — standard
+  { riseSpeed: 1.40, zoneWidth: SWEET_ZONE_WIDTH * 0.75 }, // lock 3 — fast, narrower
+] as const;
+
+const FALL_SPEED = 0.5;
+const INTER_LOCK_PAUSE_MS = 400;
+const FINISH_DELAY_MS = 600;
 
 export function ArmoryBreak({ onFinish }: ArmoryBreakProps) {
   const [currentLock, setCurrentLock] = useState(0);
@@ -18,44 +29,71 @@ export function ArmoryBreak({ onFinish }: ArmoryBreakProps) {
   const [held, setHeld] = useState(false);
   const [accuracies, setAccuracies] = useState<number[]>([]);
   const [done, setDone] = useState(false);
+  const [transitioning, setTransitioning] = useState(false);
+
   const lastTs = useRef<number | null>(null);
   const rafRef = useRef<number | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const powerRef = useRef(0);
   const heldRef = useRef(false);
+  const accuraciesRef = useRef<number[]>([]);
+  const transitioningRef = useRef(false);
+
+  // Mirror state to refs for safe rAF/callback access without stale closures.
   powerRef.current = power;
   heldRef.current = held;
+  accuraciesRef.current = accuracies;
+  transitioningRef.current = transitioning;
 
   const handleRelease = useCallback(() => {
-    if (done || !heldRef.current) return;
+    if (done || !heldRef.current || transitioningRef.current) return;
     setHeld(false);
     heldRef.current = false;
     const acc = armoryAccuracy(powerRef.current);
-    const next = [...accuracies, acc];
+    sfxPlay(acc >= 0.35 ? 'armoryLockCrack' : 'armoryLockMiss');
+    const next = [...accuraciesRef.current, acc];
     if (next.length >= ARMORY_LOCKS) {
       setAccuracies(next);
       setDone(true);
       cancelAnimationFrame(rafRef.current!);
-      onFinish(armoryScore(next));
+      sfxPlay('armoryFinish');
+      timerRef.current = setTimeout(() => onFinish(armoryScore(next)), FINISH_DELAY_MS);
     } else {
       setAccuracies(next);
-      setCurrentLock(next.length);
+      setTransitioning(true);
+      transitioningRef.current = true;
+      setPower(0);
+      powerRef.current = 0;
+      lastTs.current = null;
+      timerRef.current = setTimeout(() => {
+        setCurrentLock(next.length);
+        setTransitioning(false);
+      }, INTER_LOCK_PAUSE_MS);
     }
-  }, [done, accuracies, onFinish]);
+  }, [done, onFinish]);
 
   const handlePress = useCallback(() => {
-    if (done) return;
+    if (done || transitioningRef.current) return;
     setHeld(true);
     heldRef.current = true;
+    sfxPlay('armoryCharge');
   }, [done]);
 
+  // Cancel any pending timer on unmount.
+  useEffect(() => {
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+  }, []);
+
+  // rAF animation loop — restarts with the correct riseSpeed when currentLock changes.
   useEffect(() => {
     if (done) return;
+    const { riseSpeed } = LOCK_CONFIG[Math.min(currentLock, LOCK_CONFIG.length - 1)];
     const loop = (ts: number) => {
       if (lastTs.current === null) lastTs.current = ts;
       const dt = (ts - lastTs.current) / 1000;
       lastTs.current = ts;
-      let next = heldRef.current
-        ? Math.min(1, powerRef.current + RISE_SPEED * dt)
+      const next = heldRef.current
+        ? Math.min(1, powerRef.current + riseSpeed * dt)
         : Math.max(0, powerRef.current - FALL_SPEED * dt);
       setPower(next);
       powerRef.current = next;
@@ -63,8 +101,9 @@ export function ArmoryBreak({ onFinish }: ArmoryBreakProps) {
     };
     rafRef.current = requestAnimationFrame(loop);
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, [done]);
+  }, [done, currentLock]);
 
+  // Keyboard controls — deps are stable (only done/onFinish), so listeners register once.
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       if ((e.code === 'Space' || e.code === 'Enter') && !e.repeat) { e.preventDefault(); handlePress(); }
@@ -80,10 +119,15 @@ export function ArmoryBreak({ onFinish }: ArmoryBreakProps) {
     };
   }, [handlePress, handleRelease]);
 
+  const resultLabels = accuracies.map(a =>
+    a >= 0.7 ? 'Great' : a >= 0.35 ? 'OK' : 'Missed'
+  );
+  const lockCfg = LOCK_CONFIG[Math.min(currentLock, LOCK_CONFIG.length - 1)];
+
   return (
     <div className="flex flex-col items-center gap-6 px-2">
       <p className="text-center text-sm text-ink-muted">
-        <strong className="text-ink">Hold</strong> to charge. <strong className="text-ink">Release</strong> when the power bar is in the golden zone.
+        <strong className="text-ink">Hold</strong> to charge. <strong className="text-ink">Release</strong> when the needle enters the golden zone.
       </p>
 
       <div className="flex justify-center gap-6">
@@ -94,24 +138,40 @@ export function ArmoryBreak({ onFinish }: ArmoryBreakProps) {
             locked={i < accuracies.length}
             lockedAccuracy={accuracies[i]}
             label={`Lock ${i + 1}`}
+            zoneStart={SWEET_ZONE_START}
+            zoneWidth={i === currentLock && !done ? lockCfg.zoneWidth : SWEET_ZONE_WIDTH}
           />
         ))}
       </div>
 
-      {!done && (
+      {done ? (
+        <div className="text-center space-y-1">
+          <p className="text-2xl">⚒️</p>
+          <p className="font-display text-sm font-bold text-gold-deep">All Locks Cracked!</p>
+        </div>
+      ) : (
         <button
-          className="select-none rounded-md border-2 border-gold-deep bg-gradient-to-b from-gold-bright to-gold-deep px-8 py-5 font-display text-lg font-bold text-wood-900 shadow-gold active:scale-95"
-          onPointerDown={handlePress}
+          className={cn(
+            'select-none rounded-md border-2 border-gold-deep px-8 py-5 font-display text-lg font-bold text-wood-900 shadow-gold transition-all duration-75',
+            held
+              ? 'bg-gradient-to-b from-amber-600 to-amber-800 ring-2 ring-gold-bright scale-95'
+              : 'bg-gradient-to-b from-gold-bright to-gold-deep active:scale-95',
+            transitioning && 'opacity-40 cursor-not-allowed',
+          )}
+          onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); handlePress(); }}
           onPointerUp={handleRelease}
-          onPointerLeave={handleRelease}
+          disabled={transitioning}
         >
           ⚒️ Hold to Charge
         </button>
       )}
 
-      <p className="text-xs text-ink-muted">
-        Lock {Math.min(currentLock + 1, ARMORY_LOCKS)} of {ARMORY_LOCKS} •{' '}
-        Zone starts at {Math.round(SWEET_ZONE_START * 100)}% power
+      <p className="text-xs text-ink-muted min-h-[1.25rem]">
+        {done
+          ? ' '
+          : resultLabels.length > 0
+            ? `Lock ${Math.min(currentLock + 1, ARMORY_LOCKS)} of ${ARMORY_LOCKS} • So far: ${resultLabels.join(', ')}`
+            : `Lock 1 of ${ARMORY_LOCKS} • Release in the golden zone`}
       </p>
     </div>
   );

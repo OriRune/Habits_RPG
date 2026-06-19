@@ -1,0 +1,265 @@
+import type { StateCreator } from 'zustand';
+import type { ForestState, ForestTile, Dir } from '@/engine/forest';
+import {
+  applyBoonChoice as applyForestBoonChoice,
+  generateForest,
+  tryMove as forestTryMove,
+  tryDash as forestTryDash,
+  act as forestActFn,
+  castSpell as forestCastSpellFn,
+  stepBeasts,
+  advance as forestAdvanceFn,
+  activateShrine as forestActivateShrine,
+  coopClientStep as forestCoopClientStep,
+  FOREST_ENERGY_COST,
+} from '@/engine/forest';
+import { dungeonStamina } from '@/engine/crawl';
+import { mulberry32, floorSeed } from '@/engine/rng';
+import { getGear } from '@/engine/gear';
+import { rollBoonChoices } from '@/content/boons';
+import {
+  type WorldSliceInput,
+  applyForestWorldSlice,
+  applyForestTileSlice,
+  applyForestRemoteAttack,
+} from '@/net/coop/reduce';
+import type { GameState } from '../shared';
+import { fighterFor, gearBonuses, commitForest, commitForestDeath } from '../shared';
+import { getForestRng, getForestBaseSeed, setForestRun } from '../runRng';
+
+export interface ForestSlice {
+  forest: ForestState | null;
+  deepestForestStage: number;
+  bestForestScore: number;
+
+  beginForest: (seed?: number) => void;
+  forestMove: (dir: Dir) => void;
+  forestAct: () => void;
+  forestActCharged: () => void;
+  forestDash: (dir: Dir, nowMs: number) => void;
+  forestTick: (nowMs: number, coPlayers?: ReadonlyArray<{ r: number; c: number }>) => void;
+  beginForestBanking: () => void;
+  forestAdvance: () => void;
+  forestCast: (spellKey: string) => void;
+  forestShrine: (nowMs: number) => void;
+  chooseForestBoon: (key: string) => void;
+  coopApplyForestWorld: (slice: WorldSliceInput) => void;
+  coopApplyForestTile: (stage: number, r: number, c: number, tile: ForestTile) => void;
+  coopApplyForestAttack: (beastId: string, dmg: number) => void;
+  coopForestClientTick: (nowMs: number) => void;
+  endForest: () => void;
+}
+
+export const createForestSlice: StateCreator<
+  GameState,
+  [['zustand/persist', unknown]],
+  [],
+  ForestSlice
+> = (set) => ({
+  forest: null,
+  deepestForestStage: 0,
+  bestForestScore: 0,
+
+  beginForest: (seed) =>
+    set((s) => {
+      // Seed the run's RNG: shared mulberry32 for co-op, Math.random for solo.
+      setForestRun(seed !== undefined ? mulberry32(seed) : Math.random, seed);
+      const free = s.settings.unlimitedEnergy;
+      if (s.forest) return s;
+      if (!free && s.character.energy < FOREST_ENERGY_COST) return s;
+
+      // Grant the stone_pickaxe (toolkit) if the player has no tool yet
+      let ownedGear = s.ownedGear;
+      let equipment = s.equipment;
+      const hasAnyTool = ownedGear.some((k) => {
+        const g = getGear(k);
+        return g?.chopping != null || g?.mining != null;
+      });
+      if (!hasAnyTool) {
+        ownedGear = [...ownedGear, 'stone_pickaxe'];
+        if (!equipment.tool) {
+          equipment = { ...equipment, tool: 'stone_pickaxe' };
+        }
+      }
+
+      const stateWithGear: typeof s = { ...s, ownedGear, equipment };
+      const fighter = fighterFor(stateWithGear);
+      const { c } = fighter;
+      const gear = gearBonuses(stateWithGear);
+      const enBonus = gear.statBonuses.EN ?? 0;
+      const maxSta = dungeonStamina(s.character.statLevels.EN + enBonus);
+
+      // Chopping power from equipped tool gear
+      const toolKey = equipment.tool;
+      const toolGear = toolKey ? getGear(toolKey) : undefined;
+      const chopPower = toolGear?.chopping?.power ?? 0;
+      // AG level for dash cooldown + move speed
+      const agBonusF = (gearBonuses(stateWithGear).statBonuses.AG ?? 0);
+      const agLevelF = s.character.statLevels.AG + agBonusF;
+
+      const forest = generateForest(
+        1,
+        {
+          meleePower: c.meleePower,
+          rangedPower: c.rangedPower,
+          damageSpell: c.damageSpell,
+          supportSpell: c.supportSpell,
+          illusionPower: c.illusionPower,
+          defense: c.defense,
+          ward: c.ward,
+          maxHp: c.maxHp,
+          maxSta,
+          maxMp: c.maxMp,
+          weapon: fighter.weapon,
+          knownSpells: s.knownSpells,
+          chopPower,
+          agLevel: agLevelF,
+        },
+        // Stage 1 from the per-stage seed (co-op parity); solo uses live forest RNG.
+        seed !== undefined ? mulberry32(floorSeed(seed, 1)) : getForestRng(),
+      );
+      return {
+        character: {
+          ...s.character,
+          energy: free ? s.character.energy : s.character.energy - FOREST_ENERGY_COST,
+        },
+        ownedGear,
+        equipment,
+        forest,
+      };
+    }),
+
+  forestMove: (dir) =>
+    set((s) => {
+      if (!s.forest || s.forest.status !== 'active') return s;
+      const forest = forestTryMove(s.forest, dir);
+      // Boon cache pickup: walking onto a 'boon' tile triggers the choice panel.
+      if (forest !== s.forest) {
+        const { r, c } = forest.player;
+        if (forest.tiles[r]?.[c]?.kind === 'boon') {
+          const tiles = forest.tiles.map((row) => row.slice());
+          tiles[r][c] = { kind: 'trail' };
+          const choices = rollBoonChoices('forest', forest.activeBoons, getForestRng());
+          return {
+            forest: {
+              ...forest,
+              tiles,
+              pendingBoonChoice: choices,
+              status: 'choosing' as const,
+            },
+          };
+        }
+      }
+      return forest !== s.forest ? { forest } : s;
+    }),
+
+  forestAct: () =>
+    set((s) =>
+      s.forest && s.forest.status === 'active' ? { forest: forestActFn(s.forest, getForestRng()) } : s,
+    ),
+
+  forestActCharged: () =>
+    set((s) =>
+      s.forest && s.forest.status === 'active'
+        ? { forest: forestActFn(s.forest, getForestRng(), Date.now(), true) }
+        : s,
+    ),
+
+  forestDash: (dir, nowMs) =>
+    set((s) =>
+      s.forest && s.forest.status === 'active'
+        ? { forest: forestTryDash(s.forest, dir, nowMs) }
+        : s,
+    ),
+
+  forestTick: (nowMs, coPlayers) =>
+    set((s) => {
+      if (!s.forest || s.forest.status !== 'active') return s;
+      const forest = stepBeasts(s.forest, nowMs, getForestRng(), coPlayers);
+      if (forest === s.forest) return s;
+      // Death flips status to 'ended' but doesn't commit — the overlay shows the forfeit
+      // first, then endForest banks the kept half (mirrors the mine's banking flow).
+      return { forest };
+    }),
+
+  beginForestBanking: () =>
+    set((s) =>
+      s.forest && s.forest.status === 'active'
+        ? { forest: { ...s.forest, status: 'banking' as const } }
+        : s,
+    ),
+
+  forestAdvance: () =>
+    set((s) => {
+      if (!s.forest || s.forest.status !== 'active') return s;
+      // Next stage from its per-stage seed (co-op parity); solo uses forest RNG.
+      const nextStage = s.forest.stage + 1;
+      const _forestBaseSeed = getForestBaseSeed();
+      const genRng =
+        _forestBaseSeed !== undefined ? mulberry32(floorSeed(_forestBaseSeed, nextStage)) : getForestRng();
+      const forest = forestAdvanceFn(s.forest, genRng);
+      if (forest === s.forest) return s;
+      return { forest, deepestForestStage: Math.max(s.deepestForestStage, forest.deepest) };
+    }),
+
+  forestCast: (spellKey: string) =>
+    set((s) => {
+      if (!s.forest || s.forest.status !== 'active') return s;
+      const forest = forestCastSpellFn(s.forest, spellKey, Date.now(), getForestRng());
+      if (forest === s.forest) return s;
+      return { forest };
+    }),
+
+  forestShrine: (nowMs: number) =>
+    set((s) => {
+      if (!s.forest || s.forest.status !== 'active') return s;
+      const forest = forestActivateShrine(s.forest, nowMs, getForestRng());
+      if (forest === s.forest) return s;
+      return { forest };
+    }),
+
+  chooseForestBoon: (key: string) =>
+    set((s) => {
+      if (!s.forest || s.forest.status !== 'choosing') return s;
+      const forest = applyForestBoonChoice(s.forest, key);
+      return forest !== s.forest ? { forest } : s;
+    }),
+
+  coopApplyForestWorld: (slice) =>
+    set((s) => {
+      if (!s.forest) return s;
+      return { forest: applyForestWorldSlice(s.forest, slice, { baseSeed: getForestBaseSeed(), rng: getForestRng() }) };
+    }),
+
+  coopApplyForestTile: (stage, r, c, tile) =>
+    set((s) => {
+      if (!s.forest) return s;
+      const forest = applyForestTileSlice(s.forest, stage, r, c, tile as ForestTile);
+      return forest !== s.forest ? { forest } : s;
+    }),
+
+  coopApplyForestAttack: (beastId, dmg) =>
+    set((s) => {
+      if (!s.forest) return s;
+      const forest = applyForestRemoteAttack(s.forest, beastId, dmg, getForestRng());
+      return forest !== s.forest ? { forest } : s;
+    }),
+
+  coopForestClientTick: (nowMs) =>
+    set((s) => {
+      if (!s.forest || s.forest.status !== 'active') return s;
+      const forest = forestCoopClientStep(s.forest, nowMs);
+      if (forest === s.forest) return s;
+      return { forest };
+    }),
+
+  // Death forfeits half the haul; a confirmed bank keeps it all.
+  endForest: () =>
+    set((s) =>
+      !s.forest
+        ? s
+        : s.forest.status === 'ended'
+          ? commitForestDeath(s, s.forest)
+          : commitForest(s, s.forest),
+    ),
+});

@@ -6,7 +6,7 @@
 import { type RNG } from './combat';
 import { MATERIAL_KEYS } from './materials';
 import { type Reward } from './challenges';
-import { type BiomeDef, isBossDepth } from './biomes';
+import { type BiomeDef } from './biomes';
 
 export const DUNGEON_ENERGY_COST = 3; // brief §7.2: "Dungeon entry = 3 Energy"
 
@@ -42,11 +42,6 @@ export const ROOM_META: Record<RoomKind, { name: string; description: string }> 
   rest: { name: 'Campfire', description: 'A safe hollow to recover or attune your relics.' },
 };
 
-/** Build an encounter room drawing from the biome's pool (exported for the floor-map generator). */
-export function encounterRoomFor(biome: BiomeDef, rng: RNG = Math.random): DungeonRoom {
-  return encounterRoom(biome, rng);
-}
-
 function randomMaterial(rng: RNG): string {
   return MATERIAL_KEYS[Math.floor(rng() * MATERIAL_KEYS.length)];
 }
@@ -55,37 +50,13 @@ function randomFrom<T>(arr: T[], rng: RNG): T {
   return arr[Math.floor(rng() * arr.length)];
 }
 
-function shuffle<T>(arr: T[], rng: RNG): T[] {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
 // Loot tables — keys must exist in src/content/items.ts and src/content/weapons.ts.
 const SPELLBOOK_DROPS = ['spellbook_firebolt', 'spellbook_bless', 'spellbook_dazzle', 'spellbook_hex'];
 const WEAPON_DROPS = ['iron_mace', 'short_bow'];
 
-function encounterRoom(biome: BiomeDef, rng: RNG): DungeonRoom {
+export function encounterRoomFor(biome: BiomeDef, rng: RNG = Math.random): DungeonRoom {
   const key = biome.encounters.length ? randomFrom(biome.encounters, rng) : 'sealed_door';
   return { type: 'encounter', key };
-}
-
-/**
- * Build one floor for the given depth + biome. Boss floors (every 5th depth) are a lead-in
- * encounter then the boss; normal floors are a combat + an encounter (order varied) with a
- * treasure room appearing more often as you go deeper. The checkpoint follows the last room.
- */
-export function generateFloor(depth: number, biome: BiomeDef, rng: RNG = Math.random): DungeonRoom[] {
-  if (isBossDepth(depth)) {
-    return [encounterRoom(biome, rng), { type: 'boss' }];
-  }
-  const rooms: DungeonRoom[] = shuffle([{ type: 'combat' } as DungeonRoom, encounterRoom(biome, rng)], rng);
-  // Richer floors carry a treasure finale; chance climbs with depth.
-  if (rng() < 0.4 + depth * 0.05) rooms.push({ type: 'treasure' });
-  return rooms;
 }
 
 /** A wandering-merchant offer (bought with the player's gold mid-run). */

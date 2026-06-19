@@ -4,6 +4,8 @@
 import { useEffect, useRef } from 'react';
 import { useGameStore } from '@/store/useGameStore';
 import { canAdvance, isOnShrine, facedCell, facedBeastId, type Dir } from '@/engine/forest';
+import { CHARGE_SWING_COUNT, DASH_BASE_CD_MS } from '@/engine/crawl';
+import { boonChargeReduce } from '@/content/boons';
 import { useCoopStore } from '@/net/coop/session';
 import { useAuthStore } from '@/net/auth';
 
@@ -12,7 +14,7 @@ const KEY_DIRS: Record<string, Dir> = {
   w: 'up', s: 'down', a: 'left', d: 'right',
 };
 
-/** How often a held direction advances one cell (ms) — the tile-step cadence. */
+/** Fallback move cadence when run state has no moveIntervalMs (old saves). */
 const MOVE_INTERVAL_MS = 150;
 /** Minimum gap between blade swings / gathers (ms) so holding the key doesn't burn stamina at 60fps. */
 const ACT_INTERVAL_MS = 240;
@@ -26,8 +28,12 @@ export interface ForestControlsApi {
   release: (dir: Dir) => void;
   /** Queue a single act (slash / gather). */
   act: () => void;
+  /** Queue a dash. Fires in the currently-held direction, or facing if nothing is held. */
+  dash: () => void;
   /** Cast a spell by key (from ability bar buttons). */
   castSpell: (key: string) => void;
+  /** Charge progress 0–1; updated every rAF frame. Read imperatively in the overlay. */
+  chargeProgressRef: { readonly current: number };
 }
 
 /** Drives an active Wild Forest run. Mount once inside the run overlay. */
@@ -35,7 +41,13 @@ export function useForestLoop(): ForestControlsApi {
   const held = useRef<Set<Dir>>(new Set());
   const lastDir = useRef<Dir | null>(null);
   const actQueued = useRef(false);
+  const dashQueued = useRef(false);
   const spellQueue = useRef<string | null>(null);
+  // Charge tracking: timestamp when Space was first pressed (reset on each new press).
+  const spaceDownAt = useRef<number | null>(null);
+  const chargeConsumed = useRef(false);
+  // Exposed to the overlay so it can render a charge bar without React re-renders.
+  const chargeProgressRef = useRef(0);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -47,7 +59,18 @@ export function useForestLoop(): ForestControlsApi {
         return;
       }
       if (e.key === ' ' || e.key === 'Enter') {
-        actQueued.current = true;
+        if (spaceDownAt.current === null) {
+          // First press this hold: record timestamp and queue a normal act.
+          spaceDownAt.current = performance.now();
+          chargeConsumed.current = false;
+          actQueued.current = true;
+        }
+        e.preventDefault();
+        return;
+      }
+      // Shift → dash in current facing direction
+      if (e.key === 'Shift') {
+        dashQueued.current = true;
         e.preventDefault();
         return;
       }
@@ -65,7 +88,11 @@ export function useForestLoop(): ForestControlsApi {
     };
     const onKeyUp = (e: KeyboardEvent) => {
       const dir = KEY_DIRS[e.key];
-      if (dir) held.current.delete(dir);
+      if (dir) { held.current.delete(dir); return; }
+      if (e.key === ' ' || e.key === 'Enter') {
+        spaceDownAt.current = null;
+        chargeConsumed.current = false;
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
@@ -86,12 +113,68 @@ export function useForestLoop(): ForestControlsApi {
         spellQueue.current = null;
       }
 
+      // Dash — fires in the currently held direction, falling back to facing.
+      if (dashQueued.current) {
+        dashQueued.current = false;
+        const heldDir =
+          lastDir.current && held.current.has(lastDir.current)
+            ? lastDir.current
+            : held.current.size > 0
+              ? [...held.current][0]
+              : null;
+        const dir = heldDir ?? run.player.facing;
+        const cd = run.dashCooldownMs ?? DASH_BASE_CD_MS;
+        const lastDash = run.lastDashMs ?? -cd;
+        if (now - lastDash >= cd) {
+          store.forestDash(dir, now);
+        }
+      }
+
       // Co-op role for this frame (solo when not joined to a session).
       const coop = useCoopStore.getState();
       const inCoop = coop.joined && !!coop.session;
       const myId = useAuthStore.getState().session?.user?.id;
       const isHost = inCoop && coop.session!.host_id === myId;
       const isGuest = inCoop && !isHost;
+
+      // Charge detection: if Space is still held for effectiveChargeCount intervals, fire a charged act.
+      // The Overcharge boon reduces the required hold count by 1 (minimum 1).
+      const chargeReduce = run.activeBoons ? boonChargeReduce(run.activeBoons) : 0;
+      const effectiveChargeCount = Math.max(1, CHARGE_SWING_COUNT - chargeReduce);
+      if (
+        spaceDownAt.current !== null &&
+        !chargeConsumed.current &&
+        now - spaceDownAt.current >= effectiveChargeCount * ACT_INTERVAL_MS &&
+        now - lastAct >= ACT_INTERVAL_MS
+      ) {
+        chargeConsumed.current = true;
+        lastAct = now;
+        if (canAdvance(run) && (!inCoop || isHost)) {
+          store.forestAdvance();
+        } else if (isGuest && facedBeastId(run)) {
+          const dmg = (run.weapon.attackStat === 'DX' ? run.rangedPower : run.meleePower) * 1.75;
+          coop.send?.({ type: 'attack', userId: myId ?? 'anon', monsterId: facedBeastId(run)!, dmg });
+        } else if (isOnShrine(run)) {
+          store.forestShrine(now);
+        } else {
+          const { r, c } = facedCell(run);
+          const before = run.tiles[r]?.[c];
+          store.forestActCharged();
+          if (inCoop) {
+            const after = useGameStore.getState().forest?.tiles[r]?.[c];
+            if (after && after !== before) {
+              coop.send?.({ type: 'tile', userId: myId ?? 'anon', floor: run.stage, r, c, tile: after });
+            }
+          }
+        }
+      }
+
+      // Update charge progress ref each frame so the overlay can animate a charge bar.
+      const chargeDuration = effectiveChargeCount * ACT_INTERVAL_MS;
+      chargeProgressRef.current =
+        spaceDownAt.current !== null && !chargeConsumed.current
+          ? Math.min(1, (now - spaceDownAt.current) / chargeDuration)
+          : 0;
 
       if (actQueued.current && now - lastAct >= ACT_INTERVAL_MS) {
         actQueued.current = false;
@@ -121,7 +204,10 @@ export function useForestLoop(): ForestControlsApi {
           }
         }
       }
-      if (held.current.size && now - lastMove >= MOVE_INTERVAL_MS) {
+
+      // AG-scaled move interval from run state (falls back to constant for old saves).
+      const moveMs = run.moveIntervalMs ?? MOVE_INTERVAL_MS;
+      if (held.current.size && now - lastMove >= moveMs) {
         // Favour the most recently pressed direction when several are held.
         const dir =
           lastDir.current && held.current.has(lastDir.current)
@@ -164,9 +250,15 @@ export function useForestLoop(): ForestControlsApi {
     release: (dir) => held.current.delete(dir),
     act: () => {
       actQueued.current = true;
+      if (spaceDownAt.current === null) {
+        spaceDownAt.current = performance.now();
+        chargeConsumed.current = false;
+      }
     },
+    dash: () => { dashQueued.current = true; },
     castSpell: (key) => {
       spellQueue.current = key;
     },
+    chargeProgressRef,
   };
 }

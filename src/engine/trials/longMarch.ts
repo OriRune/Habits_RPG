@@ -5,6 +5,8 @@
 export const MARCH_TILES = 16;
 export const MARCH_START_STA = 12;
 export const MARCH_MAX_STA = 12;
+// Theoretical maximum distance: all Push on Clear tiles.
+export const MARCH_MAX_DISTANCE = MARCH_TILES * 2;
 
 export type TerrainKind = 'clear' | 'rough' | 'mud' | 'spring';
 export type MarchPace = 'rest' | 'walk' | 'push';
@@ -15,97 +17,97 @@ export interface TerrainTile {
   emoji: string;
 }
 
+// Exported so the component can show live per-pace previews without calling marchStep.
+export const PACE_COSTS: Record<MarchPace, Record<TerrainKind, { sta: number; dist: number }>> = {
+  rest:  { clear: { sta:  2, dist: 0 }, rough: { sta: 2, dist: 0 }, mud: { sta: 2, dist: 0 }, spring: { sta: 6, dist: 0 } },
+  walk:  { clear: { sta: -1, dist: 1 }, rough: { sta: -2, dist: 1 }, mud: { sta: -1, dist: 0 }, spring: { sta: 3, dist: 1 } },
+  push:  { clear: { sta: -3, dist: 2 }, rough: { sta: -4, dist: 2 }, mud: { sta: -3, dist: 1 }, spring: { sta: 1, dist: 2 } },
+};
+
 const TERRAIN_LABELS: Record<TerrainKind, { label: string; emoji: string }> = {
-  clear: { label: 'Clear Path', emoji: '🌄' },
-  rough: { label: 'Rough Terrain', emoji: '🪨' },
-  mud: { label: 'Muddy Track', emoji: '💧' },
+  clear:  { label: 'Clear Path',      emoji: '🌄' },
+  rough:  { label: 'Rough Terrain',   emoji: '🪨' },
+  mud:    { label: 'Muddy Track',     emoji: '💧' },
   spring: { label: 'Mountain Spring', emoji: '✨' },
 };
 
-/** Generate the terrain sequence for a run (deterministic). */
+// Weights must sum to 1.
+export const TERRAIN_WEIGHTS: [TerrainKind, number][] = [
+  ['clear',  0.45],
+  ['rough',  0.25],
+  ['mud',    0.20],
+  ['spring', 0.10],
+];
+
+/** Generate the terrain sequence for a run. Pass a seeded rng for determinism. */
 export function generateTerrain(rng: () => number): TerrainTile[] {
-  const weights: [TerrainKind, number][] = [
-    ['clear', 0.45],
-    ['rough', 0.25],
-    ['mud', 0.20],
-    ['spring', 0.10],
-  ];
   return Array.from({ length: MARCH_TILES }, () => {
     const roll = rng();
     let cumulative = 0;
-    for (const [kind, w] of weights) {
+    for (const [kind, w] of TERRAIN_WEIGHTS) {
       cumulative += w;
-      if (roll < cumulative) {
-        return { kind, ...TERRAIN_LABELS[kind] };
-      }
+      if (roll < cumulative) return { kind, ...TERRAIN_LABELS[kind] };
     }
     return { kind: 'clear', ...TERRAIN_LABELS.clear };
   });
 }
 
 export interface MarchStepResult {
-  /** Distance gained this step (can be negative for mud). */
   distanceDelta: number;
-  /** Stamina change this step (negative = cost, positive = gain). */
   staminaDelta: number;
-  /** Narrative message for this step. */
   message: string;
 }
 
+const STEP_MESSAGES: Record<MarchPace, Record<TerrainKind, string>> = {
+  rest: {
+    clear:  'You rest a moment and catch your breath.',
+    rough:  'You rest a moment and catch your breath.',
+    mud:    'You rest a moment and catch your breath.',
+    spring: 'You drink from the spring — your body recovers.',
+  },
+  walk: {
+    clear:  'You march at a steady pace.',
+    rough:  'The rough ground drains you as you trudge through.',
+    mud:    'The mud clings to your boots; you barely make progress.',
+    spring: 'The spring water refreshes you as you pass.',
+  },
+  push: {
+    clear:  'You surge forward, burning hard.',
+    rough:  'You push hard through brutal terrain — it costs you dearly.',
+    mud:    'You force your way through the mud at great effort.',
+    spring: 'You gulp from the spring mid-stride.',
+  },
+};
+
 /**
- * Resolve one tile step, given the current terrain and chosen pace.
- * Stamina is floored at 0 by the caller; the caller also checks for end-of-march.
+ * Resolve one tile step given the current terrain and chosen pace.
+ * Stamina is floored at 0 and capped at MARCH_MAX_STA by the caller.
  */
 export function marchStep(tile: TerrainTile, pace: MarchPace): MarchStepResult {
-  switch (pace) {
-    case 'rest':
-      return {
-        distanceDelta: 0,
-        staminaDelta: tile.kind === 'spring' ? MARCH_MAX_STA : 2, // spring restores full
-        message:
-          tile.kind === 'spring'
-            ? 'You drink from the spring and feel restored.'
-            : 'You rest a moment and catch your breath.',
-      };
-    case 'walk': {
-      const staMod = tile.kind === 'spring' ? 1 : tile.kind === 'rough' ? -2 : -1;
-      const distMod = tile.kind === 'mud' ? 0 : 1;
-      return {
-        distanceDelta: distMod,
-        staminaDelta: tile.kind === 'spring' ? staMod + 2 : staMod, // spring gives bonus
-        message:
-          tile.kind === 'rough'
-            ? 'The rough ground drains you as you trudge through.'
-            : tile.kind === 'mud'
-              ? 'The mud clings to your boots; you barely make progress.'
-              : tile.kind === 'spring'
-                ? 'The spring water refreshes you as you pass.'
-                : 'You march at a steady pace.',
-      };
-    }
-    case 'push': {
-      const staMod = tile.kind === 'spring' ? -1 : tile.kind === 'rough' ? -4 : -3;
-      const distMod = tile.kind === 'mud' ? 1 : 2;
-      return {
-        distanceDelta: distMod,
-        staminaDelta: tile.kind === 'spring' ? staMod + 2 : staMod,
-        message:
-          tile.kind === 'rough'
-            ? 'You push hard through brutal terrain — it costs you dearly.'
-            : tile.kind === 'mud'
-              ? 'You force your way through the mud at great effort.'
-              : tile.kind === 'spring'
-                ? 'You gulp from the spring mid-stride.'
-                : 'You surge forward, burning hard.',
-      };
-    }
-  }
+  const { sta, dist } = PACE_COSTS[pace][tile.kind];
+  return {
+    staminaDelta: sta,
+    distanceDelta: dist,
+    message: STEP_MESSAGES[pace][tile.kind],
+  };
 }
 
 /**
- * Score = tiles completed (where any step taken = 1 tile) / MARCH_TILES.
- * Reaching the end gives a perfect 1.0.
+ * Starting stamina for a run given the player's EN stat level.
+ * EN investment grants a small bonus — capped at +6 above the base.
  */
-export function marchScore(tilesCompleted: number): number {
-  return Math.min(1, tilesCompleted / MARCH_TILES);
+export function marchStartStamina(enLevel: number): number {
+  return Math.min(MARCH_START_STA + 6, MARCH_START_STA + Math.floor(enLevel / 3));
+}
+
+/**
+ * Compute a 0–1 run score.
+ * 70% weight on tile completion, 30% on distance efficiency.
+ * Both components are individually capped so a full completion + zero distance
+ * still scores 0.70, rewarding persistence even with a cautious pace.
+ */
+export function marchScore(tilesCompleted: number, distance: number): number {
+  const tileScore = Math.min(1, tilesCompleted / MARCH_TILES);
+  const distScore = Math.min(1, distance / MARCH_MAX_DISTANCE);
+  return 0.7 * tileScore + 0.3 * distScore;
 }

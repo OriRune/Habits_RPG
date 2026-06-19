@@ -36,6 +36,11 @@ export interface MineOreDef {
     | { kind: 'gold'; amount: [number, number] }
     | { kind: 'material'; material: string; amount: [number, number] }
     | { kind: 'stamina'; amount: [number, number] };
+  /**
+   * If set, this vein only spawns in the named biome band.
+   * Omit for band-agnostic ores (eligible in any band at or above floorMin).
+   */
+  band?: import('@/engine/crawlBiomes').MineBandId;
 }
 
 export interface MineMonsterDef {
@@ -54,6 +59,18 @@ export interface MineMonsterDef {
   weakTo?: string[];
   /** Stats this monster resists (×0.6). */
   resistTo?: string[];
+  /**
+   * If set, this monster only spawns in the named biome band.
+   * Omit for band-agnostic monsters (eligible in any band at or above floorMin).
+   */
+  band?: import('@/engine/crawlBiomes').MineBandId;
+  /**
+   * Band-gate guardian. Excluded from the random spawn pool; placed once by
+   * generateMine on the exact floor matching guardianFloor.
+   */
+  isGuardian?: true;
+  /** The exact floor this guardian appears on (required when isGuardian is set). */
+  guardianFloor?: number;
 }
 
 export const MINE_ORES: Record<string, MineOreDef> = {
@@ -82,8 +99,28 @@ export const MINE_ORES: Record<string, MineOreDef> = {
     floorMin: 10, weight: 0.8, durability: 5, grants: { kind: 'material', material: 'gemstone', amount: [1, 1] },
   },
   energy_gem: {
+    // weight: 0 excludes this from the weighted ore pool. It is placed by a dedicated
+    // generation step (generateMine step 7) at fixed density (1 per ENERGY_GEM_INTERVAL
+    // open floor cells). Any ore with special placement logic should use weight: 0.
     key: 'energy_gem', name: 'Energy Gem', glyph: '⚡', color: '#22d3ee',
     floorMin: 1, weight: 0, durability: 1, grants: { kind: 'stamina', amount: [11, 11] },
+  },
+  // --- Frozen Depths band (floors 7–14) ---
+  frost_quartz_vein: {
+    key: 'frost_quartz_vein', name: 'Frost Quartz Vein', glyph: '❄', color: '#60c8e8',
+    floorMin: 7, weight: 2, durability: 3, band: 'frozen',
+    grants: { kind: 'material', material: 'frost_quartz', amount: [1, 2] },
+  },
+  // --- Magma Core band (floors 15+) ---
+  obsidian_vein: {
+    key: 'obsidian_vein', name: 'Obsidian Vein', glyph: '▲', color: '#5a3a7a',
+    floorMin: 15, weight: 1.5, durability: 5, band: 'magma',
+    grants: { kind: 'material', material: 'obsidian', amount: [1, 2] },
+  },
+  magma_geode: {
+    key: 'magma_geode', name: 'Magma Geode', glyph: '◈', color: '#ff6a00',
+    floorMin: 15, weight: 1.2, durability: 4, band: 'magma',
+    grants: { kind: 'gold', amount: [25, 50] },
   },
 };
 
@@ -105,18 +142,44 @@ export const MINE_MONSTERS: Record<string, MineMonsterDef> = {
   },
   stone_golem: {
     key: 'stone_golem', name: 'Stone Golem', glyph: '🪨', color: '#8a7a6a',
-    floorMin: 10, hp: 50, touchDamage: 15, moveCadenceMs: 850, bounty: [20, 35],
-    defense: 6, resistTo: ['DX'], weakTo: ['ST'],
+    floorMin: 7, hp: 50, touchDamage: 15, moveCadenceMs: 850, bounty: [20, 35],
+    defense: 4, resistTo: ['DX'], weakTo: ['ST'],
+    isGuardian: true, guardianFloor: 7,
   },
   cave_spider: {
     key: 'cave_spider', name: 'Cave Spider', glyph: '🕷️', color: '#6a3a6a',
     floorMin: 4, hp: 14, touchDamage: 8, moveCadenceMs: 400, bounty: [5, 12],
     weakTo: ['DX', 'WI'],
   },
+  // --- Frozen Depths band (floors 7–14) ---
+  ice_crawler: {
+    key: 'ice_crawler', name: 'Ice Crawler', glyph: '🦞', color: '#60c8e8',
+    floorMin: 7, hp: 22, touchDamage: 9, moveCadenceMs: 450, bounty: [8, 16],
+    band: 'frozen', weakTo: ['ST'], resistTo: ['WI'],
+  },
+  // --- Magma Core band (floors 15+) ---
+  magma_hound: {
+    key: 'magma_hound', name: 'Magma Hound', glyph: '🐕', color: '#ff6a00',
+    floorMin: 15, hp: 38, touchDamage: 16, moveCadenceMs: 580, bounty: [20, 38],
+    defense: 3, band: 'magma', resistTo: ['ST'], weakTo: ['WI'],
+  },
+  // --- Band-gate guardians (placed once per run; excluded from random pool) ---
+  magma_colossus: {
+    key: 'magma_colossus', name: 'Magma Colossus', glyph: '🌋', color: '#ff4400',
+    floorMin: 15, hp: 70, touchDamage: 20, moveCadenceMs: 900, bounty: [40, 70],
+    defense: 5, band: 'magma', resistTo: ['ST'], weakTo: ['WI'],
+    isGuardian: true, guardianFloor: 15,
+  },
 };
 
 export const MINE_ORE_KEYS = Object.keys(MINE_ORES);
 export const MINE_MONSTER_KEYS = Object.keys(MINE_MONSTERS);
+
+/** Maps exact guardian floor → monster key. Consumed by generateMine for deterministic placement. */
+export const MINE_GUARDIAN_FLOORS: Record<number, string> = {
+  7: 'stone_golem',
+  15: 'magma_colossus',
+};
 
 export function getMineOre(key: string): MineOreDef | undefined {
   return MINE_ORES[key];
