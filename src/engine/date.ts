@@ -1,7 +1,35 @@
 // Local-date helpers. We key habit completion by calendar day (YYYY-MM-DD)
 // in the player's local timezone, so "today" matches what the user sees.
 
-export function toISODate(d: Date = new Date()): string {
+// ---------------------------------------------------------------------------
+// Injectable clock seam
+//
+// All "what is today/now" reads go through now() so tests can override the
+// clock without patching the global Date. Always call _resetNow() in afterEach.
+// ---------------------------------------------------------------------------
+
+let _now: () => Date = () => new Date();
+
+/** The current local datetime. All "what is now" reads should route through this. */
+export function now(): Date {
+  return _now();
+}
+
+/** Override the clock for tests. Pair with _resetNow() in afterEach. */
+export function _setNow(fn: () => Date): void {
+  _now = fn;
+}
+
+/** Restore the real wall clock after a test override. */
+export function _resetNow(): void {
+  _now = () => new Date();
+}
+
+// ---------------------------------------------------------------------------
+// Date helpers
+// ---------------------------------------------------------------------------
+
+export function toISODate(d: Date = now()): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
