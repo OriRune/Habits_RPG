@@ -140,15 +140,16 @@ interface Anim {
   // Impact phase (foe takes damage)
   foeHit: boolean;
   foeFloater: string | null;
-  foeFlash: boolean;       // full-screen red flash
-  foeShake: boolean;       // battlefield shake
+  foeFlash: boolean;       // full-screen gold flash (player hits foe)
+  foeShake: boolean;       // battlefield shake on heavy foe hit
   foeImpactRing: boolean;  // expanding ring on foe unit
   // Enemy action phase
   foeLunge: boolean;
   foeActionKind: string | null;  // drives the per-kind foe VFX glyph
   playerHit: boolean;
   playerFloater: string | null;
-  playerFlash: boolean;     // full-screen gold/white flash
+  playerFlash: boolean;     // full-screen red damage vignette (foe hits player)
+  playerShake: boolean;     // battlefield shake when player takes a hit
   playerImpactRing: boolean;
 }
 
@@ -156,7 +157,7 @@ const ANIM_NONE: Anim = {
   playerLunge: false, spellKind: null, spellTarget: 'foe',
   foeHit: false, foeFloater: null, foeFlash: false, foeShake: false, foeImpactRing: false,
   foeLunge: false, foeActionKind: null,
-  playerHit: false, playerFloater: null, playerFlash: false, playerImpactRing: false,
+  playerHit: false, playerFloater: null, playerFlash: false, playerShake: false, playerImpactRing: false,
 };
 
 // ── Burst particle positions (fanned outward from impact point) ───────────────
@@ -366,7 +367,7 @@ export function BattleScene({
       if (playerDmg > 0) {
         // ── PHASE 4: player HP drain + impact ────────────────────────────────
         schedule(() => {
-          setAnim({ ...ANIM_NONE, playerHit: true, playerFloater: `-${playerDmg}`, playerFlash: true, playerImpactRing: true });
+          setAnim({ ...ANIM_NONE, playerHit: true, playerFloater: `-${playerDmg}`, playerFlash: true, playerShake: playerDmg > 8, playerImpactRing: true });
           setDisp(d => ({ ...d, playerHp: battle.playerHp }));
           sfx.play('playerHurt');
           if (battle.status === 'lost') {
@@ -400,7 +401,7 @@ export function BattleScene({
     } else if (playerDmg > 0) {
       // Foe was frozen/blinded but player has DoT — show player hit without foe lunge
       schedule(() => {
-        setAnim({ ...ANIM_NONE, playerHit: true, playerFloater: `-${playerDmg}`, playerFlash: true, playerImpactRing: true });
+        setAnim({ ...ANIM_NONE, playerHit: true, playerFloater: `-${playerDmg}`, playerFlash: true, playerShake: playerDmg > 8, playerImpactRing: true });
         setDisp(d => ({ ...d, playerHp: battle.playerHp }));
       }, foeDrainEnd + 350);
 
@@ -448,7 +449,7 @@ export function BattleScene({
       <div
         className={cn(
           'relative h-52 w-full overflow-hidden rounded-md border-2 border-gold-deep/60',
-          active && anim.foeShake && 'motion-safe:animate-[battle-shake_0.5s_ease]',
+          active && (anim.foeShake || anim.playerShake) && 'motion-safe:animate-[battle-shake_0.5s_ease]',
         )}
         style={{
           backgroundImage: `url('${battlefieldSrc}')`,
@@ -467,8 +468,8 @@ export function BattleScene({
             style={{ background: 'radial-gradient(ellipse at 75% 35%, #ffe08a 0%, transparent 70%)', opacity: 0 }} />
         )}
         {anim.playerFlash && (
-          <div className="battle-flash pointer-events-none absolute inset-0 motion-safe:animate-[battle-flash_0.5s_ease_forwards]"
-            style={{ background: 'radial-gradient(ellipse at 25% 70%, #ef4444 0%, transparent 70%)', opacity: 0 }} />
+          <div className="battle-flash pointer-events-none absolute inset-0 motion-safe:animate-[battle-flash_0.55s_ease_forwards]"
+            style={{ background: 'radial-gradient(ellipse at center, rgba(255,90,90,0) 30%, rgba(220,30,30,0.55) 72%, rgba(180,10,10,0.85) 100%)', opacity: 0 }} />
         )}
 
         {/* ── Foe info card — upper-left ── */}
