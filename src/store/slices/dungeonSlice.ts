@@ -119,6 +119,7 @@ export const createDungeonSlice: StateCreator<
       const def = getEncounter(room.key);
       if (!def) return s;
 
+      const gateCtx = { hp: run.hp, mp: run.mp, sta: run.sta, depth: run.depth, relics: run.relics };
       const checkedStat = def.nodes[run.encounter.nodeId]?.choices?.[choiceIndex]?.stat;
       const { state: encState, step } = chooseEncounter(
         run.encounter,
@@ -126,6 +127,8 @@ export const createDungeonSlice: StateCreator<
         choiceIndex,
         s.character.statLevels,
         gearBonuses(s).statBonuses,
+        Math.random,
+        gateCtx,
       );
       const inv = s.settings.invincible;
       const hp = inv ? run.maxHp : Math.max(0, Math.min(run.maxHp, run.hp + step.hpDelta));
@@ -141,8 +144,24 @@ export const createDungeonSlice: StateCreator<
         // Fell during the encounter — forfeit most of the floor's loot.
         return { dungeon: finishRun({ ...run, encounter: encState, mp, sta, floorReward }, false, 0, FLOOR_LOSS_KEEP) };
       }
+
+      // Apply boon / curse signals from the encounter step.
+      let next: DungeonRun = { ...run, encounter: encState, hp, mp, sta, floorReward };
+      if (step.grantBoonTier != null) {
+        offerBoon(next, step.grantBoonTier);
+      }
+      if (step.grantCurse) {
+        const curse = rollCurse();
+        if (curse) {
+          next.relics = [...next.relics, curse];
+          const newMax = fighterFor({ ...s, dungeon: next }).c.maxHp;
+          next.maxHp = newMax;
+          next.hp = Math.min(hp, newMax);
+        }
+      }
+
       return {
-        dungeon: { ...run, encounter: encState, hp, mp, sta, floorReward },
+        dungeon: next,
         ...(statXpPatch ?? {}),
       };
     }),

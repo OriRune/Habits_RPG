@@ -526,6 +526,129 @@ body {
   [class*="rooftop-"] { animation: none !important; }
 }
 
+/* ── Battle scene (BattleScene.tsx) ─────────────────────────────────────────
+   Drive via Tailwind arbitrary-value animation classes:
+   animate-[battle-idle_2.2s_ease-in-out_infinite], animate-[battle-hit_0.45s_ease], … */
+
+/* Gentle idle bob — shared by both battlers, staggered with animation-delay */
+@keyframes battle-idle {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-4px); }
+}
+
+/* Player lunges diagonally toward the foe (upper-right quadrant) */
+@keyframes battle-lunge-player {
+  0%   { transform: translate(0, 0); }
+  38%  { transform: translate(14px, -7px); }
+  100% { transform: translate(0, 0); }
+}
+
+/* Foe lunges diagonally toward the player (lower-left quadrant) */
+@keyframes battle-lunge-foe {
+  0%   { transform: translate(0, 0); }
+  38%  { transform: translate(-14px, 6px); }
+  100% { transform: translate(0, 0); }
+}
+
+/* Hit flash + lateral shake on the struck battler */
+@keyframes battle-hit {
+  0%   { filter: brightness(1);             transform: translateX(0); }
+  14%  { filter: brightness(3.5) saturate(0); transform: translateX(-7px); }
+  30%  { filter: brightness(2);             transform: translateX(5px); }
+  52%  { filter: brightness(1.4);           transform: translateX(-3px); }
+  100% { filter: brightness(1);             transform: translateX(0); }
+}
+
+/* Floater: damage number rises and fades above the struck battler */
+@keyframes battle-floater {
+  0%   { opacity: 1;   transform: translate(-50%, 0); }
+  60%  { opacity: 0.9; transform: translate(-50%, -18px); }
+  100% { opacity: 0;   transform: translate(-50%, -28px); }
+}
+
+/* Spell projectile — travels caster→target using --dx/--dy CSS vars */
+@keyframes battle-spell {
+  0%   { opacity: 0;   transform: translate(-50%, -50%) scale(0.5); }
+  12%  { opacity: 1; }
+  82%  { opacity: 1; }
+  100% { opacity: 0;   transform: translate(calc(-50% + var(--dx, 120px)), calc(-50% + var(--dy, -40px))) scale(1.4); }
+}
+
+/* ── Per-spell VFX keyframes ───────────────────────────────────────────────── */
+/* All use translate(-50%,-50%) centering to sit on the target unit.           */
+/* Covered by the [class*="battle-"] reduced-motion guard above.               */
+
+/* Sparks (sparks / chaotic_blink) — fast electric snap */
+@keyframes battle-spell-sparks {
+  0%   { opacity: 0;   transform: translate(-50%, -50%) scale(0.4) rotate(0deg); }
+  18%  { opacity: 1;   transform: translate(-50%, -50%) scale(1.4) rotate(-18deg); }
+  45%  { opacity: 0.8; transform: translate(-50%, -50%) scale(1.0) rotate(14deg); }
+  100% { opacity: 0;   transform: translate(-50%, -50%) scale(1.5) rotate(-8deg); }
+}
+
+/* Firebolt (firebolt / ring_of_fire) — expanding blaze that rises */
+@keyframes battle-spell-firebolt {
+  0%   { opacity: 0;   transform: translate(-50%, -50%) scale(0.3); filter: brightness(2.0); }
+  28%  { opacity: 1;   transform: translate(-50%, -50%) scale(1.5); filter: brightness(1.5); }
+  55%  { opacity: 0.9; transform: translate(-50%, -58%) scale(1.3); filter: brightness(1.2); }
+  100% { opacity: 0;   transform: translate(-50%, -75%) scale(1.8); filter: brightness(1); }
+}
+
+/* Mend — healing glow that rises off the target (used on player) */
+@keyframes battle-spell-mend {
+  0%   { opacity: 0;   transform: translate(-50%, -38%) scale(0.6); }
+  32%  { opacity: 1;   transform: translate(-50%, -58%) scale(1.1); }
+  100% { opacity: 0;   transform: translate(-50%, -100%) scale(1.2); }
+}
+
+/* Bless / teleport — steady ward shimmer that pulses outward */
+@keyframes battle-spell-bless {
+  0%   { opacity: 0;   transform: translate(-50%, -50%) scale(0.5); }
+  38%  { opacity: 1;   transform: translate(-50%, -50%) scale(1.3); }
+  100% { opacity: 0;   transform: translate(-50%, -56%) scale(1.6); }
+}
+
+/* Dazzle — bright starburst flares and vanishes */
+@keyframes battle-spell-dazzle {
+  0%   { opacity: 0;   transform: translate(-50%, -50%) scale(0.3) rotate(0deg); }
+  28%  { opacity: 1;   transform: translate(-50%, -50%) scale(1.6) rotate(45deg); }
+  100% { opacity: 0;   transform: translate(-50%, -50%) scale(0.9) rotate(100deg); }
+}
+
+/* Hex — sinking violet curse */
+@keyframes battle-spell-hex {
+  0%   { opacity: 0;   transform: translate(-50%, -60%) scale(1.5); }
+  38%  { opacity: 1;   transform: translate(-50%, -50%) scale(1.1); }
+  100% { opacity: 0;   transform: translate(-50%, -38%) scale(0.6); }
+}
+
+/* Rune (fire_rune / ice_rune / poison_rune) — inscribed glyph pulses then sinks */
+@keyframes battle-spell-rune {
+  0%   { opacity: 0;   transform: translate(-50%, -50%) scale(0.5) rotate(-10deg); }
+  30%  { opacity: 1;   transform: translate(-50%, -50%) scale(1.2) rotate(5deg); }
+  75%  { opacity: 0.8; transform: translate(-50%, -50%) scale(1.0) rotate(0deg); }
+  100% { opacity: 0;   transform: translate(-50%, -44%) scale(0.8) rotate(-5deg); }
+}
+
+/* Foe faint: flash bright → shrink + sink + fade out */
+@keyframes battle-faint-foe {
+  0%   { transform: scale(1)    translateY(0);    filter: brightness(1);            opacity: 1; }
+  18%  { transform: scale(1.25) translateY(-6px); filter: brightness(4) saturate(0); opacity: 1; }
+  55%  { transform: scale(0.85) translateY(10px); filter: brightness(0.5) saturate(0); opacity: 0.6; }
+  100% { transform: scale(0.5)  translateY(22px); filter: brightness(0.1);          opacity: 0; }
+}
+
+/* Player faint: slump downward with a slow tilt */
+@keyframes battle-faint-player {
+  0%   { transform: translateY(0)    rotate(0deg);   opacity: 1; }
+  35%  { transform: translateY(5px)  rotate(-6deg);  opacity: 0.9; }
+  100% { transform: translateY(18px) rotate(-18deg); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [class*="battle-"] { animation: none !important; }
+}
+
 /* Themed scrollbar */
 ::-webkit-scrollbar {
   width: 10px;

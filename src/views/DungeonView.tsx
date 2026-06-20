@@ -3,7 +3,8 @@ import { Heart, Sparkles, Coins, Zap, Wind, ChevronsDown, DoorOpen } from 'lucid
 import { useGameStore } from '@/store/useGameStore';
 import { ROOM_META, DUNGEON_ENERGY_COST } from '@/engine/dungeon';
 import { getBiome } from '@/engine/biomes';
-import { getEncounter, checkChance } from '@/engine/encounters';
+import { getEncounter, checkChance, choiceAvailable } from '@/engine/encounters';
+import { getRelic } from '@/engine/relics';
 import { type Reward } from '@/engine/challenges';
 import { getMaterial } from '@/engine/materials';
 import { getItem } from '@/engine/items';
@@ -20,6 +21,7 @@ import { SectionTitle } from '@/components/ui/Divider';
 import { SceneArt } from '@/components/ui/SceneArt';
 import { BattleScene } from '@/components/combat/BattleScene';
 import { RelicTray } from '@/components/dungeon/RelicTray';
+import { RunBuffs } from '@/components/dungeon/RunBuffs';
 import { FloorMap } from '@/components/dungeon/FloorMap';
 import { ShrineRoom } from '@/components/dungeon/ShrineRoom';
 import { MerchantRoom } from '@/components/dungeon/MerchantRoom';
@@ -237,6 +239,7 @@ export function DungeonView() {
           <Panel tone="wood" className="space-y-2 p-3">
             <RunGauge icon={<Heart className="h-4 w-4 text-stat-HP" />} value={dungeon.hp} max={dungeon.maxHp} fill="#2e8a5e" />
             <RelicTray relics={dungeon.relics} />
+            <RunBuffs relics={dungeon.relics} />
           </Panel>
 
           <div>
@@ -292,6 +295,7 @@ export function DungeonView() {
             <span>This floor: <RewardInline reward={dungeon.floorReward} /></span>
           </div>
           <RelicTray relics={dungeon.relics} />
+          <RunBuffs relics={dungeon.relics} />
         </Panel>
       )}
 
@@ -307,6 +311,7 @@ export function DungeonView() {
           {dungeon.battle && (
             <BattleScene
               battle={dungeon.battle}
+              biomeKey={dungeon.biomeKey}
               onAction={dungeonBattleAction}
               onResolve={dungeonAdvance}
               resolveWonLabel={room!.type === 'boss' ? 'Onward →' : 'Continue Deeper →'}
@@ -396,6 +401,9 @@ function EncounterRoom({
     (['armor', 'trinket', 'tool'] as GearSlot[]).map((sl) => (equipment[sl] ? getGear(equipment[sl]!) : undefined)),
   ).statBonuses;
 
+  // Gate context for choice availability checks.
+  const gateCtx = { hp: dungeon.hp, mp: dungeon.mp, sta: dungeon.sta, depth: dungeon.depth, relics: dungeon.relics };
+
   const room = dungeon.nodeId ? dungeon.map.nodes[dungeon.nodeId]?.room : undefined;
   const enc = dungeon.encounter;
   const def = room?.type === 'encounter' ? getEncounter(room.key) : undefined;
@@ -418,9 +426,19 @@ function EncounterRoom({
     );
   }
 
+  // Map encounter outcome → scene key for the banner art
+  const outcomeSceneKey =
+    enc.lastOutcome === 'success' ? 'outcome:success' :
+    enc.lastOutcome === 'fail'    ? 'outcome:fail'    :
+    enc.lastOutcome === 'neutral' ? 'outcome:partial'  :
+    null;
+
   return (
     <Panel tone="parchment" className="space-y-3 p-5">
-      <SceneArt sceneKey="room:encounter" caption={def.title} />
+      <SceneArt
+        sceneKey={outcomeSceneKey ?? 'room:encounter'}
+        caption={outcomeSceneKey ? undefined : def.title}
+      />
 
       {/* Outcome of the last choice — shown before the next prompt so it reads naturally */}
       {enc.lastText && (
@@ -434,8 +452,29 @@ function EncounterRoom({
                 : 'border-gold-deep/20 bg-parchment-100/60',
           )}
         >
-          <div className="mb-0.5 font-display text-[10px] uppercase tracking-wider text-ink-muted">
-            {enc.lastOutcome === 'fail' ? 'Outcome — failure' : enc.lastOutcome === 'success' ? 'Outcome — success' : 'Outcome'}
+          <div className="mb-0.5 flex items-center justify-between gap-2">
+            <span className="font-display text-[10px] uppercase tracking-wider text-ink-muted">
+              {enc.lastOutcome === 'fail' ? 'Outcome — failure' : enc.lastOutcome === 'success' ? 'Outcome — success' : 'Outcome'}
+            </span>
+            {enc.lastDeltas && (
+              <span className="flex items-center gap-1.5 text-[11px]">
+                {enc.lastDeltas.hp !== 0 && (
+                  <span className={enc.lastDeltas.hp > 0 ? 'text-stat-HP' : 'text-ember'}>
+                    {enc.lastDeltas.hp > 0 ? '+' : ''}{enc.lastDeltas.hp} HP
+                  </span>
+                )}
+                {enc.lastDeltas.mp !== 0 && (
+                  <span className={enc.lastDeltas.mp > 0 ? 'text-stat-KN' : 'text-ember'}>
+                    {enc.lastDeltas.mp > 0 ? '+' : ''}{enc.lastDeltas.mp} MP
+                  </span>
+                )}
+                {enc.lastDeltas.sta !== 0 && (
+                  <span className={enc.lastDeltas.sta > 0 ? 'text-stat-EN' : 'text-ember'}>
+                    {enc.lastDeltas.sta > 0 ? '+' : ''}{enc.lastDeltas.sta} STA
+                  </span>
+                )}
+              </span>
+            )}
           </div>
           <p className="text-sm text-ink">{enc.lastText}</p>
         </div>
@@ -457,24 +496,67 @@ function EncounterRoom({
             const lvl = choice.stat ? statLevels[choice.stat] : null;
             const power = choice.stat ? lvl! + (gearBonus[choice.stat] ?? 0) : 0;
             const odds = choice.stat ? Math.round(checkChance(power, choice.difficulty ?? 5) * 100) : null;
+            const available = choiceAvailable(choice, gateCtx);
+
+            // Build a short unavailability hint for locked choices.
+            let lockHint: string | null = null;
+            if (!available && choice.requires) {
+              const r = choice.requires;
+              if (r.minHp    !== undefined) lockHint = `Need ${r.minHp} HP`;
+              else if (r.minMp  !== undefined) lockHint = `Need ${r.minMp} MP`;
+              else if (r.minSta !== undefined) lockHint = `Need ${r.minSta} Stamina`;
+              else if (r.minDepth !== undefined) lockHint = `Floor ${r.minDepth}+ only`;
+              else if (r.hasRelic !== undefined) lockHint = `Requires: ${getRelic(r.hasRelic)?.name ?? r.hasRelic}`;
+            }
+
+            // Build outcome tags (boon/curse indicators).
+            const boonTier = choice.boon ?? null;
+            const boonSuccessTier = choice.boonOnSuccess ?? null;
+            const hasCurseRisk = choice.curseOnFail ?? false;
+
             return (
               <Button
                 key={i}
                 variant="secondary"
-                onClick={() => onChoose(i)}
-                className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm"
+                onClick={() => available ? onChoose(i) : undefined}
+                disabled={!available}
+                className="flex w-full flex-col items-stretch gap-1 px-3 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <span>{choice.label}</span>
-                {choice.stat && (
-                  <span
-                    className="shrink-0 rounded border border-gold-deep/40 bg-parchment-300/40 px-1.5 py-0.5 text-[11px] tabular-nums text-ink-muted"
-                    title={`Your ${getStat(choice.stat).name} is ${lvl}${
-                      gearBonus[choice.stat] ? ` (+${gearBonus[choice.stat]} gear)` : ''
-                    } vs difficulty ${choice.difficulty ?? 5}`}
-                  >
-                    {getStat(choice.stat).short} {lvl} · ~{odds}%
-                  </span>
-                )}
+                <div className="flex items-center justify-between gap-2">
+                  <span>{choice.label}</span>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {boonTier && (
+                      <span className="rounded border border-gold-deep/50 bg-parchment-300/30 px-1.5 py-0.5 text-[10px] text-gold-deep">
+                        ✦ Boon
+                      </span>
+                    )}
+                    {boonSuccessTier && (
+                      <span className="rounded border border-gold-deep/50 bg-parchment-300/30 px-1.5 py-0.5 text-[10px] text-gold-deep">
+                        ✦ Boon on success
+                      </span>
+                    )}
+                    {hasCurseRisk && (
+                      <span className="rounded border border-ember/40 bg-ember/5 px-1.5 py-0.5 text-[10px] text-ember">
+                        ⚠ Curse on fail
+                      </span>
+                    )}
+                    {choice.stat && (
+                      <span
+                        className="rounded border border-gold-deep/40 bg-parchment-300/40 px-1.5 py-0.5 text-[11px] tabular-nums text-ink-muted"
+                        title={`Your ${getStat(choice.stat).name} is ${lvl}${
+                          gearBonus[choice.stat] ? ` (+${gearBonus[choice.stat]} gear)` : ''
+                        } vs difficulty ${choice.difficulty ?? 5}`}
+                      >
+                        {getStat(choice.stat).short} {lvl} · ~{odds}%
+                      </span>
+                    )}
+                    {!available && lockHint && (
+                      <span className="rounded border border-parchment-300/30 bg-parchment-100/20 px-1.5 py-0.5 text-[10px] text-ink-light">
+                        🔒 {lockHint}
+                      </span>
+                    )}
+                  </div>
+                </div>
               </Button>
             );
           })}

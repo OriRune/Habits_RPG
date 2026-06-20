@@ -126,6 +126,10 @@ const FOLDER_PREFIX: Record<string, string> = {
   potions: 'item',
   materials: 'material',
   relics: 'relic',
+  // Battle combatants — drop a PNG into src/assets/sprites/bosses/<bossId>.png or
+  // avatars/<classId>.png and it lights up automatically (Phase 4 swap-seam).
+  bosses: 'boss',
+  avatars: 'avatar',
 };
 
 /** One generic tome sprite stands in for every spellbook item. */

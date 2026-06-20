@@ -11,10 +11,13 @@ const strong = (...stats: Array<keyof ReturnType<typeof emptyStatXP>>) => {
 };
 
 describe('checkChance', () => {
-  it('clamps to [0.05, 0.95]', () => {
+  it('clamps to [0.15, 0.95] (raised floor for early-game fairness)', () => {
     expect(checkChance(100, 0)).toBe(0.95);
-    expect(checkChance(-100, 0)).toBe(0.05);
+    // Floor raised from 0.05 → 0.15 so fresh characters aren't near-auto-failing.
+    expect(checkChance(-100, 0)).toBe(0.15);
     expect(checkChance(12, 12)).toBeCloseTo(0.3, 5);
+    // At stat 1 vs diff 5 (worst early-game case): was 0.05, now 0.15.
+    expect(checkChance(1, 5)).toBe(0.15);
   });
 });
 

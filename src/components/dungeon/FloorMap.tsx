@@ -58,14 +58,18 @@ export function FloorMap({
     else nodeRefs.current.delete(id);
   };
 
-  // Recompute edge positions after every render (map changes between floors)
+  // Recompute edge positions after every render (map changes between floors).
+  // Uses functional setState so identical values return the same reference → no
+  // extra re-render → the "setState → re-render → setState" loop terminates.
   useLayoutEffect(() => {
     const grid = gridRef.current;
     if (!grid) return;
     const cRect = grid.getBoundingClientRect();
     if (cRect.width === 0) return;
 
-    setSvgSize({ w: cRect.width, h: cRect.height });
+    const w = cRect.width;
+    const h = cRect.height;
+    setSvgSize(prev => (prev.w === w && prev.h === h ? prev : { w, h }));
 
     const newEdges: EdgeLine[] = [];
     for (const [id, node] of Object.entries(map.nodes)) {
@@ -86,8 +90,21 @@ export function FloorMap({
         newEdges.push({ x1: fx, y1: fy, x2: tx, y2: ty, active });
       }
     }
-    setEdges(newEdges);
-  }); // intentionally no deps — reruns on every render to stay in sync
+
+    setEdges(prev => {
+      if (prev.length !== newEdges.length) return newEdges;
+      for (let i = 0; i < prev.length; i++) {
+        const p = prev[i], n = newEdges[i];
+        // 0.5-px tolerance handles sub-pixel float jitter from getBoundingClientRect
+        if (
+          Math.abs(p.x1 - n.x1) > 0.5 || Math.abs(p.y1 - n.y1) > 0.5 ||
+          Math.abs(p.x2 - n.x2) > 0.5 || Math.abs(p.y2 - n.y2) > 0.5 ||
+          p.active !== n.active
+        ) return newEdges;
+      }
+      return prev; // stable reference → React bails out of re-render
+    });
+  }); // intentionally no deps — reruns on every render to stay in sync with layout
 
   return (
     <Panel tone="parchment" className="space-y-3 p-4">
@@ -158,7 +175,9 @@ export function FloorMap({
           ))}
         </div>
       </div>
-      <p className="text-center text-[11px] text-ink-light">Tap a glowing room to enter it.</p>
+      <p className="text-center text-[11px] text-ink-light">
+        Tap a glowing room to enter it — your choice opens the paths it connects to.
+      </p>
     </Panel>
   );
 }

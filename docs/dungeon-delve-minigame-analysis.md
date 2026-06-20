@@ -1,6 +1,6 @@
 # Dungeon Delve Minigame Analysis
 
-*Last updated: 2026-06-18. Reflects the state after improvement Steps 1–6 from the Dungeon Delve Improvement Plan.*
+*Last updated: 2026-06-20. Reflects the state after improvement Phases 1–4 plus the follow-up round: Run Buffs HUD, Event Variety, and Battle VFX.*
 
 ---
 
@@ -82,12 +82,13 @@ All interaction is click/tap. There is no keyboard navigation, no real-time comp
 - Three resource bars — HP (green), MP (blue), Sta (amber) — each showing `value/max` numerically.
 - Inline reward summary: "Banked: Xg · Y mat" and "This floor: …" in the same panel.
 - RelicTray: a compact row of small sprite icons showing held boons/curses for the run, with title-tooltip on hover.
+- **RunBuffs** (`src/components/dungeon/RunBuffs.tsx`): directly below the relic tray, a per-relic stat readout grouped into **BLESSINGS** and **CURSES**. Each relic row shows its crest icon, name, and signed effect tokens (e.g. "+3 ST", "DEF +4", "−15 HP"). Stat tokens are tinted by their stat color (`getStat(stat).color`). Empty groups are omitted. Shown in both the main HUD and the checkpoint panel.
 
 **FloorMap** (`src/components/dungeon/FloorMap.tsx`): A layered grid of room node buttons, with an SVG overlay drawn behind the nodes that renders connection lines between them. Active connections (visited → choosable) render as solid gold lines; other connections render as dashed, dimmed lines. Choosable rooms glow gold; visited rooms show a checkmark badge; unreachable rooms are dimmed and disabled. A `Layer X of Y` label in the header shows floor progress. Room types are distinguished by Lucide icon and color. A hint text reads "Tap a glowing room to enter it."
 
-**BattleScene** (`src/components/combat/BattleScene.tsx`): Shared combat component reused from the top-level boss battles. Shows enemy art, health bars, action buttons, and allows fleeing.
+**BattleScene** (`src/components/combat/BattleScene.tsx`): Shared combat component reused from the top-level boss battles. Renders a GBC/Pokémon-style framed battlefield: foe sprite upper-right on a raised shadow-platform, player sprite lower-left; foe info card (name, HP, statuses, telegraphed intent) upper-left; player info card (class, HP, MP, STA) lower-right. HP bars animate width transitions (400 ms ease) and shift green → amber → red at 50%/20% thresholds. CSS keyframe animations (`battle-lunge-foe/player`, `battle-hit`, `battle-floater`, `battle-spell`, `battle-faint-foe/player`) are triggered by a diff `useEffect` that classifies each turn (player melee → lunge + foe shake + floating "−N" damage number; foe attacks → foe lunge + player shake + floater; spell cast → projectile sprite instead of lunge). Sprites idle-bob continuously (`battle-idle`, staggered delays). All motion animations use Tailwind's `motion-safe:` variant so they degrade gracefully when `prefers-reduced-motion: reduce` is set. Boss death triggers `battle-faint-foe`; player defeat triggers `battle-faint-player`.
 
-**EncounterRoom** (inline in `src/views/DungeonView.tsx`): Shows a `SceneArt` banner, then a separately labeled outcome callout (color-coded: red border for fail, gold border for success, neutral for no check) above the next narrative node's text and choices. Each choice button includes a stat badge showing the relevant stat level and success odds (`STAT X · ~Y%`). The outcome callout has a small header label ("Outcome — success", "Outcome — failure", "Outcome") so it is visually distinct from the prompt text that follows.
+**EncounterRoom** (inline in `src/views/DungeonView.tsx`): Shows a `SceneArt` banner, then a separately labeled outcome callout (color-coded: red border for fail, gold border for success, neutral for no check) above the next narrative node's text and choices. Each choice button includes a stat badge showing the relevant stat level and success odds (`STAT X · ~Y%`). The outcome callout has a small header label ("Outcome — success", "Outcome — failure", "Outcome") so it is visually distinct from the prompt text that follows. Gated choices (those with `requires` conditions not met by the current run state) are rendered as disabled buttons with a small lock hint ("Need 30 HP", "Floor 6+ only"); choices that will grant a boon or curse show a badge (✦ Boon, ✦ Boon on success, ⚠ Curse on fail).
 
 **ShrineRoom** (`src/components/dungeon/ShrineRoom.tsx`): Three buttons — Pray (shows `~X%` success odds based on best WI/CH), Offer (costs 25% max HP, disabled if HP too low), Leave.
 
@@ -146,13 +147,23 @@ Room type is selected by weighted random from `normalKindWeights()` (`src/engine
 
 **Combat / Elite / Boss**: Calls `createBattle()` and passes to the shared combat engine. HP/MP/Sta are carried into the battle via `battle.startingHp/Mp/Sta`. After resolution, run resources are updated from `battle.playerHp/Mp/Sta`. Elite wins grant a bonus boon offer in addition to floor loot. Boss fights can have multiple phases (indicated by PhasePips). Boss biome phases have full movesets (weighted attack, heavy, guard, drain, inflict, enrage, multi) defined in `src/content/biomes.ts`.
 
-**Encounter**: A branching text event. Choices may have a stat check (`checkChance(power, difficulty)` = `min(0.95, max(0.05, 0.3 + (power − difficulty) × 0.07))`). Success/failure routes to different subsequent nodes. Resource deltas (HP/MP/Sta) and gold/materials are applied per node. Encounters are drawn from the current biome's encounter pool. There are 13 unique encounter definitions across three pools of 5 each (two cross-biome keys are shared between pools):
+**Encounter**: A branching text event. Choices may have a stat check (`checkChance(power, difficulty)` = `min(0.95, max(0.15, 0.3 + (power − difficulty) × 0.07))`). The minimum was raised from 0.05 → 0.15 to prevent fresh characters (stat level ~1) from near-auto-failing early Catacomb events. Success/failure routes to different subsequent nodes. Resource deltas (HP/MP/Sta/gold/materials) and their numerical magnitudes are always displayed in a colored outcome badge (e.g. "−8 HP", "+30 gold") so the player sees the exact cost/gain of every outcome. Choices may additionally carry `hpOnFail`, `mpOnFail`, or `staOnFail` penalties.
 
-| Biome | Encounters |
-|-------|-----------|
-| Catacombs | sealed_door, gatekeeper, bone_pit, ossuary_hoard, whispering_crypt |
-| Ruins | collapsing_bridge, wild_grove, gatekeeper, toppled_idol, spiders_larder |
-| Frozen | frozen_chasm, starving_dark, sealed_door, buried_caravan, aurora_pool |
+Encounter choices now support three additional mechanics:
+
+- **Gated choices** (`requires?: { minHp?, minMp?, minSta?, minDepth?, hasRelic? }`): a choice is only available when the run's current resources meet the requirement. The pure predicate `choiceAvailable(choice, ctx)` (exported from `encounters.ts`) is checked by the UI (disables the button + shows a hint) and defensively in the engine. Examples: a wounded-only passage, a depth-gated shortcut, a relic-required door.
+- **Boon grants** (`boon?: number` / `boonOnSuccess?: number`): the engine signals `step.grantBoonTier`; the slice calls `offerBoon(run, tier)`, which activates the global `<BoonChoice/>` modal — the same flow as shrines and elite wins. Zero new UI required.
+- **Curse grants** (`curseOnFail?: boolean`): the engine signals `step.grantCurse`; the slice calls `rollCurse()` and appends to `run.relics`, mirroring the shrine-fail path (including `maxHp` recomputation via `fighterFor`).
+
+Encounters are drawn from the current biome's encounter pool. There are 28 unique encounter definitions (18 original + 10 new). The Ruins and Frozen pools were expanded from 5 to 10:
+
+| Biome | Pool size | Encounters |
+|-------|-----------|-----------|
+| Catacombs | 10 | sealed_door, gatekeeper, bone_pit, ossuary_hoard, whispering_crypt, ancient_cache, dust_and_echoes, crumbling_fresco, bone_chimes, fallen_pilgrim |
+| Ruins | 10 | collapsing_bridge, wild_grove, gatekeeper, toppled_idol, spiders_larder, **ruined_scriptorium, vine_temple, overgrown_arsenal, riverside_shrine, fungal_network** |
+| Frozen | 10 | frozen_chasm, starving_dark, sealed_door, buried_caravan, aurora_pool, **ice_sculptor, whiteout, frozen_titan, cold_archive, glacial_hermit** |
+
+New encounters include gamble events (large reward on success, steep HP loss on fail), boon-granting successes (`boonOnSuccess`), curse-on-fail paths, and depth-gated locked branches (`requires: { minDepth: 6 }`).
 
 **Treasure**: Loot is generated on room entry via `resolveTreasure(depth, rng)` (`src/engine/dungeon.ts:110`). Gold: `60 + depth×10 + rand(0..40)`. Always 1–2 crafting materials + crystals. 50% spellbook drop. Weapon drop chance scales with depth. No player action required; "Continue" advances immediately.
 
@@ -229,9 +240,9 @@ All generation functions (`generateFloorMap`, `resolveTreasure`, `rollBoons`, et
 | `src/engine/dungeonMap.ts` | Layered DAG floor map generator. `MapNode`, `FloorMap` types. `generateFloorMap()`. |
 | `src/engine/dungeonTypes.ts` | Extracted `DungeonRun` interface — standalone types file so engine tests can import it without pulling in the Zustand store. |
 | `src/engine/biomes.ts` | Biome definitions and `biomeForDepth()`, `bossFor()`, `isBossDepth()`. |
-| `src/engine/encounters.ts` | `EncounterDef`/`EncounterNode`/`EncounterChoice` types, `chooseEncounter()` stat-check resolution, `checkChance()`. |
+| `src/engine/encounters.ts` | `EncounterDef`/`EncounterNode`/`EncounterChoice` types, `chooseEncounter()` stat-check resolution, `checkChance()`, `choiceAvailable()`, `ChoiceGateCtx`. Choices support `requires`, `boon`, `boonOnSuccess`, `curseOnFail`; steps support `grantBoonTier`, `grantCurse`. |
 | `src/engine/relics.ts` | `RelicDef` type, `rollBoons()`, `rollCurse()`, `aggregateRelics()`, `boonMaxTier()`. |
-| `src/engine/combat.ts` | Shared combat engine used for all dungeon battles. |
+| `src/engine/combat.ts` | Shared combat engine used for all dungeon battles. `BattleState.lastAction` (new structured field) is written by `playerAction` on every turn to enable reliable spell VFX detection. |
 | `src/store/useGameStore.ts` | ~15 dungeon store actions. `DungeonRun` imported from `src/engine/dungeonTypes.ts`. `deepestFloor` and `dungeonHistory` are the two persistent dungeon records. Exports `DungeonRunSummary` type. |
 | `src/views/ExploreView.tsx` | Hosts `DungeonErrorBoundary` (class component) wrapping `<DungeonView />`. Any render crash in the dungeon shows a "Back to Explore" recovery screen instead of blanking the app. |
 | `src/views/DungeonView.tsx` | Top-level dungeon view. Renders all dungeon states (entrance, run, checkpoint, end). Entrance shows "Deepest descent" row and "Recent Runs" panel from `dungeonHistory`. Sets `--biome-tint` CSS variable on checkpoint and active-run containers. Wraps room content in a `key={nodeId}` div for fade-in animation. Hosts `EncounterRoom`, `PhasePips`, `RewardLine`, `RewardInline`, `RunGauge` inline sub-components. |
@@ -239,15 +250,16 @@ All generation functions (`generateFloorMap`, `resolveTreasure`, `rollBoons`, et
 | `src/components/dungeon/FloorMap.tsx` | Layered node grid for path selection. Renders connection lines between nodes via a `useLayoutEffect`-driven SVG overlay (active edges gold solid; inactive edges gold dashed). Shows `Layer X of Y` progress label. |
 | `src/components/dungeon/BoonChoice.tsx` | Non-dismissable modal for 1-of-3 relic selection. |
 | `src/components/dungeon/RelicTray.tsx` | Compact relic icon row shown in HUD. |
+| `src/components/dungeon/RunBuffs.tsx` | Per-relic stat readout (Blessings / Curses) shown in HUD and checkpoint, below RelicTray. |
 | `src/components/dungeon/ShrineRoom.tsx` | Shrine interaction UI. |
 | `src/components/dungeon/MerchantRoom.tsx` | Merchant shop UI. |
 | `src/components/dungeon/RestRoom.tsx` | Campfire rest/attune UI. Replaces the "Rest" button with an informational message when HP is full. |
 | `src/components/combat/BattleScene.tsx` | Shared combat component (not dungeon-specific). |
 | `src/components/ui/SceneArt.tsx` | Scene art component. Wraps the `<img>` in a `<div>` with an overlay `<div>` that reads `var(--biome-tint, transparent)` at 22% opacity. |
 | `src/lib/scenes.ts` | Scene art config — all room types (including `room:shrine`, `room:merchant`, `room:elite`) are registered with glyphs, tint colors, and captions. No fallback `❓` for any active room type. |
-| `src/content/biomes.ts` | `BIOMES` catalog and `BIOME_ORDER`. Each biome's encounter pool has 5 keys. |
+| `src/content/biomes.ts` | `BIOMES` catalog and `BIOME_ORDER`. All three pools are now 10 encounter keys. |
 | `src/content/relics.ts` | `RELICS` catalog — 28 entries (23 boons across 3 tiers, 5 curses). |
-| `src/content/encounters.ts` | `ENCOUNTERS` catalog — 13 unique encounter definitions. |
+| `src/content/encounters.ts` | `ENCOUNTERS` catalog — 28 unique encounter definitions (18 original + 10 new for Ruins/Frozen). Uses `requires`, `boon/boonOnSuccess/curseOnFail` fields; `EncounterRunState` carries `lastDeltas` for surfacing exact penalty/reward numbers. |
 | `src/engine/__tests__/dungeon.test.ts` | Unit tests for floor generation, treasure scaling, reward utilities. |
 | `src/engine/__tests__/dungeonMap.test.ts` | Unit tests for map structure, reachability, boss funnels, determinism. |
 | `src/engine/__tests__/content.test.ts` | Validates that every biome encounter/enemy key resolves, every relic has required fields, and every scene key used by the dungeon is registered. |
@@ -346,24 +358,35 @@ No two-way data bindings or callbacks between the engine and the UI. The UI read
 
 Room backgrounds are rendered by `SceneArt` (`src/components/ui/SceneArt.tsx`). The component wraps its `<img>` in a `<div>` and overlays a second `<div>` with `backgroundColor: var(--biome-tint, transparent)` at 22% opacity. When the dungeon container sets `--biome-tint`, this overlay tints the scene banner with the current biome's palette. Outside the dungeon (or on screens that don't set the variable), the overlay is fully transparent and has no visible effect.
 
-Every scene key used by the dungeon is registered in `src/lib/scenes.ts`:
+**Per-key themed motifs.** Each scene key now dispatches to a distinct procedural SVG composition via `sceneMotif(key)` in `src/lib/placeholderArt.ts` rather than the generic landscape placeholder. Every room type shows a recognizably different visual:
 
-| Key | Glyph | Color | Caption |
-|-----|-------|-------|---------|
-| `dungeon:entrance` | 🚪 | Dark brown | The dungeon mouth |
-| `dungeon:checkpoint` | 🏕️ | Forest green | A safe respite |
-| `dungeon:cleared` | 👑 | Gold | Dungeon cleared |
-| `dungeon:retreat` | 🏳️ | Gray | You retreat |
-| `room:combat` | ⚔️ | Dark red | A foe blocks the way |
-| `room:encounter` | 📜 | Tan | A choice to make |
-| `room:treasure` | 💰 | Amber gold | A glittering hoard |
-| `room:rest` | 🏕️ | Forest green | A quiet alcove |
-| `room:shrine` | ✨ | Deep purple | A shrine in the dark |
-| `room:merchant` | 🪙 | Dark gold | A wandering merchant |
-| `room:elite` | 🔥 | Dark red | A powerful guardian |
-| `room:boss` | ☠️ | Deep purple | A boss bars the way |
+| Key | Motif |
+|-----|-------|
+| `dungeon:entrance` | Arched stone doorway with a glowing eye |
+| `dungeon:checkpoint` | Tent peak + small campfire |
+| `dungeon:cleared` | Crown silhouette with gem tips |
+| `dungeon:retreat` | Flag on a pole |
+| `room:combat` | Crossed blades |
+| `room:boss` | Crossed blades + skull crown |
+| `room:elite` | Crossed blades + flame crest |
+| `room:encounter` | Open scroll + quill |
+| `room:treasure` | Chest body + lid + stacked coin ellipses |
+| `room:rest` | Campfire with log base + floating embers |
+| `room:shrine` | Stepped altar + crystal triangle + light rays |
+| `room:merchant` | Balance scales with pans |
+| `room:elite` | Crossed blades + flame crest |
+| `outcome:success` | 8-ray starburst + sparkles |
+| `outcome:fail` | Cracked red X with radiating fissures |
+| `outcome:partial` | Half-filled circle (quarter-pie) |
+| `combat:victory` | Trophy cup |
+| `combat:defeat` | Skull with eye sockets |
+| `biome:catacombs` | Bone arch silhouettes + glowing eye-socket hints + scattered bones |
+| `biome:ruins` | Broken columns with vine draped between them + cobblestone ground hint |
+| `biome:frozen` | Ice spike cluster + faint aurora band + crystal sparkles |
 
-There is a defined swap seam (`SCENE_REGISTRY` in `scenes.ts`, `resolveSceneImage()`) so real illustration assets can replace placeholders by key without any component changes.
+**Outcome art in EncounterRoom.** The `SceneArt` banner at the top of each encounter flips dynamically after a choice resolves: `room:encounter` (scroll) while the player is choosing → `outcome:success` / `outcome:fail` / `outcome:partial` after resolution. This makes every encounter outcome immediately readable at a glance without reading the text.
+
+All scene keys remain registered in `src/lib/scenes.ts`. There is a defined swap seam (`SCENE_REGISTRY` in `scenes.ts`, `resolveSceneImage()`) so real illustration assets can replace any key without component changes.
 
 ### Sprites
 
@@ -373,8 +396,26 @@ Relics use `Sprite` with procedurally generated crest art (`relicCrest()` from `
 
 - **Room transition**: 0.18 s ease-out fade-in on the room content wrapper, triggered by React key churn when `dungeon.nodeId` changes (`src/views/DungeonView.tsx`).
 - **FloorMap edges**: SVG lines drawn via `useLayoutEffect`; active edges render as solid gold, inactive as dashed/dimmed.
-- **Resource bars**: CSS `transition-all` for smooth width changes.
-- No combat animations specific to the dungeon (BattleScene handles its own).
+- **Resource bars**: CSS `transition-all` for smooth width changes on MP/STA gauges.
+- **HP bars (GBC)**: CSS `transition: width 400ms ease, background-color 400ms ease` on both battler HP bars; fill color shifts green→amber→red at 50%/20% thresholds.
+- **Battle VFX** (`battle-*` keyframes in `src/index.css`):
+  - `battle-idle` — both battlers bob gently (staggered, `motion-safe:` gated).
+  - `battle-lunge-player` / `battle-lunge-foe` — diagonal lunge toward the foe/player on melee attacks.
+  - `battle-hit` — struck target flashes bright + shakes laterally (brightness filter + translateX sequence).
+  - `battle-floater` — `−N` damage number rises and fades over the struck battler (green `+N` for heals).
+  - `battle-spell-sparks` — electric snap burst (⚡ Sparks, Chaotic Blink).
+  - `battle-spell-firebolt` — expanding blaze that rises (🔥 Firebolt, Ring of Fire).
+  - `battle-spell-mend` — healing glow that rises off the target on player (✨ Mend).
+  - `battle-spell-bless` — ward shimmer pulsing outward (🛡 Bless, Teleport).
+  - `battle-spell-dazzle` — starburst that flares and vanishes (💫 Dazzle).
+  - `battle-spell-hex` — sinking violet curse (🔮 Hex).
+  - `battle-spell-rune` — inscribed glyph that pulses then sinks (🔥/❄️/☠️ Rune spells).
+  - Spell detection now uses `battle.lastAction` (a structured field on `BattleState` written by `playerAction` in `combat.ts`) instead of a log-string regex. Each spell action records `{ kind, spellKey, school, mechanic, target, amount }`. Support spells (`target: 'self'`) render their VFX on the player quadrant; damage/illusion spells render on the foe quadrant.
+  - `battle-faint-foe` — foe flashes → shrinks → sinks → fades on defeat.
+  - `battle-faint-player` — player tilts and sinks on defeat.
+  - All motion effects respect `prefers-reduced-motion: reduce` via a CSS `[class*="battle-"] { animation: none !important }` media query guard. The `battle-spell-vfx` marker class on the VFX element is picked up by this selector.
+- **Per-biome battle backgrounds** (`BattleScene.tsx`): the `biomeKey` prop (optional, forwarded from `DungeonView`) replaces the hardcoded brown gradient with a tint-derived gradient for each region (catacombs → purple-dark; ruins → forest-green-dark; frozen → ice-blue-dark). A faint procedural SVG motif layer (`scenePlaceholderImage` at 10% opacity, using the biome's existing `sceneMotif` case) adds silhouetted bone arches / vine-draped columns / ice spike clusters as a background texture. `BattleOverlay` (Level-Up Trials) passes no `biomeKey`, keeping the neutral default gradient.
+- `sceneMotif` in `src/lib/placeholderArt.ts` now handles `biome:catacombs`, `biome:ruins`, and `biome:frozen` — bone arch silhouettes, broken columns with vines, and ice spike cluster respectively.
 
 ### Sound
 
@@ -398,8 +439,14 @@ Fantasy RPG aesthetic. Color palette: parchment backgrounds, dark wood panels, g
 - **Biome atmosphere**: The `--biome-tint` overlay tints every scene banner with the current region's palette. Catacombs reads purple, Ruins reads green, Frozen Caverns reads blue-grey — without any real illustration assets.
 - **Room transitions**: The 0.18 s fade-in on each room entry provides a clear, unobtrusive state change signal.
 - **Encounter pacing**: The last outcome is shown in a labeled, color-coded callout that is visually distinct from the next choice prompt, so the narrative reads as: *what just happened → what you face now*.
-- **All room types have art**: Shrine, merchant, and elite rooms have intentional scene keys with matching glyphs and tints. No room type shows `❓` fallback art.
-- **Encounter content depth**: 13 unique encounter definitions, 5 per biome, reduce repetition on multi-floor runs.
+- **All room types have distinct art**: Each room type now shows its own themed procedural SVG motif (treasure → chest + coins, combat → crossed blades, shrine → altar + crystal, etc.) rather than a generic glyph-in-a-box. Outcome art also switches the encounter banner dynamically after each choice resolves (starburst on success, cracked X on failure, half-circle on neutral).
+- **Explicit outcome deltas**: Every encounter outcome now shows numbered resource badges (e.g. "−8 HP", "+30 gold") so the player always knows exactly what a check cost or gained.
+- **Early-game fairness**: `checkChance` minimum raised to 15% and 5 new low-difficulty Catacombs events added, so level-3 characters have a meaningful chance to succeed and see varied content rather than near-auto-failing everything.
+- **GBC-style combat**: BattleScene rebuilt with a framed battlefield (foe upper-right, player lower-left), animated HP bars that drain with a color-coded CSS transition, diagonal lunge animations, hit-flash shake, damage floaters, and faint animations on defeat. Combat now reads as a spatial confrontation rather than a flat list.
+- **Encounter content depth**: 28 unique encounter definitions; all three biome pools at 10 events, reducing repetition. New events include gambles, boon-granting shrines, depth-gated locked paths, and curse-on-fail traps.
+- **Persistent buff readout**: The HUD shows each held relic's stat effects as signed per-stat tokens ("+3 ST", "DEF +4", "−15 HP"), grouped into Blessings and Curses below the relic icon tray. The player never has to tab away to understand how their current relics are affecting their stats.
+- **Per-spell VFX**: Casting Sparks shows an electric snap, Firebolt an expanding blaze, Mend a green healing glow on the player, Dazzle a spinning starburst, Hex a sinking violet mote, and rune spells a pulsing glyph. Spell detection uses `battle.lastAction` (structured field on `BattleState`) instead of the previous brittle log-string regex — every spell now reliably triggers its VFX.
+- **Per-biome battle backgrounds**: Dungeon battles show a biome-themed gradient (purple for Catacombs, dark green for Ruins, ice blue for Frozen) with a faint procedural silhouette overlay — bone arches, vine-draped columns, or ice spikes. Level-Up Trial battles keep the neutral default.
 - **Milestone progression**: The `deepestFloor` gates for merchants, elites, and tier-3 relics give early runs a sense of discovery. The next milestone is always visible on the entrance screen.
 - **Run history**: The entrance screen shows up to 5 recent runs (outcome, floor, date) so the player can track their progress between sessions without leaving the dungeon tab.
 - **Cross-tab record**: `deepestFloor` is now visible on the Character screen's Records panel alongside mine, forest, arena, and tactics records — a player can see their dungeon progression without opening the Explore tab.
@@ -419,8 +466,9 @@ Fantasy RPG aesthetic. Color palette: parchment backgrounds, dark wood panels, g
 
 ### Visual gaps
 
-- All scene art is procedural SVG placeholder. The `SCENE_REGISTRY` swap seam is defined but empty — no real illustration assets exist yet.
+- All scene art is procedural SVG (per-type themed motifs, not generic). The `SCENE_REGISTRY` swap seam is defined but empty — no real illustration assets exist yet. Dropping a PNG under the matching key in `SCENE_REGISTRY` replaces the procedural art automatically.
 - The biome tint overlay appears on scene banners only, not on panel backgrounds or the overall page. The atmosphere effect is correct but subtle.
+- BattleScene battler sprites are procedural crests (colored square + letter). `src/assets/sprites/bosses/<bossId>.png` and `avatars/<classId>.png` swap-seams are registered in `FOLDER_PREFIX`; dropping a PNG there lights it up with zero code changes.
 
 ### FloorMap
 
@@ -469,10 +517,11 @@ The items below are drawn from the Improvement Plan and have **not** been implem
 - In-run damage stats panel (damage dealt/taken this run, total rooms cleared across all floors).
 - Show total rooms remaining on the current floor (not just layer X of Y — count remaining selectable paths).
 
-### Visual and audio polish (Step 8)
+### Visual and audio polish
 
 - Audio: SFX for room entry, combat victory, relic acquisition, treasure pickup, and banking; optional per-biome ambient loop.
-- Real room illustrations: populate `SCENE_REGISTRY` in `scenes.ts` to replace procedural SVG banners.
+- Real room illustrations: populate `SCENE_REGISTRY` in `scenes.ts` to replace per-key procedural SVG banners. Swap-seam is in place — drop PNGs by key, zero component changes.
+- Real battler sprites: drop PNGs into `src/assets/sprites/bosses/<bossId>.png` and `avatars/<classId>.png`. Swap-seam registered in `FOLDER_PREFIX` in `src/lib/sprites.ts`.
 
 ### Code quality
 

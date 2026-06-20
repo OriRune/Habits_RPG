@@ -33,8 +33,8 @@ export function RestRoom() {
           </Button>
         )}
         <Button variant="secondary" onClick={() => rest('fortify')} className="w-full justify-between px-3 py-2 text-left text-sm">
-          <span>Attune to the deep</span>
-          <span className="text-[11px] text-gold-deep">a minor boon</span>
+          <span>Attune to the deep — add a boon</span>
+          <span className="text-[11px] text-gold-deep">stacks with relics</span>
         </Button>
       </div>
     </Panel>

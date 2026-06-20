@@ -57,6 +57,6 @@ export function resolveSceneImage(key: string): string | undefined {
 }
 
 /** Generated wide "framed image box" placeholder for a scene banner. */
-export function scenePlaceholderImage(look: SceneLook, caption?: string): string {
-  return framedSvg({ glyph: look.glyph, color: look.color, label: caption ?? look.caption, wide: true });
+export function scenePlaceholderImage(look: SceneLook, caption?: string, sceneKey?: string): string {
+  return framedSvg({ glyph: look.glyph, color: look.color, label: caption ?? look.caption, wide: true, sceneKey });
 }

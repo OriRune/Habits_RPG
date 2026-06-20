@@ -23,7 +23,7 @@ export function SceneArt({ sceneKey, caption, size = 'md', className }: SceneArt
   const look = getScene(sceneKey);
   const cap = caption ?? look.caption;
   // Real art when registered, otherwise a generated wide "framed image box" — always an <img>.
-  const src = resolveSceneImage(sceneKey) ?? scenePlaceholderImage(look, cap);
+  const src = resolveSceneImage(sceneKey) ?? scenePlaceholderImage(look, cap, sceneKey);
 
   return (
     <div className={cn('relative overflow-hidden rounded-md border-2 border-gold-deep/60', HEIGHTS[size], className)}>

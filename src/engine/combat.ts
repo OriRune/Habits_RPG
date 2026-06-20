@@ -4,7 +4,7 @@
 import { type StatId } from './stats';
 import type { BossDef, BossPhase, EnemyMove } from './bosses';
 import { getItem } from './items';
-import { getSpell, SCHOOL_STAT, type StatusKey } from './spells';
+import { getSpell, SCHOOL_STAT, type StatusKey, type SpellSchool, type SpellMechanic } from './spells';
 import type { WeaponDef } from './weapons';
 import type { CombatStats } from './combatStats';
 import { mitigation } from './combatStats';
@@ -116,6 +116,19 @@ export interface BattleState {
   enemyGuardBonus: number;
   /** Cumulative attack bonus from 'enrage' moves (permanent for the duration of the fight). */
   enemyEnrageBonus: number;
+  /**
+   * Structured record of the last player action — written by `playerAction` every turn.
+   * BattleScene reads this to drive per-spell VFX instead of regexing the log string.
+   */
+  lastAction?: {
+    kind: CombatAction['kind'];
+    spellKey?: string;
+    school?: SpellSchool;
+    mechanic?: SpellMechanic;
+    /** 'foe' for damage/illusion spells; 'self' for support spells (mend, bless, teleport). */
+    target: 'foe' | 'self';
+    amount?: number;
+  };
 }
 
 const ANTI_FRUSTRATION_LOSS_THRESHOLD = 3;
@@ -342,6 +355,7 @@ export function playerAction(
       const tag = weak ? ' — weak to it!' : resist ? ' — resisted' : '';
       const guardTag = s.enemyGuardBonus > 0 ? ' (guarded)' : '';
       s.log.push(`You attack with ${weapon.name} for ${dealt}${tag}${guardTag}${full ? '' : ' (exhausted)'}.`);
+      s.lastAction = { kind: 'attack', target: 'foe', amount: dealt };
       break;
     }
     case 'spell': {
@@ -365,14 +379,17 @@ export function playerAction(
         const delay = 1 + Math.floor(rng() * 3);
         s.pendingRunes.push({ kind, turnsLeft: delay, power: dealt });
         s.log.push(`${spell.name} is inscribed on the ground. It triggers in ${delay} turn${delay > 1 ? 's' : ''}!`);
+        s.lastAction = { kind: 'spell', spellKey: action.spellKey, school: spell.school, mechanic: spell.mechanic, target: 'foe' };
       } else if (spell.mechanic === 'ring-of-fire') {
         const magnitude = Math.max(2, Math.round(c.damageSpell * weakenFactor * 0.4 + spell.power * 0.3));
         applyStatus(s.enemyStatuses, { key: 'burn', turns: 3, magnitude });
         s.log.push(`${spell.name} engulfs the foe in a ring of flame.`);
+        s.lastAction = { kind: 'spell', spellKey: action.spellKey, school: spell.school, mechanic: spell.mechanic, target: 'foe' };
       } else if (spell.mechanic === 'teleport') {
         const ward = Math.max(2, Math.round(c.supportSpell * 0.5));
         applyStatus(s.playerStatuses, { key: 'bless', turns: 2, magnitude: ward });
         s.log.push(`${spell.name} — you blink evasively, gaining a defensive ward.`);
+        s.lastAction = { kind: 'spell', spellKey: action.spellKey, school: spell.school, mechanic: spell.mechanic, target: 'self' };
       } else if (spell.school === 'damage') {
         const { dealt, weak, resist } = spellDamageRoll(
           spell.power, weakenedDamageSpell, schoolStat, state.weakTo, state.resistTo, s.enemyWard, rng,
@@ -381,17 +398,21 @@ export function playerAction(
         const tag = weak ? ' — super effective!' : resist ? ' — resisted' : '';
         s.log.push(`${spell.name} sears the foe for ${dealt}${tag}.`);
         if (spell.status) applyStatus(s.enemyStatuses, spell.status);
+        s.lastAction = { kind: 'spell', spellKey: action.spellKey, school: spell.school, mechanic: spell.mechanic, target: 'foe', amount: dealt };
       } else if (spell.school === 'support') {
+        let supportAmount: number | undefined;
         if (spell.power > 0) {
           const heal = spellHealAmount(spell.power, c.supportSpell);
           const gained = Math.min(heal, s.playerMaxHp - s.playerHp);
           s.playerHp += gained;
           s.log.push(`${spell.name} restores ${gained} HP.`);
+          supportAmount = gained;
         }
         if (spell.status) {
           applyStatus(s.playerStatuses, spell.status);
           s.log.push(`${spell.name} wraps you in a protective ward.`);
         }
+        s.lastAction = { kind: 'spell', spellKey: action.spellKey, school: spell.school, mechanic: spell.mechanic, target: 'self', amount: supportAmount };
       } else {
         // illusion — apply a debuff to the foe, potency boosted by Charisma
         if (spell.status) {
@@ -399,6 +420,7 @@ export function playerAction(
           applyStatus(s.enemyStatuses, boosted);
           s.log.push(`${spell.name} bewilders the foe.`);
         }
+        s.lastAction = { kind: 'spell', spellKey: action.spellKey, school: spell.school, mechanic: spell.mechanic, target: 'foe' };
       }
       break;
     }
@@ -407,6 +429,7 @@ export function playerAction(
       const regain = Math.round(s.playerMaxSta * 0.5);
       s.playerSta = Math.min(s.playerMaxSta, s.playerSta + regain);
       s.log.push(`You brace, recovering ${regain} stamina.`);
+      s.lastAction = { kind: 'defend', target: 'self', amount: regain };
       break;
     }
     case 'item': {
@@ -416,9 +439,11 @@ export function playerAction(
         break;
       }
       s.consumedItems.push(item.key);
+      let itemHeal = 0;
       if (item.effect.healHp) {
         const heal = Math.min(item.effect.healHp, s.playerMaxHp - s.playerHp);
         s.playerHp += heal;
+        itemHeal = heal;
         s.log.push(`You drink ${item.name} and restore ${heal} HP.`);
       }
       if (item.effect.buff) {
@@ -427,15 +452,18 @@ export function playerAction(
         }
         s.log.push(`${item.name} sharpens your senses for this battle.`);
       }
+      s.lastAction = { kind: 'item', target: 'self', amount: itemHeal || undefined };
       break;
     }
     case 'flee': {
       if (rng() < c.flee) {
         s.status = 'fled';
+        s.lastAction = { kind: 'flee', target: 'self' };
         s.log.push('You slip away and escape the fight!');
         return s;
       }
       s.log.push("You can't escape! The foe presses in.");
+      s.lastAction = { kind: 'flee', target: 'self' };
       break;
     }
   }

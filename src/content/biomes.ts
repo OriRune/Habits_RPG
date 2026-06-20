@@ -22,7 +22,11 @@ export const BIOMES: Record<string, BiomeDef> = {
     tint: '#4a3a55',
     blurb: 'Bone-lined halls where the restless dead keep their vigil.',
     enemies: ['skeleton', 'wisp', 'ghoul'],
-    encounters: ['sealed_door', 'gatekeeper', 'bone_pit', 'ossuary_hoard', 'whispering_crypt'],
+    encounters: [
+      'sealed_door', 'gatekeeper', 'bone_pit', 'ossuary_hoard', 'whispering_crypt',
+      // Easy early-game events (difficulty 1–3) for new characters
+      'ancient_cache', 'dust_and_echoes', 'crumbling_fresco', 'bone_chimes', 'fallen_pilgrim',
+    ],
     boss: {
       id: 'bone_tyrant',
       name: 'The Bone Tyrant',
@@ -67,7 +71,10 @@ export const BIOMES: Record<string, BiomeDef> = {
     tint: '#2f5a3a',
     blurb: 'Toppled stone swallowed by root and bramble, prowled by wild things.',
     enemies: ['goblin', 'giant_spider', 'dire_wolf', 'thornling'],
-    encounters: ['collapsing_bridge', 'wild_grove', 'gatekeeper', 'toppled_idol', 'spiders_larder'],
+    encounters: [
+      'collapsing_bridge', 'wild_grove', 'gatekeeper', 'toppled_idol', 'spiders_larder',
+      'ruined_scriptorium', 'vine_temple', 'overgrown_arsenal', 'riverside_shrine', 'fungal_network',
+    ],
     boss: {
       id: 'vinewood_ancient',
       name: 'The Vinewood Ancient',
@@ -111,7 +118,10 @@ export const BIOMES: Record<string, BiomeDef> = {
     tint: '#33586b',
     blurb: 'A blue-lit labyrinth of ice where elementals churn the cold.',
     enemies: ['stone_sentry', 'frost_revenant', 'ice_elemental'],
-    encounters: ['frozen_chasm', 'starving_dark', 'sealed_door', 'buried_caravan', 'aurora_pool'],
+    encounters: [
+      'frozen_chasm', 'starving_dark', 'sealed_door', 'buried_caravan', 'aurora_pool',
+      'ice_sculptor', 'whiteout', 'frozen_titan', 'cold_archive', 'glacial_hermit',
+    ],
     boss: {
       id: 'frost_warden',
       name: 'The Frost Warden',

@@ -102,6 +102,11 @@ export async function pullCloudSave(): Promise<void> {
   }
 
   if (data) {
+    // Re-check after the network round-trip — a dungeon/mining/arena run may have
+    // started while we were awaiting Supabase.  Overwriting localStorage + calling
+    // rehydrate() here would clobber the live in-memory board even though merge()
+    // tries to preserve it (race: current.dungeon is still null during rehydrate).
+    if (hasActiveRun()) return;
     lastPulledVersion = data.version as number;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data.state));
     await useGameStore.persist.rehydrate();
