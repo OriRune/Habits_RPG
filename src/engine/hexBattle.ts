@@ -1085,9 +1085,10 @@ export const ARCHETYPE_INFO: Record<AIArchetype, { label: string; blurb: string;
 
 function archetypeFor(templateId: string): AIArchetype {
   switch (templateId) {
-    case 'dire_wolf': case 'goblin': case 'ghoul': case 'ice_elemental': return 'charger';
-    case 'wisp': case 'frost_revenant': return 'kiter';
-    case 'stone_sentry': case 'thornling': return 'holder';
+    case 'dire_wolf': case 'goblin': case 'ghoul': case 'ice_elemental':
+    case 'frost_troll': case 'ice_wolf': return 'charger';
+    case 'wisp': case 'frost_revenant': case 'draugr_mage': case 'goblin_shaman': case 'ice_wisp': return 'kiter';
+    case 'stone_sentry': case 'thornling': case 'corrupt_huorn': return 'holder';
     case 'skeleton': case 'giant_spider': return 'flanker';
     default: return 'charger';
   }

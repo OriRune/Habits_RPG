@@ -21,7 +21,7 @@ export const BIOMES: Record<string, BiomeDef> = {
     name: 'The Catacombs',
     tint: '#4a3a55',
     blurb: 'Bone-lined halls where the restless dead keep their vigil.',
-    enemies: ['skeleton', 'wisp', 'ghoul'],
+    enemies: ['skeleton', 'wisp', 'ghoul', 'draugr_mage', 'goblin'],
     encounters: [
       'sealed_door', 'gatekeeper', 'bone_pit', 'ossuary_hoard', 'whispering_crypt',
       // Easy early-game events (difficulty 1–3) for new characters
@@ -70,7 +70,7 @@ export const BIOMES: Record<string, BiomeDef> = {
     name: 'The Overgrown Ruins',
     tint: '#2f5a3a',
     blurb: 'Toppled stone swallowed by root and bramble, prowled by wild things.',
-    enemies: ['goblin', 'giant_spider', 'dire_wolf', 'thornling'],
+    enemies: ['goblin', 'giant_spider', 'dire_wolf', 'thornling', 'goblin_shaman', 'corrupt_huorn'],
     encounters: [
       'collapsing_bridge', 'wild_grove', 'gatekeeper', 'toppled_idol', 'spiders_larder',
       'ruined_scriptorium', 'vine_temple', 'overgrown_arsenal', 'riverside_shrine', 'fungal_network',
@@ -117,7 +117,7 @@ export const BIOMES: Record<string, BiomeDef> = {
     name: 'The Frozen Caverns',
     tint: '#33586b',
     blurb: 'A blue-lit labyrinth of ice where elementals churn the cold.',
-    enemies: ['stone_sentry', 'frost_revenant', 'ice_elemental'],
+    enemies: ['stone_sentry', 'frost_revenant', 'ice_elemental', 'frost_troll', 'ice_wolf', 'ice_wisp'],
     encounters: [
       'frozen_chasm', 'starving_dark', 'sealed_door', 'buried_caravan', 'aurora_pool',
       'ice_sculptor', 'whiteout', 'frozen_titan', 'cold_archive', 'glacial_hermit',
