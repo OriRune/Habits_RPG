@@ -1,6 +1,6 @@
 # Dungeon Delve Minigame Analysis
 
-*Last updated: 2026-06-20. Reflects the state after improvement Phases 1–4 plus the follow-up round: Run Buffs HUD, Event Variety, and Battle VFX.*
+*Last updated: 2026-06-20. Reflects the state after improvement Phases 1–4 plus follow-up rounds: Run Buffs HUD, Event Variety, Battle VFX, 7 new enemies, bespoke SVG monster avatars, enemy MP/STA economy, and Battle HUD overhaul.*
 
 ---
 
@@ -86,7 +86,15 @@ All interaction is click/tap. There is no keyboard navigation, no real-time comp
 
 **FloorMap** (`src/components/dungeon/FloorMap.tsx`): A layered grid of room node buttons, with an SVG overlay drawn behind the nodes that renders connection lines between them. Active connections (visited → choosable) render as solid gold lines; other connections render as dashed, dimmed lines. Choosable rooms glow gold; visited rooms show a checkmark badge; unreachable rooms are dimmed and disabled. A `Layer X of Y` label in the header shows floor progress. Room types are distinguished by Lucide icon and color. A hint text reads "Tap a glowing room to enter it."
 
-**BattleScene** (`src/components/combat/BattleScene.tsx`): Shared combat component reused from the top-level boss battles. Renders a GBC/Pokémon-style framed battlefield: foe sprite upper-right on a raised shadow-platform, player sprite lower-left; foe info card (name, HP, statuses, telegraphed intent) upper-left; player info card (class, HP, MP, STA) lower-right. HP bars animate width transitions (400 ms ease) and shift green → amber → red at 50%/20% thresholds. CSS keyframe animations (`battle-lunge-foe/player`, `battle-hit`, `battle-floater`, `battle-spell`, `battle-faint-foe/player`) are triggered by a diff `useEffect` that classifies each turn (player melee → lunge + foe shake + floating "−N" damage number; foe attacks → foe lunge + player shake + floater; spell cast → projectile sprite instead of lunge). Sprites idle-bob continuously (`battle-idle`, staggered delays). All motion animations use Tailwind's `motion-safe:` variant so they degrade gracefully when `prefers-reduced-motion: reduce` is set. Boss death triggers `battle-faint-foe`; player defeat triggers `battle-faint-player`.
+**BattleScene** (`src/components/combat/BattleScene.tsx`): Shared combat component reused from the top-level boss battles. Renders a GBC/Pokémon-style framed battlefield:
+- **Foe portrait** — upper-right on a raised shadow-platform, bespoke SVG silhouette (see §7 Sprites).
+- **Foe info card** — upper-left (name, HP bar, MP+STA bars when the foe has a moveset, status icons).
+- **Enemy intent** — top-center of the battlefield in its own responsive card (`w-[42%] max-w-[240px]`, centered with `left-1/2 -translate-x-1/2`), clear of both portraits. Toned red/gold/neutral by move type.
+- **Player portrait** — lower-left, idle-bobbing sprite.
+- **Player info card** — lower-right (class name, HP bar, MP bar, STA bar, status icons).
+- **Battle log** — below the battlefield; latest line reveals character-by-character via `TypewriterText` (22 ms/char); snaps on `prefers-reduced-motion` or tap-to-skip.
+
+HP bars animate (400 ms ease) and shift green → amber → red at 50%/20%. Resource bars for both combatants are thin labeled strips (`ResourceBar`) with smooth CSS transitions. CSS keyframe animations (`battle-lunge-foe/player`, `battle-hit`, `battle-floater`, `battle-spell`, `battle-faint-foe/player`) are triggered by a diff `useEffect` that classifies each turn. All motion effects use Tailwind's `motion-safe:` variant. Boss death triggers `battle-faint-foe`; player defeat triggers `battle-faint-player`.
 
 **EncounterRoom** (inline in `src/views/DungeonView.tsx`): Shows a `SceneArt` banner, then a separately labeled outcome callout (color-coded: red border for fail, gold border for success, neutral for no check) above the next narrative node's text and choices. Each choice button includes a stat badge showing the relevant stat level and success odds (`STAT X · ~Y%`). The outcome callout has a small header label ("Outcome — success", "Outcome — failure", "Outcome") so it is visually distinct from the prompt text that follows. Gated choices (those with `requires` conditions not met by the current run state) are rendered as disabled buttons with a small lock hint ("Need 30 HP", "Floor 6+ only"); choices that will grant a boon or curse show a badge (✦ Boon, ✦ Boon on success, ⚠ Curse on fail).
 
@@ -145,7 +153,7 @@ Room type is selected by weighted random from `normalKindWeights()` (`src/engine
 
 ### Room types and resolution
 
-**Combat / Elite / Boss**: Calls `createBattle()` and passes to the shared combat engine. HP/MP/Sta are carried into the battle via `battle.startingHp/Mp/Sta`. After resolution, run resources are updated from `battle.playerHp/Mp/Sta`. Elite wins grant a bonus boon offer in addition to floor loot. Boss fights can have multiple phases (indicated by PhasePips). Boss biome phases have full movesets (weighted attack, heavy, guard, drain, inflict, enrage, multi) defined in `src/content/biomes.ts`.
+**Combat / Elite / Boss**: Calls `createBattle()` and passes to the shared combat engine. HP/MP/Sta are carried into the battle via `battle.startingHp/Mp/Sta`. After resolution, run resources are updated from `battle.playerHp/Mp/Sta`. Elite wins grant a bonus boon offer in addition to floor loot. Boss fights can have multiple phases (indicated by PhasePips). Boss biome phases have full movesets (weighted attack, heavy, guard, drain, inflict, enrage, multi) defined in `src/content/biomes.ts`. Enemies now have functional **MP and stamina pools** (`bossMaxMp/bossMp/bossMaxSta/bossSta` on `BattleState`): magic moves cost MP, physical moves cost stamina; the AI's `pickEnemyMove` filters to only affordable moves and falls back to a free basic attack when dry. Resources regen +1 MP / +2 STA per turn and refill fully on phase transitions.
 
 **Encounter**: A branching text event. Choices may have a stat check (`checkChance(power, difficulty)` = `min(0.95, max(0.15, 0.3 + (power − difficulty) × 0.07))`). The minimum was raised from 0.05 → 0.15 to prevent fresh characters (stat level ~1) from near-auto-failing early Catacomb events. Success/failure routes to different subsequent nodes. Resource deltas (HP/MP/Sta/gold/materials) and their numerical magnitudes are always displayed in a colored outcome badge (e.g. "−8 HP", "+30 gold") so the player sees the exact cost/gain of every outcome. Choices may additionally carry `hpOnFail`, `mpOnFail`, or `staOnFail` penalties.
 
@@ -198,9 +206,9 @@ Boon tiers gate on deepest floor reached: Tier 1 always; Tier 2 from depth 4; Ti
 
 | Biome | Tint | Enemy pool | Boss |
 |-------|------|-----------|------|
-| The Catacombs | `#4a3a55` (deep purple) | skeleton, wisp, ghoul | The Bone Tyrant (2-phase) |
-| The Overgrown Ruins | `#2f5a3a` (forest green) | goblin, giant_spider, dire_wolf, thornling | The Vinewood Ancient (2-phase) |
-| The Frozen Caverns | `#33586b` (ice blue) | stone_sentry, frost_revenant, ice_elemental | The Frost Warden (3-phase) |
+| The Catacombs | `#4a3a55` (deep purple) | skeleton, wisp, ghoul, draugr_mage (frost magic / freeze), goblin | The Bone Tyrant (2-phase) |
+| The Overgrown Ruins | `#2f5a3a` (forest green) | goblin, giant_spider, dire_wolf, thornling, goblin_shaman (nature/poison magic), corrupt_huorn (high defense, slow, carnivorous tree) | The Vinewood Ancient (2-phase) |
+| The Frozen Caverns | `#33586b` (ice blue) | stone_sentry, frost_revenant, ice_elemental, frost_troll (strong brute), ice_wolf (dire wolf reskin w/ chill), ice_wisp (crystal spirit) | The Frost Warden (3-phase) |
 
 The biome `tint` is applied visually: both the checkpoint container and the active-run container set `--biome-tint: biome.tint` as a CSS custom property, which `SceneArt` reads via a 22%-opacity overlay on every scene banner within that subtree. This gives each region a distinct ambient palette.
 
@@ -242,7 +250,7 @@ All generation functions (`generateFloorMap`, `resolveTreasure`, `rollBoons`, et
 | `src/engine/biomes.ts` | Biome definitions and `biomeForDepth()`, `bossFor()`, `isBossDepth()`. |
 | `src/engine/encounters.ts` | `EncounterDef`/`EncounterNode`/`EncounterChoice` types, `chooseEncounter()` stat-check resolution, `checkChance()`, `choiceAvailable()`, `ChoiceGateCtx`. Choices support `requires`, `boon`, `boonOnSuccess`, `curseOnFail`; steps support `grantBoonTier`, `grantCurse`. |
 | `src/engine/relics.ts` | `RelicDef` type, `rollBoons()`, `rollCurse()`, `aggregateRelics()`, `boonMaxTier()`. |
-| `src/engine/combat.ts` | Shared combat engine used for all dungeon battles. `BattleState.lastAction` (new structured field) is written by `playerAction` on every turn to enable reliable spell VFX detection. |
+| `src/engine/combat.ts` | Shared combat engine used for all dungeon battles. `BattleState.lastAction` (structured field) enables reliable spell VFX detection. `BattleState` now also carries `bossMaxMp/bossMp/bossMaxSta/bossSta` — the enemy resource economy. `applyPhase()` initialises pools (auto-derived as `8 + attack×0.4`, overridable per-phase); `enemyMoveCost()` maps move kinds to costs; `pickEnemyMove()` filters to affordable moves before the weighted roll; `executeEnemyMove()` deducts costs; `enemyTurn()` regens +1 MP / +2 STA per turn. `src/engine/bosses.ts` gained optional `mpCost`/`staCost` on `EnemyMove` and `maxMp`/`maxSta` on `BossPhase`/`BossDef`. |
 | `src/store/useGameStore.ts` | ~15 dungeon store actions. `DungeonRun` imported from `src/engine/dungeonTypes.ts`. `deepestFloor` and `dungeonHistory` are the two persistent dungeon records. Exports `DungeonRunSummary` type. |
 | `src/views/ExploreView.tsx` | Hosts `DungeonErrorBoundary` (class component) wrapping `<DungeonView />`. Any render crash in the dungeon shows a "Back to Explore" recovery screen instead of blanking the app. |
 | `src/views/DungeonView.tsx` | Top-level dungeon view. Renders all dungeon states (entrance, run, checkpoint, end). Entrance shows "Deepest descent" row and "Recent Runs" panel from `dungeonHistory`. Sets `--biome-tint` CSS variable on checkpoint and active-run containers. Wraps room content in a `key={nodeId}` div for fade-in animation. Hosts `EncounterRoom`, `PhasePips`, `RewardLine`, `RewardInline`, `RunGauge` inline sub-components. |
@@ -348,7 +356,7 @@ No two-way data bindings or callbacks between the engine and the UI. The UI read
 | UI primitives | Custom `Panel`, `Button`, `Sprite`, `SceneArt`, `Modal` components in `src/components/ui/` |
 | Art pipeline | Procedural SVG placeholders via `src/lib/placeholderArt.ts` and `src/lib/sprites.ts`; swap seam in `src/lib/scenes.ts` (`SCENE_REGISTRY` / `resolveSceneImage()`) for future real assets. Biome tint overlay added via CSS variable. |
 | Persistence | `localStorage` via Zustand persist |
-| Testing | Vitest (900+ tests; dungeon-specific coverage in `dungeon.test.ts`, `dungeonMap.test.ts`, `content.test.ts`) |
+| Testing | Vitest (989 tests; dungeon-specific coverage in `dungeon.test.ts`, `dungeonMap.test.ts`, `content.test.ts`; combat resource economy in `combat.resources.test.ts`) |
 
 ---
 
@@ -391,6 +399,8 @@ All scene keys remain registered in `src/lib/scenes.ts`. There is a defined swap
 ### Sprites
 
 Relics use `Sprite` with procedurally generated crest art (`relicCrest()` from `src/lib/sprites.ts`). Room type icons in FloorMap are Lucide vector icons.
+
+**Monster avatars** — all 16 dungeon enemies and 3 biome bosses now have bespoke SVG silhouettes rendered in the BattleScene gold-frame style. `enemyMotif(key)` in `placeholderArt.ts` returns a hand-authored SVG path/polygon composition per base entity id; `enemyPalette(key)` returns a per-monster radial gradient field color. The pipeline is: `Sprite` → `placeholderImage(look)` → `framedSvg({entityKey})` → `monsterSquareSvg(entityKey, color, label)`. The `enemyCrest(id, name)` helper in `sprites.ts` strips the runtime depth suffix (e.g. `skeleton_d3_elite` → `skeleton`) before passing it as the `art` field on `CrestLook`. The PNG swap-seam remains: dropping `src/assets/sprites/bosses/<bossId>.png` auto-overrides the SVG for zero code changes.
 
 ### Animations
 
@@ -451,6 +461,10 @@ Fantasy RPG aesthetic. Color palette: parchment backgrounds, dark wood panels, g
 - **Run history**: The entrance screen shows up to 5 recent runs (outcome, floor, date) so the player can track their progress between sessions without leaving the dungeon tab.
 - **Cross-tab record**: `deepestFloor` is now visible on the Character screen's Records panel alongside mine, forest, arena, and tactics records — a player can see their dungeon progression without opening the Explore tab.
 - **Error recovery**: An error boundary catches any render crash inside DungeonView and offers a "Back to Explore" escape instead of blanking the entire application.
+- **Monster avatars**: Every enemy and biome boss shows a distinct bespoke SVG silhouette in the battle frame — skeleton skull-and-bones, hooded draugr mage cradling a frost orb, gnarled corrupt huorn with a tree-face and clawed roots, armored frost warden helm, etc. All 19 motifs use per-monster gradient palettes and the existing gold-frame house style.
+- **Enemy resource economy**: Enemies have real MP and stamina pools. Magic foes spend MP on their moves; physical foes spend stamina. The AI only picks moves it can afford; a drained foe falls back to a free basic attack rather than soft-locking. Resources regen per turn and refill fully on phase transitions. Both combatants' MP and STA bars are now visible in their respective portrait cards within the battlefield.
+- **Unobstructed enemy intent**: The "Next Move" telegraph card sits in the empty top-center strip of the battlefield (not below the foe card), so it is never covered by either combatant portrait regardless of display width.
+- **Typewriter battle log**: The latest log line now reveals character-by-character, making each combat event feel like it plays out rather than appearing instantaneously. Tap-to-skip snaps it immediately; `prefers-reduced-motion` shows the full line at once.
 
 ### What remains rough or unfinished
 
@@ -468,7 +482,7 @@ Fantasy RPG aesthetic. Color palette: parchment backgrounds, dark wood panels, g
 
 - All scene art is procedural SVG (per-type themed motifs, not generic). The `SCENE_REGISTRY` swap seam is defined but empty — no real illustration assets exist yet. Dropping a PNG under the matching key in `SCENE_REGISTRY` replaces the procedural art automatically.
 - The biome tint overlay appears on scene banners only, not on panel backgrounds or the overall page. The atmosphere effect is correct but subtle.
-- BattleScene battler sprites are procedural crests (colored square + letter). `src/assets/sprites/bosses/<bossId>.png` and `avatars/<classId>.png` swap-seams are registered in `FOLDER_PREFIX`; dropping a PNG there lights it up with zero code changes.
+- All 16 enemies and 3 bosses have bespoke SVG silhouette avatars in BattleScene (skeleton skull+bones, wisp flame, draugr mage with frost orb, etc.). The `src/assets/sprites/bosses/<bossId>.png` swap-seam overrides any SVG — drop a PNG and it takes over with zero code changes. `avatars/<classId>.png` works the same for the player portrait.
 
 ### FloorMap
 
