@@ -84,6 +84,10 @@ export interface BattleState {
   bossDefense: number;
   enemyWard: number;
   attackSchool: 'physical' | 'magic';
+  bossMaxMp: number;
+  bossMp: number;
+  bossMaxSta: number;
+  bossSta: number;
   weakTo: StatId[];
   resistTo: StatId[];
   /** Multi-phase script + current stage. Single-phase foes have one entry. */
@@ -158,6 +162,12 @@ function applyPhase(s: BattleState, phase: BossPhase, relief: number): void {
   s.attackSchool = phase.attackSchool ?? 'physical';
   s.weakTo = phase.weakTo;
   s.resistTo = phase.resistTo ?? [];
+  // Enemy resource pools — refilled on every (re)apply so phase transitions give fresh resources.
+  const basePool = 8 + Math.round(phase.attack * 0.4);
+  s.bossMaxMp  = phase.maxMp  ?? basePool;
+  s.bossMaxSta = phase.maxSta ?? basePool;
+  s.bossMp  = s.bossMaxMp;
+  s.bossSta = s.bossMaxSta;
 }
 
 export function createBattle(
@@ -197,6 +207,10 @@ export function createBattle(
     bossHp: 0,
     bossAttack: 0,
     bossDefense: 0,
+    bossMaxMp: 0,
+    bossMp: 0,
+    bossMaxSta: 0,
+    bossSta: 0,
     enemyWard: 0,
     attackSchool: 'physical',
     weakTo: [],
@@ -225,7 +239,7 @@ export function createBattle(
   };
   applyPhase(s, phases[0], relief);
   // Telegraph the foe's first move so the player sees intent before they act.
-  s.enemyIntent = pickEnemyMove(phases[0], rng);
+  s.enemyIntent = pickEnemyMove(phases[0], s.bossMp, s.bossSta, rng);
   return s;
 }
 
@@ -246,18 +260,47 @@ function resolveBossDown(s: BattleState): void {
 }
 
 /**
- * Weighted-randomly select the next move from a phase's moveset.
- * Returns null when the phase has no moveset, which falls back to a basic attack.
+ * Default MP and stamina cost for each move kind.
+ * `isMagic` = true when the phase's attackSchool is 'magic'.
+ * Per-move overrides via `move.mpCost` / `move.staCost` take precedence.
  */
-function pickEnemyMove(phase: BossPhase, rng: RNG): EnemyMove | null {
+function enemyMoveCost(move: EnemyMove, isMagic: boolean): { mp: number; sta: number } {
+  if (move.mpCost !== undefined || move.staCost !== undefined) {
+    return { mp: move.mpCost ?? 0, sta: move.staCost ?? 0 };
+  }
+  switch (move.kind) {
+    case 'attack':  return isMagic ? { mp: 2, sta: 0 } : { mp: 0, sta: 1 };
+    case 'heavy':   return isMagic ? { mp: 4, sta: 0 } : { mp: 0, sta: 3 };
+    case 'multi':   return isMagic ? { mp: 4, sta: 0 } : { mp: 0, sta: 3 };
+    case 'drain':   return isMagic ? { mp: 3, sta: 0 } : { mp: 0, sta: 2 };
+    case 'inflict': return { mp: 3, sta: 0 };
+    case 'guard':   return { mp: 0, sta: 1 };
+    case 'enrage':  return { mp: 0, sta: 2 };
+    default:        return { mp: 0, sta: 0 };
+  }
+}
+
+/**
+ * Weighted-randomly select the next move from a phase's moveset, filtered to only
+ * moves the foe can currently afford (mp ≤ bossMp and sta ≤ bossSta).
+ * Returns null when the phase has no moveset or nothing is affordable — both cases
+ * fall back to the free basic-attack in the caller.
+ */
+function pickEnemyMove(phase: BossPhase, bossMp: number, bossSta: number, rng: RNG): EnemyMove | null {
   const pool = phase.moveset;
   if (!pool || pool.length === 0) return null;
-  const total = pool.reduce((a, m) => a + (m.weight ?? 1), 0);
+  const isMagic = phase.attackSchool === 'magic';
+  const affordable = pool.filter((m) => {
+    const cost = enemyMoveCost(m, isMagic);
+    return cost.mp <= bossMp && cost.sta <= bossSta;
+  });
+  if (affordable.length === 0) return null;
+  const total = affordable.reduce((a, m) => a + (m.weight ?? 1), 0);
   let r = rng() * total;
-  for (const m of pool) {
+  for (const m of affordable) {
     if ((r -= m.weight ?? 1) < 0) return m;
   }
-  return pool[pool.length - 1];
+  return affordable[affordable.length - 1];
 }
 
 /** ±15% spread on a base magnitude. Exported so the real-time Arena rolls damage identically. */
@@ -525,6 +568,14 @@ function executeEnemyMove(s: BattleState, c: Combatant, intent: EnemyMove | null
   const act: { kind: EnemyMove['kind']; dealt: number } = { kind, dealt: 0 };
   s.lastEnemyAction = act;
 
+  // Deduct resource cost for a real telegraphed move (not the free-fallback null move).
+  if (intent) {
+    const isMagic = s.attackSchool === 'magic';
+    const cost = enemyMoveCost(intent, isMagic);
+    s.bossMp  = Math.max(0, s.bossMp  - cost.mp);
+    s.bossSta = Math.max(0, s.bossSta - cost.sta);
+  }
+
   switch (kind) {
     case 'attack': {
       if (rng() < c.dodge) { s.log.push(`${s.bossName} attacks — you dodge!`); return; }
@@ -608,14 +659,19 @@ function enemyTurn(s: BattleState, c: Combatant, rng: RNG): void {
   if (freeze) {
     s.log.push(`${s.bossName} is frozen solid and cannot act!`);
     s.lastEnemyAction = null;
-    s.enemyIntent = pickEnemyMove(currentPhase, rng);
+    // Small regen on skipped turns so the foe doesn't stall indefinitely.
+    s.bossMp  = Math.min(s.bossMaxMp,  s.bossMp  + 1);
+    s.bossSta = Math.min(s.bossMaxSta, s.bossSta + 2);
+    s.enemyIntent = pickEnemyMove(currentPhase, s.bossMp, s.bossSta, rng);
     return;
   }
   const blind = hasStatus(s.enemyStatuses, 'blind');
   if (blind && rng() < 0.4) {
     s.log.push(`${s.bossName} swings blindly and misses!`);
     s.lastEnemyAction = null;
-    s.enemyIntent = pickEnemyMove(currentPhase, rng);
+    s.bossMp  = Math.min(s.bossMaxMp,  s.bossMp  + 1);
+    s.bossSta = Math.min(s.bossMaxSta, s.bossSta + 2);
+    s.enemyIntent = pickEnemyMove(currentPhase, s.bossMp, s.bossSta, rng);
     return;
   }
 
@@ -628,8 +684,12 @@ function enemyTurn(s: BattleState, c: Combatant, rng: RNG): void {
     s.log.push('You fall... but you keep your XP. Train more and try again.');
   }
 
+  // Per-turn resource regen — keeps the foe from permanently drying out.
+  s.bossMp  = Math.min(s.bossMaxMp,  s.bossMp  + 1);
+  s.bossSta = Math.min(s.bossMaxSta, s.bossSta + 2);
+
   // Queue the next intent for the player to see before their turn.
-  s.enemyIntent = pickEnemyMove(currentPhase, rng);
+  s.enemyIntent = pickEnemyMove(currentPhase, s.bossMp, s.bossSta, rng);
 }
 
 /** End-of-round: apply damage-over-time, fire pending runes, then decrement/expire all statuses. */

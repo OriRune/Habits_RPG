@@ -54,23 +54,6 @@ function HpBar({ value, max }: { value: number; max: number }) {
   );
 }
 
-// ── Gauge: thin MP/STA bar ────────────────────────────────────────────────────
-
-function Gauge({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
-  const pct = max > 0 ? Math.max(0, Math.round((value / max) * 100)) : 0;
-  return (
-    <div>
-      <div className="mb-0.5 flex justify-between font-display text-[11px]">
-        <span className="font-semibold text-parchment-200">{label}</span>
-        <span className="tabular-nums text-parchment-300/80">{value}/{max}</span>
-      </div>
-      <div className="h-2 overflow-hidden rounded-full border border-gold-deep/60 bg-wood-900">
-        <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: color }} />
-      </div>
-    </div>
-  );
-}
-
 // ── Statuses ──────────────────────────────────────────────────────────────────
 
 function Statuses({ list }: { list: StatusEffect[] }) {
@@ -85,6 +68,60 @@ function Statuses({ list }: { list: StatusEffect[] }) {
       ))}
     </div>
   );
+}
+
+// ── ResourceBar: compact in-scene MP / STA bar ────────────────────────────────
+
+function ResourceBar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
+  const pct = max > 0 ? Math.max(0, Math.min(100, (value / max) * 100)) : 0;
+  return (
+    <div className="mt-0.5 flex items-center gap-1">
+      <span className="w-4 shrink-0 font-display text-[8px] font-bold uppercase text-parchment-300/60">{label}</span>
+      <div className="h-1.5 flex-1 overflow-hidden rounded-sm border border-gold-deep/25 bg-wood-900">
+        <div
+          className="h-full rounded-sm transition-all duration-700"
+          style={{ width: `${pct}%`, backgroundColor: color }}
+        />
+      </div>
+      <span className="w-5 shrink-0 text-right font-display text-[8px] tabular-nums text-parchment-300/50">{value}</span>
+    </div>
+  );
+}
+
+// ── TypewriterText: character-by-character reveal for the latest log line ─────
+
+function TypewriterText({ text, skip }: { text: string; skip: boolean }) {
+  const [shown, setShown] = useState(text);
+  const mounted = useRef(false);
+  // Read once on first render; doesn't need to react to changes mid-session.
+  const reducedMotion = useRef(
+    typeof window !== 'undefined' && (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false),
+  ).current;
+
+  // Re-type whenever the text changes (skip initial mount to avoid typing the first line).
+  useEffect(() => {
+    if (!mounted.current) { mounted.current = true; return; }
+    if (reducedMotion) { setShown(text); return; }
+    setShown('');
+    let i = 0;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    function tick() {
+      i++;
+      setShown(text.slice(0, i));
+      if (i < text.length) timers.push(setTimeout(tick, 22));
+    }
+    timers.push(setTimeout(tick, 0));
+    return () => timers.forEach(clearTimeout);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text]);
+
+  // Snap to full string when the user taps to skip.
+  useEffect(() => {
+    if (skip) setShown(text);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skip]);
+
+  return <>{shown}</>;
 }
 
 
@@ -479,7 +516,7 @@ export function BattleScene({
         )}
 
         {/* ── Foe info card — upper-left ── */}
-        <div className="absolute left-2 top-2 max-w-[46%]">
+        <div className="absolute left-2 top-2 max-w-[28%]">
           <div className="truncate font-display text-xs font-bold text-ember-bright">
             {battle.bossName}
           </div>
@@ -489,37 +526,48 @@ export function BattleScene({
             </div>
             <HpBar value={disp.bossHp} max={battle.bossMaxHp} />
           </div>
+          {/* Enemy MP & STA — only shown when the foe has a moveset (not plain trial guardians) */}
+          {(battle.phases[battle.phaseIndex]?.moveset?.length ?? 0) > 0 && (
+            <div className="w-28">
+              <ResourceBar label="MP"  value={battle.bossMp}  max={battle.bossMaxMp}  color="#3b82f6" />
+              <ResourceBar label="STA" value={battle.bossSta} max={battle.bossMaxSta} color="#c9a227" />
+            </div>
+          )}
           <Statuses list={battle.enemyStatuses} />
-          {active && battle.enemyIntent && (() => {
-            const style = INTENT_STYLE[battle.enemyIntent.kind] ?? INTENT_STYLE.attack;
-            const icon = battle.enemyIntent.icon ?? style.fallbackIcon;
-            const toneClass =
-              style.tone === 'danger'  ? 'border-ember-bright/40 bg-ember-bright/10 text-ember-bright' :
-              style.tone === 'caution' ? 'border-gold-deep/50 bg-gold-deep/15 text-gold-bright' :
-                                         'border-gold-deep/30 bg-wood-900/50 text-parchment-300';
-            const pipColor =
-              style.tone === 'danger'  ? 'bg-ember-bright' :
-              style.tone === 'caution' ? 'bg-gold-bright' :
-                                         'bg-parchment-300/60';
-            return (
-              <div className={cn('mt-1.5 rounded border px-1.5 py-1', toneClass)}>
-                <div className="flex items-center gap-1 font-display text-[8px] font-bold uppercase tracking-widest opacity-70">
+        </div>
+
+        {/* ── Enemy intent — top-center, in the empty space between the two combatants ── */}
+        {active && battle.enemyIntent && (() => {
+          const intentStyle = INTENT_STYLE[battle.enemyIntent.kind] ?? INTENT_STYLE.attack;
+          const icon = battle.enemyIntent.icon ?? intentStyle.fallbackIcon;
+          const toneClass =
+            intentStyle.tone === 'danger'  ? 'border-ember-bright/40 bg-ember-bright/10 text-ember-bright' :
+            intentStyle.tone === 'caution' ? 'border-gold-deep/50 bg-gold-deep/15 text-gold-bright' :
+                                              'border-gold-deep/30 bg-wood-900/50 text-parchment-300';
+          const pipColor =
+            intentStyle.tone === 'danger'  ? 'bg-ember-bright' :
+            intentStyle.tone === 'caution' ? 'bg-gold-bright' :
+                                              'bg-parchment-300/60';
+          return (
+            <div className="absolute left-1/2 top-2 z-10 w-[42%] max-w-[240px] -translate-x-1/2">
+              <div className={cn('rounded border px-1.5 py-1', toneClass)}>
+                <div className="flex items-center justify-center gap-1 font-display text-[8px] font-bold uppercase tracking-widest opacity-70">
                   <span className={cn('inline-block h-1.5 w-1.5 rounded-sm', pipColor)} />
                   Next Move
                 </div>
-                <div className="mt-0.5 flex items-center gap-1">
-                  <span className="text-base leading-none">{icon}</span>
+                <div className="mt-0.5 flex items-center justify-center gap-1 text-center">
+                  <span className="shrink-0 text-base leading-none">{icon}</span>
                   <span className="font-display text-[11px] font-semibold leading-tight">
-                    {style.label} — {battle.enemyIntent.label}
+                    {intentStyle.label} — {battle.enemyIntent.label}
                   </span>
                 </div>
               </div>
-            );
-          })()}
-        </div>
+            </div>
+          );
+        })()}
 
         {/* ── Foe sprite — upper-right, on a raised platform ── */}
-        <div className="absolute bottom-[38%] right-3">
+        <div className="absolute bottom-[44%] right-3">
           {/* Elliptical shadow platform */}
           <div className="absolute -bottom-2 left-1/2 h-3 w-16 -translate-x-1/2 rounded-full bg-black/25" />
           {/* Combat animation wrapper (lunge / hit / faint) */}
@@ -619,6 +667,8 @@ export function BattleScene({
               {disp.playerHp} / {battle.playerMaxHp}
             </div>
             <HpBar value={disp.playerHp} max={battle.playerMaxHp} />
+            <ResourceBar label="MP"  value={battle.playerMp}  max={battle.playerMaxMp}  color="#3b82f6" />
+            <ResourceBar label="STA" value={battle.playerSta} max={battle.playerMaxSta} color="#c9a227" />
           </div>
           <Statuses list={battle.playerStatuses} />
         </div>
@@ -680,16 +730,12 @@ export function BattleScene({
         )}
       </div>
 
-      {/* MP + STA bars (below battlefield, full-width) */}
-      <div className="space-y-1">
-        <Gauge label="MP"  value={battle.playerMp}  max={battle.playerMaxMp}  color="#3b82f6" />
-        <Gauge label="STA" value={battle.playerSta} max={battle.playerMaxSta} color="#c9a227" />
-      </div>
-
-      {/* Latest battle log — GBC-style text box */}
+      {/* Latest battle log — GBC-style text box with typewriter reveal on the latest line */}
       <div className="texture-scroll rounded-md border-2 border-gold-deep/60 p-3 shadow-gold-sm">
         {prevLog && <div className="text-xs text-ink-light">{prevLog}</div>}
-        <div className="font-display text-sm font-semibold text-ink">{latest}</div>
+        <div className="font-display text-sm font-semibold text-ink">
+          <TypewriterText text={latest ?? ''} skip={!animating} />
+        </div>
       </div>
 
       {/* Actions / resolution */}
