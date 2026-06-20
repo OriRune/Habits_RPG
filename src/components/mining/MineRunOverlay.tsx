@@ -149,15 +149,18 @@ export function MineRunOverlay() {
   });
   const { shake } = useSmoothCamera(worldRef, playerRef, moverRefs, layoutRef, { CELL, VIEW });
 
-  // Charge progress indicator — read from the hook's ref every rAF frame.
-  const [chargeSwings, setChargeSwings] = useState(0);
-  const [chargeActive, setChargeActive] = useState(false);
+  // Charge bar — updated imperatively each rAF frame to avoid React re-renders + layout shift.
+  const chargeBarRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const ref = controls.chargeRef;
     let rafId: number;
     const tick = () => {
-      setChargeActive(ref.current.active);
-      setChargeSwings(ref.current.swings);
+      const c = controls.chargeRef.current;
+      const el = chargeBarRef.current;
+      if (el) {
+        const p = c.active && c.max > 0 ? c.swings / c.max : 0;
+        el.style.width = `${Math.round(p * 100)}%`;
+        el.style.opacity = c.active && p > 0.04 ? '1' : '0';
+      }
       rafId = requestAnimationFrame(tick);
     };
     rafId = requestAnimationFrame(tick);
@@ -506,22 +509,14 @@ export function MineRunOverlay() {
           {mine.maxMp > 0 && (
             <Gauge icon={<Sparkles className="h-3.5 w-3.5 text-blue-400" />} value={mine.mp} max={mine.maxMp} fill="#4f7ed4" />
           )}
-          {/* Charge progress pips — visible while Space is held */}
-          {chargeActive && (
-            <div className="flex items-center gap-1 pt-0.5" title="Charged strike — hold longer">
-              <span className="font-display text-[10px] text-amber-300/70">⚡</span>
-              {Array.from({ length: controls.chargeRef.current.max }, (_, i) => (
-                <div
-                  key={i}
-                  className="h-2 w-2 rounded-full border"
-                  style={{
-                    backgroundColor: i < chargeSwings ? '#fbbf24' : 'transparent',
-                    borderColor: i < chargeSwings ? '#fbbf24' : 'rgba(251,191,36,0.35)',
-                  }}
-                />
-              ))}
+          {/* Charge bar — filled while holding Space; updated imperatively via rAF */}
+          <div className="flex items-center gap-1.5">
+            <span className="h-3.5 w-3.5" />
+            <div className="h-1.5 w-24 overflow-hidden rounded-full border border-amber-600/40 bg-stone-900">
+              <div ref={chargeBarRef} style={{ height: '100%', borderRadius: 9999, backgroundColor: '#fbbf24', width: '0%', opacity: 0 }} />
             </div>
-          )}
+            <span className="font-display text-[10px] text-amber-400/70">charge</span>
+          </div>
           {/* Active player status effects */}
           {mine.playerStatuses.length > 0 && (
             <div className="flex items-center gap-1 pt-0.5">

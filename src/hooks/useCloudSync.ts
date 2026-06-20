@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { initAuth, useAuthStore } from '@/net/auth';
 import { isBackendConfigured } from '@/net/env';
 import { pullCloudSave, startAutoSync, stopAutoSync } from '@/net/cloudSave';
+import { syncServerClock } from '@/net/clock';
 
 /**
  * Drives the cloud-save lifecycle off the auth session:
@@ -21,6 +22,9 @@ export function useCloudSync(): { cloudReady: boolean } {
 
   useEffect(() => {
     initAuth();
+    // Sync server clock once on mount so all daily gating uses server time.
+    // No-op when the backend is unconfigured.
+    void syncServerClock();
   }, []);
 
   useEffect(() => {

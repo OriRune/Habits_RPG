@@ -5,7 +5,9 @@ import {
   trialReward,
   emptyTrialsClearedOn,
   emptyBestTrialScore,
+  TRIAL_ENERGY_COST,
 } from '@/engine/trials/trials';
+import { statCompletedWithin } from '@/engine/habits';
 import { toISODate } from '@/engine/date';
 import type { GameState } from '../shared';
 import { applyReward, checkLevelUp } from '../shared';
@@ -29,7 +31,13 @@ export const createTrialsSlice: StateCreator<
     set((s) => {
       const today = toISODate();
       if (!s.settings.repeatMinigames && s.trialsClearedOn[trialId] === today) return s;
+      // Energy gate: 1 energy per trial (§6.1 — ties Trials to the habit→energy loop).
+      const free = s.settings.unlimitedEnergy;
+      if (!free && s.character.energy < TRIAL_ENERGY_COST) return s;
       const def = getTrial(trialId);
+      // Stat gate: must have completed a habit of the same stat within the last 7 days (§4.4 / §6.2).
+      // Bypassed by repeatMinigames (same dev flag that disables the daily clear gate).
+      if (!s.settings.repeatMinigames && !statCompletedWithin(s.habits, def.stat, today, 7)) return s;
       const reward = trialReward(def.stat, score01, s.character.level);
       const next: GameState = {
         ...s,
@@ -45,6 +53,7 @@ export const createTrialsSlice: StateCreator<
         },
       };
       applyReward(next, reward);
+      if (!free) next.character.energy -= TRIAL_ENERGY_COST;
       checkLevelUp(next);
       return next;
     }),

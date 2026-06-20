@@ -90,36 +90,49 @@ function ResourceBar({ label, value, max, color }: { label: string; value: numbe
 
 // ── TypewriterText: character-by-character reveal for the latest log line ─────
 
-function TypewriterText({ text, skip }: { text: string; skip: boolean }) {
+function TypewriterText({ text, revision, skipCount }: { text: string; revision: number; skipCount: number }) {
   const [shown, setShown] = useState(text);
   const mounted = useRef(false);
   // Read once on first render; doesn't need to react to changes mid-session.
   const reducedMotion = useRef(
     typeof window !== 'undefined' && (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false),
   ).current;
+  // cancelRef lets the skip effect stop an in-flight typewriter without clearing unrelated timers.
+  const cancelRef = useRef<(() => void) | null>(null);
+  // textRef always holds the current text so the skip effect can snap to it even if text just changed.
+  const textRef = useRef(text);
+  textRef.current = text;
 
-  // Re-type whenever the text changes (skip initial mount to avoid typing the first line).
+  // Re-type whenever the text or revision changes (skip initial mount to avoid typing the first line).
+  // `revision` increments on every new log entry so identical consecutive messages still re-type.
   useEffect(() => {
     if (!mounted.current) { mounted.current = true; return; }
     if (reducedMotion) { setShown(text); return; }
     setShown('');
     let i = 0;
+    let cancelled = false;
     const timers: ReturnType<typeof setTimeout>[] = [];
     function tick() {
+      if (cancelled) return;
       i++;
       setShown(text.slice(0, i));
       if (i < text.length) timers.push(setTimeout(tick, 22));
     }
     timers.push(setTimeout(tick, 0));
-    return () => timers.forEach(clearTimeout);
+    cancelRef.current = () => { cancelled = true; timers.forEach(clearTimeout); };
+    return () => { cancelled = true; timers.forEach(clearTimeout); cancelRef.current = null; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text]);
+  }, [text, revision]);
 
-  // Snap to full string when the user taps to skip.
+  // Snap to full text only when the user explicitly taps to skip (skipCount increments).
+  // Decoupled from `animating` so the end of an animation never races with an in-flight typewriter.
   useEffect(() => {
-    if (skip) setShown(text);
+    if (skipCount > 0) {
+      cancelRef.current?.();
+      setShown(textRef.current);
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [skip]);
+  }, [skipCount]);
 
   return <>{shown}</>;
 }
@@ -214,6 +227,8 @@ interface BattleSceneProps {
   allowFlee?: boolean;
   /** Optional biome key — when set, themes the battlefield gradient + shows a faint biome motif. */
   biomeKey?: string;
+  /** Size of the foe sprite. Bosses (multi-phase) should be 'xl'; regular mobs 'lg'. Default 'xl'. */
+  foeSize?: 'lg' | 'xl';
 }
 
 // ── BattleScene ───────────────────────────────────────────────────────────────
@@ -228,6 +243,7 @@ export function BattleScene({
   fullscreen = false,
   allowFlee = false,
   biomeKey,
+  foeSize = 'xl',
 }: BattleSceneProps) {
   const inventory = useGameStore((s) => s.inventory);
   const character = useGameStore((s) => s.character);
@@ -238,10 +254,12 @@ export function BattleScene({
   const updateSettings = useGameStore((s) => s.updateSettings);
   const [menu, setMenu] = useState<'main' | 'spell' | 'item'>('main');
   const [anim, setAnim] = useState<Anim>(ANIM_NONE);
-  // Displayed HP — lags behind engine state so the drain plays after VFX
-  const [disp, setDisp] = useState({ bossHp: battle.bossHp, playerHp: battle.playerHp });
+  // Displayed HP/MP/STA — lag behind engine state so bars update in sync with VFX, not immediately
+  const [disp, setDisp] = useState({ bossHp: battle.bossHp, playerHp: battle.playerHp, bossMp: battle.bossMp, bossSta: battle.bossSta });
   // Whether a timeline is currently running (shows "tap to skip" hint)
   const [animating, setAnimating] = useState(false);
+  // Increments each time the user taps to skip — TypewriterText snaps on change, not on animating state
+  const [skipTick, setSkipTick] = useState(0);
 
   // Per-biome full-bleed battlefield SVG background
   const battlefieldSrc = biomeBattlefieldSvg(biomeKey);
@@ -260,7 +278,7 @@ export function BattleScene({
   useEffect(() => {
     if (battle.bossId !== battleIdRef.current) {
       battleIdRef.current = battle.bossId;
-      setDisp({ bossHp: battle.bossHp, playerHp: battle.playerHp });
+      setDisp({ bossHp: battle.bossHp, playerHp: battle.playerHp, bossMp: battle.bossMp, bossSta: battle.bossSta });
       prevRef.current = { logLen: battle.log.length, bossHp: battle.bossHp, playerHp: battle.playerHp, status: battle.status };
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -283,8 +301,9 @@ export function BattleScene({
     timersRef.current.forEach(clearTimeout);
     timersRef.current = [];
     setAnim(ANIM_NONE);
-    setDisp({ bossHp: battle.bossHp, playerHp: battle.playerHp });
+    setDisp({ bossHp: battle.bossHp, playerHp: battle.playerHp, bossMp: battle.bossMp, bossSta: battle.bossSta });
     setAnimating(false);
+    setSkipTick(c => c + 1);
     if (battle.status === 'won')  sfx.play('victory');
     if (battle.status === 'lost') sfx.play('defeat');
   }
@@ -314,7 +333,7 @@ export function BattleScene({
 
     // If nothing visual happened (status-only change like flee success), skip
     if (bossDmg === 0 && playerDmg === 0 && !isSpell) {
-      setDisp({ bossHp: battle.bossHp, playerHp: battle.playerHp });
+      setDisp({ bossHp: battle.bossHp, playerHp: battle.playerHp, bossMp: battle.bossMp, bossSta: battle.bossSta });
       return;
     }
 
@@ -392,6 +411,8 @@ export function BattleScene({
           foeLunge: foeMeleeKinds.includes(lastEnemyKind),
           foeActionKind: lastEnemyKind,
         });
+        // Boss resources update in sync with enemy VFX, not immediately when player acts
+        setDisp(d => ({ ...d, bossMp: battle.bossMp, bossSta: battle.bossSta }));
         if (battle.status === 'active') {
           switch (lastEnemyKind) {
             case 'heavy':   sfx.play('heavyStrike'); break;
@@ -431,14 +452,14 @@ export function BattleScene({
         schedule(() => {
           setAnim(ANIM_NONE);
           setAnimating(false);
-          setDisp({ bossHp: battle.bossHp, playerHp: battle.playerHp });
+          setDisp({ bossHp: battle.bossHp, playerHp: battle.playerHp, bossMp: battle.bossMp, bossSta: battle.bossSta });
         }, foeDrainEnd + 350 + VFX_DWELL + 700);
       } else {
         // guard / enrage — glyph lands on the foe, no player hit
         schedule(() => {
           setAnim(ANIM_NONE);
           setAnimating(false);
-          setDisp({ bossHp: battle.bossHp, playerHp: battle.playerHp });
+          setDisp({ bossHp: battle.bossHp, playerHp: battle.playerHp, bossMp: battle.bossMp, bossSta: battle.bossSta });
         }, foeDrainEnd + 350 + VFX_DWELL + 400);
       }
     } else if (playerDmg > 0) {
@@ -451,13 +472,14 @@ export function BattleScene({
       schedule(() => {
         setAnim(ANIM_NONE);
         setAnimating(false);
+        setDisp(d => ({ ...d, bossMp: battle.bossMp, bossSta: battle.bossSta }));
       }, foeDrainEnd + 350 + DRAIN_DUR + 200);
     } else {
       // No foe action + no damage — quick cleanup (heal/defend/rune with no counter)
       schedule(() => {
         setAnim(ANIM_NONE);
         setAnimating(false);
-        setDisp({ bossHp: battle.bossHp, playerHp: battle.playerHp });
+        setDisp({ bossHp: battle.bossHp, playerHp: battle.playerHp, bossMp: battle.bossMp, bossSta: battle.bossSta });
       }, foeDrainEnd + 400);
     }
 
@@ -484,14 +506,13 @@ export function BattleScene({
   const content = (
     <div className={cn('flex w-full flex-col gap-3', fullscreen ? 'mx-auto h-full max-w-2xl px-4 py-4' : '')}>
 
-      {/* ── Battlefield (GBC layout) ─────────────────────────────────────────
-          Sky/wall gradient in the upper half, a floor band at ~50%.
-          Foe info card upper-left + foe sprite upper-right (classic GBC convention).
-          Player sprite lower-left + player info card lower-right.         */}
+      {/* ── Battlefield — side-by-side layout ───────────────────────────────
+          Player sprite + info card on the left; foe sprite (xl) + info card on the right.
+          Both stand on the floor. Intent telegraph floats top-center between the two cards. */}
       {/* Battlefield — click/tap while animating to skip to the result */}
       <div
         className={cn(
-          'relative h-52 w-full overflow-hidden rounded-md border-2 border-gold-deep/60',
+          'relative h-56 w-full overflow-hidden rounded-md border-2 border-gold-deep/60',
           active && (anim.foeShake || anim.playerShake) && 'motion-safe:animate-[battle-shake_0.5s_ease]',
         )}
         style={{
@@ -515,9 +536,9 @@ export function BattleScene({
             style={{ background: 'radial-gradient(ellipse at center, rgba(255,90,90,0) 30%, rgba(220,30,30,0.55) 72%, rgba(180,10,10,0.85) 100%)', opacity: 0 }} />
         )}
 
-        {/* ── Foe info card — upper-left ── */}
-        <div className="absolute left-2 top-2 max-w-[28%]">
-          <div className="truncate font-display text-xs font-bold text-ember-bright">
+        {/* ── Foe info card — upper-right (above foe sprite) ── */}
+        <div className="absolute right-2 top-2 max-w-[28%]">
+          <div className="truncate text-right font-display text-xs font-bold text-ember-bright">
             {battle.bossName}
           </div>
           <div className="mt-0.5 w-28">
@@ -529,8 +550,8 @@ export function BattleScene({
           {/* Enemy MP & STA — only shown when the foe has a moveset (not plain trial guardians) */}
           {(battle.phases[battle.phaseIndex]?.moveset?.length ?? 0) > 0 && (
             <div className="w-28">
-              <ResourceBar label="MP"  value={battle.bossMp}  max={battle.bossMaxMp}  color="#3b82f6" />
-              <ResourceBar label="STA" value={battle.bossSta} max={battle.bossMaxSta} color="#c9a227" />
+              <ResourceBar label="MP"  value={disp.bossMp}  max={battle.bossMaxMp}  color="#3b82f6" />
+              <ResourceBar label="STA" value={disp.bossSta} max={battle.bossMaxSta} color="#c9a227" />
             </div>
           )}
           <Statuses list={battle.enemyStatuses} />
@@ -566,8 +587,8 @@ export function BattleScene({
           );
         })()}
 
-        {/* ── Foe sprite — upper-right, on a raised platform ── */}
-        <div className="absolute bottom-[44%] right-3">
+        {/* ── Foe sprite — bottom-right, on the floor ── */}
+        <div className="absolute bottom-2 right-3">
           {/* Elliptical shadow platform */}
           <div className="absolute -bottom-2 left-1/2 h-3 w-16 -translate-x-1/2 rounded-full bg-black/25" />
           {/* Combat animation wrapper (lunge / hit / faint) */}
@@ -586,7 +607,7 @@ export function BattleScene({
               <Sprite
                 spriteKey={`boss:${battle.bossId.replace(/_d\d+(_elite)?$/, '')}`}
                 look={enemyCrest(battle.bossId, battle.bossName)}
-                size="xl"
+                size={foeSize}
               />
             </div>
           </div>
@@ -610,8 +631,10 @@ export function BattleScene({
           )}
         </div>
 
-        {/* ── Player sprite — lower-left ── */}
+        {/* ── Player sprite — bottom-left, on the floor ── */}
         <div className="absolute bottom-2 left-3">
+          {/* Elliptical shadow platform */}
+          <div className="absolute -bottom-2 left-1/2 h-3 w-14 -translate-x-1/2 rounded-full bg-black/25" />
           {/* Combat animation wrapper */}
           <div
             className={cn(
@@ -657,8 +680,8 @@ export function BattleScene({
           )}
         </div>
 
-        {/* ── Player info card — lower-right ── */}
-        <div className="absolute bottom-2 right-2 max-w-[46%]">
+        {/* ── Player info card — upper-left (above player sprite) ── */}
+        <div className="absolute left-2 top-2 max-w-[28%]">
           <div className="truncate font-display text-xs font-bold text-parchment-200">
             {character.classId ?? 'Adventurer'}
           </div>
@@ -674,7 +697,7 @@ export function BattleScene({
         </div>
 
         {/* ── Per-spell VFX ─────────────────────────────────────────────────────
-            Positioned on the target (foe = upper-right, self = lower-left).
+            Positioned on the target (foe = bottom-right, self = bottom-left).
             Inline animation style avoids Tailwind JIT class-name interpolation.
             `battle-spell-vfx` satisfies the [class*="battle-"] reduced-motion guard. */}
         {anim.spellKind && (() => {
@@ -684,7 +707,7 @@ export function BattleScene({
             <div
               className={cn(
                 'battle-spell-vfx pointer-events-none absolute text-3xl',
-                isForSelf ? 'bottom-[22%] left-[12%]' : 'bottom-[38%] right-[8%]',
+                isForSelf ? 'bottom-[24%] left-[14%]' : 'bottom-[24%] right-[14%]',
               )}
               style={{ animation: `${cls} 1.0s ease forwards` }}
             >
@@ -694,8 +717,8 @@ export function BattleScene({
         })()}
 
         {/* ── Foe-action VFX ────────────────────────────────────────────────────
-            Rendered on the target: player (lower-left) for attack/heavy/multi/drain/inflict;
-            foe (upper-right) for guard/enrage. `battle-foe-vfx` satisfies reduced-motion guard. */}
+            Rendered on the target: player (bottom-left) for attack/heavy/multi/drain/inflict;
+            foe (bottom-right) for guard/enrage. `battle-foe-vfx` satisfies reduced-motion guard. */}
         {anim.foeActionKind && (() => {
           const { glyph, cls, target } = foeVfx(anim.foeActionKind);
           const isOnFoe = target === 'foe';
@@ -703,7 +726,7 @@ export function BattleScene({
             <div
               className={cn(
                 'battle-foe-vfx pointer-events-none absolute text-3xl',
-                isOnFoe ? 'bottom-[38%] right-[8%]' : 'bottom-[22%] left-[12%]',
+                isOnFoe ? 'bottom-[24%] right-[14%]' : 'bottom-[24%] left-[14%]',
               )}
               style={{ animation: `${cls} 1.0s ease forwards` }}
             >
@@ -734,7 +757,7 @@ export function BattleScene({
       <div className="texture-scroll rounded-md border-2 border-gold-deep/60 p-3 shadow-gold-sm">
         {prevLog && <div className="text-xs text-ink-light">{prevLog}</div>}
         <div className="font-display text-sm font-semibold text-ink">
-          <TypewriterText text={latest ?? ''} skip={!animating} />
+          <TypewriterText text={latest ?? ''} revision={battle.log.length} skipCount={skipTick} />
         </div>
       </div>
 

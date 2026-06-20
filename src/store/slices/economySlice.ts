@@ -5,6 +5,7 @@ import { STARTER_SPELLS } from '@/engine/spells';
 import { getItem } from '@/engine/items';
 import { getRecipe, canCraft } from '@/engine/crafting';
 import { toISODate } from '@/engine/date';
+import { type Habit, currentStreak } from '@/engine/habits';
 import type { GameState } from '../shared';
 
 export interface EconomySlice {
@@ -58,11 +59,20 @@ export const createEconomySlice: StateCreator<
       const habit = s.habits.find((h) => h.id === habitId);
       if (!habit) return s;
       const today = toISODate();
+      // Don't consume the item if today is already logged (completed or frozen).
+      if (habit.log[today] !== undefined) return s;
       return {
         inventory: { ...s.inventory, streak_freeze: s.inventory['streak_freeze'] - 1 },
-        habits: s.habits.map((h) =>
-          h.id === habitId ? { ...h, lastCompletedISO: today } : h,
-        ),
+        habits: s.habits.map((h) => {
+          if (h.id !== habitId) return h;
+          const updated: Habit = {
+            ...h,
+            log: { ...h.log, [today]: { xp: 0, frozen: true } },
+            lastCompletedISO: today,
+          };
+          updated.streak = currentStreak(updated, today);
+          return updated;
+        }),
       };
     }),
 

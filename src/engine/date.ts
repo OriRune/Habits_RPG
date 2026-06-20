@@ -10,9 +10,22 @@
 
 let _now: () => Date = () => new Date();
 
+/** Offset in ms added to the device clock when a server-time sync has run. */
+let _offsetMs = 0;
+
 /** The current local datetime. All "what is now" reads should route through this. */
 export function now(): Date {
-  return _now();
+  const base = _now();
+  return _offsetMs === 0 ? base : new Date(base.getTime() + _offsetMs);
+}
+
+/**
+ * Set a persistent clock offset so all `now()` calls reflect server time.
+ * Called once per session after `supabase.rpc('server_now')` succeeds.
+ * A no-op when the backend is unconfigured (offset stays 0).
+ */
+export function setClockOffset(ms: number): void {
+  _offsetMs = ms;
 }
 
 /** Override the clock for tests. Pair with _resetNow() in afterEach. */
@@ -20,9 +33,10 @@ export function _setNow(fn: () => Date): void {
   _now = fn;
 }
 
-/** Restore the real wall clock after a test override. */
+/** Restore the real wall clock and reset the server offset after a test override. */
 export function _resetNow(): void {
   _now = () => new Date();
+  _offsetMs = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,3 +82,9 @@ export function startOfWeek(iso: string): string {
 export function weekKey(iso: string): string {
   return startOfWeek(iso);
 }
+
+/**
+ * Maximum days a player can back-date a habit completion via the normal DatePicker (§4.1).
+ * Older corrections can be made through the "Log older entry" escape hatch in the habit's kebab menu.
+ */
+export const BACKDATE_WINDOW_DAYS = 7;

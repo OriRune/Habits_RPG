@@ -5,6 +5,7 @@ import {
   effectiveStatus,
   currentStreak,
 } from '@/engine/habits';
+import { habitGold } from '@/engine/xp';
 import { toISODate } from '@/engine/date';
 import { challengeProgress, isExpired } from '@/engine/challenges';
 import { gearXpMultiplier } from '@/engine/gear';
@@ -13,8 +14,10 @@ import {
   uid,
   gearFor,
   recomputeMood,
+  recomputeHabitBonus,
   applyWeeklyRollover,
   checkLevelUp,
+  MAX_ENERGY,
 } from '../shared';
 
 export interface HabitsSlice {
@@ -58,7 +61,15 @@ export const createHabitsSlice: StateCreator<
 
   updateHabit: (id, patch) =>
     set((s) => ({
-      habits: s.habits.map((h) => (h.id === id ? { ...h, ...patch } : h)),
+      habits: s.habits.map((h) => {
+        if (h.id !== id) return h;
+        // type is immutable post-creation — changing it would invalidate historical log entries.
+        const { type: _ignored, ...safePatch } = patch;
+        const updated: Habit = { ...h, ...safePatch };
+        // Recompute streak: a frequency/days change shifts which days are "scheduled".
+        updated.streak = currentStreak(updated, toISODate());
+        return updated;
+      }),
     })),
 
   removeHabit: (id) =>
@@ -96,7 +107,12 @@ export const createHabitsSlice: StateCreator<
         }
         return h;
       });
-      return changed ? { habits } : s;
+      // Always recompute habitBonus on mount so loaded saves have a current multiplier.
+      const character = { ...s.character };
+      recomputeHabitBonus(character, habits);
+      const bonusChanged = character.habitBonus !== s.character.habitBonus;
+      if (!changed && !bonusChanged) return s;
+      return { habits, character };
     }),
 
   completeHabit: (id, actual, dateISO) =>
@@ -111,6 +127,7 @@ export const createHabitsSlice: StateCreator<
 
       const result = resolveCompletion(habit, day, { actual });
       const xp = Math.round(result.xp * gearXpMultiplier(gearFor(s), habit));
+      const gold = habitGold(habit.difficulty);
 
       const next: GameState = {
         ...s,
@@ -121,7 +138,7 @@ export const createHabitsSlice: StateCreator<
           if (h.id !== id) return h;
           const updated: Habit = {
             ...h,
-            log: { ...h.log, [day]: { amount: actual, xp } },
+            log: { ...h.log, [day]: { amount: actual, xp, gold } },
             lastCompletedISO: !h.lastCompletedISO || day > h.lastCompletedISO ? day : h.lastCompletedISO,
           };
           updated.streak = currentStreak(updated, today);
@@ -130,6 +147,7 @@ export const createHabitsSlice: StateCreator<
       };
 
       next.character.statXp[habit.stat] += xp;
+      next.character.gold += gold;
       next.completionLog[day] = (next.completionLog[day] ?? 0) + 1;
 
       next.challenges = s.challenges.map((c) => {
@@ -146,7 +164,10 @@ export const createHabitsSlice: StateCreator<
         recomputeMood(next, today, result.recovery);
         applyWeeklyRollover(next, today);
       }
+      recomputeHabitBonus(next.character, next.habits);
       checkLevelUp(next);
+      // Defensive ceiling: clamp energy regardless of code path (§4.3).
+      next.character.energy = Math.max(0, Math.min(next.character.energy, MAX_ENERGY));
       return next;
     }),
 
@@ -176,9 +197,17 @@ export const createHabitsSlice: StateCreator<
       };
 
       next.character.statXp[habit.stat] = Math.max(0, next.character.statXp[habit.stat] - entry.xp);
+      // Refund the gold stored on the entry (exact amount, so difficulty edits don't matter).
+      next.character.gold = Math.max(0, next.character.gold - (entry.gold ?? 0));
       const count = (next.completionLog[day] ?? 0) - 1;
       if (count > 0) next.completionLog[day] = count;
       else delete next.completionLog[day];
+
+      // Refund the +1 energy that completeHabit awarded on today's completion.
+      // Frozen days never awarded energy, so skip the refund for them.
+      if (day === today && !entry.frozen && next.character.energy > 0) {
+        next.character.energy -= 1;
+      }
 
       next.challenges = s.challenges.map((c) => {
         if (c.status !== 'active') return c;
@@ -187,6 +216,9 @@ export const createHabitsSlice: StateCreator<
         return { ...c, progress };
       });
 
+      recomputeHabitBonus(next.character, next.habits);
+      // Defensive ceiling: mirrors completeHabit clamp (§4.3); purely defensive on uncomplete.
+      next.character.energy = Math.max(0, Math.min(next.character.energy, MAX_ENERGY));
       return next;
     }),
 });

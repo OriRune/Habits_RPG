@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeXp, completionRatio, baseXp, BASE_XP } from '../xp';
+import { computeXp, completionRatio, baseXp, BASE_XP, COMPLETION_CAP, UNCAPPED_RATIO_CAP } from '../xp';
 
 describe('baseXp', () => {
   it('matches the brief difficulty table', () => {
@@ -13,10 +13,18 @@ describe('completionRatio', () => {
     expect(completionRatio(10, 20)).toBe(0.5);
   });
   it('caps at 150%', () => {
-    expect(completionRatio(40, 20)).toBe(1.5);
+    expect(completionRatio(40, 20)).toBe(COMPLETION_CAP);
   });
   it('treats a non-positive target as complete', () => {
     expect(completionRatio(5, 0)).toBe(1);
+  });
+  it('uncapped: scales linearly up to UNCAPPED_RATIO_CAP', () => {
+    expect(completionRatio(3, 1, true)).toBe(3);
+    expect(completionRatio(10, 1, true)).toBe(UNCAPPED_RATIO_CAP);
+  });
+  it('uncapped: is hard-capped at UNCAPPED_RATIO_CAP regardless of actual', () => {
+    expect(completionRatio(1000, 1, true)).toBe(UNCAPPED_RATIO_CAP);
+    expect(completionRatio(10000, 1, true)).toBe(UNCAPPED_RATIO_CAP);
   });
 });
 

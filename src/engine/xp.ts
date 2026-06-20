@@ -14,6 +14,13 @@ export const BASE_XP: Record<Difficulty, number> = {
 /** Completion above this is capped so overachieving can't be exploited (brief: 150%). */
 export const COMPLETION_CAP = 1.5;
 
+/**
+ * Maximum completion ratio for `uncapped` quantity habits (§4.2 — 10× goal).
+ * Allows genuine outlier days (e.g. running 50 km on a 5 km goal) while closing the
+ * trivial exploitation path (logging 10,000 against a target of 1).
+ */
+export const UNCAPPED_RATIO_CAP = 10;
+
 /** Recovery bonus multiplier when a missed habit is completed the next day (brief Section 14). */
 export const RECOVERY_BONUS = 1.1;
 
@@ -22,14 +29,14 @@ export function baseXp(difficulty: Difficulty): number {
 }
 
 /**
- * Completion ratio for a quantity habit, capped at COMPLETION_CAP unless `uncapped`.
- * target <= 0 is treated as fully complete (1.0). Uncapped lets effort scale linearly
- * (e.g. miles run → endurance per mile, no ceiling).
+ * Completion ratio for a quantity habit. The capped path clamps at COMPLETION_CAP (150%);
+ * the uncapped path clamps at UNCAPPED_RATIO_CAP (10×) to allow outlier days while
+ * blocking trivial exploitation. target <= 0 is treated as fully complete (1.0).
  */
 export function completionRatio(actual: number, target: number, uncapped = false): number {
   if (target <= 0) return 1;
-  const ratio = actual / target;
-  return uncapped ? ratio : Math.min(ratio, COMPLETION_CAP);
+  if (uncapped) return Math.min(actual / target, UNCAPPED_RATIO_CAP);
+  return Math.min(actual / target, COMPLETION_CAP);
 }
 
 export interface XpInput {
@@ -42,6 +49,14 @@ export interface XpInput {
   recovery?: boolean;
   /** Quantity only: remove the 150% completion cap so XP scales linearly with amount. */
   uncapped?: boolean;
+}
+
+/** Gold awarded on completion by difficulty (§5.3 — keeps habits-only players in the economy). */
+export const HABIT_GOLD: Record<Difficulty, number> = { easy: 0, normal: 2, hard: 5, epic: 10 };
+
+/** Gold amount for a single completion at the given difficulty. */
+export function habitGold(difficulty: Difficulty): number {
+  return HABIT_GOLD[difficulty];
 }
 
 /**

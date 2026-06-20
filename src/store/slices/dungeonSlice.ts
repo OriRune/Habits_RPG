@@ -303,7 +303,11 @@ export const createDungeonSlice: StateCreator<
         dungeon: null,
         dungeonHistory: [summary, ...(s.dungeonHistory ?? [])].slice(0, 10),
       };
-      applyReward(next, run.bankedReward); // gold/materials/items/weapons/gear — no XP
+      // Apply habit-streak gold multiplier to banked gold (§6.3) — same as commitRun does for minigames.
+      applyReward(next, {
+        ...run.bankedReward,
+        gold: Math.round((run.bankedReward.gold ?? 0) * s.character.habitBonus),
+      }); // gold/materials/items/weapons/gear — no XP
       return next;
     }),
 

@@ -1,14 +1,19 @@
 import { useState } from 'react';
-import { Check, Flame, MoreVertical, Pause, Play, Archive, Trash2, CalendarClock, Undo2 } from 'lucide-react';
+import { AlertTriangle, Check, Flame, MoreVertical, Pause, Pencil, Play, Archive, Trash2, CalendarClock, Undo2 } from 'lucide-react';
 import { getStat } from '@/engine/stats';
 import { type Habit, isCompletedOn, effectiveStatus, weekCompletions } from '@/engine/habits';
-import { toISODate } from '@/engine/date';
+import { toISODate, parseISODate, addDays } from '@/engine/date';
 import { useGameStore } from '@/store/useGameStore';
 import { statCrest } from '@/lib/sprites';
 import { Sprite } from '@/components/ui/Sprite';
 import { cn } from '@/lib/cn';
+import { Modal } from '@/components/ui/Modal';
+import { Button } from '@/components/ui/Button';
 import { CompleteHabitDialog } from './CompleteHabitDialog';
+import { DatePicker } from './DatePicker';
+import { HabitForm } from './HabitForm';
 import { SuspendDialog } from './SuspendDialog';
+import { DeleteHabitDialog } from './DeleteHabitDialog';
 
 const FREQ_LABEL: Record<Habit['frequency'], string> = {
   daily: 'Daily',
@@ -21,12 +26,16 @@ const FREQ_LABEL: Record<Habit['frequency'], string> = {
 export function HabitCard({ habit, viewDate = toISODate() }: { habit: Habit; viewDate?: string }) {
   const completeHabit = useGameStore((s) => s.completeHabit);
   const uncompleteHabit = useGameStore((s) => s.uncompleteHabit);
-  const removeHabit = useGameStore((s) => s.removeHabit);
   const retireHabit = useGameStore((s) => s.retireHabit);
   const reactivateHabit = useGameStore((s) => s.reactivateHabit);
   const [dialog, setDialog] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [suspendOpen, setSuspendOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  // Escape hatch: "Log older entry…" opens a full-range DatePicker for genuine backdated corrections.
+  const [logOlderOpen, setLogOlderOpen] = useState(false);
+  const [olderDate, setOlderDate] = useState<string | null>(null);
 
   const done = isCompletedOn(habit, viewDate);
   const suspended = effectiveStatus(habit, viewDate) === 'suspended';
@@ -135,8 +144,12 @@ export function HabitCard({ habit, viewDate = toISODate() }: { habit: Habit; vie
             <>
               <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
               <div className="absolute right-0 top-6 z-20 w-40 overflow-hidden rounded-md border border-gold-deep/40 bg-parchment-100 shadow-gold-sm">
+                <MenuItem icon={Pencil} label="Edit…" onClick={() => { setEditOpen(true); setMenuOpen(false); }} />
                 {done && (
                   <MenuItem icon={Undo2} label="Mark incomplete" onClick={() => { uncompleteHabit(habit.id, viewDate); setMenuOpen(false); }} />
+                )}
+                {!retired && (
+                  <MenuItem icon={CalendarClock} label="Log older entry…" onClick={() => { setLogOlderOpen(true); setMenuOpen(false); }} />
                 )}
                 {suspended || retired ? (
                   <MenuItem icon={Play} label="Reactivate" onClick={() => { reactivateHabit(habit.id); setMenuOpen(false); }} />
@@ -146,7 +159,7 @@ export function HabitCard({ habit, viewDate = toISODate() }: { habit: Habit; vie
                 {!retired && (
                   <MenuItem icon={Archive} label="Retire" onClick={() => { retireHabit(habit.id); setMenuOpen(false); }} />
                 )}
-                <MenuItem icon={Trash2} label="Delete" danger onClick={() => { removeHabit(habit.id); setMenuOpen(false); }} />
+                <MenuItem icon={Trash2} label="Delete" danger onClick={() => { setDeleteOpen(true); setMenuOpen(false); }} />
               </div>
             </>
           )}
@@ -154,7 +167,26 @@ export function HabitCard({ habit, viewDate = toISODate() }: { habit: Habit; vie
       </div>
 
       {dialog && <CompleteHabitDialog habit={habit} viewDate={viewDate} onClose={() => setDialog(false)} />}
+      {editOpen && <HabitForm habit={habit} onClose={() => setEditOpen(false)} />}
       {suspendOpen && <SuspendDialog habitId={habit.id} onClose={() => setSuspendOpen(false)} />}
+      {deleteOpen && <DeleteHabitDialog habit={habit} onClose={() => setDeleteOpen(false)} />}
+      {logOlderOpen && (
+        <LogOlderEntryModal
+          habit={habit}
+          onClose={() => setLogOlderOpen(false)}
+          onCommit={(date) => {
+            setLogOlderOpen(false);
+            if (habit.type === 'binary') {
+              completeHabit(habit.id, undefined, date);
+            } else {
+              setOlderDate(date);
+            }
+          }}
+        />
+      )}
+      {olderDate && (
+        <CompleteHabitDialog habit={habit} viewDate={olderDate} onClose={() => setOlderDate(null)} />
+      )}
     </>
   );
 }
@@ -180,5 +212,47 @@ function MenuItem({
     >
       <Icon className="h-4 w-4" /> {label}
     </button>
+  );
+}
+
+/**
+ * Escape hatch for logging habit completions older than the 7-day DatePicker window.
+ * Shows a full-history calendar with an integrity warning — the extra friction is intentional.
+ */
+function LogOlderEntryModal({
+  habit,
+  onClose,
+  onCommit,
+}: {
+  habit: Habit;
+  onClose: () => void;
+  onCommit: (date: string) => void;
+}) {
+  const today = toISODate();
+  // Default to yesterday — one day before the normal window floor is a typical "forgot to log" case.
+  const [pickedDate, setPickedDate] = useState(addDays(today, -1));
+
+  return (
+    <Modal title="Log older entry" onClose={onClose}>
+      <div className="space-y-3">
+        <div className="flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-50/60 px-3 py-2 text-xs text-amber-800">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>Logging older entries can inflate streaks and challenge progress — use only to correct genuine misses.</span>
+        </div>
+        <DatePicker
+          value={pickedDate}
+          onChange={setPickedDate}
+          minISO={habit.createdISO}
+          maxISO={today}
+          hasActivity={(iso) => habit.log[iso] !== undefined}
+        />
+        <Button
+          onClick={() => onCommit(pickedDate)}
+          className="w-full py-2"
+        >
+          Log {parseISODate(pickedDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+        </Button>
+      </div>
+    </Modal>
   );
 }

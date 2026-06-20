@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useGameStore, totalXp, withCharacterDefaults, type DungeonRun } from '../useGameStore';
 import { STAT_IDS, emptyStatXP } from '@/engine/stats';
 import { levelForTotalXp } from '@/engine/leveling';
@@ -11,7 +11,10 @@ import { getWeapon, STARTER_WEAPON } from '@/engine/weapons';
 import { STA_REGEN_MS, MP_REGEN_MS } from '@/engine/crawl';
 import { type ForestState, type ForestTile, FOREST_WINDUP_MS } from '@/engine/forest';
 import { getEncounter, startEncounter } from '@/engine/encounters';
-import { toISODate, weekKey } from '@/engine/date';
+import { toISODate, weekKey, _setNow, _resetNow, addDays } from '@/engine/date';
+import { MAX_ENERGY } from '../shared';
+import { completionRatio, COMPLETION_CAP, UNCAPPED_RATIO_CAP } from '@/engine/xp';
+import { statCompletedWithin } from '@/engine/habits';
 
 /** A trivial single-path floor map for tests: one room per layer, linked in sequence. */
 function linearMap(rooms: DungeonRoom[]): FloorMap {
@@ -342,6 +345,75 @@ describe('shop & streak freeze', () => {
     get().useStreakFreeze(id);
     expect(get().inventory['streak_freeze']).toBe(0);
     expect(get().habits[0].lastCompletedISO).toBeDefined();
+  });
+
+  it('does not consume item when habit is already logged today', () => {
+    // Use local-time constructor (not ISO string) so toISODate() returns the correct day
+    // regardless of the runner's UTC offset.
+    _setNow(() => new Date(2025, 0, 1)); // 2025-01-01
+    useGameStore.setState({ inventory: { streak_freeze: 1 } });
+    get().addHabit({ name: 'Run', stat: 'ST', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    get().completeHabit(id); // already completed today
+    get().useStreakFreeze(id); // should be a no-op
+    expect(get().inventory['streak_freeze']).toBe(1); // item NOT consumed
+    _resetNow();
+  });
+
+  it('streak freeze preserves streak across a missed day without inflating the count', () => {
+    const day1 = new Date(2025, 1, 1);  // 2025-02-01
+    const day2 = new Date(2025, 1, 2);  // 2025-02-02
+    const day3 = new Date(2025, 1, 3);  // 2025-02-03 — missed, freeze applied
+    const day4 = new Date(2025, 1, 4);  // 2025-02-04
+
+    // Day 1 — complete
+    _setNow(() => day1);
+    get().addHabit({ name: 'Meditate', stat: 'WI', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    useGameStore.setState({ inventory: { streak_freeze: 2 } });
+    const id = get().habits[0].id;
+    get().completeHabit(id);
+    expect(get().habits[0].streak).toBe(1);
+
+    // Day 2 — complete → streak 2
+    _setNow(() => day2);
+    get().completeHabit(id, undefined, toISODate(day2));
+    expect(get().habits[0].streak).toBe(2);
+
+    // Day 3 — miss it, apply freeze → streak should stay 2 (not increment)
+    _setNow(() => day3);
+    get().useStreakFreeze(id);
+    expect(get().inventory['streak_freeze']).toBe(1); // item consumed
+    expect(get().habits[0].streak).toBe(2); // preserved but NOT incremented
+
+    // Day 4 — complete → streak should be 3
+    _setNow(() => day4);
+    get().completeHabit(id, undefined, toISODate(day4));
+    expect(get().habits[0].streak).toBe(3);
+
+    _resetNow();
+  });
+
+  it('streak breaks without a freeze when a day is missed', () => {
+    const day1 = new Date(2025, 2, 1);  // 2025-03-01
+    const day2 = new Date(2025, 2, 2);  // 2025-03-02
+    // day3 (2025-03-03) deliberately skipped, no freeze
+    const day4 = new Date(2025, 2, 4);  // 2025-03-04
+
+    _setNow(() => day1);
+    get().addHabit({ name: 'Meditate', stat: 'WI', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    get().completeHabit(id);
+
+    _setNow(() => day2);
+    get().completeHabit(id, undefined, toISODate(day2));
+    expect(get().habits[0].streak).toBe(2);
+
+    // Skip day3 (no freeze). Complete day4 — streak resets to 1.
+    _setNow(() => day4);
+    get().completeHabit(id, undefined, toISODate(day4));
+    expect(get().habits[0].streak).toBe(1);
+
+    _resetNow();
   });
 });
 
@@ -987,6 +1059,297 @@ describe('habit lifecycle', () => {
     const id = get().habits[0].id;
     get().completeHabit(id, 9); // 9/3 = 3.0 × 20 = 60 (capped would be 30)
     expect(get().character.statXp.EN).toBe(60);
+  });
+});
+
+describe('updateHabit', () => {
+  it('patches name, stat, and difficulty', () => {
+    get().addHabit({ name: 'Read', stat: 'KN', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    get().updateHabit(id, { name: 'Read books', stat: 'WI', difficulty: 'hard' });
+    const h = get().habits[0];
+    expect(h.name).toBe('Read books');
+    expect(h.stat).toBe('WI');
+    expect(h.difficulty).toBe('hard');
+  });
+
+  it('ignores a type change — type is immutable post-creation', () => {
+    get().addHabit({ name: 'Run', stat: 'EN', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    get().updateHabit(id, { type: 'quantity' } as never);
+    expect(get().habits[0].type).toBe('binary');
+  });
+
+  it('leaves existing log entries untouched', () => {
+    get().addHabit({ name: 'Gym', stat: 'ST', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    get().completeHabit(id);
+    const logBefore = { ...get().habits[0].log };
+
+    get().updateHabit(id, { name: 'Gym (updated)', difficulty: 'epic' });
+
+    expect(get().habits[0].log).toEqual(logBefore);
+    expect(get().habits[0].name).toBe('Gym (updated)');
+  });
+
+  it('recomputes streak when frequency changes', () => {
+    // Set up a "daily" habit with two completed days so streak = 2.
+    const day1 = '2025-03-01';
+    const day2 = '2025-03-02';
+    _setNow(() => new Date(2025, 2, 1)); // March 1
+    get().addHabit({ name: 'Meditate', stat: 'WI', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    get().completeHabit(id, undefined, day1);
+    _setNow(() => new Date(2025, 2, 2)); // March 2
+    get().completeHabit(id, undefined, day2);
+    expect(get().habits[0].streak).toBe(2);
+
+    // Changing to 'as_needed' (no scheduled days) must produce streak 0.
+    get().updateHabit(id, { frequency: 'as_needed' });
+    expect(get().habits[0].streak).toBe(0);
+    _resetNow();
+  });
+});
+
+// ── Stage 3: Reward Balance ────────────────────────────────────────────────────
+
+/** Minimal mine state shape — commitMining only reads haul, deepest, and score. */
+function makeMinimalMine(over: { haul?: Record<string, unknown>; deepest?: number; score?: number; status?: string } = {}) {
+  return {
+    status: 'active', floor: 1, deepest: over.deepest ?? 0, score: over.score ?? 0,
+    haul: over.haul ?? {}, player: { r: 0, c: 0 }, hp: 10, maxHp: 10,
+    tiles: [], monsters: [], runes: [], lastHitAtMs: -1000, pickaxePower: 1,
+    killsThisFloor: 0, ringOfFire: null, ringNextHitMs: {}, playerStatuses: [],
+    lastSpellMs: -1000, nextRuneId: 1, lastDashMs: -2000, dashCooldownMs: 2000,
+    moveIntervalMs: 150, agLevel: 0, activeBoons: [], pendingBoonChoice: null,
+    weapon: getWeapon(STARTER_WEAPON), knownSpells: [],
+  } as never;
+}
+
+describe('Skill Trials — energy cost (Stage 3.1)', () => {
+  // Use repeatMinigames: true to bypass the stat gate (§4.4) — these tests focus on
+  // energy mechanics only; the stat gate is tested separately in Stage 4.4 tests.
+
+  it('deducts 1 energy on completeTrial', () => {
+    useGameStore.setState({
+      character: { ...get().character, energy: 5 },
+      settings: { ...get().settings, repeatMinigames: true },
+    });
+    get().completeTrial('lockpicking', 1);
+    expect(get().character.energy).toBe(4);
+  });
+
+  it('completeTrial is a no-op when energy is 0', () => {
+    useGameStore.setState({
+      character: { ...get().character, energy: 0 },
+      settings: { ...get().settings, repeatMinigames: true },
+    });
+    const xpBefore = totalXp(get().character.statXp);
+    get().completeTrial('rooftop_chase', 1);
+    expect(totalXp(get().character.statXp)).toBe(xpBefore);
+    expect(get().character.energy).toBe(0);
+  });
+
+  it('ignores energy cost when unlimitedEnergy is on', () => {
+    useGameStore.setState({
+      character: { ...get().character, energy: 0 },
+      settings: { ...get().settings, unlimitedEnergy: true, repeatMinigames: true },
+    });
+    const xpBefore = totalXp(get().character.statXp);
+    get().completeTrial('armory_break', 1);
+    expect(totalXp(get().character.statXp)).toBeGreaterThan(xpBefore);
+    expect(get().character.energy).toBe(0); // not touched when free
+  });
+});
+
+describe('habit gold reward (Stage 3.3)', () => {
+  it('completing a normal habit grants +2 gold and stores it on the entry', () => {
+    get().addHabit({ name: 'Meditate', stat: 'WI', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    const goldBefore = get().character.gold;
+    get().completeHabit(id);
+    expect(get().character.gold).toBe(goldBefore + 2);
+    const today = toISODate();
+    expect(get().habits[0].log[today]?.gold).toBe(2);
+  });
+
+  it('uncompleting refunds the exact gold stored on the entry', () => {
+    get().addHabit({ name: 'Epic Habit', stat: 'ST', type: 'binary', frequency: 'daily', difficulty: 'epic' });
+    const id = get().habits[0].id;
+    const goldBefore = get().character.gold;
+    get().completeHabit(id);
+    expect(get().character.gold).toBe(goldBefore + 10);
+    get().uncompleteHabit(id);
+    expect(get().character.gold).toBe(goldBefore);
+  });
+
+  it('completing an easy habit grants 0 gold', () => {
+    get().addHabit({ name: 'Quick task', stat: 'DX', type: 'binary', frequency: 'daily', difficulty: 'easy' });
+    const id = get().habits[0].id;
+    const goldBefore = get().character.gold;
+    get().completeHabit(id);
+    expect(get().character.gold).toBe(goldBefore);
+  });
+});
+
+describe('habitBonus streak multiplier (Stage 3.4)', () => {
+  it('defaults to 1.0 with no habits', () => {
+    expect(get().character.habitBonus).toBe(1);
+  });
+
+  it('rises above 1.0 when ≥75% of scheduled habits have streak ≥ 3', () => {
+    const d1 = '2025-01-01'; const d2 = '2025-01-02'; const d3 = '2025-01-03';
+
+    // Create habits on d1 so createdISO = d1 — allows the streak to walk back through d1..d3.
+    _setNow(() => new Date(2025, 0, 1));
+    get().addHabit({ name: 'H1', stat: 'ST', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    get().addHabit({ name: 'H2', stat: 'EN', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    get().addHabit({ name: 'H3', stat: 'WI', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+
+    // Complete all on d1
+    for (const h of get().habits) get().completeHabit(h.id, undefined, d1);
+
+    // Advance to d2, complete all
+    _setNow(() => new Date(2025, 0, 2));
+    for (const h of get().habits) get().completeHabit(h.id, undefined, d2);
+
+    // Advance to d3, complete all — streak = 3, 100% healthy → habitBonus 1.25
+    _setNow(() => new Date(2025, 0, 3));
+    for (const h of get().habits) get().completeHabit(h.id, undefined, d3);
+
+    expect(get().habits.every((h) => h.streak >= 3)).toBe(true);
+    expect(get().character.habitBonus).toBeGreaterThan(1);
+    _resetNow();
+  });
+
+  it('mining gold is multiplied by habitBonus', () => {
+    // Inject bonus directly, then run a mine with a known haul and check gold delta.
+    useGameStore.setState({ character: { ...get().character, habitBonus: 1.25 } });
+    const goldBefore = get().character.gold;
+    useGameStore.setState({ mining: makeMinimalMine({ haul: { gold: 100 } }) });
+    get().endMining(); // status 'active' → commitMining → applies habitBonus
+    // 100 * 1.25 = 125 gold
+    expect(get().character.gold).toBe(goldBefore + 125);
+  });
+});
+
+describe('minigame trickle split (Stage 3.5)', () => {
+  it('mining run ST + EN gains sum to trickle (not doubled)', () => {
+    // deepest = 0 → trickle = CRAWLER_XP_BASE (4) → ST:2, EN:2
+    const xpBefore = { ...get().character.statXp };
+    useGameStore.setState({ mining: makeMinimalMine({ haul: {}, deepest: 0, score: 0 }) });
+    get().endMining();
+    const stGain = get().character.statXp.ST - xpBefore.ST;
+    const enGain = get().character.statXp.EN - xpBefore.EN;
+    expect(stGain + enGain).toBe(4); // total = CRAWLER_XP_BASE, not 8
+    expect(enGain).toBe(2);          // floor(4/2), not 4 (the old doubled value)
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stage 4 — Integrity and Abuse Prevention
+// ---------------------------------------------------------------------------
+
+describe('uncapped quantity XP cap at 10× (Stage 4.2)', () => {
+  it('completionRatio(uncapped) caps at UNCAPPED_RATIO_CAP, not beyond', () => {
+    // Sanity: capped path still tops at COMPLETION_CAP (1.5).
+    expect(completionRatio(1000, 1, false)).toBe(COMPLETION_CAP);
+    // Uncapped path stops at 10× regardless of how large actual is.
+    expect(completionRatio(100, 1, true)).toBe(UNCAPPED_RATIO_CAP);
+    expect(completionRatio(10000, 1, true)).toBe(UNCAPPED_RATIO_CAP);
+    // Normal uncapped usage well under cap is still linear.
+    expect(completionRatio(3, 1, true)).toBe(3);
+  });
+
+  it('completing an uncapped habit with 100× actual awards base × 10, not base × 100', () => {
+    get().addHabit({
+      name: 'Miles run', stat: 'EN', type: 'quantity', frequency: 'daily',
+      difficulty: 'normal', target: 1, uncapped: true,
+    });
+    const id = get().habits[0].id;
+    const xpBefore = get().character.statXp.EN;
+    get().completeHabit(id, 100); // 100× target
+    // normal base = 20, uncapped ratio capped at 10 → 20 * 10 = 200 (not 2000).
+    expect(get().character.statXp.EN - xpBefore).toBe(200);
+  });
+});
+
+describe('MAX_ENERGY clamp (Stage 4.3)', () => {
+  it('energy cannot exceed MAX_ENERGY after completeHabit', () => {
+    // Seed at the cap, then complete a habit — energy should stay at MAX_ENERGY, not exceed it.
+    get().addHabit({ name: 'Push', stat: 'ST', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    useGameStore.setState({ character: { ...get().character, energy: MAX_ENERGY } });
+    get().completeHabit(id);
+    expect(get().character.energy).toBe(MAX_ENERGY); // not MAX_ENERGY + 1
+  });
+});
+
+describe('stat gate on Skill Trials (Stage 4.4)', () => {
+  afterEach(() => _resetNow());
+
+  it('completeTrial is blocked when no habit of that stat was logged in the last 7 days', () => {
+    // No habits at all → lockpicking (DX) is blocked.
+    useGameStore.setState({ character: { ...get().character, energy: 5 } });
+    const xpBefore = totalXp(get().character.statXp);
+    get().completeTrial('lockpicking', 1);
+    expect(totalXp(get().character.statXp)).toBe(xpBefore); // no-op
+  });
+
+  it('completeTrial succeeds after completing a same-stat habit today', () => {
+    // Add a DX habit and complete it today.
+    get().addHabit({ name: 'DX work', stat: 'DX', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    get().completeHabit(get().habits[0].id);
+    useGameStore.setState({ character: { ...get().character, energy: 5 } });
+    const xpBefore = totalXp(get().character.statXp);
+    get().completeTrial('lockpicking', 1); // lockpicking = DX stat
+    expect(totalXp(get().character.statXp)).toBeGreaterThan(xpBefore);
+  });
+
+  it('completeTrial is blocked when the only same-stat completion is 8 days old', () => {
+    const today = toISODate();
+    const eightDaysAgo = addDays(today, -8); // outside the 7-day window
+    get().addHabit({ name: 'DX old', stat: 'DX', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    // Manually inject a log entry that is 8 days old.
+    useGameStore.setState({
+      habits: get().habits.map((h) => ({
+        ...h,
+        log: { [eightDaysAgo]: { xp: 20 } },
+        lastCompletedISO: eightDaysAgo,
+      })),
+      character: { ...get().character, energy: 5 },
+    });
+    const xpBefore = totalXp(get().character.statXp);
+    get().completeTrial('lockpicking', 1);
+    expect(totalXp(get().character.statXp)).toBe(xpBefore); // outside window → blocked
+  });
+
+  it('repeatMinigames bypasses the stat gate (dev bypass)', () => {
+    // No habits at all, but repeatMinigames is on — trial should succeed.
+    useGameStore.setState({
+      character: { ...get().character, energy: 5 },
+      settings: { ...get().settings, repeatMinigames: true },
+    });
+    const xpBefore = totalXp(get().character.statXp);
+    get().completeTrial('lockpicking', 1);
+    expect(totalXp(get().character.statXp)).toBeGreaterThan(xpBefore);
+  });
+
+  it('statCompletedWithin returns true within the window and false outside', () => {
+    const today = '2026-06-20';
+    const habit = {
+      id: 'h1', name: 'DX habit', stat: 'DX' as const, type: 'binary' as const,
+      frequency: 'daily' as const, difficulty: 'normal' as const, status: 'active' as const,
+      streak: 0, createdISO: '2026-01-01',
+      log: { '2026-06-14': { xp: 20 } }, // 6 days ago — inside the 7-day window
+      lastCompletedISO: '2026-06-14',
+    };
+    expect(statCompletedWithin([habit], 'DX', today, 7)).toBe(true);
+    // 8 days ago → outside window.
+    const old = { ...habit, log: { '2026-06-12': { xp: 20 } }, lastCompletedISO: '2026-06-12' };
+    expect(statCompletedWithin([old], 'DX', today, 7)).toBe(false);
+    // Wrong stat → false.
+    expect(statCompletedWithin([habit], 'ST', today, 7)).toBe(false);
   });
 });
 

@@ -317,6 +317,7 @@ export function DungeonView() {
               resolveLostLabel="You fall — gather your spoils"
               resolveFledLabel="Retreat from the dungeon"
               allowFlee
+              foeSize={room!.type === 'boss' ? 'xl' : 'lg'}
             />
           )}
         </Panel>

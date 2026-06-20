@@ -536,17 +536,17 @@ body {
   50%       { transform: translateY(-4px); }
 }
 
-/* Player lunges diagonally toward the foe (upper-right quadrant) */
+/* Player lunges horizontally toward the foe (right side) */
 @keyframes battle-lunge-player {
   0%   { transform: translate(0, 0); }
-  38%  { transform: translate(14px, -7px); }
+  38%  { transform: translate(16px, 0); }
   100% { transform: translate(0, 0); }
 }
 
-/* Foe lunges diagonally toward the player (lower-left quadrant) */
+/* Foe lunges horizontally toward the player (left side) */
 @keyframes battle-lunge-foe {
   0%   { transform: translate(0, 0); }
-  38%  { transform: translate(-14px, 6px); }
+  38%  { transform: translate(-16px, 0); }
   100% { transform: translate(0, 0); }
 }
 

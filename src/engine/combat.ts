@@ -520,7 +520,10 @@ export function playerAction(
 
   if (s.bossHp <= 0) {
     resolveBossDown(s);
-    if (s.status === 'won') return s;
+    if (s.status === 'won') {
+      s.lastEnemyAction = null; // enemy never acts on its kill turn — clear stale value from last turn
+      return s;
+    }
     // A phase fell but the foe fights on in a new form — it still gets its turn.
   }
 

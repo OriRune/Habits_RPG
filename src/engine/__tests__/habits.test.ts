@@ -7,6 +7,7 @@ import {
   isCompletedOn,
   weekCompletions,
   currentStreak,
+  statCompletedWithin,
   type Habit,
 } from '../habits';
 
@@ -118,7 +119,53 @@ describe('resolveCompletion', () => {
   });
   it('uncapped quantity scales XP past 150%', () => {
     const h = makeHabit({ type: 'quantity', target: 3, uncapped: true });
-    // 9 / 3 = 3.0 ratio, normal base 20 -> 60 (would be capped to 30 if not uncapped)
+    // 9 / 3 = 3.0 ratio < UNCAPPED_RATIO_CAP (10), so 20 * 3 = 60 (no cap hit here).
     expect(resolveCompletion(h, '2026-06-13', { actual: 9 }).xp).toBe(60);
+  });
+
+  it('uncapped quantity XP stops scaling past 10× target', () => {
+    const h = makeHabit({ type: 'quantity', target: 1, uncapped: true });
+    // 100 / 1 = 100 ratio, but capped at UNCAPPED_RATIO_CAP (10) → 20 * 10 = 200.
+    expect(resolveCompletion(h, '2026-06-13', { actual: 100 }).xp).toBe(200);
+    // Logging 10,000 gives the same result (cap is a hard ceiling).
+    expect(resolveCompletion(h, '2026-06-13', { actual: 10000 }).xp).toBe(200);
+  });
+});
+
+describe('statCompletedWithin (Stage 4.4)', () => {
+  const today = '2026-06-20';
+
+  it('returns true when a habit of the stat was logged today', () => {
+    const h = makeHabit({ stat: 'DX', log: { [today]: { xp: 20 } }, lastCompletedISO: today });
+    expect(statCompletedWithin([h], 'DX', today, 7)).toBe(true);
+  });
+
+  it('returns true when a habit was logged within the window (6 days ago)', () => {
+    const sixDaysAgo = '2026-06-14';
+    const h = makeHabit({ stat: 'KN', log: { [sixDaysAgo]: { xp: 20 } }, lastCompletedISO: sixDaysAgo });
+    expect(statCompletedWithin([h], 'KN', today, 7)).toBe(true);
+  });
+
+  it('returns false when the only completion is 8 days ago (outside 7-day window)', () => {
+    const eightDaysAgo = '2026-06-12';
+    const h = makeHabit({ stat: 'ST', log: { [eightDaysAgo]: { xp: 20 } }, lastCompletedISO: eightDaysAgo });
+    expect(statCompletedWithin([h], 'ST', today, 7)).toBe(false);
+  });
+
+  it('returns false when the habit has a different stat', () => {
+    const h = makeHabit({ stat: 'WI', log: { [today]: { xp: 20 } }, lastCompletedISO: today });
+    expect(statCompletedWithin([h], 'DX', today, 7)).toBe(false);
+  });
+
+  it('returns false for an empty habit list', () => {
+    expect(statCompletedWithin([], 'DX', today, 7)).toBe(false);
+  });
+
+  it('finds the qualifying habit via full log scan when lastCompletedISO is absent', () => {
+    // A habit with a log entry but no cached lastCompletedISO (edge case for old saves).
+    const threeDaysAgo = '2026-06-17';
+    const h = makeHabit({ stat: 'AG', log: { [threeDaysAgo]: { xp: 20 } } });
+    // lastCompletedISO is undefined on the base makeHabit, so this tests the log-scan path.
+    expect(statCompletedWithin([h], 'AG', today, 7)).toBe(true);
   });
 });
