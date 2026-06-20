@@ -129,6 +129,12 @@ export interface BattleState {
     target: 'foe' | 'self';
     amount?: number;
   };
+  /**
+   * The move the foe actually executed this turn — mirrors `lastAction` for the enemy side.
+   * Null when the foe's turn was skipped (frozen, blind-miss) or the battle is over.
+   * BattleScene reads this to drive per-kind enemy attack VFX.
+   */
+  lastEnemyAction?: { kind: EnemyMove['kind'] } | null;
 }
 
 const ANTI_FRUSTRATION_LOSS_THRESHOLD = 3;
@@ -215,6 +221,7 @@ export function createBattle(
     enemyIntent: null,
     enemyGuardBonus: 0,
     enemyEnrageBonus: 0,
+    lastEnemyAction: null,
   };
   applyPhase(s, phases[0], relief);
   // Telegraph the foe's first move so the player sees intent before they act.
@@ -513,6 +520,7 @@ function enemyStrike(s: BattleState, c: Combatant, mult: number, rng: RNG): numb
 /** Execute the foe's telegraphed (or default) move. Death check is handled by the caller. */
 function executeEnemyMove(s: BattleState, c: Combatant, intent: EnemyMove | null, rng: RNG): void {
   const kind = intent?.kind ?? 'attack';
+  s.lastEnemyAction = { kind };
 
   switch (kind) {
     case 'attack': {
@@ -592,12 +600,14 @@ function enemyTurn(s: BattleState, c: Combatant, rng: RNG): void {
   const freeze = hasStatus(s.enemyStatuses, 'freeze');
   if (freeze) {
     s.log.push(`${s.bossName} is frozen solid and cannot act!`);
+    s.lastEnemyAction = null;
     s.enemyIntent = pickEnemyMove(currentPhase, rng);
     return;
   }
   const blind = hasStatus(s.enemyStatuses, 'blind');
   if (blind && rng() < 0.4) {
     s.log.push(`${s.bossName} swings blindly and misses!`);
+    s.lastEnemyAction = null;
     s.enemyIntent = pickEnemyMove(currentPhase, rng);
     return;
   }

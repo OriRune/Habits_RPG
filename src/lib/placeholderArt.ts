@@ -321,6 +321,276 @@ function sceneMotif(key: string): string {
   }
 }
 
+// ── Per-biome full-bleed battlefield SVG ─────────────────────────────────────
+
+/**
+ * Returns an inline SVG data-URI for the battle background.
+ * Designed for a 320×208 container (the h-52 battlefield div).
+ * Each biome is a multi-layer scene: sky/cavern gradient, mid silhouettes, floor.
+ */
+export function biomeBattlefieldSvg(biomeKey?: string): string {
+  let svg: string;
+  switch (biomeKey) {
+    case 'catacombs':
+      svg = catacombsBattlefieldSvg();
+      break;
+    case 'ruins':
+      svg = ruinsBattlefieldSvg();
+      break;
+    case 'frozen':
+      svg = frozenBattlefieldSvg();
+      break;
+    default:
+      svg = defaultBattlefieldSvg();
+  }
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+function defaultBattlefieldSvg(): string {
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 208" preserveAspectRatio="xMidYMid slice">` +
+    // Sky gradient — warm dungeon amber-brown
+    `<defs>` +
+    `<linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">` +
+    `<stop offset="0%" stop-color="#1c0f07"/>` +
+    `<stop offset="55%" stop-color="#2d1a0a"/>` +
+    `<stop offset="100%" stop-color="#3e2510"/>` +
+    `</linearGradient>` +
+    `<radialGradient id="torch" cx="50%" cy="30%" r="60%">` +
+    `<stop offset="0%" stop-color="#c9a227" stop-opacity="0.08"/>` +
+    `<stop offset="100%" stop-color="#c9a227" stop-opacity="0"/>` +
+    `</radialGradient>` +
+    `</defs>` +
+    `<rect width="320" height="208" fill="url(#sky)"/>` +
+    `<rect width="320" height="208" fill="url(#torch)"/>` +
+    // Mid wall — rough stone blocks
+    `<rect x="0" y="88" width="320" height="8" fill="#1a0e05" fill-opacity="0.6"/>` +
+    // Brick-hint lines
+    `${[0,32,64,96,128,160,192,224,256,288].map(x =>
+      `<line x1="${x}" y1="88" x2="${x+28}" y2="88" stroke="#c9a227" stroke-opacity="0.06" stroke-width="1"/>`
+    ).join('')}` +
+    // Floor band
+    `<rect x="0" y="160" width="320" height="48" fill="#160c04" fill-opacity="0.7"/>` +
+    `<line x1="0" y1="160" x2="320" y2="160" stroke="#c9a227" stroke-opacity="0.25" stroke-width="1.5"/>` +
+    // Torch flame hints on the walls
+    `<ellipse cx="60" cy="82" rx="5" ry="8" fill="#c9a227" fill-opacity="0.25"/>` +
+    `<ellipse cx="60" cy="78" rx="3" ry="5" fill="#f3c97a" fill-opacity="0.2"/>` +
+    `<ellipse cx="260" cy="82" rx="5" ry="8" fill="#c9a227" fill-opacity="0.25"/>` +
+    `<ellipse cx="260" cy="78" rx="3" ry="5" fill="#f3c97a" fill-opacity="0.2"/>` +
+    // Vignette
+    `<rect width="320" height="208" fill="black" fill-opacity="0.22"/>` +
+    `</svg>`
+  );
+}
+
+function catacombsBattlefieldSvg(): string {
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 208" preserveAspectRatio="xMidYMid slice">` +
+    `<defs>` +
+    `<linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">` +
+    `<stop offset="0%" stop-color="#0e0616"/>` +
+    `<stop offset="50%" stop-color="#1a0d28"/>` +
+    `<stop offset="100%" stop-color="#2a1540"/>` +
+    `</linearGradient>` +
+    `<radialGradient id="glow1" cx="28%" cy="42%" r="32%">` +
+    `<stop offset="0%" stop-color="#7a3fa0" stop-opacity="0.18"/>` +
+    `<stop offset="100%" stop-color="#7a3fa0" stop-opacity="0"/>` +
+    `</radialGradient>` +
+    `<radialGradient id="glow2" cx="72%" cy="38%" r="28%">` +
+    `<stop offset="0%" stop-color="#9a6bce" stop-opacity="0.15"/>` +
+    `<stop offset="100%" stop-color="#9a6bce" stop-opacity="0"/>` +
+    `</radialGradient>` +
+    `</defs>` +
+    // Sky
+    `<rect width="320" height="208" fill="url(#sky)"/>` +
+    `<rect width="320" height="208" fill="url(#glow1)"/>` +
+    `<rect width="320" height="208" fill="url(#glow2)"/>` +
+    // Far back: faint arch outlines
+    `<path d="M40,165 L40,100 Q40,62 80,62 Q120,62 120,100 L120,165" fill="none" stroke="#9a6bce" stroke-opacity="0.1" stroke-width="1.5"/>` +
+    `<path d="M200,165 L200,100 Q200,62 240,62 Q280,62 280,100 L280,165" fill="none" stroke="#9a6bce" stroke-opacity="0.1" stroke-width="1.5"/>` +
+    // Mid: large gothic arch left
+    `<path d="M0,165 L0,110 Q0,55 50,55 Q100,55 100,110 L100,165" fill="#0e0616" fill-opacity="0.7" stroke="#c9a227" stroke-opacity="0.2" stroke-width="2"/>` +
+    // Mid: large gothic arch right
+    `<path d="M220,165 L220,110 Q220,55 270,55 Q320,55 320,110 L320,165" fill="#0e0616" fill-opacity="0.7" stroke="#c9a227" stroke-opacity="0.2" stroke-width="2"/>` +
+    // Eye-socket glows in arches
+    `<ellipse cx="45" cy="110" rx="7" ry="5" fill="#9a6bce" fill-opacity="0.3"/>` +
+    `<ellipse cx="38" cy="110" rx="3" ry="2.5" fill="#c8aaff" fill-opacity="0.4"/>` +
+    `<ellipse cx="275" cy="110" rx="7" ry="5" fill="#9a6bce" fill-opacity="0.3"/>` +
+    `<ellipse cx="282" cy="110" rx="3" ry="2.5" fill="#c8aaff" fill-opacity="0.4"/>` +
+    // Bone pillar stumps center
+    `<rect x="132" y="105" width="14" height="60" fill="#2a1540" fill-opacity="0.5" stroke="#f3e7c9" stroke-opacity="0.08" stroke-width="1"/>` +
+    `<rect x="174" y="115" width="14" height="50" fill="#2a1540" fill-opacity="0.5" stroke="#f3e7c9" stroke-opacity="0.08" stroke-width="1"/>` +
+    // Scattered bones on floor
+    `<line x1="80" y1="160" x2="98" y2="166" stroke="#f3e7c9" stroke-opacity="0.2" stroke-width="2" stroke-linecap="round"/>` +
+    `<line x1="87" y1="164" x2="91" y2="155" stroke="#f3e7c9" stroke-opacity="0.15" stroke-width="1.5" stroke-linecap="round"/>` +
+    `<line x1="215" y1="158" x2="234" y2="163" stroke="#f3e7c9" stroke-opacity="0.2" stroke-width="2" stroke-linecap="round"/>` +
+    `<circle cx="160" cy="162" r="4" fill="#f3e7c9" fill-opacity="0.1"/>` +
+    // Fog wisps
+    `<ellipse cx="80" cy="148" rx="50" ry="10" fill="#6b3fa0" fill-opacity="0.08"/>` +
+    `<ellipse cx="240" cy="152" rx="55" ry="9" fill="#6b3fa0" fill-opacity="0.07"/>` +
+    `<ellipse cx="160" cy="145" rx="70" ry="12" fill="#2a1540" fill-opacity="0.15"/>` +
+    // Floor
+    `<rect x="0" y="163" width="320" height="45" fill="#0a0212" fill-opacity="0.85"/>` +
+    `<line x1="0" y1="163" x2="320" y2="163" stroke="#9a6bce" stroke-opacity="0.3" stroke-width="1.5"/>` +
+    // Flagstone cracks
+    `<line x1="55" y1="163" x2="55" y2="208" stroke="#f3e7c9" stroke-opacity="0.05" stroke-width="1"/>` +
+    `<line x1="110" y1="163" x2="115" y2="208" stroke="#f3e7c9" stroke-opacity="0.05" stroke-width="1"/>` +
+    `<line x1="160" y1="163" x2="158" y2="208" stroke="#f3e7c9" stroke-opacity="0.05" stroke-width="1"/>` +
+    `<line x1="210" y1="163" x2="212" y2="208" stroke="#f3e7c9" stroke-opacity="0.05" stroke-width="1"/>` +
+    `<line x1="265" y1="163" x2="263" y2="208" stroke="#f3e7c9" stroke-opacity="0.05" stroke-width="1"/>` +
+    `<line x1="0" y1="185" x2="320" y2="185" stroke="#f3e7c9" stroke-opacity="0.04" stroke-width="1"/>` +
+    // Soul motes
+    `<circle cx="105" cy="130" r="2.5" fill="#c8aaff" fill-opacity="0.45"/>` +
+    `<circle cx="218" cy="120" r="2" fill="#c8aaff" fill-opacity="0.4"/>` +
+    `<circle cx="155" cy="108" r="1.5" fill="#c8aaff" fill-opacity="0.35"/>` +
+    `<circle cx="72" cy="138" r="1.5" fill="#9a6bce" fill-opacity="0.5"/>` +
+    `<circle cx="248" cy="135" r="2" fill="#9a6bce" fill-opacity="0.45"/>` +
+    // Vignette
+    `<rect width="320" height="208" fill="black" fill-opacity="0.3"/>` +
+    `</svg>`
+  );
+}
+
+function ruinsBattlefieldSvg(): string {
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 208" preserveAspectRatio="xMidYMid slice">` +
+    `<defs>` +
+    `<linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">` +
+    `<stop offset="0%" stop-color="#0a1808"/>` +
+    `<stop offset="45%" stop-color="#142a10"/>` +
+    `<stop offset="100%" stop-color="#1e3e18"/>` +
+    `</linearGradient>` +
+    `<radialGradient id="sun" cx="50%" cy="15%" r="40%">` +
+    `<stop offset="0%" stop-color="#8aaa6a" stop-opacity="0.22"/>` +
+    `<stop offset="100%" stop-color="#8aaa6a" stop-opacity="0"/>` +
+    `</radialGradient>` +
+    `</defs>` +
+    // Sky
+    `<rect width="320" height="208" fill="url(#sky)"/>` +
+    `<rect width="320" height="208" fill="url(#sun)"/>` +
+    // God-ray shafts from upper left
+    `<polygon points="60,0 90,0 220,165 190,165" fill="#8aaa6a" fill-opacity="0.04"/>` +
+    `<polygon points="100,0 120,0 260,165 240,165" fill="#8aaa6a" fill-opacity="0.03"/>` +
+    // Collapsed column far left
+    `<rect x="8" y="72" width="22" height="93" fill="#1e3e18" fill-opacity="0.7" stroke="#3aa66a" stroke-opacity="0.18" stroke-width="1.5"/>` +
+    `<rect x="4" y="66" width="30" height="12" rx="2" fill="#2f5a3a" fill-opacity="0.5" stroke="#3aa66a" stroke-opacity="0.25" stroke-width="1.5"/>` +
+    // Column left — partial, broken top
+    `<rect x="52" y="88" width="24" height="77" fill="#1e3e18" fill-opacity="0.65" stroke="#3aa66a" stroke-opacity="0.2" stroke-width="1.5"/>` +
+    `<rect x="48" y="82" width="32" height="10" rx="2" fill="#2f5a3a" fill-opacity="0.45" stroke="#3aa66a" stroke-opacity="0.22" stroke-width="1.5"/>` +
+    // Broken chunk fallen beside it
+    `<rect x="46" y="148" width="30" height="16" rx="3" fill="#1e3e18" fill-opacity="0.55" stroke="#3aa66a" stroke-opacity="0.15" stroke-width="1"/>` +
+    // Column right — taller, leaning
+    `<rect x="244" y="76" width="24" height="89" fill="#1e3e18" fill-opacity="0.65" stroke="#3aa66a" stroke-opacity="0.2" stroke-width="1.5" transform="rotate(1.5 256 165)"/>` +
+    `<rect x="240" y="70" width="32" height="10" rx="2" fill="#2f5a3a" fill-opacity="0.45" stroke="#3aa66a" stroke-opacity="0.22" stroke-width="1.5"/>` +
+    // Column far right — stump
+    `<rect x="290" y="110" width="22" height="55" fill="#1e3e18" fill-opacity="0.6" stroke="#3aa66a" stroke-opacity="0.18" stroke-width="1.5"/>` +
+    // Vine draped across the left columns (long swooping curve)
+    `<path d="M8,75 Q30,42 52,55 Q80,35 108,50 Q136,30 160,38" fill="none" stroke="#3aa66a" stroke-opacity="0.5" stroke-width="3" stroke-linecap="round"/>` +
+    // Vine across right columns
+    `<path d="M160,38 Q185,28 215,40 Q244,30 270,48 Q295,52 312,72" fill="none" stroke="#3aa66a" stroke-opacity="0.45" stroke-width="2.5" stroke-linecap="round"/>` +
+    // Hanging vine tendrils from left vine
+    `<line x1="40" y1="52" x2="35" y2="78" stroke="#3aa66a" stroke-opacity="0.35" stroke-width="1.5"/>` +
+    `<line x1="75" y1="40" x2="70" y2="64" stroke="#3aa66a" stroke-opacity="0.3" stroke-width="1.5"/>` +
+    `<line x1="110" y1="48" x2="106" y2="72" stroke="#3aa66a" stroke-opacity="0.3" stroke-width="1.5"/>` +
+    `<line x1="140" y1="35" x2="136" y2="58" stroke="#3aa66a" stroke-opacity="0.28" stroke-width="1.5"/>` +
+    // Hanging vine tendrils from right vine
+    `<line x1="190" y1="33" x2="186" y2="56" stroke="#3aa66a" stroke-opacity="0.28" stroke-width="1.5"/>` +
+    `<line x1="230" y1="36" x2="226" y2="60" stroke="#3aa66a" stroke-opacity="0.3" stroke-width="1.5"/>` +
+    `<line x1="260" y1="43" x2="258" y2="66" stroke="#3aa66a" stroke-opacity="0.28" stroke-width="1.5"/>` +
+    // Foliage clumps on the floor
+    `<ellipse cx="88" cy="160" rx="22" ry="7" fill="#2a5a2a" fill-opacity="0.45"/>` +
+    `<ellipse cx="85" cy="157" rx="14" ry="5" fill="#3aa66a" fill-opacity="0.2"/>` +
+    `<ellipse cx="230" cy="158" rx="20" ry="7" fill="#2a5a2a" fill-opacity="0.45"/>` +
+    `<ellipse cx="235" cy="155" rx="12" ry="5" fill="#3aa66a" fill-opacity="0.2"/>` +
+    `<ellipse cx="160" cy="155" rx="16" ry="5" fill="#3aa66a" fill-opacity="0.12"/>` +
+    // Mossy cobble floor
+    `<rect x="0" y="160" width="320" height="48" fill="#0d1f0a" fill-opacity="0.85"/>` +
+    `<line x1="0" y1="160" x2="320" y2="160" stroke="#3aa66a" stroke-opacity="0.35" stroke-width="1.5"/>` +
+    // Cobble crack hints
+    `<line x1="45" y1="163" x2="52" y2="208" stroke="#3aa66a" stroke-opacity="0.06" stroke-width="1"/>` +
+    `<line x1="105" y1="163" x2="100" y2="208" stroke="#3aa66a" stroke-opacity="0.06" stroke-width="1"/>` +
+    `<line x1="165" y1="163" x2="163" y2="208" stroke="#3aa66a" stroke-opacity="0.06" stroke-width="1"/>` +
+    `<line x1="220" y1="163" x2="224" y2="208" stroke="#3aa66a" stroke-opacity="0.06" stroke-width="1"/>` +
+    `<line x1="275" y1="163" x2="272" y2="208" stroke="#3aa66a" stroke-opacity="0.06" stroke-width="1"/>` +
+    // Vignette
+    `<rect width="320" height="208" fill="black" fill-opacity="0.28"/>` +
+    `</svg>`
+  );
+}
+
+function frozenBattlefieldSvg(): string {
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 208" preserveAspectRatio="xMidYMid slice">` +
+    `<defs>` +
+    `<linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">` +
+    `<stop offset="0%" stop-color="#050e18"/>` +
+    `<stop offset="40%" stop-color="#0e2035"/>` +
+    `<stop offset="100%" stop-color="#162840"/>` +
+    `</linearGradient>` +
+    `<radialGradient id="aurora" cx="50%" cy="20%" r="55%">` +
+    `<stop offset="0%" stop-color="#2ad4c8" stop-opacity="0.15"/>` +
+    `<stop offset="60%" stop-color="#6bd4ea" stop-opacity="0.06"/>` +
+    `<stop offset="100%" stop-color="#6bd4ea" stop-opacity="0"/>` +
+    `</radialGradient>` +
+    `<linearGradient id="floor" x1="0" y1="0" x2="0" y2="1">` +
+    `<stop offset="0%" stop-color="#1e3550"/>` +
+    `<stop offset="100%" stop-color="#0a1828"/>` +
+    `</linearGradient>` +
+    `</defs>` +
+    // Sky
+    `<rect width="320" height="208" fill="url(#sky)"/>` +
+    `<rect width="320" height="208" fill="url(#aurora)"/>` +
+    // Aurora ribbon bands
+    `<ellipse cx="160" cy="30" rx="200" ry="18" fill="#2ad4c8" fill-opacity="0.08"/>` +
+    `<ellipse cx="120" cy="48" rx="160" ry="10" fill="#7be8f8" fill-opacity="0.05"/>` +
+    `<ellipse cx="200" cy="22" rx="130" ry="8" fill="#b0f0e8" fill-opacity="0.06"/>` +
+    // Background stalactites (hanging from ceiling)
+    `<polygon points="20,0 28,40 36,0"   fill="#a8d8ea" fill-opacity="0.08"/>` +
+    `<polygon points="55,0 65,55 75,0"   fill="#a8d8ea" fill-opacity="0.1"/>` +
+    `<polygon points="90,0 98,35 106,0"  fill="#a8d8ea" fill-opacity="0.07"/>` +
+    `<polygon points="140,0 150,48 160,0" fill="#a8d8ea" fill-opacity="0.09"/>` +
+    `<polygon points="185,0 193,38 201,0" fill="#a8d8ea" fill-opacity="0.08"/>` +
+    `<polygon points="228,0 238,52 248,0" fill="#a8d8ea" fill-opacity="0.1"/>` +
+    `<polygon points="268,0 276,42 284,0" fill="#a8d8ea" fill-opacity="0.08"/>` +
+    `<polygon points="295,0 305,35 315,0" fill="#a8d8ea" fill-opacity="0.07"/>` +
+    // Mid ice spike clusters LEFT
+    `<polygon points="0,165 14,88 28,165"  fill="#a8d8ea" fill-opacity="0.2" stroke="#a8d8ea" stroke-opacity="0.3" stroke-width="1"/>` +
+    `<polygon points="18,165 30,112 42,165" fill="#c8eef8" fill-opacity="0.15" stroke="#c8eef8" stroke-opacity="0.25" stroke-width="1"/>` +
+    `<polygon points="34,165 44,128 54,165" fill="#a8d8ea" fill-opacity="0.18" stroke="#a8d8ea" stroke-opacity="0.28" stroke-width="1"/>` +
+    `<polygon points="48,165 56,145 64,165" fill="#a8d8ea" fill-opacity="0.12"/>` +
+    // Mid ice spike clusters RIGHT
+    `<polygon points="256,165 264,142 272,165" fill="#a8d8ea" fill-opacity="0.12"/>` +
+    `<polygon points="268,165 278,128 288,165" fill="#a8d8ea" fill-opacity="0.18" stroke="#a8d8ea" stroke-opacity="0.28" stroke-width="1"/>` +
+    `<polygon points="282,165 294,110 306,165" fill="#c8eef8" fill-opacity="0.15" stroke="#c8eef8" stroke-opacity="0.25" stroke-width="1"/>` +
+    `<polygon points="298,165 312,86 320,165" fill="#a8d8ea" fill-opacity="0.2" stroke="#a8d8ea" stroke-opacity="0.3" stroke-width="1"/>` +
+    // Smaller center ground spikes
+    `<polygon points="142,165 149,148 156,165" fill="#a8d8ea" fill-opacity="0.12"/>` +
+    `<polygon points="164,165 170,144 176,165" fill="#a8d8ea" fill-opacity="0.1"/>` +
+    // Ice floor
+    `<rect x="0" y="163" width="320" height="45" fill="url(#floor)" fill-opacity="0.9"/>` +
+    `<line x1="0" y1="163" x2="320" y2="163" stroke="#a8d8ea" stroke-opacity="0.4" stroke-width="1.5"/>` +
+    // Ice sheen reflection band
+    `<rect x="0" y="163" width="320" height="6" fill="#6bd4ea" fill-opacity="0.1"/>` +
+    // Frost crack lines on floor
+    `<line x1="60" y1="163" x2="75" y2="208" stroke="#a8d8ea" stroke-opacity="0.08" stroke-width="1"/>` +
+    `<line x1="120" y1="163" x2="115" y2="208" stroke="#a8d8ea" stroke-opacity="0.07" stroke-width="1"/>` +
+    `<line x1="165" y1="163" x2="162" y2="208" stroke="#a8d8ea" stroke-opacity="0.08" stroke-width="1"/>` +
+    `<line x1="210" y1="163" x2="215" y2="208" stroke="#a8d8ea" stroke-opacity="0.07" stroke-width="1"/>` +
+    `<line x1="258" y1="163" x2="252" y2="208" stroke="#a8d8ea" stroke-opacity="0.08" stroke-width="1"/>` +
+    // Snowflake/crystal sparkle points
+    `<circle cx="82" cy="55" r="2.5" fill="#c8eef8" fill-opacity="0.6"/>` +
+    `<circle cx="145" cy="38" r="2" fill="#c8eef8" fill-opacity="0.55"/>` +
+    `<circle cx="200" cy="60" r="2" fill="#c8eef8" fill-opacity="0.5"/>` +
+    `<circle cx="240" cy="44" r="1.5" fill="#c8eef8" fill-opacity="0.6"/>` +
+    `<circle cx="108" cy="72" r="1.5" fill="#a8d8ea" fill-opacity="0.5"/>` +
+    `<circle cx="178" cy="50" r="1.5" fill="#a8d8ea" fill-opacity="0.45"/>` +
+    `<circle cx="295" cy="65" r="2" fill="#c8eef8" fill-opacity="0.5"/>` +
+    // Vignette
+    `<rect width="320" height="208" fill="black" fill-opacity="0.25"/>` +
+    `</svg>`
+  );
+}
+
 /** Generates a wide scene banner with a theme-specific SVG motif instead of the generic landscape. */
 function themedWideSvg(sceneKey: string, color: string, label?: string): string {
   const cap = label ? trim(label, 30) : '';

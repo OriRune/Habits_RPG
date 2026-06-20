@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { Swords, Sparkles, Shield, FlaskConical, Wind, ChevronLeft } from 'lucide-react';
+import { Swords, Sparkles, Shield, FlaskConical, Wind, ChevronLeft, Volume2, VolumeX } from 'lucide-react';
+import * as sfx from '@/lib/sfx';
 import { useGameStore } from '@/store/useGameStore';
 import { selectTopStats } from '@/store/selectors';
 import { getItem } from '@/engine/items';
@@ -7,7 +8,7 @@ import { getSpell } from '@/engine/spells';
 import { getWeapon } from '@/engine/weapons';
 import { type BattleState, type CombatAction, type StatusEffect } from '@/engine/combat';
 import { bossCrest, avatarCrest } from '@/lib/sprites';
-import { getScene, scenePlaceholderImage } from '@/lib/scenes';
+import { biomeBattlefieldSvg } from '@/lib/placeholderArt';
 import { cn } from '@/lib/cn';
 import { Sprite } from '@/components/ui/Sprite';
 import { Button } from '@/components/ui/Button';
@@ -15,6 +16,20 @@ import { SceneArt } from '@/components/ui/SceneArt';
 
 const STATUS_ICON: Record<string, string> = {
   burn: '🔥', blind: '🌀', weaken: '⬇️', bless: '✨', freeze: '❄️', poison: '☠️',
+};
+
+// ── Enemy intent display helpers ──────────────────────────────────────────────
+
+type IntentStyle = { label: string; fallbackIcon: string; tone: 'danger' | 'caution' | 'neutral' };
+
+const INTENT_STYLE: Record<string, IntentStyle> = {
+  attack:  { label: 'Attacks',   fallbackIcon: '⚔️',  tone: 'neutral'  },
+  heavy:   { label: 'Heavy hit', fallbackIcon: '💢',  tone: 'danger'   },
+  multi:   { label: 'Flurry',    fallbackIcon: '⚡',  tone: 'danger'   },
+  drain:   { label: 'Drains',    fallbackIcon: '🩸',  tone: 'danger'   },
+  guard:   { label: 'Guards',    fallbackIcon: '🛡️',  tone: 'caution'  },
+  enrage:  { label: 'Enrages',   fallbackIcon: '😤',  tone: 'caution'  },
+  inflict: { label: 'Inflicts',  fallbackIcon: '☠️',  tone: 'caution'  },
 };
 
 // ── HpBar: GBC-style animated health bar ─────────────────────────────────────
@@ -32,7 +47,7 @@ function HpBar({ value, max }: { value: number; max: number }) {
         style={{
           width: `${pct}%`,
           backgroundColor: barColor,
-          transition: 'width 400ms ease, background-color 400ms ease',
+          transition: 'width 900ms ease-out, background-color 600ms ease',
         }}
       />
     </div>
@@ -72,16 +87,6 @@ function Statuses({ list }: { list: StatusEffect[] }) {
   );
 }
 
-// ── Biome battle backgrounds ──────────────────────────────────────────────────
-
-const DEFAULT_BATTLE_BG =
-  'linear-gradient(to bottom, #1c0f07 0%, #2d1a0a 47%, #3e2510 49%, #5a3a18 54%, #3e2510 100%)';
-
-const BIOME_BATTLE_BG: Record<string, string> = {
-  catacombs: 'linear-gradient(to bottom, #1a0e22 0%, #2a1535 47%, #3a1e4a 49%, #4a2a58 54%, #3a1e4a 100%)',
-  ruins:     'linear-gradient(to bottom, #0c1a0e 0%, #182e14 47%, #243e1e 49%, #2e5a28 54%, #243e1e 100%)',
-  frozen:    'linear-gradient(to bottom, #0a1520 0%, #162535 47%, #1e3548 49%, #284f62 54%, #1e3548 100%)',
-};
 
 // ── Per-spell VFX ─────────────────────────────────────────────────────────────
 
@@ -108,27 +113,55 @@ function spellVfx(kind: string): SpellVfx {
   }
 }
 
+// ── Per-foe-move VFX ──────────────────────────────────────────────────────────
+
+interface FoeVfx { glyph: string; cls: string; target: 'player' | 'foe' }
+
+function foeVfx(kind: string): FoeVfx {
+  switch (kind) {
+    case 'attack':  return { glyph: '⚔️', cls: 'battle-spell-sparks',   target: 'player' };
+    case 'heavy':   return { glyph: '💥', cls: 'battle-spell-firebolt', target: 'player' };
+    case 'multi':   return { glyph: '⚡', cls: 'battle-spell-dazzle',   target: 'player' };
+    case 'drain':   return { glyph: '🩸', cls: 'battle-spell-hex',      target: 'player' };
+    case 'inflict': return { glyph: '☠️', cls: 'battle-spell-hex',      target: 'player' };
+    case 'guard':   return { glyph: '🛡',  cls: 'battle-spell-bless',   target: 'foe'    };
+    case 'enrage':  return { glyph: '😤', cls: 'battle-spell-firebolt', target: 'foe'    };
+    default:        return { glyph: '⚔️', cls: 'battle-spell-sparks',   target: 'player' };
+  }
+}
+
 // ── Animation state ───────────────────────────────────────────────────────────
 
 interface Anim {
-  foeLunge: boolean;
-  foeHit: boolean;
+  // Player action phase
   playerLunge: boolean;
-  playerHit: boolean;
-  foeFloater: string | null;
-  playerFloater: string | null;
-  /** Spell key or school name to drive per-spell VFX; null when no spell was cast. */
   spellKind: string | null;
-  /** 'foe' for damage/illusion; 'self' for support spells (mend, bless, teleport). */
   spellTarget: 'foe' | 'self';
+  // Impact phase (foe takes damage)
+  foeHit: boolean;
+  foeFloater: string | null;
+  foeFlash: boolean;       // full-screen red flash
+  foeShake: boolean;       // battlefield shake
+  foeImpactRing: boolean;  // expanding ring on foe unit
+  // Enemy action phase
+  foeLunge: boolean;
+  foeActionKind: string | null;  // drives the per-kind foe VFX glyph
+  playerHit: boolean;
+  playerFloater: string | null;
+  playerFlash: boolean;     // full-screen gold/white flash
+  playerImpactRing: boolean;
 }
 
 const ANIM_NONE: Anim = {
-  foeLunge: false, foeHit: false,
-  playerLunge: false, playerHit: false,
-  foeFloater: null, playerFloater: null,
-  spellKind: null, spellTarget: 'foe',
+  playerLunge: false, spellKind: null, spellTarget: 'foe',
+  foeHit: false, foeFloater: null, foeFlash: false, foeShake: false, foeImpactRing: false,
+  foeLunge: false, foeActionKind: null,
+  playerHit: false, playerFloater: null, playerFlash: false, playerImpactRing: false,
 };
+
+// ── Burst particle positions (fanned outward from impact point) ───────────────
+const FOE_BURSTS   = [[-28,-22],[ 0,-32],[28,-22],[32,0],[20,24],[-20,24],[-32,0]];
+const SELF_BURSTS  = [[-24,-18],[0,-28],[24,-18],[26,6],[14,22],[-14,22],[-26,6]];
 
 // ── BattleSceneProps ──────────────────────────────────────────────────────────
 
@@ -163,18 +196,20 @@ export function BattleScene({
   const knownSpells = useGameStore((s) => s.knownSpells);
   const equippedWeapon = useGameStore((s) => s.equippedWeapon);
   const topStat = useGameStore(selectTopStats)[0];
+  const soundEnabled = useGameStore((s) => s.settings.soundEnabled);
+  const updateSettings = useGameStore((s) => s.updateSettings);
   const [menu, setMenu] = useState<'main' | 'spell' | 'item'>('main');
   const [anim, setAnim] = useState<Anim>(ANIM_NONE);
+  // Displayed HP — lags behind engine state so the drain plays after VFX
+  const [disp, setDisp] = useState({ bossHp: battle.bossHp, playerHp: battle.playerHp });
+  // Whether a timeline is currently running (shows "tap to skip" hint)
+  const [animating, setAnimating] = useState(false);
 
-  // Biome-themed battlefield background + faint motif overlay
-  const battleBg = biomeKey ? (BIOME_BATTLE_BG[biomeKey] ?? DEFAULT_BATTLE_BG) : DEFAULT_BATTLE_BG;
-  const biomeSrc = biomeKey
-    ? scenePlaceholderImage(getScene(`biome:${biomeKey}`), undefined, `biome:${biomeKey}`)
-    : null;
+  // Per-biome full-bleed battlefield SVG background
+  const battlefieldSrc = biomeBattlefieldSvg(biomeKey);
 
-  // VFX diff — compare the previous battle snapshot after each turn to classify
-  // what happened (player hit foe, foe hit player, spell cast) and trigger the
-  // matching CSS keyframe token. Pattern mirrors ArenaOverlay/tactics floaters.
+  // Timeline refs — cleared on skip
+  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const prevRef = useRef({
     logLen: battle.log.length,
     bossHp: battle.bossHp,
@@ -182,6 +217,46 @@ export function BattleScene({
     status: battle.status,
   });
 
+  // Snap displayed HP immediately when battle identity changes (new fight, mount)
+  const battleIdRef = useRef(battle.bossId);
+  useEffect(() => {
+    if (battle.bossId !== battleIdRef.current) {
+      battleIdRef.current = battle.bossId;
+      setDisp({ bossHp: battle.bossHp, playerHp: battle.playerHp });
+      prevRef.current = { logLen: battle.log.length, bossHp: battle.bossHp, playerHp: battle.playerHp, status: battle.status };
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [battle.bossId]);
+
+  // Sync mute state with the store's soundEnabled setting
+  useEffect(() => {
+    sfx.setMuted(!soundEnabled);
+  }, [soundEnabled]);
+
+  // Resume AudioContext and play battle start sting once per encounter
+  useEffect(() => {
+    void sfx.resume().then(() => sfx.play('battleStart'));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [battle.bossId]);
+
+  // Tap-to-skip: clear all pending timers and snap state to engine values
+  function skipAnimation() {
+    if (!animating) return;
+    timersRef.current.forEach(clearTimeout);
+    timersRef.current = [];
+    setAnim(ANIM_NONE);
+    setDisp({ bossHp: battle.bossHp, playerHp: battle.playerHp });
+    setAnimating(false);
+    if (battle.status === 'won')  sfx.play('victory');
+    if (battle.status === 'lost') sfx.play('defeat');
+  }
+
+  function schedule(fn: () => void, ms: number) {
+    const t = setTimeout(fn, ms);
+    timersRef.current.push(t);
+  }
+
+  // Staged VFX + HP drain timeline
   useEffect(() => {
     const prev = prevRef.current;
     if (battle.log.length === prev.logLen && battle.status === prev.status) return;
@@ -191,34 +266,7 @@ export function BattleScene({
     const la = battle.lastAction;
     const isSpell = la?.kind === 'spell';
 
-    const next: Anim = { ...ANIM_NONE };
-
-    if (bossDmg > 0) {
-      next.foeHit     = true;
-      next.foeFloater = `-${bossDmg}`;
-      if (isSpell && la) {
-        next.spellKind   = la.spellKey ?? la.school ?? null;
-        next.spellTarget = 'foe';
-      } else {
-        next.playerLunge = true;      // melee: player charges the foe
-      }
-    } else if (isSpell && la && la.target === 'self') {
-      // Support spell on self (mend, bless, teleport) — no foe damage
-      next.spellKind   = la.spellKey ?? la.school ?? null;
-      next.spellTarget = 'self';
-    }
-
-    if (playerDmg > 0) {
-      next.foeLunge      = true;      // foe charges the player
-      next.playerHit     = true;
-      next.playerFloater = `-${playerDmg}`;
-    }
-
-    // Heal floater on support spells that restored HP
-    if (la?.kind === 'spell' && la.target === 'self' && la.amount && la.amount > 0) {
-      next.playerFloater = `+${la.amount}`;
-    }
-
+    // Update prevRef immediately so re-fires don't double-trigger
     prevRef.current = {
       logLen: battle.log.length,
       bossHp: battle.bossHp,
@@ -226,10 +274,149 @@ export function BattleScene({
       status: battle.status,
     };
 
-    if (!Object.values(next).some(Boolean)) return;
-    setAnim(next);
-    const t = setTimeout(() => setAnim(ANIM_NONE), 700);
-    return () => clearTimeout(t);
+    // If nothing visual happened (status-only change like flee success), skip
+    if (bossDmg === 0 && playerDmg === 0 && !isSpell) {
+      setDisp({ bossHp: battle.bossHp, playerHp: battle.playerHp });
+      return;
+    }
+
+    // Clear any existing timeline
+    timersRef.current.forEach(clearTimeout);
+    timersRef.current = [];
+    setAnimating(true);
+
+    // ── PHASE 1 (t=0): player action VFX (~950 ms dwell before HP drains) ──
+    if (bossDmg > 0 || (isSpell && la && la.target === 'foe')) {
+      setAnim({
+        ...ANIM_NONE,
+        playerLunge: !isSpell,
+        spellKind:   isSpell && la ? (la.spellKey ?? la.school ?? null) : null,
+        spellTarget: 'foe',
+      });
+      // Play spell/weapon sound immediately on action
+      if (isSpell && la) {
+        const key = la.spellKey ?? la.school ?? '';
+        if (key === 'firebolt' || key === 'ring_of_fire') sfx.play('fireSpell');
+        else if (key === 'hex') sfx.play('blink');
+        else sfx.play('cast');
+      } else {
+        sfx.play('swing');
+      }
+    } else if (isSpell && la && la.target === 'self') {
+      setAnim({
+        ...ANIM_NONE,
+        spellKind: la.spellKey ?? la.school ?? null,
+        spellTarget: 'self',
+      });
+      sfx.play('heal');
+    }
+
+    const VFX_DWELL = 950;   // ms before HP starts draining
+    const DRAIN_DUR = 900;   // HP bar transition duration (must match HpBar style)
+
+    // ── PHASE 2 (t≈950): foe HP drain + impact ──────────────────────────────
+    if (bossDmg > 0) {
+      schedule(() => {
+        setAnim({ ...ANIM_NONE, foeHit: true, foeFloater: `-${bossDmg}`, foeFlash: true, foeImpactRing: true, foeShake: bossDmg > 8 });
+        setDisp(d => ({ ...d, bossHp: battle.bossHp }));
+        sfx.play('hit');
+        if (battle.status === 'won') {
+          schedule(() => sfx.play('victory'), DRAIN_DUR + 400);
+        }
+      }, VFX_DWELL);
+    } else if (isSpell && la && la.target === 'self' && la.amount && la.amount > 0) {
+      // Heal — show green floater timed with the VFX
+      schedule(() => {
+        setAnim(prev2 => ({ ...prev2, playerFloater: `+${la.amount}` }));
+        setDisp(d => ({ ...d, playerHp: battle.playerHp }));
+      }, VFX_DWELL);
+    }
+
+    const foeDrainEnd = bossDmg > 0 ? VFX_DWELL + DRAIN_DUR : VFX_DWELL;
+
+    // ── PHASE 3 (after foe drain): clear foe impact ─────────────────────────
+    schedule(() => {
+      setAnim(ANIM_NONE);
+    }, foeDrainEnd + 200);
+
+    const foeActed = !!battle.lastEnemyAction;
+    const lastEnemyKind = battle.lastEnemyAction?.kind ?? 'attack';
+    const foeMeleeKinds = ['attack', 'heavy', 'multi', 'drain'];
+
+    if (foeActed) {
+      // ── PHASE 3b: foe executes its move — glyph VFX + lunge if melee ─────
+      schedule(() => {
+        setAnim({
+          ...ANIM_NONE,
+          foeLunge: foeMeleeKinds.includes(lastEnemyKind),
+          foeActionKind: lastEnemyKind,
+        });
+        if (battle.status === 'active') {
+          switch (lastEnemyKind) {
+            case 'heavy':   sfx.play('heavyStrike'); break;
+            case 'drain':   sfx.play('drainAttack'); break;
+            case 'inflict': sfx.play('blink');       break;
+            case 'guard':   sfx.play('lastStandBlock'); break;
+            case 'enrage':  sfx.play('bossEnrage');  break;
+            default:        sfx.play('swing');        break; // attack, multi
+          }
+        }
+      }, foeDrainEnd + 350);
+
+      if (playerDmg > 0) {
+        // ── PHASE 4: player HP drain + impact ────────────────────────────────
+        schedule(() => {
+          setAnim({ ...ANIM_NONE, playerHit: true, playerFloater: `-${playerDmg}`, playerFlash: true, playerImpactRing: true });
+          setDisp(d => ({ ...d, playerHp: battle.playerHp }));
+          sfx.play('playerHurt');
+          if (battle.status === 'lost') {
+            schedule(() => sfx.play('defeat'), DRAIN_DUR + 400);
+          }
+        }, foeDrainEnd + 350 + VFX_DWELL);
+
+        // ── PHASE 5: clear all ──────────────────────────────────────────────
+        schedule(() => {
+          setAnim(ANIM_NONE);
+          setAnimating(false);
+        }, foeDrainEnd + 350 + VFX_DWELL + DRAIN_DUR + 200);
+      } else if (lastEnemyKind === 'inflict') {
+        // Non-damaging inflict — show a status floater on the player, then clear
+        schedule(() => {
+          setAnim({ ...ANIM_NONE, playerFloater: '☠' });
+        }, foeDrainEnd + 350 + VFX_DWELL);
+        schedule(() => {
+          setAnim(ANIM_NONE);
+          setAnimating(false);
+          setDisp({ bossHp: battle.bossHp, playerHp: battle.playerHp });
+        }, foeDrainEnd + 350 + VFX_DWELL + 700);
+      } else {
+        // guard / enrage — glyph lands on the foe, no player hit
+        schedule(() => {
+          setAnim(ANIM_NONE);
+          setAnimating(false);
+          setDisp({ bossHp: battle.bossHp, playerHp: battle.playerHp });
+        }, foeDrainEnd + 350 + VFX_DWELL + 400);
+      }
+    } else if (playerDmg > 0) {
+      // Foe was frozen/blinded but player has DoT — show player hit without foe lunge
+      schedule(() => {
+        setAnim({ ...ANIM_NONE, playerHit: true, playerFloater: `-${playerDmg}`, playerFlash: true, playerImpactRing: true });
+        setDisp(d => ({ ...d, playerHp: battle.playerHp }));
+      }, foeDrainEnd + 350);
+
+      schedule(() => {
+        setAnim(ANIM_NONE);
+        setAnimating(false);
+      }, foeDrainEnd + 350 + DRAIN_DUR + 200);
+    } else {
+      // No foe action + no damage — quick cleanup (heal/defend/rune with no counter)
+      schedule(() => {
+        setAnim(ANIM_NONE);
+        setAnimating(false);
+        setDisp({ bossHp: battle.bossHp, playerHp: battle.playerHp });
+      }, foeDrainEnd + 400);
+    }
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [battle.log.length, battle.bossHp, battle.playerHp, battle.status]);
 
@@ -257,22 +444,33 @@ export function BattleScene({
           Sky/wall gradient in the upper half, a floor band at ~50%.
           Foe info card upper-left + foe sprite upper-right (classic GBC convention).
           Player sprite lower-left + player info card lower-right.         */}
+      {/* Battlefield — click/tap while animating to skip to the result */}
       <div
-        className="relative h-52 w-full overflow-hidden rounded-md border-2 border-gold-deep/60"
-        style={{ background: battleBg }}
-      >
-        {/* Faint biome motif overlay — only when a biome key is set */}
-        {biomeSrc && (
-          <div
-            className="pointer-events-none absolute inset-0"
-            style={{
-              backgroundImage: `url('${biomeSrc}')`,
-              backgroundSize: 'cover',
-              backgroundPosition: 'bottom center',
-              opacity: 0.1,
-            }}
-          />
+        className={cn(
+          'relative h-52 w-full overflow-hidden rounded-md border-2 border-gold-deep/60',
+          active && anim.foeShake && 'motion-safe:animate-[battle-shake_0.5s_ease]',
         )}
+        style={{
+          backgroundImage: `url('${battlefieldSrc}')`,
+          backgroundSize: 'cover',
+          backgroundPosition: 'center',
+        }}
+        onClick={animating ? skipAnimation : undefined}
+        role={animating ? 'button' : undefined}
+        aria-label={animating ? 'Skip animation' : undefined}
+        tabIndex={animating ? 0 : undefined}
+        onKeyDown={animating ? (e) => { if (e.key === 'Enter' || e.key === ' ') skipAnimation(); } : undefined}
+      >
+        {/* Full-screen flash overlays — red = foe hit player, gold = player hit foe */}
+        {anim.foeFlash && (
+          <div className="battle-flash pointer-events-none absolute inset-0 motion-safe:animate-[battle-flash_0.5s_ease_forwards]"
+            style={{ background: 'radial-gradient(ellipse at 75% 35%, #ffe08a 0%, transparent 70%)', opacity: 0 }} />
+        )}
+        {anim.playerFlash && (
+          <div className="battle-flash pointer-events-none absolute inset-0 motion-safe:animate-[battle-flash_0.5s_ease_forwards]"
+            style={{ background: 'radial-gradient(ellipse at 25% 70%, #ef4444 0%, transparent 70%)', opacity: 0 }} />
+        )}
+
         {/* ── Foe info card — upper-left ── */}
         <div className="absolute left-2 top-2 max-w-[46%]">
           <div className="truncate font-display text-xs font-bold text-ember-bright">
@@ -280,17 +478,37 @@ export function BattleScene({
           </div>
           <div className="mt-0.5 w-28">
             <div className="mb-0.5 text-right font-display text-[9px] tabular-nums text-parchment-300/60">
-              {battle.bossHp} / {battle.bossMaxHp}
+              {disp.bossHp} / {battle.bossMaxHp}
             </div>
-            <HpBar value={battle.bossHp} max={battle.bossMaxHp} />
+            <HpBar value={disp.bossHp} max={battle.bossMaxHp} />
           </div>
           <Statuses list={battle.enemyStatuses} />
-          {active && battle.enemyIntent && (
-            <div className="mt-1 flex items-center gap-0.5 text-[9px] text-parchment-300/70">
-              <span className="shrink-0">{battle.enemyIntent.icon ?? '⚔️'}</span>
-              <span className="truncate">{battle.enemyIntent.label}…</span>
-            </div>
-          )}
+          {active && battle.enemyIntent && (() => {
+            const style = INTENT_STYLE[battle.enemyIntent.kind] ?? INTENT_STYLE.attack;
+            const icon = battle.enemyIntent.icon ?? style.fallbackIcon;
+            const toneClass =
+              style.tone === 'danger'  ? 'border-ember-bright/40 bg-ember-bright/10 text-ember-bright' :
+              style.tone === 'caution' ? 'border-gold-deep/50 bg-gold-deep/15 text-gold-bright' :
+                                         'border-gold-deep/30 bg-wood-900/50 text-parchment-300';
+            const pipColor =
+              style.tone === 'danger'  ? 'bg-ember-bright' :
+              style.tone === 'caution' ? 'bg-gold-bright' :
+                                         'bg-parchment-300/60';
+            return (
+              <div className={cn('mt-1.5 rounded border px-1.5 py-1', toneClass)}>
+                <div className="flex items-center gap-1 font-display text-[8px] font-bold uppercase tracking-widest opacity-70">
+                  <span className={cn('inline-block h-1.5 w-1.5 rounded-sm', pipColor)} />
+                  Next Move
+                </div>
+                <div className="mt-0.5 flex items-center gap-1">
+                  <span className="text-base leading-none">{icon}</span>
+                  <span className="font-display text-[11px] font-semibold leading-tight">
+                    {style.label} — {battle.enemyIntent.label}
+                  </span>
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         {/* ── Foe sprite — upper-right, on a raised platform ── */}
@@ -317,6 +535,18 @@ export function BattleScene({
               />
             </div>
           </div>
+          {/* Impact ring on foe */}
+          {anim.foeImpactRing && (
+            <div className="battle-impact pointer-events-none absolute left-1/2 top-1/2 h-12 w-12 rounded-full border-2 border-amber-300/80 motion-safe:animate-[battle-impact-ring_0.55s_ease-out_forwards]" />
+          )}
+          {/* Burst particles on foe */}
+          {anim.foeImpactRing && FOE_BURSTS.map(([bx, by], i) => (
+            <div
+              key={i}
+              className="battle-burst pointer-events-none absolute left-1/2 top-1/2 text-[10px] motion-safe:animate-[battle-burst_0.6s_ease-out_forwards]"
+              style={{ '--bx': `${bx}px`, '--by': `${by}px`, animationDelay: `${i * 30}ms` } as React.CSSProperties}
+            >✦</div>
+          ))}
           {/* Damage floater over foe */}
           {anim.foeFloater && (
             <span className="pointer-events-none absolute left-1/2 top-0 font-display text-sm font-bold leading-none text-red-400 motion-safe:animate-[battle-floater_0.65s_ease_forwards]">
@@ -347,6 +577,18 @@ export function BattleScene({
               />
             </div>
           </div>
+          {/* Impact ring on player */}
+          {anim.playerImpactRing && (
+            <div className="battle-impact pointer-events-none absolute left-1/2 top-1/2 h-10 w-10 rounded-full border-2 border-red-400/80 motion-safe:animate-[battle-impact-ring_0.55s_ease-out_forwards]" />
+          )}
+          {/* Burst particles on player */}
+          {anim.playerImpactRing && SELF_BURSTS.map(([bx, by], i) => (
+            <div
+              key={i}
+              className="battle-burst pointer-events-none absolute left-1/2 top-1/2 text-[10px] text-red-400 motion-safe:animate-[battle-burst_0.6s_ease-out_forwards]"
+              style={{ '--bx': `${bx}px`, '--by': `${by}px`, animationDelay: `${i * 30}ms` } as React.CSSProperties}
+            >✦</div>
+          ))}
           {/* Damage / heal floater over player (green when gaining HP) */}
           {anim.playerFloater && (
             <span
@@ -367,33 +609,68 @@ export function BattleScene({
           </div>
           <div className="mt-0.5 w-28">
             <div className="mb-0.5 font-display text-[9px] tabular-nums text-parchment-300/60">
-              {battle.playerHp} / {battle.playerMaxHp}
+              {disp.playerHp} / {battle.playerMaxHp}
             </div>
-            <HpBar value={battle.playerHp} max={battle.playerMaxHp} />
+            <HpBar value={disp.playerHp} max={battle.playerMaxHp} />
           </div>
           <Statuses list={battle.playerStatuses} />
         </div>
 
         {/* ── Per-spell VFX ─────────────────────────────────────────────────────
             Positioned on the target (foe = upper-right, self = lower-left).
-            Uses inline style for the animation name so Tailwind JIT scan is not
-            needed for the dynamic keyframe name. The `battle-spell-vfx` class
-            satisfies the [class*="battle-"] reduced-motion guard in index.css.  */}
+            Inline animation style avoids Tailwind JIT class-name interpolation.
+            `battle-spell-vfx` satisfies the [class*="battle-"] reduced-motion guard. */}
         {anim.spellKind && (() => {
           const { glyph, cls } = spellVfx(anim.spellKind);
           const isForSelf = anim.spellTarget === 'self';
           return (
             <div
               className={cn(
-                'battle-spell-vfx pointer-events-none absolute text-xl',
-                isForSelf ? 'bottom-[20%] left-[10%]' : 'bottom-[42%] right-[10%]',
+                'battle-spell-vfx pointer-events-none absolute text-3xl',
+                isForSelf ? 'bottom-[22%] left-[12%]' : 'bottom-[38%] right-[8%]',
               )}
-              style={{ animation: `${cls} 0.7s ease forwards` }}
+              style={{ animation: `${cls} 1.0s ease forwards` }}
             >
               {glyph}
             </div>
           );
         })()}
+
+        {/* ── Foe-action VFX ────────────────────────────────────────────────────
+            Rendered on the target: player (lower-left) for attack/heavy/multi/drain/inflict;
+            foe (upper-right) for guard/enrage. `battle-foe-vfx` satisfies reduced-motion guard. */}
+        {anim.foeActionKind && (() => {
+          const { glyph, cls, target } = foeVfx(anim.foeActionKind);
+          const isOnFoe = target === 'foe';
+          return (
+            <div
+              className={cn(
+                'battle-foe-vfx pointer-events-none absolute text-3xl',
+                isOnFoe ? 'bottom-[38%] right-[8%]' : 'bottom-[22%] left-[12%]',
+              )}
+              style={{ animation: `${cls} 1.0s ease forwards` }}
+            >
+              {glyph}
+            </div>
+          );
+        })()}
+
+        {/* Mute toggle */}
+        <button
+          className="absolute right-1.5 top-1.5 z-10 rounded p-0.5 text-parchment-300/40 transition-colors hover:text-parchment-200"
+          onClick={(e) => { e.stopPropagation(); updateSettings({ soundEnabled: !soundEnabled }); void sfx.resume(); }}
+          title={soundEnabled ? 'Mute sounds' : 'Unmute sounds'}
+          aria-label={soundEnabled ? 'Mute' : 'Unmute'}
+        >
+          {soundEnabled ? <Volume2 size={13} /> : <VolumeX size={13} />}
+        </button>
+
+        {/* Tap-to-skip hint */}
+        {animating && (
+          <div className="pointer-events-none absolute bottom-1 right-2 font-display text-[9px] text-parchment-300/50 uppercase tracking-wider">
+            tap to skip
+          </div>
+        )}
       </div>
 
       {/* MP + STA bars (below battlefield, full-width) */}

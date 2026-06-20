@@ -119,6 +119,17 @@ export type SfxCue =
   | 'lockClick'
   /** Sharp metallic snap — pick breaks under sustained torque. */
   | 'lockSnap'
+  // ── Boss Battle ────────────────────────────────────────────────────────────
+  /** Dramatic encounter sting — deep war-drum impact + high metallic ring. */
+  | 'battleStart'
+  /** Explosive fire-magic cast — firebolt / ring-of-fire, distinct from generic 'cast'. */
+  | 'fireSpell'
+  /** Enemy heavy-slam — deeper and bassier than 'swing'. */
+  | 'heavyStrike'
+  /** Enemy life-drain — ascending siphon pitch sweep. */
+  | 'drainAttack'
+  /** Enemy enrages — threatening roar swell. */
+  | 'bossEnrage'
   // ── Deep Mine ─────────────────────────────────────────────────────────
   /** Dull thud + dust noise — pick breaks through a rock tile. */
   | 'mineRockBreak'
@@ -842,6 +853,44 @@ const _CUES: Record<SfxCue, (ctx: AudioContext) => void> = {
   lockSnap(ctx) {
     _osc(ctx, 'square', 520, 110, 0.07, 0.48, 0.002);
     _noise(ctx, 2600, 420, 0.06, 0.28, 'bandpass', 2.6);
+  },
+
+  // ── Boss Battle ───────────────────────────────────────────────────────────
+
+  /** Dramatic encounter sting — deep war-drum thud + high metallic ring. */
+  battleStart(ctx) {
+    _osc(ctx, 'triangle', 55, 22, 0.55, 0.50, 0.004);
+    _noise(ctx, 110, 35, 0.48, 0.30, 'lowpass', 0.7);
+    _osc(ctx, 'triangle', 1080, 460, 0.52, 0.32, 0.003);
+    _osc(ctx, 'sine', 640, 320, 0.58, 0.18, 0.010);
+  },
+
+  /** Explosive fire-magic cast — hotter and more percussive than generic 'cast'. */
+  fireSpell(ctx) {
+    _osc(ctx, 'sawtooth', 180, 360, 0.20, 0.28, 0.005);
+    _noise(ctx, 900, 2600, 0.24, 0.38, 'bandpass', 1.8);
+    _osc(ctx, 'sine', 520, 980, 0.26, 0.14, 0.008);
+  },
+
+  /** Enemy heavy slam — more bass and duration than 'swing'. */
+  heavyStrike(ctx) {
+    _noise(ctx, 550, 88, 0.24, 0.44, 'bandpass', 1.6);
+    _osc(ctx, 'square', 95, 38, 0.22, 0.42, 0.004);
+    _osc(ctx, 'triangle', 52, 28, 0.20, 0.24, 0.008);
+  },
+
+  /** Enemy life-drain — ascending siphon sweep with eerie shimmer. */
+  drainAttack(ctx) {
+    _osc(ctx, 'sine', 120, 480, 0.38, 0.24, 0.018);
+    _osc(ctx, 'triangle', 240, 960, 0.30, 0.12, 0.014);
+    _noise(ctx, 220, 900, 0.22, 0.10, 'bandpass', 2.8);
+  },
+
+  /** Enemy enrages — two detuned sawtooths swell into a menacing roar. */
+  bossEnrage(ctx) {
+    _osc(ctx, 'sawtooth', 62, 38, 0.58, 0.38, 0.018);
+    _osc(ctx, 'sawtooth', 98, 58, 0.50, 0.26, 0.025);
+    _noise(ctx, 160, 50, 0.44, 0.22, 'lowpass', 0.5);
   },
 
   // ── Deep Mine ─────────────────────────────────────────────────────────────

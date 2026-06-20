@@ -269,7 +269,6 @@ export function DungeonView() {
   const room = dungeon.nodeId ? dungeon.map.nodes[dungeon.nodeId]?.room ?? null : null;
   const choosingPath = room === null;
   const inBattle = room?.type === 'combat' || room?.type === 'boss' || room?.type === 'elite';
-  const inActiveCombat = inBattle && dungeon.battle?.status === 'active';
 
   return (
     <div
@@ -285,7 +284,7 @@ export function DungeonView() {
         </span>
       </div>
 
-      {!inActiveCombat && (
+      {!inBattle && (
         <Panel tone="wood" className="space-y-2 p-3">
           <RunGauge icon={<Heart className="h-4 w-4 text-stat-HP" />} value={dungeon.hp} max={dungeon.maxHp} fill="#2e8a5e" />
           <RunGauge icon={<Sparkles className="h-4 w-4 text-stat-KN" />} value={dungeon.mp} max={dungeon.maxMp} fill="#3b82f6" />
