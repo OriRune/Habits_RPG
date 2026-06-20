@@ -21,6 +21,8 @@ const CLASS_TO_STAT: Record<string, StatId> = (() => {
 export interface CrestLook {
   glyph: string;
   color: string;
+  /** Base entity key forwarded to placeholderArt for bespoke monster silhouettes. */
+  art?: string;
 }
 
 const GOLD = '#c9a227';
@@ -112,7 +114,14 @@ export function brandLook(): CrestLook {
 
 /** A generated "framed image box" placeholder for any crest. The real-art swap seam below. */
 export function placeholderImage(look: CrestLook, label?: string): string {
-  return framedSvg({ glyph: look.glyph, color: look.color, label });
+  return framedSvg({ glyph: look.glyph, color: look.color, label, entityKey: look.art });
+}
+
+/** Enemy/boss crest: strips the depth suffix from the runtime id, selects the bespoke monster
+ *  silhouette for that base id (e.g. 'skeleton_d3_elite' → art: 'skeleton'). */
+export function enemyCrest(id: string, name: string): CrestLook {
+  const base = id.replace(/_d\d+(_elite)?$/, '');
+  return { glyph: firstLetter(name), color: EMBER, art: base };
 }
 
 // --- The swap seam -------------------------------------------------------------

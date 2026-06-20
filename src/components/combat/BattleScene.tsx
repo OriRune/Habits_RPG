@@ -7,7 +7,7 @@ import { getItem } from '@/engine/items';
 import { getSpell } from '@/engine/spells';
 import { getWeapon } from '@/engine/weapons';
 import { type BattleState, type CombatAction, type StatusEffect } from '@/engine/combat';
-import { bossCrest, avatarCrest } from '@/lib/sprites';
+import { enemyCrest, avatarCrest } from '@/lib/sprites';
 import { biomeBattlefieldSvg } from '@/lib/placeholderArt';
 import { cn } from '@/lib/cn';
 import { Sprite } from '@/components/ui/Sprite';
@@ -536,8 +536,8 @@ export function BattleScene({
               style={{ animationDelay: '0.4s' }}
             >
               <Sprite
-                spriteKey={`boss:${battle.bossId}`}
-                look={bossCrest(battle.bossName)}
+                spriteKey={`boss:${battle.bossId.replace(/_d\d+(_elite)?$/, '')}`}
+                look={enemyCrest(battle.bossId, battle.bossName)}
                 size="xl"
               />
             </div>
