@@ -134,7 +134,7 @@ export interface BattleState {
    * Null when the foe's turn was skipped (frozen, blind-miss) or the battle is over.
    * BattleScene reads this to drive per-kind enemy attack VFX.
    */
-  lastEnemyAction?: { kind: EnemyMove['kind'] } | null;
+  lastEnemyAction?: { kind: EnemyMove['kind']; dealt: number } | null;
 }
 
 const ANTI_FRUSTRATION_LOSS_THRESHOLD = 3;
@@ -520,12 +520,16 @@ function enemyStrike(s: BattleState, c: Combatant, mult: number, rng: RNG): numb
 /** Execute the foe's telegraphed (or default) move. Death check is handled by the caller. */
 function executeEnemyMove(s: BattleState, c: Combatant, intent: EnemyMove | null, rng: RNG): void {
   const kind = intent?.kind ?? 'attack';
-  s.lastEnemyAction = { kind };
+  // `act.dealt` records how much HP was actually removed this turn so the UI can drive
+  // the player-hit reaction independently of any post-action HP restoration (e.g. Invincibility).
+  const act: { kind: EnemyMove['kind']; dealt: number } = { kind, dealt: 0 };
+  s.lastEnemyAction = act;
 
   switch (kind) {
     case 'attack': {
       if (rng() < c.dodge) { s.log.push(`${s.bossName} attacks — you dodge!`); return; }
       const dealt = enemyStrike(s, c, 1.0, rng);
+      act.dealt = dealt;
       s.log.push(`${s.bossName} hits you for ${dealt}.`);
       break;
     }
@@ -537,6 +541,7 @@ function executeEnemyMove(s: BattleState, c: Combatant, intent: EnemyMove | null
         return;
       }
       const dealt = enemyStrike(s, c, mult, rng);
+      act.dealt = dealt;
       s.log.push(`${s.bossName} ${intent?.label ?? 'winds up a heavy blow'} and hits for ${dealt}!`);
       break;
     }
@@ -547,6 +552,7 @@ function executeEnemyMove(s: BattleState, c: Combatant, intent: EnemyMove | null
         if (s.playerHp <= 0) break;
         if (rng() < c.dodge) { s.log.push(`  Hit ${h + 1}: you dodge!`); continue; }
         const dealt = enemyStrike(s, c, 0.6, rng);
+        act.dealt += dealt;
         s.log.push(`  Hit ${h + 1}: ${dealt} damage.`);
         if (s.playerHp <= 0) break;
       }
@@ -574,6 +580,7 @@ function executeEnemyMove(s: BattleState, c: Combatant, intent: EnemyMove | null
         return;
       }
       const dealt = enemyStrike(s, c, 1.0, rng);
+      act.dealt = dealt;
       const healed = Math.min(s.bossMaxHp - s.bossHp, Math.round(dealt * (intent?.drainRatio ?? 0.5)));
       if (healed > 0) s.bossHp += healed;
       s.log.push(`${s.bossName} ${intent?.label ?? 'drains your vitality'} for ${dealt}${healed > 0 ? `, healing ${healed}` : ''}.`);

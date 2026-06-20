@@ -342,6 +342,9 @@ export function BattleScene({
 
     const foeActed = !!battle.lastEnemyAction;
     const lastEnemyKind = battle.lastEnemyAction?.kind ?? 'attack';
+    // `foeDealt` is the damage actually struck before any post-action HP restoration (e.g.
+    // Invincibility), so hit-reaction VFX fire correctly even when playerDmg ends up 0.
+    const foeDealt = battle.lastEnemyAction?.dealt ?? 0;
     const foeMeleeKinds = ['attack', 'heavy', 'multi', 'drain'];
 
     if (foeActed) {
@@ -364,10 +367,13 @@ export function BattleScene({
         }
       }, foeDrainEnd + 350);
 
-      if (playerDmg > 0) {
+      if (foeDealt > 0) {
         // ── PHASE 4: player HP drain + impact ────────────────────────────────
+        // Gate on `foeDealt` (damage struck by the engine) rather than `playerDmg`
+        // (net HP change), so the hit reaction fires correctly even when Invincibility
+        // restores HP after the action and keeps playerDmg at 0.
         schedule(() => {
-          setAnim({ ...ANIM_NONE, playerHit: true, playerFloater: `-${playerDmg}`, playerFlash: true, playerShake: playerDmg > 8, playerImpactRing: true });
+          setAnim({ ...ANIM_NONE, playerHit: true, playerFloater: `-${foeDealt}`, playerFlash: true, playerShake: foeDealt > 8, playerImpactRing: true });
           setDisp(d => ({ ...d, playerHp: battle.playerHp }));
           sfx.play('playerHurt');
           if (battle.status === 'lost') {
