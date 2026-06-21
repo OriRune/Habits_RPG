@@ -13,6 +13,10 @@ export interface HabitEntry {
   amount?: number;
   /** XP earned that day (drives "total points" stats). */
   xp: number;
+  /** Gold earned that day — stored so uncompleteHabit can refund the exact amount. */
+  gold?: number;
+  /** True when a Streak Freeze was used for this day — no XP, but streak not broken. */
+  frozen?: boolean;
 }
 
 export interface Habit {
@@ -133,13 +137,37 @@ export function currentStreak(habit: Habit, today: string): number {
       continue;
     }
     if (isCompletedOn(habit, cursor)) {
-      streak++;
+      // Frozen days bridge the gap (streak not broken) but don't add to the count.
+      if (!habit.log[cursor]?.frozen) streak++;
       cursor = addDays(cursor, -1);
     } else {
       break;
     }
   }
   return streak;
+}
+
+/**
+ * Returns true if any habit of the given `stat` has a log entry within the last
+ * `windowDays` calendar days (inclusive of today). Used to gate Skill Trials (§4.4 / §6.2):
+ * a trial only unlocks once the player has logged a real habit of that stat recently.
+ * Scans all habits regardless of status — a historical completion is a historical fact.
+ */
+export function statCompletedWithin(
+  habits: Habit[],
+  stat: StatId,
+  today: string,
+  windowDays: number,
+): boolean {
+  const cutoff = addDays(today, -(windowDays - 1));
+  return habits.some((h) => {
+    if (h.stat !== stat) return false;
+    // Fast path: the cached lastCompletedISO is within the window.
+    if (h.lastCompletedISO && h.lastCompletedISO >= cutoff && h.lastCompletedISO <= today)
+      return true;
+    // Full scan: covers backdated entries not captured by lastCompletedISO.
+    return Object.keys(h.log).some((iso) => iso >= cutoff && iso <= today);
+  });
 }
 
 export interface CompletionResult {

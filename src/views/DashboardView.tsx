@@ -3,7 +3,7 @@ import { Plus, Swords, AlertTriangle, BarChart3, RotateCcw } from 'lucide-react'
 import { useGameStore } from '@/store/useGameStore';
 import { makeSelectDashboardHabits, selectHabitLoadWarning } from '@/store/selectors';
 import { isCompletedOn, effectiveStatus } from '@/engine/habits';
-import { toISODate, parseISODate } from '@/engine/date';
+import { toISODate, parseISODate, addDays, BACKDATE_WINDOW_DAYS } from '@/engine/date';
 import { HabitCard } from '@/components/habits/HabitCard';
 import { HabitForm } from '@/components/habits/HabitForm';
 import { DatePicker } from '@/components/habits/DatePicker';
@@ -29,11 +29,14 @@ export function DashboardView({ onOpenHistory }: { onOpenHistory: () => void }) 
   const pending = active.filter((h) => !isCompletedOn(h, viewDate));
   const done = active.filter((h) => isCompletedOn(h, viewDate));
 
-  // Earliest pickable day = the first habit's creation date (fall back to today).
-  const minISO = allHabits.reduce<string>(
+  // Normal backdating window: max(earliestCreated, today − 6 days) = 7-day inclusive window (§4.1).
+  // Corrections beyond 7 days go through "Log older entry…" in the habit's kebab menu.
+  const earliestCreated = allHabits.reduce<string>(
     (min, h) => (h.createdISO < min ? h.createdISO : min),
     today,
   );
+  const windowFloor = addDays(today, -(BACKDATE_WINDOW_DAYS - 1));
+  const minISO = windowFloor > earliestCreated ? windowFloor : earliestCreated;
   const hasActivity = (iso: string) => allHabits.some((h) => isCompletedOn(h, iso));
   const title = isToday
     ? 'Quest Log · Today'

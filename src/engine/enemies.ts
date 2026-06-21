@@ -28,6 +28,18 @@ export interface EnemyTemplate {
 // typically ~6–14 for an on-level fighter). enemyFor scales these up with depth + level.
 export const ENEMIES: Record<string, EnemyTemplate> = {
   // --- Catacombs (undead, magic-leaning) ---
+  draugr_mage: {
+    id: 'draugr_mage', name: 'Draugr Mage',
+    flavor: 'A frost-wreathed corpse that remembers terrible cold.',
+    hp: 30, attack: 8, defense: 1, ward: 4,
+    attackSchool: 'magic', weakTo: ['ST', 'DX'], resistTo: ['WI'],
+    archetype: 'undead', glyph: '🧙',
+    moveset: [
+      { kind: 'attack', weight: 2, label: 'hurls a bolt of crackling frost', icon: '❄️' },
+      { kind: 'inflict', weight: 2, inflictKey: 'freeze', inflictTurns: 1, inflictMag: 1, label: 'exhales a wave of freezing air', icon: '🌬️' },
+      { kind: 'heavy',  weight: 1, mult: 1.8, label: 'drives a shard of black ice into you', icon: '💥' },
+    ],
+  },
   skeleton: {
     id: 'skeleton', name: 'Skeleton Warrior',
     flavor: 'Bones held together by spite.',
@@ -66,6 +78,32 @@ export const ENEMIES: Record<string, EnemyTemplate> = {
   },
 
   // --- Overgrown Ruins (beasts) ---
+  goblin_shaman: {
+    id: 'goblin_shaman', name: 'Goblin Shaman',
+    flavor: 'Its bone-rattle chant carries a sickly green light.',
+    hp: 28, attack: 7, defense: 0, ward: 3,
+    attackSchool: 'magic', weakTo: ['ST', 'DX'], resistTo: ['WI'],
+    archetype: 'beast', glyph: '👹',
+    moveset: [
+      { kind: 'inflict', weight: 3, inflictKey: 'poison', inflictTurns: 3, inflictMag: 3, label: 'blows a cloud of toxic spores', icon: '☠️' },
+      { kind: 'attack',  weight: 2, label: 'jabs with a totemic staff', icon: '⚔️' },
+      { kind: 'inflict', weight: 2, inflictKey: 'weaken', inflictTurns: 2, inflictMag: 0.25, label: 'mutters a withering hex', icon: '⬇️' },
+      { kind: 'drain',   weight: 1, drainRatio: 0.4, label: 'siphons your vitality through a spirit-bond', icon: '🩸' },
+    ],
+  },
+  corrupt_huorn: {
+    id: 'corrupt_huorn', name: 'Corrupt Huorn',
+    flavor: 'A carnivorous tree that has learned to hunger.',
+    hp: 54, attack: 10, defense: 5, ward: 2,
+    attackSchool: 'physical', weakTo: ['WI'], resistTo: ['ST', 'DX'],
+    archetype: 'construct', glyph: '🌳',
+    moveset: [
+      { kind: 'attack', weight: 2, label: 'rakes with clawed, grasping branches', icon: '⚔️' },
+      { kind: 'heavy',  weight: 2, mult: 2.0, label: 'brings down a crushing limb', icon: '💥' },
+      { kind: 'guard',  weight: 2, bonus: 5, label: 'thickens its bark into a hardened shell', icon: '🛡️' },
+      { kind: 'drain',  weight: 1, drainRatio: 0.4, label: 'pulls you close and feeds', icon: '🩸' },
+    ],
+  },
   goblin: {
     id: 'goblin', name: 'Cave Goblin',
     flavor: 'A wiry scavenger with a rusted dagger.',
@@ -115,6 +153,42 @@ export const ENEMIES: Record<string, EnemyTemplate> = {
   },
 
   // --- Frozen Caverns (elementals / constructs) ---
+  frost_troll: {
+    id: 'frost_troll', name: 'Frost Troll',
+    flavor: 'Pale as the ice it was born in, and twice as hard.',
+    hp: 50, attack: 12, defense: 2, ward: 1,
+    attackSchool: 'physical', weakTo: ['ST', 'WI'], resistTo: ['CH'],
+    archetype: 'beast', glyph: '🧌',
+    moveset: [
+      { kind: 'attack', weight: 2, label: 'drives a frozen fist into you', icon: '⚔️' },
+      { kind: 'heavy',  weight: 2, mult: 2.1, label: 'swings an icicle-crusted club overhead', icon: '💥' },
+      { kind: 'enrage', weight: 1, bonus: 4,  label: 'beats its chest and works itself into a frenzy', icon: '🔥' },
+    ],
+  },
+  ice_wolf: {
+    id: 'ice_wolf', name: 'Ice Wolf',
+    flavor: 'Its coat is pale as frost, its breath a killing cold.',
+    hp: 36, attack: 9, defense: 1, ward: 1,
+    attackSchool: 'physical', weakTo: ['DX'], resistTo: ['CH'],
+    archetype: 'beast', glyph: '🐺',
+    moveset: [
+      { kind: 'attack',  weight: 2, label: 'mauls with frost-rimed jaws', icon: '⚔️' },
+      { kind: 'multi',   weight: 2, hits: 3, label: 'savages with rapid icy bites', icon: '🗡️' },
+      { kind: 'inflict', weight: 1, inflictKey: 'freeze', inflictTurns: 1, inflictMag: 1, label: 'breathes a numbing growl of cold air', icon: '❄️' },
+    ],
+  },
+  ice_wisp: {
+    id: 'ice_wisp', name: 'Ice Wisp',
+    flavor: 'A cold intelligence drifting through the dark.',
+    hp: 28, attack: 8, defense: 0, ward: 4,
+    attackSchool: 'magic', weakTo: ['DX'], resistTo: ['WI'],
+    archetype: 'elemental', glyph: '💠',
+    moveset: [
+      { kind: 'attack',  weight: 2, label: 'lashes you with a frost tendril', icon: '⚔️' },
+      { kind: 'inflict', weight: 2, inflictKey: 'freeze', inflictTurns: 1, inflictMag: 1, label: 'shrieks and flash-freezes the air around you', icon: '❄️' },
+      { kind: 'inflict', weight: 1, inflictKey: 'blind',  inflictTurns: 2, inflictMag: 1,  label: 'whirls in a blinding flurry of ice crystals', icon: '🌀' },
+    ],
+  },
   stone_sentry: {
     id: 'stone_sentry', name: 'Stone Sentry',
     flavor: 'A squat guardian of the depths.',

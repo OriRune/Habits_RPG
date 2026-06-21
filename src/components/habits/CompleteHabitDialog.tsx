@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { type Habit } from '@/engine/habits';
-import { computeXp } from '@/engine/xp';
+import { computeXp, habitGold, UNCAPPED_RATIO_CAP } from '@/engine/xp';
 import { useGameStore } from '@/store/useGameStore';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
@@ -26,6 +26,7 @@ export function CompleteHabitDialog({
     target: habit.target,
     uncapped: habit.uncapped,
   });
+  const gold = habitGold(habit.difficulty);
 
   return (
     <Modal title={habit.name} onClose={onClose}>
@@ -43,7 +44,11 @@ export function CompleteHabitDialog({
         />
         <div className="rounded-md border border-gold-deep/40 bg-parchment-300/60 px-3 py-2 text-sm text-ink">
           Reward: <span className="font-display font-semibold text-ember">{xp} XP</span>
+          {gold > 0 && <span className="font-display font-semibold text-gold-deep"> · {gold}g</span>}
           {habit.target ? <span className="text-ink-light"> ({Math.round((amount / habit.target) * 100)}%)</span> : null}
+          {habit.uncapped && (
+            <span className="mt-1 block text-[11px] text-ink-muted">XP is capped at {UNCAPPED_RATIO_CAP}× your goal.</span>
+          )}
         </div>
         <Button
           onClick={() => {

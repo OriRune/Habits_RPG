@@ -27,11 +27,17 @@ describe('daily trial gate', () => {
     const tuesday = new Date(2026, 0, 13); // 2026-01-13
     _setNow(() => tuesday);
     get().resetGame(); // lastWeekKey and trialsClearedOn seeded from mocked clock
+    // Seed a DX habit completed today so the stat gate (§4.4) passes for lockpicking (DX trial).
+    get().addHabit({ name: 'DX seed', stat: 'DX', type: 'binary', frequency: 'daily', difficulty: 'easy' });
+    get().completeHabit(get().habits[0].id); // completes for today under mocked clock
+    // Seed energy so the energy gate doesn't interfere with the day-gate test.
+    useGameStore.setState({ character: { ...get().character, energy: 5 } });
 
     get().completeTrial('lockpicking', 1.0);
     const goldAfterFirst = get().character.gold;
 
-    get().completeTrial('lockpicking', 1.0); // same day → blocked
+    useGameStore.setState({ character: { ...get().character, energy: 5 } }); // replenish
+    get().completeTrial('lockpicking', 1.0); // same day → blocked by day gate
     expect(get().character.gold).toBe(goldAfterFirst);
   });
 
@@ -41,11 +47,16 @@ describe('daily trial gate', () => {
 
     _setNow(() => tuesday);
     get().resetGame();
+    // Seed a DX habit completed on tuesday — also passes the 7-day window on wednesday (§4.4).
+    get().addHabit({ name: 'DX seed', stat: 'DX', type: 'binary', frequency: 'daily', difficulty: 'easy' });
+    get().completeHabit(get().habits[0].id); // completed on 2026-01-13
+    useGameStore.setState({ character: { ...get().character, energy: 5 } });
 
     get().completeTrial('lockpicking', 1.0);
     const goldAfterFirst = get().character.gold;
 
     _setNow(() => wednesday); // advance the clock to the next day
+    useGameStore.setState({ character: { ...get().character, energy: 5 } }); // replenish
     get().completeTrial('lockpicking', 1.0); // gate re-opens
     expect(get().character.gold).toBeGreaterThan(goldAfterFirst);
   });

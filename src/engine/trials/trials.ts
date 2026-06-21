@@ -100,6 +100,9 @@ export function getTrial(id: TrialId): TrialDef {
 /** Level at which the Skills tab unlocks. */
 export const TRIALS_UNLOCK_LEVEL = 3;
 
+/** Energy cost per trial run (§6.1 — ties Trials to the habit→energy loop). */
+export const TRIAL_ENERGY_COST = 1;
+
 // ── Scoring helpers ────────────────────────────────────────────────────────────
 
 /** Map a normalised score (0..1) to a 1–3 star rating. */
@@ -115,16 +118,18 @@ export function scoreToStars(score01: number): 1 | 2 | 3 {
  * Convert a trial result into a Reward that flows through the store's `applyReward`.
  *
  * Scaling:
- *   statXp = round((20 + 8 * level) * (0.25 + 0.75 * score01))
+ *   statXp = round((10 + 4 * level) * (0.25 + 0.75 * score01))   ← halved vs. pre-3.2
  *   gold   = round((15 + 5 * level) * (0.25 + 0.75 * score01))
  *
  * The 0.25 floor means even a zero score gives ~25% of the full reward (participation
  * bonus — rewards the act of doing a daily, not just perfecting it).
+ * XP was reduced in Stage 3 so Trials are a supplement to habits, not a replacement.
+ * Gold is unchanged — gold gating healthy minigame purchases.
  */
 export function trialReward(stat: StatId, score01: number, level: number): Reward {
   const s = Math.max(0, Math.min(1, score01));
   const multiplier = 0.25 + 0.75 * s;
-  const statXp = Math.round((20 + 8 * level) * multiplier);
+  const statXp = Math.round((10 + 4 * level) * multiplier);
   const gold = Math.round((15 + 5 * level) * multiplier);
   return {
     gold,

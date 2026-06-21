@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { STATS } from '@/engine/stats';
 import { type Difficulty } from '@/engine/xp';
-import { type HabitType, type Frequency } from '@/engine/habits';
+import { type Habit, type HabitType, type Frequency } from '@/engine/habits';
 import { useGameStore, type NewHabitInput } from '@/store/useGameStore';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
@@ -19,19 +19,22 @@ const fieldCls =
   'w-full rounded-md border border-ink-light/40 bg-parchment-100 px-3 py-2 text-sm text-ink focus:border-gold-deep focus:outline-none';
 const labelCls = 'mb-1 block font-display text-[11px] font-semibold uppercase tracking-wide text-ink-muted';
 
-export function HabitForm({ onClose }: { onClose: () => void }) {
+export function HabitForm({ habit, onClose }: { habit?: Habit; onClose: () => void }) {
   const addHabit = useGameStore((s) => s.addHabit);
-  const [name, setName] = useState('');
-  const [stat, setStat] = useState(STATS[0].id);
-  const [type, setType] = useState<HabitType>('binary');
-  const [target, setTarget] = useState('20');
-  const [unit, setUnit] = useState('');
-  const [uncapped, setUncapped] = useState(false);
-  const [frequency, setFrequency] = useState<Frequency>('daily');
-  const [days, setDays] = useState<number[]>([1, 3, 5]);
-  const [timesPerWeek, setTimesPerWeek] = useState('3');
-  const [difficulty, setDifficulty] = useState<Difficulty>('normal');
-  const [tag, setTag] = useState('');
+  const updateHabit = useGameStore((s) => s.updateHabit);
+  const isEdit = habit !== undefined;
+
+  const [name, setName] = useState(habit?.name ?? '');
+  const [stat, setStat] = useState(habit?.stat ?? STATS[0].id);
+  const [type, setType] = useState<HabitType>(habit?.type ?? 'binary');
+  const [target, setTarget] = useState(String(habit?.target ?? 20));
+  const [unit, setUnit] = useState(habit?.unit ?? '');
+  const [uncapped, setUncapped] = useState(habit?.uncapped ?? false);
+  const [frequency, setFrequency] = useState<Frequency>(habit?.frequency ?? 'daily');
+  const [days, setDays] = useState<number[]>(habit?.days ?? [1, 3, 5]);
+  const [timesPerWeek, setTimesPerWeek] = useState(String(habit?.timesPerWeek ?? 3));
+  const [difficulty, setDifficulty] = useState<Difficulty>(habit?.difficulty ?? 'normal');
+  const [tag, setTag] = useState(habit?.tag ?? '');
 
   function toggleDay(d: number) {
     setDays((cur) => (cur.includes(d) ? cur.filter((x) => x !== d) : [...cur, d].sort()));
@@ -55,12 +58,16 @@ export function HabitForm({ onClose }: { onClose: () => void }) {
         ? { timesPerWeek: Math.max(1, Math.min(7, Number(timesPerWeek) || 1)) }
         : {}),
     };
-    addHabit(input);
+    if (isEdit) {
+      updateHabit(habit.id, input);
+    } else {
+      addHabit(input);
+    }
     onClose();
   }
 
   return (
-    <Modal title="New Habit" onClose={onClose}>
+    <Modal title={isEdit ? 'Edit Habit' : 'New Habit'} onClose={onClose}>
       <div className="space-y-4">
         <div>
           <label className={labelCls}>Habit name</label>
@@ -99,16 +106,23 @@ export function HabitForm({ onClose }: { onClose: () => void }) {
 
         <div>
           <label className={labelCls}>Type</label>
+          {isEdit && (
+            <p className="mb-1.5 text-xs text-ink-muted">
+              Type can't be changed after creation — existing logs would become inconsistent.
+            </p>
+          )}
           <div className="flex gap-2">
             {(['binary', 'quantity'] as HabitType[]).map((t) => (
               <button
                 key={t}
-                onClick={() => setType(t)}
+                onClick={() => !isEdit && setType(t)}
+                disabled={isEdit}
+                title={isEdit ? "Type can't be changed after creation" : undefined}
                 className={`flex-1 rounded-md border px-3 py-2 text-sm ${
                   type === t
                     ? 'border-gold-deep bg-gold/15 font-semibold text-ink'
                     : 'border-ink-light/40 text-ink-muted hover:border-gold-deep/60'
-                }`}
+                } ${isEdit ? 'cursor-not-allowed opacity-50' : ''}`}
               >
                 {t === 'binary' ? 'Yes / No' : 'Quantity'}
               </button>
@@ -203,10 +217,13 @@ export function HabitForm({ onClose }: { onClose: () => void }) {
               </button>
             ))}
           </div>
+          {isEdit && (
+            <p className="mt-1.5 text-xs text-ink-muted">Changes future XP only — past entries are unchanged.</p>
+          )}
         </div>
 
         <Button onClick={submit} disabled={!name.trim()} className="w-full py-2.5">
-          Inscribe Habit
+          {isEdit ? 'Save Changes' : 'Inscribe Habit'}
         </Button>
       </div>
     </Modal>

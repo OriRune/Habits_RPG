@@ -89,3 +89,40 @@ describe('determinism', () => {
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
   });
 });
+
+describe('branching path constraint', () => {
+  // Verify the Slay-the-Spire-style invariant: after choosing a node on layer N,
+  // the only reachable nodes on layer N+1 are exactly that node's `to` list.
+  // This is the engine guarantee that FloorMap.tsx and resolveCurrentNode rely on.
+  it('picking a node on layer 0 restricts next choices to its .to array', () => {
+    const map = generateFloorMap(2, biome, seeded(12));
+    // Simulate picking the first node on layer 0.
+    const pickedId = map.layers[0][0];
+    const picked = map.nodes[pickedId];
+    // picked.to must be a subset of layer 1 (no cross-layer edges).
+    for (const id of picked.to) {
+      expect(map.layers[1]).toContain(id);
+    }
+    // The store sets choices = picked.to after entering the room — verify it is a
+    // non-empty subset of the next layer (player always has somewhere to go).
+    expect(picked.to.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('every node on non-final layers has at least one outgoing edge (full reachability)', () => {
+    // After choosing any room, the player always gets at least one next option.
+    const map = generateFloorMap(3, biome, seeded(77));
+    for (let li = 0; li < map.layers.length - 1; li++) {
+      for (const id of map.layers[li]) {
+        expect(map.nodes[id].to.length).toBeGreaterThanOrEqual(1);
+      }
+    }
+  });
+
+  it('last-layer nodes have empty .to — they resolve to the checkpoint', () => {
+    const map = generateFloorMap(3, biome, seeded(55));
+    const finalLayer = map.layers[map.layers.length - 1];
+    for (const id of finalLayer) {
+      expect(map.nodes[id].to).toHaveLength(0);
+    }
+  });
+});

@@ -92,6 +92,16 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             onChange={(v) => updateSettings({ soundEnabled: v })}
           />
 
+          {/* Party habit visibility (only meaningful when signed in) */}
+          {isBackendConfigured() && (
+            <Toggle
+              label="Share habits with party"
+              description="Your active habit names, current streaks, and today's completion status will be visible to your party members."
+              checked={settings.shareHabitNames}
+              onChange={(v) => updateSettings({ shareHabitNames: v })}
+            />
+          )}
+
           {/* Arena pace */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between gap-3">

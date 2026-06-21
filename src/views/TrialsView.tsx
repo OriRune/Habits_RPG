@@ -1,10 +1,12 @@
 // Skill Trials hub — shows 8 stat-specific daily challenge cards.
-// One free attempt per trial per calendar day; no energy cost.
+// One attempt per trial per calendar day; costs 1 energy per trial (§6.1).
+// Each trial also requires a habit of its stat completed within the last 7 days (§4.4).
 
 import { useState } from 'react';
 import { Target } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
-import { TRIALS, TRIALS_UNLOCK_LEVEL, scoreToStars, type TrialId } from '@/engine/trials/trials';
+import { TRIALS, TRIALS_UNLOCK_LEVEL, TRIAL_ENERGY_COST, scoreToStars, type TrialId } from '@/engine/trials/trials';
+import { statCompletedWithin } from '@/engine/habits';
 import { getStat } from '@/engine/stats';
 import { toISODate } from '@/engine/date';
 import { SectionTitle } from '@/components/ui/Divider';
@@ -31,13 +33,17 @@ function StarRow({ count }: { count: 0 | 1 | 2 | 3 }) {
 
 export function TrialsView() {
   const level = useGameStore((s) => s.character.level);
+  const energy = useGameStore((s) => s.character.energy);
+  const unlimitedEnergy = useGameStore((s) => s.settings.unlimitedEnergy);
   const trialsClearedOn = useGameStore((s) => s.trialsClearedOn);
   const bestTrialScore = useGameStore((s) => s.bestTrialScore);
   const repeatMinigames = useGameStore((s) => s.settings.repeatMinigames);
+  const habits = useGameStore((s) => s.habits);
   const [openTrial, setOpenTrial] = useState<TrialId | null>(null);
 
   const today = toISODate();
   const unlocked = level >= TRIALS_UNLOCK_LEVEL;
+  const canAfford = unlimitedEnergy || energy >= TRIAL_ENERGY_COST;
 
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
@@ -47,7 +53,7 @@ export function TrialsView() {
         <div className="flex items-center gap-2">
           <Target className="h-5 w-5 text-gold-deep" />
           <p className="font-display text-sm text-ink">
-            Eight daily challenges — one for each stat. Each trial is playable once per day for free, rewarding stat XP and gold scaled by your score.
+            Eight daily challenges — one for each stat. Each trial costs <span className="font-semibold">⚡ {TRIAL_ENERGY_COST}</span> and is playable once per day, rewarding stat XP and gold scaled by your score. Complete a habit of the matching stat within 7 days to unlock each trial.
           </p>
         </div>
         {!unlocked && (
@@ -63,24 +69,31 @@ export function TrialsView() {
           const clearedToday = !repeatMinigames && trialsClearedOn[trial.id] === today;
           const best = bestTrialScore[trial.id] ?? 0;
           const bestStars = best > 0 ? scoreToStars(best) : 0;
+          // Stat gate: must have a habit of this stat completed within 7 days (§4.4).
+          const statReady = repeatMinigames || statCompletedWithin(habits, trial.stat, today, 7);
+          const blocked = !unlocked || clearedToday || !statReady || !canAfford;
 
           return (
             <button
               key={trial.id}
               onClick={() => {
-                if (!unlocked || clearedToday) return;
+                if (blocked) return;
                 setOpenTrial(trial.id);
               }}
-              disabled={!unlocked || clearedToday}
+              disabled={blocked}
               className={`relative rounded-md border-2 p-3 text-left transition-all ${
                 !unlocked
                   ? 'border-gold-deep/20 bg-parchment-300/30 opacity-50 cursor-not-allowed'
                   : clearedToday
                     ? 'border-emerald-500/40 bg-emerald-50/30 cursor-default'
-                    : 'border-gold-deep/40 bg-parchment-100/80 hover:border-gold-bright hover:shadow-gold active:scale-95 cursor-pointer'
+                    : !statReady
+                      ? 'border-ink-light/30 bg-parchment-300/30 opacity-60 cursor-not-allowed'
+                      : !canAfford
+                        ? 'border-ink-light/30 bg-parchment-300/30 opacity-60 cursor-not-allowed'
+                        : 'border-gold-deep/40 bg-parchment-100/80 hover:border-gold-bright hover:shadow-gold active:scale-95 cursor-pointer'
               }`}
             >
-              {/* Status badge */}
+              {/* Status badge — priority: done → locked → no-stat → no-energy → ready */}
               <div className="absolute right-2 top-2">
                 {clearedToday ? (
                   <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-display font-bold text-emerald-700">
@@ -88,9 +101,17 @@ export function TrialsView() {
                   </span>
                 ) : !unlocked ? (
                   <span className="text-[10px] text-ink-muted">🔒</span>
+                ) : !statReady ? (
+                  <span className="rounded-full bg-ink-light/10 px-1.5 py-0.5 text-[10px] font-display font-bold text-ink-muted">
+                    Need {stat.name}
+                  </span>
+                ) : !canAfford ? (
+                  <span className="rounded-full bg-ink-light/10 px-1.5 py-0.5 text-[10px] font-display font-bold text-ink-muted">
+                    Need ⚡
+                  </span>
                 ) : (
                   <span className="rounded-full bg-gold-bright/20 px-1.5 py-0.5 text-[10px] font-display font-bold text-gold-deep">
-                    Free
+                    ⚡ {TRIAL_ENERGY_COST}
                   </span>
                 )}
               </div>

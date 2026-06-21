@@ -111,6 +111,52 @@ export function habitStats(habit: Habit, today: string): HabitStats {
   return { totalDays, longestStreak, successPct, totalPoints };
 }
 
+/**
+ * Account-wide habit-completion rate (0–100) over the last `windowDays` calendar
+ * days (inclusive). Counts day-scheduled and times_per_week habits; as_needed habits
+ * are excluded (no meaningful denominator). Retired habits are excluded entirely.
+ * Returns 0 when there are no schedulable habits in the window.
+ */
+export function consistencyScore(habits: Habit[], today: string, windowDays = 30): number {
+  const windowStart = addDays(today, -(windowDays - 1));
+  const todayWeek = startOfWeek(today);
+  let scheduled = 0;
+  let successes = 0;
+
+  for (const habit of habits) {
+    if (habit.status === 'retired') continue;
+    if (habit.frequency === 'as_needed') continue;
+
+    const habitStart = habit.createdISO > windowStart ? habit.createdISO : windowStart;
+
+    if (habit.frequency === 'times_per_week') {
+      // Walk complete (past) weeks only — the current week is still in progress.
+      let ws = startOfWeek(habitStart);
+      while (ws < todayWeek) {
+        if (addDays(ws, 6) >= windowStart) {
+          const target = habit.timesPerWeek ?? 1;
+          scheduled += target;
+          successes += Math.min(weekCompletions(habit, ws), target);
+        }
+        ws = addDays(ws, 7);
+      }
+    } else {
+      // daily / weekdays / custom
+      let day = habitStart;
+      while (day <= today) {
+        const st = effectiveStatus(habit, day);
+        if (st === 'active' && isScheduledOn(habit, day)) {
+          scheduled++;
+          if (isCompletedOn(habit, day)) successes++;
+        }
+        day = addDays(day, 1);
+      }
+    }
+  }
+
+  return scheduled > 0 ? Math.round((successes / scheduled) * 100) : 0;
+}
+
 export type ChartRange = 'week' | 'month' | 'year';
 
 export function rangeStart(today: string, range: ChartRange): string {

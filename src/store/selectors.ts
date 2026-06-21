@@ -13,6 +13,7 @@ import { levelProgress } from '@/engine/leveling';
 import { rankStats } from '@/engine/classes';
 import { deriveCombatant } from '@/engine/combat';
 import { dungeonStamina } from '@/engine/crawl';
+import { consistencyScore } from '@/engine/tracking';
 import { type GameState, totalXp } from './useGameStore';
 
 export function selectTotalXp(s: GameState): number {
@@ -61,6 +62,14 @@ export function selectWeekProgress(h: Habit): { done: number; target: number } |
 
 export function selectTopStats(s: GameState): StatId[] {
   return rankStats(s.character.statXp);
+}
+
+/**
+ * Account-wide habit consistency score (0–100) over the last 30 days.
+ * Used by the "Consistency" leaderboard track and the public snapshot.
+ */
+export function selectHabitScore(s: GameState): number {
+  return consistencyScore(s.habits, toISODate());
 }
 
 /**

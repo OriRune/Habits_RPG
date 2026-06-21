@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { type Habit, type HabitEntry } from '../habits';
-import { dayCell, habitStats, series } from '../tracking';
+import { dayCell, habitStats, series, consistencyScore } from '../tracking';
 
 function makeHabit(over: Partial<Habit> = {}): Habit {
   return {
@@ -124,5 +124,80 @@ describe('series', () => {
       { date: '2026-06-13', amount: 8 },
       { date: '2026-06-14', amount: 0 },
     ]);
+  });
+});
+
+describe('consistencyScore (Stage 5.3)', () => {
+  // TODAY = '2026-06-14' (Sunday); windowDays = 7 for these tests to keep setup small.
+
+  it('returns 0 for an empty habit list', () => {
+    expect(consistencyScore([], TODAY, 7)).toBe(0);
+  });
+
+  it('returns 0 when all habits are as_needed (no denominator)', () => {
+    const h = makeHabit({ frequency: 'as_needed', log: log({ [TODAY]: { xp: 20 } }) });
+    expect(consistencyScore([h], TODAY, 7)).toBe(0);
+  });
+
+  it('returns 0 for a retired habit', () => {
+    const h = makeHabit({
+      status: 'retired',
+      createdISO: '2026-06-08',
+      log: log({ '2026-06-08': { xp: 20 }, '2026-06-09': { xp: 20 } }),
+    });
+    expect(consistencyScore([h], TODAY, 7)).toBe(0);
+  });
+
+  it('returns 100 when every scheduled day in the window is completed', () => {
+    // Window: 2026-06-08 to 2026-06-14 (7 days). Habit created 06-08, daily.
+    const h = makeHabit({
+      createdISO: '2026-06-08',
+      log: log({
+        '2026-06-08': { xp: 20 },
+        '2026-06-09': { xp: 20 },
+        '2026-06-10': { xp: 20 },
+        '2026-06-11': { xp: 20 },
+        '2026-06-12': { xp: 20 },
+        '2026-06-13': { xp: 20 },
+        '2026-06-14': { xp: 20 },
+      }),
+    });
+    expect(consistencyScore([h], TODAY, 7)).toBe(100);
+  });
+
+  it('returns ~57 when 4 of 7 scheduled days are completed', () => {
+    const h = makeHabit({
+      createdISO: '2026-06-08',
+      log: log({
+        '2026-06-08': { xp: 20 },
+        '2026-06-10': { xp: 20 },
+        '2026-06-12': { xp: 20 },
+        '2026-06-14': { xp: 20 },
+      }),
+    });
+    // 4 / 7 ≈ 57.14 → rounds to 57
+    expect(consistencyScore([h], TODAY, 7)).toBe(57);
+  });
+
+  it('excludes the current week from times_per_week calculation', () => {
+    // Week of 06-07 (Mon–Sun): completions 2 of 2 → 100%.
+    // Current week 06-14 (today = sunday start of week): excluded.
+    const h = makeHabit({
+      frequency: 'times_per_week',
+      timesPerWeek: 2,
+      createdISO: '2026-06-07',
+      log: log({ '2026-06-08': { xp: 20 }, '2026-06-10': { xp: 20 }, '2026-06-14': { xp: 20 } }),
+    });
+    // Only the week of 06-07 falls fully before today's week (06-14).
+    expect(consistencyScore([h], TODAY, 14)).toBe(100);
+  });
+
+  it('respects the window start — completions before the window do not count as scheduled', () => {
+    // Window of 1 day: only today (2026-06-14). Habit created long before.
+    const h = makeHabit({
+      createdISO: '2026-01-01',
+      log: log({ '2026-06-14': { xp: 20 } }),
+    });
+    expect(consistencyScore([h], TODAY, 1)).toBe(100);
   });
 });

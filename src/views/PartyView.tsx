@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Copy, Check, Crown, LogOut, UserX, Circle } from 'lucide-react';
+import { Copy, Check, Crown, LogOut, UserX, Circle, ChevronDown, ChevronRight } from 'lucide-react';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
@@ -51,41 +51,16 @@ function PartyScreen() {
       {/* Roster */}
       <Panel tone="parchment" className="space-y-2 p-4">
         <SectionTitle>Roster</SectionTitle>
-        {members.map((m) => {
-          const online = !!presence[m.user_id];
-          const activity = presence[m.user_id]?.activity ?? 'Offline';
-          return (
-            <div key={m.user_id} className="flex items-center gap-3 border-b border-gold-deep/15 py-1.5 last:border-0">
-              <Circle
-                size={9}
-                className={online ? 'fill-jewel-green text-jewel-green' : 'fill-ink-light/40 text-ink-light/40'}
-                aria-label={online ? 'online' : 'offline'}
-              />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5">
-                  <span className="truncate font-display text-sm font-bold text-ink">
-                    {m.username}
-                    {m.user_id === myId && <span className="text-ink-muted"> (you)</span>}
-                  </span>
-                  {m.role === 'owner' && <Crown size={13} className="shrink-0 text-gold-deep" />}
-                </div>
-                <div className="text-[11px] text-ink-muted">
-                  Lv {m.snapshot.level ?? 1}
-                  {m.snapshot.classId ? ` · ${m.snapshot.classId}` : ''} · {online ? activity : 'Offline'}
-                </div>
-              </div>
-              {isLead && m.user_id !== myId && (
-                <button
-                  onClick={() => void partyActions.kick(m.user_id)}
-                  className="shrink-0 text-ink-light hover:text-ember"
-                  aria-label={`Remove ${m.username}`}
-                >
-                  <UserX size={16} />
-                </button>
-              )}
-            </div>
-          );
-        })}
+        {members.map((m) => (
+          <RosterMember
+            key={m.user_id}
+            member={m}
+            myId={myId}
+            isLead={isLead}
+            online={!!presence[m.user_id]}
+            activity={presence[m.user_id]?.activity ?? 'Offline'}
+          />
+        ))}
       </Panel>
 
       <PartyQuestPanel isLead={isLead} />
@@ -101,6 +76,84 @@ function PartyScreen() {
       >
         <LogOut size={16} /> Leave party
       </Button>
+    </div>
+  );
+}
+
+function RosterMember({
+  member: m,
+  myId,
+  isLead,
+  online,
+  activity,
+}: {
+  member: ReturnType<typeof usePartyStore.getState>['members'][number];
+  myId: string | undefined;
+  isLead: boolean;
+  online: boolean;
+  activity: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const hasHabits = m.habits.length > 0;
+
+  return (
+    <div className="border-b border-gold-deep/15 last:border-0">
+      <div className="flex items-center gap-3 py-1.5">
+        <Circle
+          size={9}
+          className={online ? 'fill-jewel-green text-jewel-green' : 'fill-ink-light/40 text-ink-light/40'}
+          aria-label={online ? 'online' : 'offline'}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="truncate font-display text-sm font-bold text-ink">
+              {m.username}
+              {m.user_id === myId && <span className="text-ink-muted"> (you)</span>}
+            </span>
+            {m.role === 'owner' && <Crown size={13} className="shrink-0 text-gold-deep" />}
+          </div>
+          <div className="text-[11px] text-ink-muted">
+            Lv {m.snapshot.level ?? 1}
+            {m.snapshot.classId ? ` · ${m.snapshot.classId}` : ''} · {online ? activity : 'Offline'}
+          </div>
+        </div>
+        {hasHabits && (
+          <button
+            onClick={() => setExpanded((x) => !x)}
+            className="shrink-0 text-ink-muted hover:text-ink"
+            aria-label={expanded ? 'Collapse habits' : 'Show habits'}
+          >
+            {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+          </button>
+        )}
+        {isLead && m.user_id !== myId && (
+          <button
+            onClick={() => void partyActions.kick(m.user_id)}
+            className="shrink-0 text-ink-light hover:text-ember"
+            aria-label={`Remove ${m.username}`}
+          >
+            <UserX size={16} />
+          </button>
+        )}
+      </div>
+      {expanded && hasHabits && (
+        <div className="mb-2 ml-5 space-y-0.5 rounded-md border border-gold-deep/20 bg-parchment-100/50 p-2">
+          {m.habits.map((h, i) => (
+            <div key={i} className="flex items-center gap-2 text-[11px]">
+              <span
+                className={h.doneToday ? 'text-jewel-green' : 'text-ink-muted'}
+                title={h.doneToday ? 'Done today' : 'Not yet done'}
+              >
+                {h.doneToday ? '✓' : '○'}
+              </span>
+              <span className="flex-1 truncate text-ink">{h.name}</span>
+              {h.streak > 0 && (
+                <span className="shrink-0 text-ink-muted">🔥 {h.streak}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -250,20 +303,38 @@ function LeadControls() {
 
 function Leaderboard() {
   const partyBoard = usePartyStore((s) => s.leaderboard);
+  const myId = useAuthStore((s) => s.session?.user?.id);
   const [scope, setScope] = useState<'party' | 'global'>('party');
+  const [track, setTrack] = useState<'xp' | 'consistency'>('xp');
   const [globalBoard, setGlobalBoard] = useState<LeaderboardRow[]>([]);
+  const [globalConsistencyBoard, setGlobalConsistencyBoard] = useState<LeaderboardRow[]>([]);
 
   useEffect(() => {
-    if (scope === 'global' && globalBoard.length === 0) {
-      void getLeaderboard().then(setGlobalBoard);
+    if (scope === 'global' && track === 'xp' && globalBoard.length === 0) {
+      void getLeaderboard(undefined, 'xp').then(setGlobalBoard);
     }
-  }, [scope, globalBoard.length]);
+    if (scope === 'global' && track === 'consistency' && globalConsistencyBoard.length === 0) {
+      void getLeaderboard(undefined, 'consistency').then(setGlobalConsistencyBoard);
+    }
+  }, [scope, track, globalBoard.length, globalConsistencyBoard.length]);
 
-  const rows = scope === 'party' ? partyBoard : globalBoard;
+  // Party boards: sorted client-side by the chosen track (already loaded).
+  const sortedPartyBoard =
+    track === 'consistency'
+      ? [...partyBoard].sort((a, b) => (b.habit_score ?? 0) - (a.habit_score ?? 0))
+      : partyBoard;
+
+  const rows =
+    scope === 'party'
+      ? sortedPartyBoard
+      : track === 'consistency'
+        ? globalConsistencyBoard
+        : globalBoard;
 
   return (
     <Panel tone="parchment" className="space-y-2 p-4">
       <SectionTitle>Leaderboard</SectionTitle>
+      {/* Scope row */}
       <div className="flex gap-2">
         {(['party', 'global'] as const).map((s) => (
           <button
@@ -271,26 +342,53 @@ function Leaderboard() {
             onClick={() => setScope(s)}
             className={
               'flex-1 rounded-md py-1 font-display text-xs uppercase tracking-wider transition-colors ' +
-              (scope === s
-                ? 'bg-gold-bright/20 text-gold-deep'
-                : 'text-ink-muted hover:text-ink')
+              (scope === s ? 'bg-gold-bright/20 text-gold-deep' : 'text-ink-muted hover:text-ink')
             }
           >
             {s}
           </button>
         ))}
       </div>
+      {/* Track row */}
+      <div className="flex gap-2">
+        {([['xp', 'XP'], ['consistency', 'Consistency']] as const).map(([t, label]) => (
+          <button
+            key={t}
+            onClick={() => setTrack(t)}
+            className={
+              'flex-1 rounded-md py-0.5 font-display text-[11px] uppercase tracking-wider transition-colors ' +
+              (track === t ? 'bg-parchment-300/60 text-ink' : 'text-ink-muted/60 hover:text-ink-muted')
+            }
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       <ol className="space-y-1">
         {rows.map((r, i) => (
-          <li key={r.id} className="flex items-center gap-2 text-sm">
+          <li
+            key={r.id}
+            className={
+              'flex items-center gap-2 text-sm' +
+              (r.id === myId ? ' font-semibold' : '')
+            }
+          >
             <span className="w-5 text-right font-display font-bold tabular-nums text-gold-deep">
               {i + 1}
             </span>
-            <span className="flex-1 truncate text-ink">{r.username}</span>
-            <span className="text-[11px] text-ink-muted">Lv {r.level}</span>
-            <span className="w-16 text-right tabular-nums text-ink-muted">
-              {Math.round(r.total_xp).toLocaleString()} XP
+            <span className={`flex-1 truncate ${r.id === myId ? 'text-gold-deep' : 'text-ink'}`}>
+              {r.username}
             </span>
+            <span className="text-[11px] text-ink-muted">Lv {r.level}</span>
+            {track === 'consistency' ? (
+              <span className="w-16 text-right tabular-nums text-ink-muted">
+                {(r.habit_score ?? 0)}%
+              </span>
+            ) : (
+              <span className="w-16 text-right tabular-nums text-ink-muted">
+                {Math.round(r.total_xp).toLocaleString()} XP
+              </span>
+            )}
           </li>
         ))}
         {rows.length === 0 && (

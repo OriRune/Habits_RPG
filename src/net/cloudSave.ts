@@ -1,7 +1,8 @@
 import { supabase } from './supabaseClient';
 import { useAuthStore } from './auth';
 import { useGameStore, type GameState } from '@/store/useGameStore';
-import { selectLevelProgress, selectTopStats, selectTotalXp } from '@/store/selectors';
+import { selectLevelProgress, selectTopStats, selectTotalXp, selectHabitScore, isHabitDoneToday } from '@/store/selectors';
+import type { SharedHabit } from './party';
 
 /**
  * Cloud-save adapter (Phase 1).
@@ -72,6 +73,8 @@ function buildPublicSnapshot(s: GameState) {
     deepestArenaTier: s.deepestArenaTier ?? 0,
     deepestTacticsTier: s.deepestTacticsTier ?? 0,
     lastActiveISO: s.lastActiveISO ?? null,
+    /** 30-day habit consistency rate (0–100) for the Consistency leaderboard track. */
+    habitScore: selectHabitScore(s),
   };
 }
 
@@ -102,6 +105,11 @@ export async function pullCloudSave(): Promise<void> {
   }
 
   if (data) {
+    // Re-check after the network round-trip — a dungeon/mining/arena run may have
+    // started while we were awaiting Supabase.  Overwriting localStorage + calling
+    // rehydrate() here would clobber the live in-memory board even though merge()
+    // tries to preserve it (race: current.dungeon is still null during rehydrate).
+    if (hasActiveRun()) return;
     lastPulledVersion = data.version as number;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data.state));
     await useGameStore.persist.rehydrate();
@@ -169,6 +177,19 @@ export async function pushCloudSave(): Promise<void> {
     .from('profiles')
     .update({ public_snapshot: snapshot })
     .eq('id', uid);
+
+  // Push opt-in habit visibility to the party-scoped member_habits table.
+  // When the toggle is off, an empty array is upserted so disabling the setting
+  // immediately clears shared data for party members (no stale data lingers).
+  const gs = useGameStore.getState();
+  const habitData: SharedHabit[] = gs.settings.shareHabitNames
+    ? gs.habits
+        .filter((h) => h.status === 'active')
+        .map((h) => ({ name: h.name, streak: h.streak, doneToday: isHabitDoneToday(h) }))
+    : [];
+  await supabase
+    .from('member_habits')
+    .upsert({ user_id: uid, habits: habitData, updated_at: new Date().toISOString() });
 }
 
 // ---- Autosync lifecycle -----------------------------------------------------

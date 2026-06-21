@@ -13,7 +13,7 @@ export function BoonChoice() {
   return (
     <Modal title="Choose a Boon" dismissable={false}>
       <p className="mb-3 text-sm text-ink-muted">
-        A power lingers here — claim one to carry for the rest of this run.
+        A power lingers here — claim one. Boons <strong className="text-ink">stack</strong>: every relic you've picked this run still applies.
       </p>
       <div className="space-y-2">
         {pending.map((key) => {

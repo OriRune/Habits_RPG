@@ -101,6 +101,8 @@ export interface Character {
   energy: number;
   classId: string | null;
   mood: Mood;
+  /** Minigame-gold multiplier (1.0–1.25) earned by keeping habits on-streak (§6.3). */
+  habitBonus: number;
 }
 
 export interface NewHabitInput {
@@ -159,6 +161,8 @@ export interface GameSettings {
   darkMode: boolean;
   /** Enable sound effects and the adaptive tension drone during minigames. */
   soundEnabled: boolean;
+  /** Opt-in: share active habit names, streaks, and today's status with party members only. */
+  shareHabitNames: boolean;
 }
 
 /** Lightweight record of a completed run — kept in `dungeonHistory` (last 10). */
@@ -240,6 +244,8 @@ export interface GameState {
   settings: GameSettings;
   /** False until the player finishes the character-creation screen (gates onboarding). */
   created: boolean;
+  /** Party quest IDs whose gold reward has already been credited locally (prevents double-credit). */
+  claimedPartyQuests: string[];
 
   // --- actions ---
   /** Commit the character-creation screen: seed name, starting stat levels, weapon, and spell. */
@@ -277,6 +283,8 @@ export interface GameState {
 
   buyItem: (itemKey: string) => void;
   useStreakFreeze: (habitId: string) => void;
+  /** Credit the flat party-quest gold reward to this player once; idempotent on the same questId. */
+  claimPartyQuestReward: (questId: string, memberCount: number) => void;
 
   equipWeapon: (weaponKey: string) => void;
   buyWeapon: (weaponKey: string) => void;
@@ -480,6 +488,7 @@ export function freshCharacter(): Character {
     energy: 0,
     classId: null,
     mood: 'steady',
+    habitBonus: 1,
   };
 }
 
@@ -506,6 +515,7 @@ export function freshSettings(): GameSettings {
     repeatMinigames: false,
     darkMode: false,
     soundEnabled: true,
+    shareHabitNames: false,
   };
 }
 
@@ -582,6 +592,22 @@ export function recomputeMood(state: GameState, todayIso: string, recentlyRecove
     expected += state.habits.filter((h) => isScheduledOn(h, iso)).length;
   }
   state.character.mood = computeMood(completions, expected, recentlyRecovered);
+}
+
+/**
+ * Recompute the habit-streak minigame-gold multiplier from the current active habits.
+ * Mutates `character` in place. Called after any streak change and on app mount.
+ *
+ * Tracked = active, scheduled habits (as_needed excluded — they never break streak).
+ * healthy = fraction with streak ≥ 3.
+ * Bonus tiers: ≥100% → 1.25, ≥75% → 1.15, ≥50% → 1.10, else → 1.0.
+ */
+export function recomputeHabitBonus(character: Character, habits: Habit[]): void {
+  const tracked = habits.filter((h) => h.status === 'active' && h.frequency !== 'as_needed');
+  if (tracked.length === 0) { character.habitBonus = 1; return; }
+  const healthy = tracked.filter((h) => h.streak >= 3).length / tracked.length;
+  character.habitBonus =
+    healthy >= 1 ? 1.25 : healthy >= 0.75 ? 1.15 : healthy >= 0.5 ? 1.1 : 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -929,7 +955,14 @@ export function commitRun(state: GameState, opts: CommitRunOpts): GameState {
     ...recordUpdate,
   } as GameState;
 
-  applyReward(next, { ...opts.reward, statXp: opts.statXp });
+  // Apply the habit-streak gold multiplier (§6.3) — scales minigame gold by how many
+  // active habits are on a ≥3-day streak. Never affects XP.
+  const bonusedReward = {
+    ...opts.reward,
+    gold: Math.round((opts.reward.gold ?? 0) * state.character.habitBonus),
+    statXp: opts.statXp,
+  };
+  applyReward(next, bonusedReward);
   checkLevelUp(next);
   return next;
 }
@@ -937,6 +970,12 @@ export function commitRun(state: GameState, opts: CommitRunOpts): GameState {
 // ---------------------------------------------------------------------------
 // Reward policy constants — change these to retune balance across all minigames.
 // ---------------------------------------------------------------------------
+
+/**
+ * Maximum energy a character can hold (§4.3 — defensive ceiling against accumulation bugs).
+ * High enough to never affect normal play; clamped at the end of every energy-mutating action.
+ */
+export const MAX_ENERGY = 50;
 
 /** Mine/forest: base stat-XP trickle per completed run. */
 export const CRAWLER_XP_BASE = 4;
@@ -962,9 +1001,11 @@ export const ARENA_XP_DAMAGE_SCALE = 0.6;
 export function commitMining(state: GameState, run: MineState): GameState {
   // Include gold haul in the final score so resource-gathering builds score alongside kills.
   const finalScore = run.score + (run.haul.gold ?? 0);
+  // Trickle is split across both trained stats so total stat-XP stays modest (§5.4).
   const trickle = CRAWLER_XP_BASE + CRAWLER_XP_PER_DEPTH * run.deepest;
   return commitRun(state, {
-    runField: 'mining', reward: run.haul, statXp: { ST: trickle, EN: trickle },
+    runField: 'mining', reward: run.haul,
+    statXp: { ST: Math.ceil(trickle / 2), EN: Math.floor(trickle / 2) },
     deepestField: 'deepestMineFloor', deepestValue: run.deepest,
     scoreField: 'bestMineScore', scoreValue: finalScore, cloneMaterials: true,
   });
@@ -980,7 +1021,8 @@ export function commitMineDeath(state: GameState, run: MineState): GameState {
   const finalScore = run.score + (kept.gold ?? 0);
   const trickle = CRAWLER_XP_BASE + CRAWLER_XP_PER_DEPTH * run.deepest;
   return commitRun(state, {
-    runField: 'mining', reward: kept, statXp: { ST: trickle, EN: trickle },
+    runField: 'mining', reward: kept,
+    statXp: { ST: Math.ceil(trickle / 2), EN: Math.floor(trickle / 2) },
     deepestField: 'deepestMineFloor', deepestValue: run.deepest,
     scoreField: 'bestMineScore', scoreValue: finalScore, cloneMaterials: true,
   });
@@ -988,10 +1030,11 @@ export function commitMineDeath(state: GameState, run: MineState): GameState {
 
 /** Bank a finished forest run's haul into the economy, clear the run, and reconcile level. */
 export function commitForest(state: GameState, run: ForestState): GameState {
-  // The run's gold/materials, plus a modest Dexterity/Endurance trickle for the foraging trek.
+  // The run's gold/materials, plus a Dexterity/Endurance trickle split across both stats (§5.4).
   const trickle = CRAWLER_XP_BASE + CRAWLER_XP_PER_DEPTH * run.deepest;
   return commitRun(state, {
-    runField: 'forest', reward: run.haul, statXp: { DX: trickle, EN: trickle },
+    runField: 'forest', reward: run.haul,
+    statXp: { DX: Math.ceil(trickle / 2), EN: Math.floor(trickle / 2) },
     deepestField: 'deepestForestStage', deepestValue: run.deepest,
     scoreField: 'bestForestScore', scoreValue: run.score, cloneMaterials: true,
   });
@@ -1003,10 +1046,11 @@ export function commitForest(state: GameState, run: ForestState): GameState {
  */
 export function commitForestDeath(state: GameState, run: ForestState): GameState {
   const { kept } = splitHaul(run.haul, FOREST_DEATH_KEEP);
-  // The trek still earns its Dexterity/Endurance trickle — only the haul is docked.
+  // The trek still earns its Dexterity/Endurance trickle split across both stats (§5.4).
   const trickle = CRAWLER_XP_BASE + CRAWLER_XP_PER_DEPTH * run.deepest;
   return commitRun(state, {
-    runField: 'forest', reward: kept, statXp: { DX: trickle, EN: trickle },
+    runField: 'forest', reward: kept,
+    statXp: { DX: Math.ceil(trickle / 2), EN: Math.floor(trickle / 2) },
     deepestField: 'deepestForestStage', deepestValue: run.deepest,
     scoreField: 'bestForestScore', scoreValue: run.score, cloneMaterials: true,
   });
@@ -1055,8 +1099,12 @@ export function commitTactics(state: GameState, run: HexBattleState): GameState 
   const trickle = Math.round(
     (MINIGAME_XP_BASE + MINIGAME_XP_PER_TIER * run.tier) * (won ? 1 : MINIGAME_XP_LOSS_FACTOR),
   );
+  // Split trickle across three stats — AG-forward (§5.4). Remainders go to AG then DX.
+  const each = Math.floor(trickle / 3);
+  const rem = trickle - each * 3; // 0, 1, or 2
   return commitRun(state, {
-    runField: 'tactics', reward: tacticsReward(run), statXp: { AG: trickle, DX: trickle, EN: trickle },
+    runField: 'tactics', reward: tacticsReward(run),
+    statXp: { AG: each + (rem > 0 ? 1 : 0), DX: each + (rem > 1 ? 1 : 0), EN: each },
     deepestField: 'deepestTacticsTier', deepestValue: run.tier, gateOnWin: won,
     cloneMaterials: false,
   });

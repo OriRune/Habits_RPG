@@ -45,6 +45,10 @@ export interface EnemyMove {
   drainRatio?: number;
   /** 'guard': physical defense bonus added until the foe's next turn (default 4). */
   bonus?: number; // also used for 'enrage' (attack bonus, default 3)
+  /** Override the default MP cost for this move (see combat.ts enemyMoveCost). */
+  mpCost?: number;
+  /** Override the default stamina cost for this move (see combat.ts enemyMoveCost). */
+  staCost?: number;
 }
 
 /** One stage of a multi-phase fight. When a boss has phases, defeating one HP bar
@@ -65,6 +69,10 @@ export interface BossPhase {
    * move to the player before each turn. Omit for a plain basic-attack foe.
    */
   moveset?: EnemyMove[];
+  /** Maximum MP for this phase (overrides auto-derived default in combat.ts). */
+  maxMp?: number;
+  /** Maximum stamina for this phase (overrides auto-derived default in combat.ts). */
+  maxSta?: number;
   // ── Arena-specific phase tuning ───────────────────────────────────────────
   /** Override the post-attack recovery delay (ms). Lower = faster attack cadence (enrage). */
   recoverMs?: number;
@@ -94,6 +102,10 @@ export interface BossDef {
   glyph?: string;
   /** Optional multi-phase script. If set (and non-empty), overrides baseHp/attack/etc. */
   phases?: BossPhase[];
+  /** Maximum MP for single-phase enemies (overrides auto-derived default in combat.ts). */
+  maxMp?: number;
+  /** Maximum stamina for single-phase enemies (overrides auto-derived default in combat.ts). */
+  maxSta?: number;
   /**
    * Move pool for single-phase enemies (passed through to the synthetic phase in createBattle).
    * For multi-phase enemies, set `moveset` per phase instead.

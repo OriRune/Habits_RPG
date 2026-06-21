@@ -5,6 +5,7 @@ import { STARTER_SPELLS } from '@/engine/spells';
 import { getItem } from '@/engine/items';
 import { getRecipe, canCraft } from '@/engine/crafting';
 import { toISODate } from '@/engine/date';
+import { type Habit, currentStreak } from '@/engine/habits';
 import type { GameState } from '../shared';
 
 export interface EconomySlice {
@@ -15,9 +16,11 @@ export interface EconomySlice {
   ownedWeapons: string[];
   ownedGear: string[];
   equipment: Record<GearSlot, string | null>;
+  claimedPartyQuests: string[];
 
   buyItem: (itemKey: string) => void;
   useStreakFreeze: (habitId: string) => void;
+  claimPartyQuestReward: (questId: string, memberCount: number) => void;
   equipWeapon: (weaponKey: string) => void;
   buyWeapon: (weaponKey: string) => void;
   learnFromSpellbook: (itemKey: string) => void;
@@ -39,6 +42,7 @@ export const createEconomySlice: StateCreator<
   ownedWeapons: [STARTER_WEAPON],
   ownedGear: [],
   equipment: { armor: null, trinket: null, tool: null },
+  claimedPartyQuests: [],
 
   buyItem: (itemKey) =>
     set((s) => {
@@ -58,11 +62,30 @@ export const createEconomySlice: StateCreator<
       const habit = s.habits.find((h) => h.id === habitId);
       if (!habit) return s;
       const today = toISODate();
+      // Don't consume the item if today is already logged (completed or frozen).
+      if (habit.log[today] !== undefined) return s;
       return {
         inventory: { ...s.inventory, streak_freeze: s.inventory['streak_freeze'] - 1 },
-        habits: s.habits.map((h) =>
-          h.id === habitId ? { ...h, lastCompletedISO: today } : h,
-        ),
+        habits: s.habits.map((h) => {
+          if (h.id !== habitId) return h;
+          const updated: Habit = {
+            ...h,
+            log: { ...h.log, [today]: { xp: 0, frozen: true } },
+            lastCompletedISO: today,
+          };
+          updated.streak = currentStreak(updated, today);
+          return updated;
+        }),
+      };
+    }),
+
+  claimPartyQuestReward: (questId, memberCount) =>
+    set((s) => {
+      if (s.claimedPartyQuests.includes(questId)) return s;
+      const reward = Math.min(200, 50 + 10 * memberCount);
+      return {
+        claimedPartyQuests: [...s.claimedPartyQuests, questId],
+        character: { ...s.character, gold: s.character.gold + reward },
       };
     }),
 

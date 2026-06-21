@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
 import type { ChallengeDef } from '@/engine/challenges';
 import { partyActions, usePartyStore } from '@/hooks/useParty';
+import { useGameStore } from '@/store/useGameStore';
+import { useAuthStore } from '@/net/auth';
 
 /**
  * Shared party quest: a combined progress bar everyone contributes to via habit
@@ -13,7 +15,14 @@ import { partyActions, usePartyStore } from '@/hooks/useParty';
  */
 export function PartyQuestPanel({ isLead }: { isLead: boolean }) {
   const quest = usePartyStore((s) => s.quest);
+  const memberCount = usePartyStore((s) => s.members.length);
+  const claimedPartyQuests = useGameStore((s) => s.claimedPartyQuests);
+  const myId = useAuthStore((s) => s.session?.user?.id);
   const [showForm, setShowForm] = useState(false);
+
+  const reward = Math.min(200, 50 + 10 * memberCount);
+  const iContributed = quest ? (quest.contributions?.[myId ?? ''] ?? 0) > 0 : false;
+  const alreadyClaimed = quest ? claimedPartyQuests.includes(quest.id) : false;
 
   return (
     <Panel tone="parchment" className="space-y-3 p-4">
@@ -31,8 +40,12 @@ export function PartyQuestPanel({ isLead }: { isLead: boolean }) {
             <span className="tabular-nums">
               {quest.progress} / {quest.target} completions
             </span>
-            {quest.status === 'completed' && (
-              <span className="font-semibold text-jewel-green">Complete! 🎉</span>
+            {quest.status === 'completed' ? (
+              <span className="font-semibold text-jewel-green">
+                Complete! 🎉{alreadyClaimed && iContributed && ' · Reward claimed'}
+              </span>
+            ) : (
+              <span>Reward: 🪙 {reward} each</span>
             )}
           </div>
         </div>
@@ -46,6 +59,7 @@ export function PartyQuestPanel({ isLead }: { isLead: boolean }) {
         <>
           {showForm ? (
             <QuestForm
+              memberCount={memberCount}
               onCancel={() => setShowForm(false)}
               onCreate={async (def, target, days) => {
                 await partyActions.createQuest(def, target, days);
@@ -78,15 +92,18 @@ function ProgressBar({ value, target }: { value: number; target: number }) {
 function QuestForm({
   onCancel,
   onCreate,
+  memberCount,
 }: {
   onCancel: () => void;
   onCreate: (def: ChallengeDef, target: number, days: number) => void;
+  memberCount: number;
 }) {
   const [name, setName] = useState('Party Push');
   const [target, setTarget] = useState(50);
   const [days, setDays] = useState(7);
 
   const submit = () => {
+    const rewardGold = Math.min(200, 50 + 10 * memberCount);
     const def: ChallengeDef = {
       id: `party_${Date.now()}`,
       name: name.trim() || 'Party Quest',
@@ -94,7 +111,7 @@ function QuestForm({
       kind: 'count',
       goal: target,
       durationDays: days,
-      reward: { gold: 0 },
+      reward: { gold: rewardGold },
       custom: true,
     };
     onCreate(def, target, days);
