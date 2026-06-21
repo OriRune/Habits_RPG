@@ -7,6 +7,7 @@ import {
   createParty,
   createPartyQuest,
   getActiveQuest,
+  getClaimableQuests,
   getLeaderboard,
   getMembers,
   getMessages,
@@ -72,6 +73,17 @@ export async function reloadParty(): Promise<void> {
   ]);
   const leaderboard = await getLeaderboard(members.map((m) => m.user_id));
   usePartyStore.setState({ loading: false, party, members, messages, quest, leaderboard });
+
+  // Offline catch-up: credit gold for any completed quests the player contributed to
+  // but may have missed while offline. claimPartyQuestReward is idempotent on the same id.
+  const myId = useAuthStore.getState().session?.user?.id;
+  if (myId) {
+    const claimable = await getClaimableQuests(party.id, myId);
+    const claim = useGameStore.getState().claimPartyQuestReward;
+    for (const q of claimable) {
+      claim(q.id, members.length);
+    }
+  }
 }
 
 export const partyActions = {
@@ -167,7 +179,15 @@ export function useParty(): void {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'party_quests', filter: `party_id=eq.${partyId}` },
-        () => {
+        (payload) => {
+          // Credit gold when the quest flips to completed and this user contributed.
+          if (payload.eventType !== 'DELETE') {
+            const q = payload.new as PartyQuest;
+            if (q.status === 'completed' && userId && (q.contributions?.[userId] ?? 0) > 0) {
+              const memberCount = usePartyStore.getState().members.length;
+              useGameStore.getState().claimPartyQuestReward(q.id, memberCount);
+            }
+          }
           void getActiveQuest(partyId).then((quest) => usePartyStore.setState({ quest }));
         },
       )

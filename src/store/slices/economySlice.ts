@@ -16,9 +16,11 @@ export interface EconomySlice {
   ownedWeapons: string[];
   ownedGear: string[];
   equipment: Record<GearSlot, string | null>;
+  claimedPartyQuests: string[];
 
   buyItem: (itemKey: string) => void;
   useStreakFreeze: (habitId: string) => void;
+  claimPartyQuestReward: (questId: string, memberCount: number) => void;
   equipWeapon: (weaponKey: string) => void;
   buyWeapon: (weaponKey: string) => void;
   learnFromSpellbook: (itemKey: string) => void;
@@ -40,6 +42,7 @@ export const createEconomySlice: StateCreator<
   ownedWeapons: [STARTER_WEAPON],
   ownedGear: [],
   equipment: { armor: null, trinket: null, tool: null },
+  claimedPartyQuests: [],
 
   buyItem: (itemKey) =>
     set((s) => {
@@ -73,6 +76,16 @@ export const createEconomySlice: StateCreator<
           updated.streak = currentStreak(updated, today);
           return updated;
         }),
+      };
+    }),
+
+  claimPartyQuestReward: (questId, memberCount) =>
+    set((s) => {
+      if (s.claimedPartyQuests.includes(questId)) return s;
+      const reward = Math.min(200, 50 + 10 * memberCount);
+      return {
+        claimedPartyQuests: [...s.claimedPartyQuests, questId],
+        character: { ...s.character, gold: s.character.gold + reward },
       };
     }),
 

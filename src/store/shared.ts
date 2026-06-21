@@ -161,6 +161,8 @@ export interface GameSettings {
   darkMode: boolean;
   /** Enable sound effects and the adaptive tension drone during minigames. */
   soundEnabled: boolean;
+  /** Opt-in: share active habit names, streaks, and today's status with party members only. */
+  shareHabitNames: boolean;
 }
 
 /** Lightweight record of a completed run — kept in `dungeonHistory` (last 10). */
@@ -242,6 +244,8 @@ export interface GameState {
   settings: GameSettings;
   /** False until the player finishes the character-creation screen (gates onboarding). */
   created: boolean;
+  /** Party quest IDs whose gold reward has already been credited locally (prevents double-credit). */
+  claimedPartyQuests: string[];
 
   // --- actions ---
   /** Commit the character-creation screen: seed name, starting stat levels, weapon, and spell. */
@@ -279,6 +283,8 @@ export interface GameState {
 
   buyItem: (itemKey: string) => void;
   useStreakFreeze: (habitId: string) => void;
+  /** Credit the flat party-quest gold reward to this player once; idempotent on the same questId. */
+  claimPartyQuestReward: (questId: string, memberCount: number) => void;
 
   equipWeapon: (weaponKey: string) => void;
   buyWeapon: (weaponKey: string) => void;
@@ -509,6 +515,7 @@ export function freshSettings(): GameSettings {
     repeatMinigames: false,
     darkMode: false,
     soundEnabled: true,
+    shareHabitNames: false,
   };
 }
 

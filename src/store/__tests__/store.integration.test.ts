@@ -903,8 +903,8 @@ describe('deep mine', () => {
     expect(get().deepestMineFloor).toBe(2);
   });
 
-  it('persists at version 22', () => {
-    expect(useGameStore.persist.getOptions().version).toBe(22);
+  it('persists at version 23', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(23);
   });
 });
 
@@ -1350,6 +1350,33 @@ describe('stat gate on Skill Trials (Stage 4.4)', () => {
     expect(statCompletedWithin([old], 'DX', today, 7)).toBe(false);
     // Wrong stat → false.
     expect(statCompletedWithin([habit], 'ST', today, 7)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stage 5 — Party and Accountability
+// ---------------------------------------------------------------------------
+
+describe('claimPartyQuestReward (Stage 5.1)', () => {
+  const get = () => useGameStore.getState();
+
+  it('credits flat gold on first claim', () => {
+    useGameStore.setState({ character: { ...get().character, gold: 0 }, claimedPartyQuests: [] });
+    get().claimPartyQuestReward('quest-1', 4); // reward = min(200, 50 + 40) = 90
+    expect(get().character.gold).toBe(90);
+    expect(get().claimedPartyQuests).toContain('quest-1');
+  });
+
+  it('is idempotent — second call with the same questId is a no-op', () => {
+    useGameStore.setState({ character: { ...get().character, gold: 0 }, claimedPartyQuests: ['quest-1'] });
+    get().claimPartyQuestReward('quest-1', 4);
+    expect(get().character.gold).toBe(0); // gold unchanged
+  });
+
+  it('caps reward at 200 regardless of memberCount', () => {
+    useGameStore.setState({ character: { ...get().character, gold: 0 }, claimedPartyQuests: [] });
+    get().claimPartyQuestReward('quest-big', 50); // 50 + 500 = 550 → capped at 200
+    expect(get().character.gold).toBe(200);
   });
 });
 

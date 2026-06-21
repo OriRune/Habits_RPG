@@ -38,6 +38,8 @@ export interface ProfileSnapshot {
     deepestArenaTier?: number;
     deepestTacticsTier?: number;
     lastActiveISO?: string | null;
+    /** 30-day habit completion rate (0–100). Added in Stage 5. */
+    habitScore?: number;
   };
 }
 
@@ -45,6 +47,8 @@ export interface ProfileSnapshot {
 export interface PartyMember extends PartyMemberRow {
   username: string;
   snapshot: ProfileSnapshot['public_snapshot'];
+  /** Active habits shared by this member (empty if they haven't opted in). */
+  habits: SharedHabit[];
 }
 
 export interface PartyMessage {
@@ -63,6 +67,15 @@ export interface PartyQuest {
   progress: number;
   status: 'active' | 'completed' | 'expired';
   ends_at: string | null;
+  /** Per-user completion contribution counts, keyed by user_id (added in migration 0006). */
+  contributions: Record<string, number>;
+}
+
+/** One row of a member's habit visibility (published to `member_habits` when opted in). */
+export interface SharedHabit {
+  name: string;
+  streak: number;
+  doneToday: boolean;
 }
 
 export interface LeaderboardRow {
@@ -73,6 +86,8 @@ export interface LeaderboardRow {
   deepest_mine: number;
   deepest_forest: number;
   deepest_arena: number;
+  /** 30-day habit completion rate (0–100); 0 for users who haven't synced yet. */
+  habit_score: number;
 }
 
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: string };
@@ -149,7 +164,7 @@ export async function renameParty(partyId: string, name: string): Promise<ApiRes
   return error ? { ok: false, error: error.message } : { ok: true, data: null };
 }
 
-/** Members of a party joined with their public profile snapshots. */
+/** Members of a party joined with their public profile snapshots and opt-in habit visibility. */
 export async function getMembers(partyId: string): Promise<PartyMember[]> {
   if (!supabase) return [];
   const { data: members } = await supabase
@@ -159,17 +174,36 @@ export async function getMembers(partyId: string): Promise<PartyMember[]> {
   if (!members || members.length === 0) return [];
 
   const ids = members.map((m) => (m as PartyMemberRow).user_id);
-  const { data: profiles } = await supabase
-    .from('profiles')
-    .select('id, username, public_snapshot')
-    .in('id', ids);
+  const [{ data: profiles }, { data: habitRows }] = await Promise.all([
+    supabase.from('profiles').select('id, username, public_snapshot').in('id', ids),
+    supabase.from('member_habits').select('user_id, habits').in('user_id', ids),
+  ]);
 
   const byId = new Map((profiles ?? []).map((p) => [p.id, p as ProfileSnapshot]));
+  const habitsByUser = new Map(
+    ((habitRows ?? []) as { user_id: string; habits: SharedHabit[] }[]).map((r) => [r.user_id, r.habits]),
+  );
   return (members as PartyMemberRow[]).map((m) => ({
     ...m,
     username: byId.get(m.user_id)?.username ?? '???',
     snapshot: byId.get(m.user_id)?.public_snapshot ?? {},
+    habits: habitsByUser.get(m.user_id) ?? [],
   }));
+}
+
+/**
+ * Completed party quests that the given user contributed to (offline catch-up).
+ * Returns all `completed` quests where the user has a contributions entry.
+ */
+export async function getClaimableQuests(partyId: string, userId: string): Promise<PartyQuest[]> {
+  if (!supabase) return [];
+  const { data } = await supabase
+    .from('party_quests')
+    .select('*')
+    .eq('party_id', partyId)
+    .eq('status', 'completed');
+  const rows = (data as PartyQuest[]) ?? [];
+  return rows.filter((q) => (q.contributions?.[userId] ?? 0) > 0);
 }
 
 export async function getMessages(partyId: string, limit = 100): Promise<PartyMessage[]> {
@@ -248,13 +282,18 @@ export async function incrementPartyQuest(partyId: string, amount: number): Prom
   await supabase.rpc('increment_party_quest', { p_party: partyId, p_amount: amount });
 }
 
-/** Global leaderboard, or party-scoped when `memberIds` is provided. */
-export async function getLeaderboard(memberIds?: string[]): Promise<LeaderboardRow[]> {
+/** Global leaderboard, or party-scoped when `memberIds` is provided.
+ *  `track` controls the sort column: 'xp' (default) or 'consistency' (habit_score). */
+export async function getLeaderboard(
+  memberIds?: string[],
+  track: 'xp' | 'consistency' = 'xp',
+): Promise<LeaderboardRow[]> {
   if (!supabase) return [];
+  const orderCol = track === 'consistency' ? 'habit_score' : 'total_xp';
   let query = supabase
     .from('leaderboard')
     .select('*')
-    .order('total_xp', { ascending: false })
+    .order(orderCol, { ascending: false })
     .limit(50);
   if (memberIds && memberIds.length > 0) query = query.in('id', memberIds);
   const { data } = await query;

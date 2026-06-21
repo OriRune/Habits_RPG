@@ -58,10 +58,16 @@ vi.mock('@/net/supabaseClient', () => {
     }),
   };
 
+  // Stub for the member_habits upsert added in Stage 5.2.
+  const memberHabitsChain = {
+    upsert: (_payload: unknown) => Promise.resolve({ data: null, error: null }),
+  };
+
   return {
     supabase: {
       from: (table: string) => {
         if (table === 'profiles') return profilesChain;
+        if (table === 'member_habits') return memberHabitsChain;
         return savesChain;
       },
     },
