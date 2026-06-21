@@ -66,6 +66,13 @@ body {
   background-attachment: fixed;
 }
 
+/* Slightly smaller base font on very narrow screens (≤400px) to ease density. */
+@media (max-width: 400px) {
+  body {
+    font-size: 16px;
+  }
+}
+
 @layer components {
   /* Aged parchment surface — light, mottled. */
   .texture-parchment {

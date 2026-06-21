@@ -52,7 +52,7 @@ export function BottomBar({ active, onChange }: NavProps) {
               key={id}
               onClick={() => onChange(id)}
               className={cn(
-                'relative flex flex-1 flex-col items-center gap-1 py-2.5 font-display text-[11px] uppercase tracking-wider transition-colors',
+                'relative flex min-w-0 flex-1 flex-col items-center gap-1 px-0.5 py-2.5 font-display text-[11px] uppercase leading-none tracking-tight transition-colors',
                 isActive ? 'text-gold-bright' : 'text-on-wood-dim hover:text-on-wood-hi',
               )}
             >

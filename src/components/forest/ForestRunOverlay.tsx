@@ -25,6 +25,7 @@ import { BOONS } from '@/content/boons';
 import { forestThicketTree, forestFloorTile, forestNodeSprite } from '@/lib/minigameArt';
 import { getMaterial } from '@/engine/materials';
 import { Button } from '@/components/ui/Button';
+import { FitToWidth } from '@/components/ui/FitToWidth';
 import { cn } from '@/lib/cn';
 import { ForestControls } from './ForestControls';
 import { CrawlerAvatar } from '@/components/minigame/CrawlerAvatar';
@@ -578,7 +579,8 @@ export function ForestRunOverlay() {
         )}
       </div>
 
-      {/* Forest board */}
+      {/* Forest board — wrapped in FitToWidth so it scales down on narrow screens */}
+      <FitToWidth contentWidth={BOARD_PX} contentHeight={BOARD_PX}>
       <div
         className="relative shrink-0 overflow-hidden rounded-md border-2 border-gold-deep/60"
         style={{
@@ -1203,6 +1205,7 @@ export function ForestRunOverlay() {
           </div>
         )}
       </div>
+      </FitToWidth>
 
       {/* Spell ability bar */}
       {forest.knownSpells.length > 0 && (
