@@ -142,6 +142,29 @@ describe('completeHabit', () => {
     expect(get().character.statXp.KN).toBe(20);
     expect(get().character.energy).toBe(1);
     expect(get().habits[0].streak).toBe(1);
+    // Earnings ledger: habit completion is recorded.
+    expect(get().earnings.xp.habit).toBe(20);
+    expect(get().earnings.count.habit).toBe(1);
+    expect(get().earnings.energyEarned).toBe(1);
+  });
+
+  it('records energy earned in energyLog for today', () => {
+    get().addHabit({ name: 'Read', stat: 'KN', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    get().completeHabit(get().habits[0].id);
+    const today = new Date().toISOString().slice(0, 10);
+    expect(get().energyLog[today]?.earned).toBe(1);
+  });
+
+  it('reverses earnings ledger on uncomplete', () => {
+    get().addHabit({ name: 'Read', stat: 'KN', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    get().completeHabit(id);
+    const xpAfterComplete = get().earnings.xp.habit;
+    get().uncompleteHabit(id);
+    expect(get().earnings.xp.habit).toBe(0);
+    expect(get().earnings.count.habit).toBe(0);
+    expect(get().earnings.energyEarned).toBe(0);
+    void xpAfterComplete; // used above
   });
 
   it('cannot be completed twice in one day', () => {
@@ -865,6 +888,8 @@ describe('deep mine', () => {
     expect(get().mining).not.toBeNull();
     expect(get().mining!.floor).toBe(1);
     expect(get().character.energy).toBe(8); // MINE_ENERGY_COST = 2
+    // Earnings ledger: energySpent bumped on entry.
+    expect(get().earnings.energySpent).toBe(2);
   });
 
   it('beginMining has no level gate — a fresh level-1 character can enter', () => {
@@ -893,6 +918,10 @@ describe('deep mine', () => {
     expect(get().materials.iron_bar).toBe(ironBefore + 3);
     expect(get().deepestMineFloor).toBe(4);
     expect(get().character.statXp.ST).toBeGreaterThan(0); // labour trickle
+    // Earnings ledger: mine source records the committed XP and gold.
+    expect(get().earnings.xp.mine).toBeGreaterThan(0);
+    expect(get().earnings.gold.mine).toBe(50);
+    expect(get().earnings.count.mine).toBe(1);
   });
 
   it('mineTick flips to ended on death; endMining then banks the haul', () => {
@@ -916,8 +945,8 @@ describe('deep mine', () => {
     expect(get().deepestMineFloor).toBe(2);
   });
 
-  it('persists at version 24', () => {
-    expect(useGameStore.persist.getOptions().version).toBe(24);
+  it('persists at version 25', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(25);
   });
 });
 

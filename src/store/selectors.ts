@@ -2,6 +2,13 @@
 // components can compute view data without bloating the store definition.
 import { type StatId } from '@/engine/stats';
 import {
+  buildBalanceReport,
+  buildEnergySummary,
+  freshEarningsLedger,
+  type BalanceReport,
+  type EnergySummary,
+} from '@/engine/balance';
+import {
   type Habit,
   isCompletedOn,
   isLoggableOn,
@@ -145,6 +152,14 @@ export function selectConsistencyTrend(s: GameState) {
 /** Completion breakdown by weekday (0=Sun..6=Sat) over the last 12 weeks (84 days). */
 export function selectDayOfWeek(s: GameState) {
   return dayOfWeekBreakdown(s.habits, toISODate());
+}
+
+export function selectBalanceReport(s: GameState): BalanceReport {
+  return buildBalanceReport(s.earnings ?? freshEarningsLedger());
+}
+
+export function selectEnergySummary(s: GameState): EnergySummary {
+  return buildEnergySummary(s.energyLog ?? {}, toISODate());
 }
 
 export type { DailySummary, RecoveryState };

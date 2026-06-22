@@ -10,7 +10,7 @@ import {
 import { statCompletedWithin } from '@/engine/habits';
 import { toISODate } from '@/engine/date';
 import type { GameState } from '../shared';
-import { applyReward, checkLevelUp } from '../shared';
+import { applyReward, checkLevelUp, energySpentPatch } from '../shared';
 
 export interface TrialsSlice {
   trialsClearedOn: Record<TrialId, string>;
@@ -51,8 +51,9 @@ export const createTrialsSlice: StateCreator<
           ...s.bestTrialScore,
           [trialId]: Math.max(s.bestTrialScore[trialId] ?? 0, Math.max(0, Math.min(1, score01))),
         },
+        ...(free ? {} : energySpentPatch(s, TRIAL_ENERGY_COST)),
       };
-      applyReward(next, reward);
+      applyReward(next, reward, 'trial');
       if (!free) next.character.energy -= TRIAL_ENERGY_COST;
       checkLevelUp(next);
       return next;

@@ -10,6 +10,7 @@ import {
   applyLevelUp,
   checkLevelUp,
 } from '../shared';
+import { freshEarningsLedger } from '@/engine/balance';
 
 export interface BattleSlice {
   battle: BattleState | null;
@@ -55,17 +56,24 @@ export const createBattleSlice: StateCreator<
       const target = s.pendingLevelUp;
 
       if (battle.status === 'won' && target) {
+        const baseEarnings = s.earnings ?? freshEarningsLedger();
         const next: GameState = {
           ...s,
           character: { ...s.character, statXp: { ...s.character.statXp } },
           inventory: { ...s.inventory },
           materials: { ...s.materials },
+          earnings: {
+            ...baseEarnings,
+            xp: { ...baseEarnings.xp },
+            gold: { ...baseEarnings.gold },
+            count: { ...baseEarnings.count },
+          },
           codex: [...s.codex],
           battle: null,
           pendingLevelUp: null,
         };
         const boss = bossForLevel(target);
-        applyReward(next, { gold: boss.rewards.gold, items: boss.rewards.items });
+        applyReward(next, { gold: boss.rewards.gold, items: boss.rewards.items }, 'boss');
         applyLevelUp(next, target);
         checkLevelUp(next);
         return next;

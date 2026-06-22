@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { ChevronLeft, FlaskConical } from 'lucide-react';
+import { ChevronLeft, FlaskConical, BarChart3 } from 'lucide-react';
+import { BalanceReportModal } from '@/components/balance/BalanceReportModal';
 import { useGameStore } from '@/store/useGameStore';
 import { STATS, type StatId } from '@/engine/stats';
 import type { ArenaSpeed } from '@/engine/arena';
@@ -39,6 +40,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
   const [primary, setPrimary] = useState<StatId>('ST');
   const [secondary, setSecondary] = useState<StatId>('DX');
   const previewClass = classFor(primary, secondary);
+  const [showBalanceReport, setShowBalanceReport] = useState(false);
 
   const username = useAuthStore((s) => s.username);
   const handleSignOut = async () => {
@@ -155,6 +157,12 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
           </p>
           <div className="space-y-2">
             <Toggle
+              label="Adventure Ritual"
+              description="Show a pre-entry checklist before each minigame that lists today's habits and the energy cost."
+              checked={settings.showAdventureRitual}
+              onChange={(v) => updateSettings({ showAdventureRitual: v })}
+            />
+            <Toggle
               label="Unlimited Gold"
               description="Purchases and crafting ignore their gold cost."
               checked={settings.unlimitedGold}
@@ -178,6 +186,18 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
               checked={settings.repeatMinigames}
               onChange={(v) => updateSettings({ repeatMinigames: v })}
             />
+          </div>
+
+          {/* Balance report — cumulative per-source XP/gold ledger (v25+). */}
+          <div className="border-t border-gold-deep/20 pt-3">
+            <Button
+              variant="secondary"
+              onClick={() => setShowBalanceReport(true)}
+              className="flex w-full items-center justify-center gap-2 text-sm"
+            >
+              <BarChart3 className="h-4 w-4" />
+              Balance Report
+            </Button>
           </div>
 
           {/* Testing tools — jump straight to level-locked content. */}
@@ -323,6 +343,8 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
           </div>
         </Panel>
       </div>
+
+      {showBalanceReport && <BalanceReportModal onClose={() => setShowBalanceReport(false)} />}
     </div>
   );
 }

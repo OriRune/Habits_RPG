@@ -1,6 +1,8 @@
+import { useState } from 'react';
 import { Swords, Zap } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { ARENA_ENERGY_COST, ARENA_UNLOCK_LEVEL } from '@/engine/arena';
+import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
 import { bossForLevel } from '@/engine/bosses';
 import { MAX_LEVEL } from '@/engine/progression';
 import { Panel } from '@/components/ui/Panel';
@@ -16,11 +18,13 @@ const SPEED_LABEL: Record<string, string> = {
 };
 
 export function ArenaView() {
+  const [showRitual, setShowRitual] = useState(false);
   const energy = useGameStore((s) => s.character.energy);
   const level = useGameStore((s) => s.character.level);
   const deepestArenaTier = useGameStore((s) => s.deepestArenaTier);
   const arenaSpeed = useGameStore((s) => s.settings.arenaSpeed);
   const beginArena = useGameStore((s) => s.beginArena);
+  const showAdventureRitual = useGameStore((s) => s.settings.showAdventureRitual);
 
   const unlocked = level >= ARENA_UNLOCK_LEVEL;
   const canEnter = unlocked && energy >= ARENA_ENERGY_COST;
@@ -79,13 +83,24 @@ export function ArenaView() {
           <div className="mt-1 text-[10px] text-ink-muted">Adjust pace in Settings → General.</div>
         </div>
 
-        <Button onClick={beginArena} disabled={!canEnter} className="w-full py-2.5">
+        <Button
+          onClick={() => canEnter && showAdventureRitual ? setShowRitual(true) : beginArena()}
+          disabled={!canEnter}
+          className="w-full py-2.5"
+        >
           {!unlocked
             ? `Unlocks at Level ${ARENA_UNLOCK_LEVEL}`
             : canEnter
               ? 'Enter the Arena'
               : `Need ${ARENA_ENERGY_COST} energy (complete habits)`}
         </Button>
+        {showRitual && (
+          <AdventureRitualModal
+            energyCost={ARENA_ENERGY_COST}
+            onConfirm={() => { setShowRitual(false); beginArena(); }}
+            onCancel={() => setShowRitual(false)}
+          />
+        )}
         {!unlocked && (
           <p className="text-center text-xs text-ink-muted">
             Train your habits to reach Level {ARENA_UNLOCK_LEVEL} — you'll level up automatically.

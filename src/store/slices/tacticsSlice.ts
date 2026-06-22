@@ -20,7 +20,7 @@ import { MAX_LEVEL } from '@/engine/progression';
 import type { Hex } from '@/engine/hex';
 import { applyTacticsState } from '@/net/coop/reduce';
 import type { GameState } from '../shared';
-import { fighterFor, commitTactics } from '../shared';
+import { fighterFor, commitTactics, energySpentPatch } from '../shared';
 
 export type { TacticsSize, HeroOpts };
 
@@ -65,6 +65,7 @@ export const createTacticsSlice: StateCreator<
           energy: free ? s.character.energy : s.character.energy - TACTICS_ENERGY_COST,
         },
         tactics,
+        ...(free ? {} : energySpentPatch(s, TACTICS_ENERGY_COST)),
       };
     }),
 

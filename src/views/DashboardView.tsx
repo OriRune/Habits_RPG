@@ -20,6 +20,7 @@ import {
   selectDailySummary,
   selectRecoveryState,
   selectAccountHealth,
+  selectEnergySummary,
 } from '@/store/selectors';
 import { isCompletedOn, effectiveStatus } from '@/engine/habits';
 import { toISODate, parseISODate, addDays, BACKDATE_WINDOW_DAYS } from '@/engine/date';
@@ -268,12 +269,15 @@ function DailySummaryStrip({
 }) {
   const weeklyPct = Math.round(summary.weeklyCompletionRate * 100);
   const topStreak = summary.topStreaks[0];
+  const energySummary = useGameStore(selectEnergySummary);
 
   // Suppress the struggling action once the user has acted on it or dismissed it.
   const action =
     hideRecovery && summary.recommendedAction?.kind === 'struggling'
       ? null
       : summary.recommendedAction;
+
+  const hasEnergyData = energySummary.weekEarned > 0 || energySummary.weekSpent > 0;
 
   return (
     <div className="space-y-2">
@@ -298,6 +302,31 @@ function DailySummaryStrip({
           sub={topStreak ? topStreak.habitName : 'no streaks yet'}
         />
       </div>
+
+      {/* Energy flow strip */}
+      {hasEnergyData && (
+        <div className="flex items-center gap-1.5 rounded bg-wood-900/40 px-3 py-1.5 text-xs text-ink-muted">
+          <Zap className="h-3 w-3 shrink-0 text-amber-400" />
+          <span>
+            Today{' '}
+            <span className="text-amber-400">+{energySummary.todayEarned}</span>
+            {' / '}
+            <span className="text-ember">−{energySummary.todaySpent}</span>
+            {energySummary.todayNet !== 0 && (
+              <span className={energySummary.todayNet > 0 ? 'text-green-400' : 'text-red-400'}>
+                {' '}({energySummary.todayNet > 0 ? '+' : ''}{energySummary.todayNet})
+              </span>
+            )}
+          </span>
+          <span className="mx-1 text-ink-muted/50">·</span>
+          <span>
+            This week{' '}
+            <span className="text-amber-400">+{energySummary.weekEarned}</span>
+            {' / '}
+            <span className="text-ember">−{energySummary.weekSpent}</span>
+          </span>
+        </div>
+      )}
 
       {/* Recommended action */}
       {action && (

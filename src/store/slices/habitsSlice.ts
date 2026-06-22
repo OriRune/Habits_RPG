@@ -19,6 +19,7 @@ import {
   checkLevelUp,
   MAX_ENERGY,
 } from '../shared';
+import { freshEarningsLedger } from '@/engine/balance';
 
 /** Max number of habits that can be simultaneously marked as focus. */
 export const MAX_FOCUS_HABITS = 3;
@@ -161,11 +162,19 @@ export const createHabitsSlice: StateCreator<
       const xp = Math.round(result.xp * gearXpMultiplier(gearFor(s), habit));
       const gold = habitGold(habit.difficulty);
 
+      const baseEarnings = s.earnings ?? freshEarningsLedger();
       const next: GameState = {
         ...s,
         character: { ...s.character, statXp: { ...s.character.statXp } },
         inventory: { ...s.inventory },
         completionLog: { ...s.completionLog },
+        earnings: {
+          ...baseEarnings,
+          xp: { ...baseEarnings.xp },
+          gold: { ...baseEarnings.gold },
+          count: { ...baseEarnings.count },
+        },
+        energyLog: { ...s.energyLog },
         habits: s.habits.map((h) => {
           if (h.id !== id) return h;
           const updated: Habit = {
@@ -182,6 +191,11 @@ export const createHabitsSlice: StateCreator<
       next.character.gold += gold;
       next.completionLog[day] = (next.completionLog[day] ?? 0) + 1;
 
+      // Record to earnings ledger.
+      next.earnings.xp['habit'] += xp;
+      next.earnings.gold['habit'] += gold;
+      next.earnings.count['habit'] += 1;
+
       next.challenges = s.challenges.map((c) => {
         if (c.status !== 'active') return c;
         if (isExpired(c, today)) return { ...c, status: 'expired' as const };
@@ -195,6 +209,10 @@ export const createHabitsSlice: StateCreator<
         next.lastActiveISO = today;
         recomputeMood(next, today, result.recovery);
         applyWeeklyRollover(next, today);
+        // Record energy earned today.
+        next.earnings.energyEarned += 1;
+        const todayEntry = next.energyLog[today] ?? { earned: 0, spent: 0 };
+        next.energyLog[today] = { earned: todayEntry.earned + 1, spent: todayEntry.spent };
       }
       recomputeHabitBonus(next.character, next.habits);
       checkLevelUp(next);
@@ -212,10 +230,18 @@ export const createHabitsSlice: StateCreator<
       const entry = habit.log[day];
       if (entry === undefined) return s;
 
+      const baseEarnings = s.earnings ?? freshEarningsLedger();
       const next: GameState = {
         ...s,
         character: { ...s.character, statXp: { ...s.character.statXp } },
         completionLog: { ...s.completionLog },
+        earnings: {
+          ...baseEarnings,
+          xp: { ...baseEarnings.xp },
+          gold: { ...baseEarnings.gold },
+          count: { ...baseEarnings.count },
+        },
+        energyLog: { ...s.energyLog },
         habits: s.habits.map((h) => {
           if (h.id !== id) return h;
           const log = { ...h.log };
@@ -228,17 +254,27 @@ export const createHabitsSlice: StateCreator<
         }),
       };
 
-      next.character.statXp[habit.stat] = Math.max(0, next.character.statXp[habit.stat] - entry.xp);
+      const refundXp = entry.xp ?? 0;
+      const refundGold = entry.gold ?? 0;
+      next.character.statXp[habit.stat] = Math.max(0, next.character.statXp[habit.stat] - refundXp);
       // Refund the gold stored on the entry (exact amount, so difficulty edits don't matter).
-      next.character.gold = Math.max(0, next.character.gold - (entry.gold ?? 0));
+      next.character.gold = Math.max(0, next.character.gold - refundGold);
       const count = (next.completionLog[day] ?? 0) - 1;
       if (count > 0) next.completionLog[day] = count;
       else delete next.completionLog[day];
+
+      // Reverse earnings ledger (clamp at 0 to guard against corrupt saves).
+      next.earnings.xp['habit'] = Math.max(0, next.earnings.xp['habit'] - refundXp);
+      next.earnings.gold['habit'] = Math.max(0, next.earnings.gold['habit'] - refundGold);
+      next.earnings.count['habit'] = Math.max(0, next.earnings.count['habit'] - 1);
 
       // Refund the +1 energy that completeHabit awarded on today's completion.
       // Frozen days never awarded energy, so skip the refund for them.
       if (day === today && !entry.frozen && next.character.energy > 0) {
         next.character.energy -= 1;
+        next.earnings.energyEarned = Math.max(0, next.earnings.energyEarned - 1);
+        const todayEntry = next.energyLog[today] ?? { earned: 0, spent: 0 };
+        next.energyLog[today] = { earned: Math.max(0, todayEntry.earned - 1), spent: todayEntry.spent };
       }
 
       next.challenges = s.challenges.map((c) => {

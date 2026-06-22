@@ -24,6 +24,7 @@ import {
   emptyTrialsClearedOn,
   emptyBestTrialScore,
 } from '@/engine/trials/trials';
+import { freshEarningsLedger } from '@/engine/balance';
 export { TRIALS_UNLOCK_LEVEL } from '@/engine/trials/trials';
 import {
   type GameState,
@@ -61,7 +62,7 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 24,
+      version: 25,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -112,6 +113,8 @@ export const useGameStore = create<GameState>()(
       //      quest IDs already credited locally, preventing double-credit across sessions.
       // v24: Focus habits — new `focus?: boolean` field on Habit (defaults to false/undefined
       //      for existing habits; capped at MAX_FOCUS_HABITS per account).
+      // v25: Balance ledger — new `earnings` (EarningsLedger, zeroed) and `energyLog` ({}) fields
+      //      track per-source XP/gold and per-day energy earned/spent from this version onward.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {
@@ -139,7 +142,7 @@ export const useGameStore = create<GameState>()(
               statXpAtLastLevel: p.character.statXpAtLastLevel ?? { ...(p.character.statXp ?? emptyStatXP()) },
             }
           : p.character;
-        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, arena: null, tactics: null, created: true, trialsClearedOn: p.trialsClearedOn ?? emptyTrialsClearedOn(), bestTrialScore: p.bestTrialScore ?? emptyBestTrialScore(), dungeonHistory: p.dungeonHistory ?? [], claimedPartyQuests: p.claimedPartyQuests ?? [] } as GameState;
+        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, arena: null, tactics: null, created: true, trialsClearedOn: p.trialsClearedOn ?? emptyTrialsClearedOn(), bestTrialScore: p.bestTrialScore ?? emptyBestTrialScore(), dungeonHistory: p.dungeonHistory ?? [], claimedPartyQuests: p.claimedPartyQuests ?? [], earnings: p.earnings ?? freshEarningsLedger(), energyLog: p.energyLog ?? {} } as GameState;
       },
       // Deep-merge the nested `character`/`settings` objects so fields added in later versions
       // (e.g. statLevels) always fall back to their defaults instead of being dropped by the

@@ -1,5 +1,7 @@
 import type { CSSProperties } from 'react';
+import { useState } from 'react';
 import { Heart, Sparkles, Coins, Zap, Wind, ChevronsDown, DoorOpen } from 'lucide-react';
+import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
 import { useGameStore } from '@/store/useGameStore';
 import { ROOM_META, DUNGEON_ENERGY_COST } from '@/engine/dungeon';
 import { getBiome } from '@/engine/biomes';
@@ -101,10 +103,12 @@ function RewardLine({ reward, empty = 'No spoils.' }: { reward: Reward; empty?: 
 }
 
 export function DungeonView() {
+  const [showRitual, setShowRitual] = useState(false);
   const dungeon = useGameStore((s) => s.dungeon);
   const energy = useGameStore((s) => s.character.energy);
   const level = useGameStore((s) => s.character.level);
   const deepestFloor = useGameStore((s) => s.deepestFloor);
+  const showAdventureRitual = useGameStore((s) => s.settings.showAdventureRitual);
   const dungeonHistory = useGameStore((s) => s.dungeonHistory ?? []);
   const startDungeon = useGameStore((s) => s.startDungeon);
   const dungeonChoosePath = useGameStore((s) => s.dungeonChoosePath);
@@ -171,13 +175,24 @@ export function DungeonView() {
             </div>
           )}
 
-          <Button onClick={startDungeon} disabled={!canEnter} className="w-full py-2.5">
+          <Button
+            onClick={() => canEnter && showAdventureRitual ? setShowRitual(true) : startDungeon()}
+            disabled={!canEnter}
+            className="w-full py-2.5"
+          >
             {!unlocked
               ? `Unlocks at Level ${DUNGEON_UNLOCK_LEVEL}`
               : canEnter
                 ? 'Enter the Dungeon'
                 : `Need ${DUNGEON_ENERGY_COST} energy (complete habits)`}
           </Button>
+          {showRitual && (
+            <AdventureRitualModal
+              energyCost={DUNGEON_ENERGY_COST}
+              onConfirm={() => { setShowRitual(false); startDungeon(); }}
+              onCancel={() => setShowRitual(false)}
+            />
+          )}
           {!unlocked && (
             <p className="text-center text-xs text-ink-muted">
               Train your habits to reach Level {DUNGEON_UNLOCK_LEVEL} — you'll level up automatically.
