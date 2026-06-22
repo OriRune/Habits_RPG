@@ -24,7 +24,7 @@ import {
 } from '@/net/coop/reduce';
 import type { GameState } from '../shared';
 import { fighterFor, gearBonuses, commitMining, commitMineDeath, energySpentPatch } from '../shared';
-import { getMineRng, getMineBaseSeed, setMineRun } from '../runRng';
+import { getMineRng, getMineBaseSeed, setMineRun, acceptMineWorldT } from '../runRng';
 
 export interface MiningSlice {
   mining: MineState | null;
@@ -196,6 +196,7 @@ export const createMiningSlice: StateCreator<
   coopApplyWorld: (slice) =>
     set((s) => {
       if (!s.mining) return s;
+      if (!acceptMineWorldT(slice.t)) return s;
       return { mining: applyMineWorldSlice(s.mining, slice, { baseSeed: getMineBaseSeed(), rng: getMineRng() }) };
     }),
 

@@ -359,6 +359,8 @@ export interface GameState {
    * floor (regenerate on descent) and replace monster positions/HP.
    */
   coopApplyWorld: (slice: {
+    /** Host clock (ms) when produced — used by the staleness guard; ignored by the reducer. */
+    t?: number;
     floor: number;
     monsters: ReadonlyArray<{ id: string; r: number; c: number; hp: number; readyAtMs: number }>;
   }) => void;
@@ -401,6 +403,8 @@ export interface GameState {
   forestShrine: (nowMs: number) => void;
   /** Co-op guest: apply the host's authoritative forest world — follow stage + beasts. */
   coopApplyForestWorld: (slice: {
+    /** Host clock (ms) when produced — used by the staleness guard; ignored by the reducer. */
+    t?: number;
     floor: number;
     monsters: ReadonlyArray<{
       id: string;

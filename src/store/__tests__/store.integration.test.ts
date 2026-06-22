@@ -951,6 +951,28 @@ describe('deep mine', () => {
   it('persists at version 25', () => {
     expect(useGameStore.persist.getOptions().version).toBe(25);
   });
+
+  it('coopApplyWorld drops a stale/duplicate world slice (t guard)', () => {
+    useGameStore.setState({ mining: makeMine() });
+    // First slice: accepted (high-water mark starts at -Infinity).
+    get().coopApplyWorld({ floor: 1, monsters: [], t: 100 });
+    const miningAfterFirst = get().mining;
+    expect(miningAfterFirst).not.toBeNull();
+
+    // Second slice with a lower t: dropped — mining reference must not change.
+    get().coopApplyWorld({ floor: 1, monsters: [], t: 50 });
+    expect(get().mining).toBe(miningAfterFirst);
+
+    // Third slice with a higher t: accepted — reference advances.
+    get().coopApplyWorld({ floor: 1, monsters: [], t: 200 });
+    expect(get().mining).not.toBe(miningAfterFirst);
+  });
+
+  it('coopApplyWorld accepts a slice with no t (back-compat)', () => {
+    useGameStore.setState({ mining: makeMine() });
+    get().coopApplyWorld({ floor: 1, monsters: [] }); // no t field
+    expect(get().mining).not.toBeNull();
+  });
 });
 
 describe('wild forest', () => {
@@ -1055,6 +1077,28 @@ describe('wild forest', () => {
     expect(get().character.gold).toBe(goldBefore + 5); // floor(10 * 0.5) kept, the rest forfeit
     expect(get().materials.herbs ?? 0).toBe(2); // floor(4 * 0.5)
     expect(get().deepestForestStage).toBe(2);
+  });
+
+  it('coopApplyForestWorld drops a stale/duplicate world slice (t guard)', () => {
+    useGameStore.setState({ forest: makeForest() });
+    // First slice: accepted (WorldSliceInput uses `floor` for both mine and forest stages).
+    get().coopApplyForestWorld({ floor: 1, monsters: [], t: 100 });
+    const forestAfterFirst = get().forest;
+    expect(forestAfterFirst).not.toBeNull();
+
+    // Duplicate t: dropped.
+    get().coopApplyForestWorld({ floor: 1, monsters: [], t: 100 });
+    expect(get().forest).toBe(forestAfterFirst);
+
+    // Higher t: accepted.
+    get().coopApplyForestWorld({ floor: 1, monsters: [], t: 101 });
+    expect(get().forest).not.toBe(forestAfterFirst);
+  });
+
+  it('coopApplyForestWorld accepts a slice with no t (back-compat)', () => {
+    useGameStore.setState({ forest: makeForest() });
+    get().coopApplyForestWorld({ floor: 1, monsters: [] }); // no t field
+    expect(get().forest).not.toBeNull();
   });
 });
 

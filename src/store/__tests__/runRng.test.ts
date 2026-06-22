@@ -5,9 +5,11 @@ import {
   getMineRng,
   getMineBaseSeed,
   setMineRun,
+  acceptMineWorldT,
   getForestRng,
   getForestBaseSeed,
   setForestRun,
+  acceptForestWorldT,
   resetRunRng,
 } from '../runRng';
 
@@ -75,5 +77,90 @@ describe('resetRunRng', () => {
     expect(getForestRng()).toBe(Math.random);
     expect(getMineBaseSeed()).toBeUndefined();
     expect(getForestBaseSeed()).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// acceptMineWorldT / acceptForestWorldT — world-slice staleness guards
+// ---------------------------------------------------------------------------
+
+describe('acceptMineWorldT', () => {
+  it('accepts the first t (high-water mark starts at -Infinity)', () => {
+    expect(acceptMineWorldT(100)).toBe(true);
+  });
+
+  it('accepts a strictly increasing t', () => {
+    acceptMineWorldT(100);
+    expect(acceptMineWorldT(101)).toBe(true);
+  });
+
+  it('drops an equal t (not strictly greater)', () => {
+    acceptMineWorldT(100);
+    expect(acceptMineWorldT(100)).toBe(false);
+  });
+
+  it('drops a lower t (out-of-order/stale)', () => {
+    acceptMineWorldT(200);
+    expect(acceptMineWorldT(50)).toBe(false);
+  });
+
+  it('treats undefined t as accept (back-compat: slice carries no timestamp)', () => {
+    acceptMineWorldT(500);
+    expect(acceptMineWorldT(undefined)).toBe(true);
+    // undefined does not advance the high-water mark; a lower real t is still dropped
+    expect(acceptMineWorldT(400)).toBe(false);
+  });
+
+  it('setMineRun resets the high-water mark (reconnect/new host)', () => {
+    acceptMineWorldT(9000);
+    expect(acceptMineWorldT(1)).toBe(false); // would be dropped before reset
+
+    setMineRun(Math.random);
+    // After reset a lower t is accepted again
+    expect(acceptMineWorldT(1)).toBe(true);
+  });
+
+  it('resetRunRng resets the high-water mark', () => {
+    acceptMineWorldT(9000);
+    resetRunRng();
+    expect(acceptMineWorldT(1)).toBe(true);
+  });
+});
+
+describe('acceptForestWorldT', () => {
+  it('accepts the first t', () => {
+    expect(acceptForestWorldT(100)).toBe(true);
+  });
+
+  it('accepts a strictly increasing t', () => {
+    acceptForestWorldT(100);
+    expect(acceptForestWorldT(200)).toBe(true);
+  });
+
+  it('drops an equal t', () => {
+    acceptForestWorldT(100);
+    expect(acceptForestWorldT(100)).toBe(false);
+  });
+
+  it('drops a lower t', () => {
+    acceptForestWorldT(300);
+    expect(acceptForestWorldT(150)).toBe(false);
+  });
+
+  it('treats undefined t as accept', () => {
+    acceptForestWorldT(500);
+    expect(acceptForestWorldT(undefined)).toBe(true);
+  });
+
+  it('setForestRun resets the high-water mark', () => {
+    acceptForestWorldT(9000);
+    setForestRun(Math.random);
+    expect(acceptForestWorldT(1)).toBe(true);
+  });
+
+  it('resetRunRng resets the high-water mark', () => {
+    acceptForestWorldT(9000);
+    resetRunRng();
+    expect(acceptForestWorldT(1)).toBe(true);
   });
 });
