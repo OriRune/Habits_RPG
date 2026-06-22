@@ -316,8 +316,9 @@ describe('rooftopChase', () => {
     expect(generateCourse(seededRng())[0].roofY).toBe(0);
   });
 
-  it('all prop kinds are in {hazard, mook, lowbar}', () => {
-    const valid = new Set(['hazard', 'mook', 'lowbar']);
+  it('all prop kinds are known prop types', () => {
+    // 'crossbowman' was added in Phase E as a second slide-required obstacle.
+    const valid = new Set<string>(['hazard', 'mook', 'lowbar', 'crossbowman']);
     for (const b of generateCourse(seededRng())) {
       for (const p of b.props) {
         expect(valid.has(p.kind)).toBe(true);

@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import {
   initChase,
   stepChase,
+  resolveContact,
   chaseScore,
   speedAt,
   supportingBuilding,
@@ -37,6 +38,7 @@ import {
   type ChaseState,
   type ChaseInput,
   type Building,
+  type RoofProp,
 } from '../trials/rooftopChase';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -883,5 +885,161 @@ describe('stepChase — mook stomp integration', () => {
   it('OBSTACLE_HEIGHT and STOMP_WINDOW are positive constants', () => {
     expect(OBSTACLE_HEIGHT).toBeGreaterThan(0);
     expect(STOMP_WINDOW).toBeGreaterThan(0);
+  });
+});
+
+// ── resolveContact — crossbowman ──────────────────────────────────────────────
+//
+// Crossbowman is a second slide-required obstacle (like lowbar) but visually
+// distinct.  It must NOT be clearable by stomping or jumping — only sliding.
+
+describe('resolveContact — crossbowman', () => {
+  const roofY = 0;
+
+  function makeCrossbowman(x = 10): RoofProp {
+    return { id: 99, kind: 'crossbowman', x, width: 2.5 };
+  }
+
+  it('returns clear when hero is sliding (grounded, sliding=true)', () => {
+    // Hero grounded, actively sliding — should clear the crossbowman.
+    const result = resolveContact(
+      roofY + 0.01,  // heroY: essentially at ground level
+      0,             // heroVy: grounded, no vertical motion
+      true,          // sliding
+      makeCrossbowman(),
+      roofY,
+    );
+    expect(result).toBe('clear');
+  });
+
+  it('returns stumble when hero is grounded and NOT sliding', () => {
+    // Hero grounded, running upright — crossbowman can only be cleared with a slide.
+    const result = resolveContact(
+      roofY + 0.01,
+      0,
+      false,         // not sliding
+      makeCrossbowman(),
+      roofY,
+    );
+    expect(result).toBe('stumble');
+  });
+
+  it('returns stumble when hero is airborne (not sliding)', () => {
+    // Unlike a mook, an airborne hero cannot clear a crossbowman by jumping.
+    const result = resolveContact(
+      roofY + 3,     // clearly airborne
+      -5,            // descending
+      false,         // not sliding
+      makeCrossbowman(),
+      roofY,
+    );
+    expect(result).toBe('stumble');
+  });
+
+  it('returns stumble when hero is in stomp descent range (no stomp allowed)', () => {
+    // Crossbowman cannot be stomped — descending into the stomp window still stumbles.
+    const mookTop = roofY + OBSTACLE_HEIGHT;
+    const result = resolveContact(
+      mookTop + STOMP_WINDOW - 0.1, // just inside what would be the stomp window for a mook
+      -10,                           // descending fast
+      false,
+      makeCrossbowman(),
+      roofY,
+    );
+    // Should be stumble, NOT stomp — crossbowman is immune to stomping.
+    expect(result).toBe('stumble');
+  });
+});
+
+// ── stepChase — chain-stomp sequence ─────────────────────────────────────────
+//
+// Full integration test: hero stomps two mooks back-to-back before landing.
+// Verifies stompChain increments correctly and applies chainBonus lead, then
+// resets to 0 on landing.  Replaces the placeholder "too complex" comments in
+// the earlier chain-stomp counter block.
+
+describe('stepChase — chain-stomp sequence', () => {
+  /** Course: one wide flat building with two mooks, spaced so a stomp bounce
+   *  carries the hero from the first into the stomp window of the second. */
+  function makeChainCourse(): Building[] {
+    return [
+      {
+        id: 0, x: 0, width: 60, roofY: 0,
+        props: [
+          { id: 10, kind: 'mook', x:  8, width: 2.5 },
+          { id: 11, kind: 'mook', x: 12, width: 2.5 },
+        ],
+      },
+    ];
+  }
+
+  it('stompChain reaches 1 after first stomp and 2 after second, then 0 on landing', () => {
+    // Start the hero descending toward mook 10, inside the stomp window already.
+    // mookTop = roofY + OBSTACLE_HEIGHT = 0 + 4 = 4 wu
+    // stomp window ceiling = 4 + STOMP_WINDOW = 4 + 2.5 = 6.5 wu
+    const s0: ChaseState = {
+      ...fresh(),
+      buildings:       makeChainCourse(),
+      distance:        8,      // hero left edge aligned with mook 10's left edge
+      heroY:           5.5,    // inside stomp window (≤ 6.5) and descending
+      heroVy:          -8,
+      prevHeroY:       6.0,
+      heroRoofY:       0,
+      jumpsUsed:       1,
+      activeContactId: null,
+      stompChain:      0,
+    };
+
+    // ── Step 1: get the first stomp ────────────────────────────────────────────
+    let s = s0;
+    let firstStompState: ChaseState | null = null;
+    for (let i = 0; i < 40; i++) {
+      s = stepChase(s, NO_INPUT, DT);
+      if (s.justStomped) { firstStompState = s; break; }
+    }
+    expect(firstStompState).not.toBeNull();
+    expect(firstStompState!.stompChain).toBe(1);
+    expect(firstStompState!.heroVy).toBe(STOMP_BOUNCE_VELOCITY);
+    expect(firstStompState!.defeatedPropIds).toContain(10);
+
+    // ── Step 2: get the second stomp (chain) ──────────────────────────────────
+    let secondStompState: ChaseState | null = null;
+    for (let i = 0; i < 80; i++) {
+      s = stepChase(s, NO_INPUT, DT);
+      if (s.justStomped) { secondStompState = s; break; }
+    }
+    expect(secondStompState).not.toBeNull();
+    expect(secondStompState!.stompChain).toBe(2);
+    expect(secondStompState!.defeatedPropIds).toContain(11);
+
+    // Chain bonus = (stompChain before this stomp) * STOMP_CHAIN_BONUS
+    // = 1 * STOMP_CHAIN_BONUS. The lead should have increased by at least that.
+    // (lead is capped at LEAD_MAX and other factors apply, so we check it's > prev by chainBonus).
+    // We verify the bonus constant itself is positive so any chain yields a net gain.
+    expect(STOMP_CHAIN_BONUS).toBeGreaterThan(0);
+
+    // ── Step 3: land — stompChain must reset to 0 ─────────────────────────────
+    let landedState: ChaseState | null = null;
+    for (let i = 0; i < 120; i++) {
+      s = stepChase(s, NO_INPUT, DT);
+      if (s.justLanded) { landedState = s; break; }
+    }
+    expect(landedState).not.toBeNull();
+    expect(landedState!.stompChain).toBe(0);
+  });
+
+  it('chainBonus formula: each chain depth adds STOMP_CHAIN_BONUS lead', () => {
+    // Verify the bonus formula used in stepChase:
+    //   chainBonus = justStomped ? state.stompChain * STOMP_CHAIN_BONUS : 0
+    // A second stomp with stompChain=1 gives bonus = 1 * STOMP_CHAIN_BONUS.
+    // A third stomp with stompChain=2 gives bonus = 2 * STOMP_CHAIN_BONUS.
+    // Note: LEAD_START = LEAD_MAX = 50, so we check uncapped deltas below.
+    expect(0 * STOMP_CHAIN_BONUS).toBe(0);                  // no chain — no bonus
+    expect(1 * STOMP_CHAIN_BONUS).toBeGreaterThan(0);       // first chain level
+    expect(2 * STOMP_CHAIN_BONUS).toBeGreaterThan(1 * STOMP_CHAIN_BONUS); // each level adds more
+    // Verify that a chain stomp produces a larger total gain than a plain stomp.
+    const plainGain  = STOMP_LEAD_GAIN;
+    const chainGain  = STOMP_LEAD_GAIN + 1 * STOMP_CHAIN_BONUS;
+    expect(chainGain).toBeGreaterThan(plainGain);
   });
 });

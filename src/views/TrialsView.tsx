@@ -2,17 +2,26 @@
 // One attempt per trial per calendar day; costs 1 energy per trial (§6.1).
 // Each trial also requires a habit of its stat completed within the last 7 days (§4.4).
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Target } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { TRIALS, TRIALS_UNLOCK_LEVEL, TRIAL_ENERGY_COST, scoreToStars, type TrialId } from '@/engine/trials/trials';
 import { statCompletedWithin } from '@/engine/habits';
 import { getStat } from '@/engine/stats';
-import { toISODate } from '@/engine/date';
+import { toISODate, now } from '@/engine/date';
 import { SectionTitle } from '@/components/ui/Divider';
 import { Panel } from '@/components/ui/Panel';
 import { TrialModal } from '@/components/trials/TrialModal';
 import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
+
+/** Returns hours and minutes remaining until local midnight (daily reset). */
+function timeUntilMidnight(from: Date): { h: number; m: number } {
+  const midnight = new Date(from);
+  midnight.setHours(24, 0, 0, 0);
+  const msLeft = midnight.getTime() - from.getTime();
+  const totalMinutes = Math.ceil(msLeft / 60_000);
+  return { h: Math.floor(totalMinutes / 60), m: totalMinutes % 60 };
+}
 
 function formatShortDate(iso: string): string {
   const parts = iso.split('-');
@@ -41,8 +50,16 @@ export function TrialsView() {
   const repeatMinigames = useGameStore((s) => s.settings.repeatMinigames);
   const habits = useGameStore((s) => s.habits);
   const showAdventureRitual = useGameStore((s) => s.settings.showAdventureRitual);
+  const statLevels = useGameStore((s) => s.character.statLevels);
   const [openTrial, setOpenTrial] = useState<TrialId | null>(null);
   const [pendingTrialId, setPendingTrialId] = useState<TrialId | null>(null);
+
+  // Tick once per minute so the reset countdown stays current.
+  const [nowTick, setNowTick] = useState(() => now());
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   const today = toISODate();
   const unlocked = level >= TRIALS_UNLOCK_LEVEL;
@@ -99,8 +116,8 @@ export function TrialsView() {
               {/* Status badge — priority: done → locked → no-stat → no-energy → ready */}
               <div className="absolute right-2 top-2">
                 {clearedToday ? (
-                  <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-display font-bold text-emerald-700">
-                    ✓ Done
+                  <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-display font-bold text-emerald-700 whitespace-nowrap">
+                    {(() => { const { h, m } = timeUntilMidnight(nowTick); return `↺ ${h}h ${m}m`; })()}
                   </span>
                 ) : !unlocked ? (
                   <span className="text-[10px] text-ink-muted">🔒</span>
@@ -142,6 +159,10 @@ export function TrialsView() {
               ) : (
                 <div className="text-[10px] text-ink-muted/60 font-display">No record yet</div>
               )}
+              {/* Governing stat level — bridges minigame and RPG progression */}
+              <div className="text-[10px] text-ink-muted font-display mt-0.5">
+                Lv {statLevels[trial.stat] ?? 0} {trial.stat}
+              </div>
               {/* Last-cleared date (shown when cleared on a previous day) */}
               {trialsClearedOn[trial.id] && !clearedToday && (
                 <div className="text-[10px] text-ink-muted/50 font-display mt-0.5">

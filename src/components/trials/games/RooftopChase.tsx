@@ -28,6 +28,7 @@ import { useChaseLoop } from '@/hooks/useChaseLoop';
 import { useChaseAudio } from '@/hooks/useChaseAudio';
 import { useGameStore } from '@/store/useGameStore';
 import { FitToWidth } from '@/components/ui/FitToWidth';
+import { CASTLE_TOWERS, MID_BUILDINGS, CHIMNEYS } from '@/content/rooftopArt';
 
 type RunOutcome = 'escaped' | 'caught' | 'fell';
 
@@ -72,42 +73,8 @@ const MID_TILE_W   = 320;
 const DECOR_TILE_W = 240;
 const CLOUD_TILE_W = 500;
 
-// ── Procedural art data ───────────────────────────────────────────────────────
-
-const CASTLE_TOWERS: ReadonlyArray<[number, number, number, boolean]> = [
-  [0,   18, 62, true],
-  [36,  12, 45, false],
-  [62,  22, 75, true],
-  [110, 16, 52, true],
-  [150, 28, 90, true],
-  [200, 14, 48, false],
-  [228, 20, 68, true],
-  [270, 12, 40, false],
-  [300, 18, 58, true],
-  [340, 24, 72, true],
-  [390, 14, 46, false],
-  [420, 20, 65, true],
-  [456, 16, 52, false],
-];
-
-const MID_BUILDINGS: ReadonlyArray<[number, number, number]> = [
-  [0,   38, 44],
-  [40,  26, 34],
-  [68,  48, 54],
-  [120, 32, 40],
-  [156, 42, 50],
-  [202, 28, 36],
-  [234, 44, 48],
-  [282, 36, 42],
-];
-
-const CHIMNEYS: ReadonlyArray<[number, number, number, number]> = [
-  [18,  8, 12, 28],
-  [60,  6, 10, 22],
-  [100, 8, 12, 32],
-  [150, 6, 10, 24],
-  [190, 8, 12, 28],
-];
+// ── Renderer art data ─────────────────────────────────────────────────────────
+// CASTLE_TOWERS, MID_BUILDINGS, CHIMNEYS are imported from @/content/rooftopArt.
 
 // Cloud blobs — [x, y, w, h] in px within one CLOUD_TILE_W tile.
 const CLOUDS: ReadonlyArray<[number, number, number, number]> = [
@@ -321,6 +288,31 @@ function LowbarSprite({ widthPx }: { widthPx: number }) {
   );
 }
 
+function CrossbowmanSprite({ widthPx }: { widthPx: number }) {
+  // A kneeling guard with a crossbow, kept deliberately low-profile so the
+  // slide-required nature is immediately readable (contrast with the taller mook).
+  const w = Math.max(widthPx, 24);
+  return (
+    <div style={{ width: w, height: 30, position: 'relative' }}>
+      {/* Body — crouched torso */}
+      <div style={{ position: 'absolute', bottom: 10, left: Math.floor(w * 0.15), width: Math.floor(w * 0.45), height: 14, background: 'linear-gradient(180deg, #7a5030, #5a3818)', border: '1px solid #3a2010', borderRadius: '3px 3px 0 0' }} />
+      {/* Head — helmet */}
+      <div style={{ position: 'absolute', bottom: 22, left: Math.floor(w * 0.18), width: Math.floor(w * 0.32), height: 10, background: 'linear-gradient(180deg, #909aaa, #707888)', border: '1px solid #405060', borderRadius: '3px 3px 0 0' }} />
+      {/* Visor slit */}
+      <div style={{ position: 'absolute', bottom: 25, left: Math.floor(w * 0.22), width: Math.floor(w * 0.22), height: 2, backgroundColor: '#202830', borderRadius: '1px' }} />
+      {/* Legs — kneeling */}
+      <div style={{ position: 'absolute', bottom: 0, left: Math.floor(w * 0.12), width: Math.floor(w * 0.22), height: 10, backgroundColor: '#5a6878', borderRadius: '0 0 3px 3px' }} />
+      <div style={{ position: 'absolute', bottom: 0, left: Math.floor(w * 0.38), width: Math.floor(w * 0.22), height: 7, backgroundColor: '#4a5868', borderRadius: '0 0 3px 3px' }} />
+      {/* Crossbow stock */}
+      <div style={{ position: 'absolute', bottom: 12, left: Math.floor(w * 0.55), width: Math.floor(w * 0.35), height: 5, background: 'linear-gradient(90deg, #8a6040, #6a4020)', borderRadius: '0 2px 2px 0' }} />
+      {/* Crossbow prod (horizontal arms) */}
+      <div style={{ position: 'absolute', bottom: 16, left: Math.floor(w * 0.72), width: 3, height: 13, backgroundColor: '#c0a060', borderRadius: '1px' }} />
+      {/* Bolt tip */}
+      <div style={{ position: 'absolute', bottom: 14, right: 1, width: 5, height: 3, backgroundColor: '#d0c080', clipPath: 'polygon(0 0, 100% 50%, 0 100%)' }} />
+    </div>
+  );
+}
+
 // ── Building renderer ──────────────────────────────────────────────────────────
 
 function BuildingView({
@@ -414,7 +406,7 @@ function BuildingView({
             className="absolute"
             style={{
               left: propLeftPx,
-              top: roofScreenY - (prop.kind === 'lowbar' ? 48 : prop.kind === 'mook' ? 42 : 40) - 4,
+              top: roofScreenY - (prop.kind === 'lowbar' ? 48 : prop.kind === 'mook' ? 42 : prop.kind === 'crossbowman' ? 30 : 40) - 4,
               zIndex: 3,
             }}
           >
@@ -429,6 +421,7 @@ function BuildingView({
               </div>
             )}
             {prop.kind === 'lowbar' && <LowbarSprite widthPx={propWidthPx} />}
+            {prop.kind === 'crossbowman' && <CrossbowmanSprite widthPx={propWidthPx} />}
           </div>
         );
       })}
