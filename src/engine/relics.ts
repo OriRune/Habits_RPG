@@ -18,6 +18,21 @@ export interface RelicEffect {
   maxHp?: number;
 }
 
+/**
+ * Event-driven relic trigger — evaluated by the dungeon store at the relevant event seam.
+ * At most one trigger per relic (keep it readable).
+ *
+ *  `onCombatWin`  — called after any won fight; heals `healPct × maxHp`.
+ *  `lowHp`        — evaluated inside `fighterFor` each time a fighter is built;
+ *                   the bonus is active while `hp / maxHp < threshold`.
+ *  `onShrine`     — called when a shrine interaction succeeds (pray wins or offer);
+ *                   the statBonuses accumulate into `DungeonRun.runBuff` (stacks).
+ */
+export type RelicTrigger =
+  | { type: 'onCombatWin'; healPct: number }
+  | { type: 'lowHp'; threshold: number; statBonuses?: Partial<Record<StatId, number>>; defense?: number }
+  | { type: 'onShrine'; statBonuses: Partial<Record<StatId, number>> };
+
 export interface RelicDef {
   key: string;
   name: string;
@@ -26,6 +41,8 @@ export interface RelicDef {
   effect: RelicEffect;
   /** Curses are granted by shrine failures, never offered as a boon. */
   curse?: boolean;
+  /** Optional event trigger — fires once at the relevant game event. */
+  trigger?: RelicTrigger;
 }
 
 // Re-export the editable catalog so importers use `@/engine/relics`.

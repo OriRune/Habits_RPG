@@ -28,6 +28,7 @@ import { FloorMap } from '@/components/dungeon/FloorMap';
 import { ShrineRoom } from '@/components/dungeon/ShrineRoom';
 import { MerchantRoom } from '@/components/dungeon/MerchantRoom';
 import { RestRoom } from '@/components/dungeon/RestRoom';
+import { useDungeonAudio } from '@/hooks/useDungeonAudio';
 
 /** What the next depth milestone unlocks (gates mirror engine/dungeonMap weights). */
 function milestoneHint(deepest: number): string {
@@ -105,6 +106,8 @@ function RewardLine({ reward, empty = 'No spoils.' }: { reward: Reward; empty?: 
 export function DungeonView() {
   const [showRitual, setShowRitual] = useState(false);
   const dungeon = useGameStore((s) => s.dungeon);
+  const soundEnabled = useGameStore((s) => s.settings.soundEnabled);
+  useDungeonAudio(dungeon ?? null, soundEnabled);
   const energy = useGameStore((s) => s.character.energy);
   const level = useGameStore((s) => s.character.level);
   const deepestFloor = useGameStore((s) => s.deepestFloor);
@@ -219,6 +222,37 @@ export function DungeonView() {
                 ? `You retreat from depth ${dungeon.depth} with all your gathered spoils intact.`
                 : `You fall at depth ${dungeon.depth}. Your banked spoils are safe, but 75% of that floor's gold is lost and all its items are left behind.`}
           </p>
+          {/* Per-run stat highlights */}
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 rounded-md border border-gold-deep/30 bg-wood-900/40 px-3 py-2.5 text-xs">
+            <span className="flex items-center gap-1.5 text-ink-muted">
+              <DoorOpen className="h-3.5 w-3.5 shrink-0" />
+              Rooms
+              <span className="ml-auto font-display font-bold tabular-nums text-ink">
+                {dungeon.roomsCleared ?? 0}
+              </span>
+            </span>
+            <span className="flex items-center gap-1.5 text-ink-muted">
+              <Sparkles className="h-3.5 w-3.5 shrink-0" />
+              Relics
+              <span className="ml-auto font-display font-bold tabular-nums text-ink">
+                {dungeon.relics.length}
+              </span>
+            </span>
+            <span className="flex items-center gap-1.5 text-ink-muted">
+              <Zap className="h-3.5 w-3.5 shrink-0" />
+              Damage dealt
+              <span className="ml-auto font-display font-bold tabular-nums text-ink">
+                {dungeon.damageDealt ?? 0}
+              </span>
+            </span>
+            <span className="flex items-center gap-1.5 text-ink-muted">
+              <Heart className="h-3.5 w-3.5 shrink-0" />
+              Damage taken
+              <span className="ml-auto font-display font-bold tabular-nums text-ink">
+                {dungeon.damageTaken ?? 0}
+              </span>
+            </span>
+          </div>
           <div>
             <div className="mb-1 font-display text-xs uppercase tracking-wider text-ink-muted">Spoils</div>
             <RewardLine reward={dungeon.bankedReward} />
@@ -316,7 +350,7 @@ export function DungeonView() {
       {/* key on nodeId so every room entry triggers the fade-in animation */}
       <div key={dungeon.nodeId ?? 'path'} className="animate-fade-in">
       {choosingPath ? (
-        <FloorMap map={dungeon.map} choices={dungeon.choices} path={dungeon.path} onChoose={dungeonChoosePath} />
+        <FloorMap map={dungeon.map} choices={dungeon.choices} path={dungeon.path} depth={dungeon.depth} onChoose={dungeonChoosePath} />
       ) : inBattle ? (
         <Panel tone="wood" className="p-4">
           {room!.type === 'boss' && dungeon.battle && dungeon.battle.phases.length > 1 && (

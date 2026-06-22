@@ -2,7 +2,8 @@ import type { StateCreator } from 'zustand';
 import { type CombatStats, emptyCombatStats, combatXpForWin, dungeonCombatStatXp } from '@/engine/combatStats';
 import { type CombatAction, playerAction } from '@/engine/combat';
 import { getWeapon } from '@/engine/weapons';
-import { rollBoons, rollCurse } from '@/engine/relics';
+import { getRelic, rollBoons, rollCurse } from '@/engine/relics';
+import type { StatId } from '@/engine/stats';
 import { mergeReward, DUNGEON_ENERGY_COST } from '@/engine/dungeon';
 import { generateFloorMap } from '@/engine/dungeonMap';
 import { type DungeonRun } from '@/engine/dungeonTypes';
@@ -109,7 +110,13 @@ export const createDungeonSlice: StateCreator<
     set((s) => {
       const run = s.dungeon;
       if (!run || run.status !== 'active' || run.nodeId !== null || !run.choices.includes(nodeId)) return s;
-      const next: DungeonRun = { ...run, nodeId, choices: [], path: [...run.path, nodeId] };
+      const next: DungeonRun = {
+        ...run,
+        nodeId,
+        choices: [],
+        path: [...run.path, nodeId],
+        roomsCleared: (run.roomsCleared ?? 0) + 1,
+      };
       enterRoom(next, s);
       return { dungeon: next };
     }),
@@ -218,6 +225,13 @@ export const createDungeonSlice: StateCreator<
         hp = b.playerHp;
         mp = b.playerMp;
         sta = b.playerSta;
+        // Fire onCombatWin triggers — each qualifying relic heals a share of max HP.
+        for (const key of run.relics) {
+          const def = getRelic(key);
+          if (def?.trigger?.type === 'onCombatWin') {
+            hp = Math.min(run.maxHp, hp + Math.round(run.maxHp * def.trigger.healPct));
+          }
+        }
         const xp = combatXpForWin(b.bossMaxHp);
         combatStats =
           b.attackSchool === 'magic'
@@ -234,6 +248,12 @@ export const createDungeonSlice: StateCreator<
           eliteWin = true;
           workingRun = { ...run, floorReward: mergeReward(run.floorReward, { gold: 40 + run.depth * 12 }) };
         }
+        // Accumulate per-run battle statistics (using pre-heal hp so damageTaken reflects raw loss).
+        workingRun = {
+          ...workingRun,
+          damageTaken: (workingRun.damageTaken ?? 0) + Math.max(0, run.hp - b.playerHp),
+          damageDealt: (workingRun.damageDealt ?? 0) + b.bossMaxHp,
+        };
       } else if (room.type === 'encounter') {
         if (!run.encounter || !run.encounter.done) return s; // encounter not finished
       }
@@ -295,11 +315,16 @@ export const createDungeonSlice: StateCreator<
     set((s) => {
       const run = s.dungeon;
       if (!run || run.status !== 'ended') return s;
+      // Compute final gold once — used in both the summary record and the actual reward.
+      const finalGold = Math.round((run.bankedReward.gold ?? 0) * s.character.habitBonus);
       const summary: DungeonRunSummary = {
         depth: run.depth,
         cleared: run.cleared,
         defeated: !run.cleared && run.hp <= 0,
         date: toISODate(),
+        roomsCleared: run.roomsCleared ?? 0,
+        relicCount: run.relics.length,
+        goldBanked: finalGold,
       };
       const baseEarnings = s.earnings ?? freshEarningsLedger();
       const next: GameState = {
@@ -323,7 +348,6 @@ export const createDungeonSlice: StateCreator<
       if (runXp > 0) next.earnings.xp['dungeon'] += runXp;
       next.earnings.count['dungeon'] += 1;
       // Apply habit-streak gold multiplier to banked gold (§6.3) — same as commitRun does for minigames.
-      const finalGold = Math.round((run.bankedReward.gold ?? 0) * s.character.habitBonus);
       if (finalGold > 0) next.earnings.gold['dungeon'] += finalGold;
       // Apply the reward (no source — earnings already recorded above to avoid double-counting count).
       applyReward(next, {
@@ -351,11 +375,14 @@ export const createDungeonSlice: StateCreator<
       const run = s.dungeon;
       if (!run || run.status !== 'active' || currentRoom(run)?.type !== 'shrine') return s;
       let next: DungeonRun = { ...run };
+      let shrineSucceeded = false;
+
       if (choice === 'pray') {
         // A check of your best spiritual stat: success blesses you, failure curses you.
         const power = Math.max(s.character.statLevels.WI, s.character.statLevels.CH);
         if (Math.random() < checkChance(power, 6)) {
           offerBoon(next, boonMaxTier(next.depth, s.deepestFloor));
+          shrineSucceeded = true;
         } else {
           const curse = rollCurse();
           if (curse) {
@@ -370,7 +397,24 @@ export const createDungeonSlice: StateCreator<
         if (run.hp <= cost) return s; // can't pay the toll
         next.hp = run.hp - cost;
         offerBoon(next, boonMaxTier(next.depth, s.deepestFloor));
+        shrineSucceeded = true;
       }
+
+      // Fire onShrine triggers when the shrine interaction succeeded.
+      if (shrineSucceeded) {
+        for (const key of run.relics) {
+          const def = getRelic(key);
+          if (def?.trigger?.type === 'onShrine') {
+            const current = next.runBuff ?? {};
+            const buff: Partial<Record<StatId, number>> = { ...current };
+            for (const [stat, n] of Object.entries(def.trigger.statBonuses)) {
+              buff[stat as StatId] = (buff[stat as StatId] ?? 0) + (n ?? 0);
+            }
+            next.runBuff = buff;
+          }
+        }
+      }
+
       // 'leave' = no effect. In every case, resolve the room and present the next path.
       return { dungeon: resolveCurrentNode(next, next.hp, next.mp, next.sta) };
     }),

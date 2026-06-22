@@ -5,6 +5,7 @@ import { type Reward } from './challenges';
 import { type EncounterRunState } from './encounters';
 import { type BattleState } from './combat';
 import { type MerchantOffer } from './dungeon';
+import { type StatId } from './stats';
 
 /** An in-progress Dungeon Expedition — an endless descent through floors.
  *  Persisted so a run resumes on reload. */
@@ -51,4 +52,15 @@ export interface DungeonRun {
   /** Cumulative stat-XP granted to the character during this run (via grantStatXp calls).
    *  Tracked for the balance ledger; flushed to earnings.xp['dungeon'] at collectDungeon. */
   earnedXp?: number;
+  /**
+   * Persistent per-run stat-point bonuses accumulated from triggered relics (e.g. `onShrine`
+   * stacking relics). Applied inside `fighterFor` alongside flat relic effects.
+   */
+  runBuff?: Partial<Record<StatId, number>>;
+  /** Number of rooms entered (and resolved) during this run — incremented on room entry. */
+  roomsCleared?: number;
+  /** Total HP damage dealt to enemies during this run — summed from battle outcomes. */
+  damageDealt?: number;
+  /** Total HP damage taken by the player during this run — summed from battle outcomes. */
+  damageTaken?: number;
 }

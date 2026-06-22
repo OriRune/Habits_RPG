@@ -26,6 +26,8 @@ export const BIOMES: Record<string, BiomeDef> = {
       'sealed_door', 'gatekeeper', 'bone_pit', 'ossuary_hoard', 'whispering_crypt',
       // Easy early-game events (difficulty 1–3) for new characters
       'ancient_cache', 'dust_and_echoes', 'crumbling_fresco', 'bone_chimes', 'fallen_pilgrim',
+      // Deep-room events (floors 6+)
+      'shadow_pool', 'cursed_reliquary', 'mirrored_tomb',
     ],
     boss: {
       id: 'bone_tyrant',
@@ -74,6 +76,8 @@ export const BIOMES: Record<string, BiomeDef> = {
     encounters: [
       'collapsing_bridge', 'wild_grove', 'gatekeeper', 'toppled_idol', 'spiders_larder',
       'ruined_scriptorium', 'vine_temple', 'overgrown_arsenal', 'riverside_shrine', 'fungal_network',
+      // Deep-room events (floors 6+)
+      'overgrown_sanctum', 'sentinel_statue', 'ancient_sundial',
     ],
     boss: {
       id: 'vinewood_ancient',
@@ -121,6 +125,8 @@ export const BIOMES: Record<string, BiomeDef> = {
     encounters: [
       'frozen_chasm', 'starving_dark', 'sealed_door', 'buried_caravan', 'aurora_pool',
       'ice_sculptor', 'whiteout', 'frozen_titan', 'cold_archive', 'glacial_hermit',
+      // Deep-room events (floors 11+)
+      'cryo_sentinel', 'frozen_library', 'frozen_memorial',
     ],
     boss: {
       id: 'frost_warden',

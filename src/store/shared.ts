@@ -191,6 +191,12 @@ export interface DungeonRunSummary {
   cleared: boolean;
   defeated: boolean;
   date: string;
+  /** Rooms entered during this run (for the history list). */
+  roomsCleared: number;
+  /** Number of relics (boons + curses) held at run end. */
+  relicCount: number;
+  /** Gold banked (post habit-streak multiplier). */
+  goldBanked: number;
 }
 
 // ---------------------------------------------------------------------------

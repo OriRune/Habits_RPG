@@ -3,7 +3,7 @@
 // Pure + deterministic via injected RNG. Room payloads reuse engine/dungeon.ts's DungeonRoom.
 import { type RNG } from './combat';
 import { type BiomeDef, isBossDepth } from './biomes';
-import { type DungeonRoom, type RoomKind, encounterRoomFor } from './dungeon';
+import { type DungeonRoom, type RoomKind } from './dungeon';
 
 export interface MapNode {
   id: string;
@@ -39,7 +39,12 @@ function weightedKind(rng: RNG, weights: [RoomKind, number][]): RoomKind {
 }
 
 function makeRoom(kind: RoomKind, biome: BiomeDef, rng: RNG): DungeonRoom {
-  if (kind === 'encounter') return encounterRoomFor(biome, rng);
+  if (kind === 'encounter') {
+    const key = biome.encounters.length
+      ? biome.encounters[Math.floor(rng() * biome.encounters.length)]
+      : 'sealed_door';
+    return { type: 'encounter', key };
+  }
   return { type: kind } as DungeonRoom;
 }
 

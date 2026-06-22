@@ -154,6 +154,28 @@ export function selectDayOfWeek(s: GameState) {
   return dayOfWeekBreakdown(s.habits, toISODate());
 }
 
+/** Ordered depth gates that unlock dungeon features. */
+const DUNGEON_MILESTONES: ReadonlyArray<{ depth: number; label: string }> = [
+  { depth: 5, label: 'Merchant shops appear' },
+  { depth: 8, label: 'Elite rooms appear' },
+  { depth: 10, label: 'Tier-3 relics unlocked' },
+];
+
+/**
+ * Dungeon milestone progress: the player's deepest-ever floor and the next
+ * depth gate they haven't reached yet, or null when all are cleared.
+ * Mirrors the inline `milestoneHint` logic in DungeonView so other views
+ * (CharacterView, etc.) can display consistent progress text.
+ */
+export function selectDungeonMilestone(s: GameState): {
+  deepestFloor: number;
+  nextMilestone: { depth: number; label: string } | null;
+} {
+  const deepestFloor = s.deepestFloor;
+  const nextMilestone = DUNGEON_MILESTONES.find((m) => m.depth > deepestFloor) ?? null;
+  return { deepestFloor, nextMilestone };
+}
+
 export function selectBalanceReport(s: GameState): BalanceReport {
   return buildBalanceReport(s.earnings ?? freshEarningsLedger());
 }
