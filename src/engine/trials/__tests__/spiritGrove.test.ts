@@ -6,10 +6,13 @@ import {
   prepareRounds,
   spiritGroveScore,
   validateSpiritGroveRounds,
+  clueVisible,
+  WI_CLUE_NOVICE,
+  WI_CLUE_SAGE,
   type PreparedRound,
 } from '../spiritGrove';
 import type { SpiritGroveRound } from '@/content/trials';
-import { SPIRIT_GROVE_ROUND_COUNT } from '@/content/trials';
+import { SPIRIT_GROVE_ROUND_COUNT, SPIRIT_GROVE_ROUNDS } from '@/content/trials';
 
 // ── Test-pool helpers ─────────────────────────────────────────────────────────
 
@@ -176,5 +179,125 @@ describe('validateSpiritGroveRounds', () => {
     expect(() => validateSpiritGroveRounds(badPool)).toThrow(
       /The flame gutters in a windless room/,
     );
+  });
+});
+
+// ── clueVisible ───────────────────────────────────────────────────────────────
+
+describe('clueVisible', () => {
+  const NOVICE = WI_CLUE_NOVICE - 1; // below threshold
+  const DEFAULT = WI_CLUE_NOVICE;    // at default threshold
+  const SAGE = WI_CLUE_SAGE;         // at sage threshold
+
+  it('novice (WI < 5): shows clues only on easy rounds', () => {
+    expect(clueVisible('easy', NOVICE)).toBe(true);
+    expect(clueVisible('medium', NOVICE)).toBe(false);
+    expect(clueVisible('hard', NOVICE)).toBe(false);
+  });
+
+  it('novice at WI=0: all non-easy hidden', () => {
+    expect(clueVisible('easy', 0)).toBe(true);
+    expect(clueVisible('medium', 0)).toBe(false);
+    expect(clueVisible('hard', 0)).toBe(false);
+  });
+
+  it('default (WI 5–9): shows clues on easy and medium, hides hard', () => {
+    expect(clueVisible('easy', DEFAULT)).toBe(true);
+    expect(clueVisible('medium', DEFAULT)).toBe(true);
+    expect(clueVisible('hard', DEFAULT)).toBe(false);
+    // Also check WI=9 (still below sage)
+    expect(clueVisible('easy', WI_CLUE_SAGE - 1)).toBe(true);
+    expect(clueVisible('medium', WI_CLUE_SAGE - 1)).toBe(true);
+    expect(clueVisible('hard', WI_CLUE_SAGE - 1)).toBe(false);
+  });
+
+  it('sage (WI >= 10): all clues always visible', () => {
+    expect(clueVisible('easy', SAGE)).toBe(true);
+    expect(clueVisible('medium', SAGE)).toBe(true);
+    expect(clueVisible('hard', SAGE)).toBe(true);
+    // Also check WI well above threshold
+    expect(clueVisible('hard', 20)).toBe(true);
+  });
+});
+
+// ── prepareRounds — harder (mastery) mode ────────────────────────────────────
+
+describe('prepareRounds (harder=true)', () => {
+  it('returns exactly SPIRIT_GROVE_ROUND_COUNT rounds', () => {
+    const prepared = prepareRounds(FULL_POOL, mulberry32(1), { harder: true });
+    expect(prepared).toHaveLength(SPIRIT_GROVE_ROUND_COUNT);
+  });
+
+  it('drafts 0 easy, 2 medium, 3 hard from a full pool', () => {
+    const prepared = prepareRounds(FULL_POOL, mulberry32(1), { harder: true });
+    const diffs = prepared.map((p) => p.round.difficulty);
+    expect(diffs.filter((d) => d === 'easy')).toHaveLength(0);
+    expect(diffs.filter((d) => d === 'medium')).toHaveLength(2);
+    expect(diffs.filter((d) => d === 'hard')).toHaveLength(3);
+  });
+
+  it('still pads to SPIRIT_GROVE_ROUND_COUNT when hard tier is short', () => {
+    // Only 1 hard round available — needs 3, so 2 padding rounds drawn from the
+    // remaining medium rounds. Pool must have at least 5 rounds to fill all 5 slots.
+    const tinyPool: SpiritGroveRound[] = [
+      makeRound('medium', 'm0'),
+      makeRound('medium', 'm1'),
+      makeRound('medium', 'm2'),
+      makeRound('medium', 'm3'),
+      makeRound('hard', 'h0'),
+    ];
+    const prepared = prepareRounds(tinyPool, mulberry32(7), { harder: true });
+    expect(prepared).toHaveLength(SPIRIT_GROVE_ROUND_COUNT);
+    for (const p of prepared) {
+      expect(tinyPool).toContain(p.round);
+    }
+  });
+
+  it('has no duplicate rounds', () => {
+    const prepared = prepareRounds(FULL_POOL, mulberry32(1), { harder: true });
+    const ids = prepared.map((p) => p.round.omen);
+    expect(new Set(ids).size).toBe(SPIRIT_GROVE_ROUND_COUNT);
+  });
+});
+
+// ── Production pool integrity ────────────────────────────────────────────────
+
+describe('SPIRIT_GROVE_ROUNDS production pool', () => {
+  it('passes validateSpiritGroveRounds (no out-of-range correctIndex)', () => {
+    expect(() => validateSpiritGroveRounds(SPIRIT_GROVE_ROUNDS)).not.toThrow();
+  });
+
+  it('every round has exactly 4 choices', () => {
+    for (const r of SPIRIT_GROVE_ROUNDS) {
+      expect(r.choices).toHaveLength(4);
+    }
+  });
+
+  it('every round has a non-empty omen and explanation', () => {
+    for (const r of SPIRIT_GROVE_ROUNDS) {
+      expect(r.omen.trim().length).toBeGreaterThan(0);
+      expect(r.explanation?.trim().length ?? 0).toBeGreaterThan(0);
+    }
+  });
+
+  it('pool has at least 5 rounds per difficulty tier', () => {
+    const easy = SPIRIT_GROVE_ROUNDS.filter((r) => r.difficulty === 'easy');
+    const medium = SPIRIT_GROVE_ROUNDS.filter((r) => r.difficulty === 'medium');
+    const hard = SPIRIT_GROVE_ROUNDS.filter((r) => r.difficulty === 'hard');
+    expect(easy.length).toBeGreaterThanOrEqual(5);
+    expect(medium.length).toBeGreaterThanOrEqual(5);
+    expect(hard.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it('can draft a full session from the pool', () => {
+    const prepared = prepareRounds(SPIRIT_GROVE_ROUNDS, mulberry32(42));
+    expect(prepared).toHaveLength(SPIRIT_GROVE_ROUND_COUNT);
+  });
+
+  it('can draft a full mastery session from the pool', () => {
+    const prepared = prepareRounds(SPIRIT_GROVE_ROUNDS, mulberry32(99), { harder: true });
+    expect(prepared).toHaveLength(SPIRIT_GROVE_ROUND_COUNT);
+    const diffs = prepared.map((p) => p.round.difficulty);
+    expect(diffs.filter((d) => d === 'easy')).toHaveLength(0);
   });
 });

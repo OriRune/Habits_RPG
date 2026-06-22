@@ -11,7 +11,9 @@ import {
   prepareRounds,
   spiritGroveScore,
   validateSpiritGroveRounds,
+  clueVisible,
 } from '@/engine/trials/spiritGrove';
+import { useGameStore } from '@/store/useGameStore';
 
 const ROUND_TRANSITION_MS = 700;
 
@@ -24,7 +26,16 @@ if (import.meta.env.DEV) {
 }
 
 export function SpiritGrove({ onFinish }: SpiritGroveProps) {
-  const prepared = useMemo(() => prepareRounds(SPIRIT_GROVE_ROUNDS, Math.random), []);
+  // WI gates clue visibility; best score triggers mastery mode (harder draft).
+  const wi   = useGameStore((s) => s.character.statLevels.WI ?? 0);
+  const best = useGameStore((s) => s.bestTrialScore['spirit_grove'] ?? 0);
+
+  const prepared = useMemo(
+    () => prepareRounds(SPIRIT_GROVE_ROUNDS, Math.random, { harder: best >= 1 }),
+    // Re-draft only when mastery mode changes (best crosses 0→1), not on every re-render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [best >= 1],
+  );
 
   const [roundIndex, setRoundIndex] = useState(0);
   const [selectedDisplay, setSelectedDisplay] = useState<number | null>(null);
@@ -42,6 +53,8 @@ export function SpiritGrove({ onFinish }: SpiritGroveProps) {
 
   const { round, displayOrder } = prepared[roundIndex];
   const correctDisplayPos = displayOrder.indexOf(round.correctIndex);
+  // Whether clue text is visible at the player's current Wisdom level.
+  const showClues = clueVisible(round.difficulty, wi);
 
   const skipTransition = () => {
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
@@ -137,13 +150,13 @@ export function SpiritGrove({ onFinish }: SpiritGroveProps) {
                   key={displayIdx}
                   onClick={() => choose(displayIdx)}
                   disabled={selectedDisplay !== null}
-                  aria-label={`${displayIdx + 1}. ${choice.label}${choice.clue ? ` — ${choice.clue}` : ''}`}
+                  aria-label={`${displayIdx + 1}. ${choice.label}${(showClues && choice.clue) ? ` — ${choice.clue}` : ''}`}
                   aria-pressed={isSelected}
                   className={`w-full rounded-md border px-4 py-3 text-left font-display text-sm transition-all duration-200 ${
                     isCorrectReveal
                       ? 'border-emerald-500 bg-emerald-50 text-emerald-800 scale-[1.02] shadow-sm shadow-emerald-200/60'
                       : isWrong
-                        ? 'border-rose-400 bg-rose-50 text-rose-800'
+                        ? 'border-rose-400 bg-rose-50 text-rose-800 animate-shake'
                         : selectedDisplay !== null
                           ? 'border-gold-deep/20 bg-parchment-200/60 text-ink-muted opacity-50'
                           : 'border-gold-deep/40 bg-parchment-100/70 text-ink hover:border-gold-bright hover:bg-gold-bright/10'
@@ -151,7 +164,7 @@ export function SpiritGrove({ onFinish }: SpiritGroveProps) {
                 >
                   <span className="text-[10px] text-ink-muted/50 mr-2 font-mono select-none">[{displayIdx + 1}]</span>
                   <span className="font-bold">{choice.label}</span>
-                  {choice.clue && (
+                  {showClues && choice.clue && (
                     <span className="ml-2 text-xs opacity-60">{choice.clue}</span>
                   )}
                   {isCorrectReveal && selectedDisplay !== null && <span className="ml-1">✓</span>}

@@ -263,6 +263,195 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     correctIndex: 0,
     explanation: 'The leaves did not fall from wind or rot — they waited for the snow, then let go together. Release is a choice, even when it is the right one. Surrender implies defeat; Endings is what follows the act, not the act itself.',
   },
+
+  // ── EASY (additional) ────────────────────────────────────────────────────────
+
+  {
+    difficulty: 'easy',
+    omen: 'A crow drops a single white feather at your feet, then flies east.',
+    choices: [
+      { label: 'Blessing of the Omen', clue: 'Signals what is to come.' },
+      { label: 'Blessing of Loss', clue: 'Marks what has been given up.' },
+      { label: 'Blessing of Flight', clue: 'Frees the earthbound to move.' },
+      { label: 'Blessing of Dawn', clue: 'Opens what the night has sealed.' },
+    ],
+    correctIndex: 0,
+    explanation: 'The crow is a messenger; the white feather it leaves behind is the message. Flying east points toward the rising sun — a beginning, not an end. The gift is the sign itself: the omen has been delivered, not a new day opened or something released.',
+  },
+  {
+    difficulty: 'easy',
+    omen: 'Two deer drink from the same pool without startling each other.',
+    choices: [
+      { label: 'Blessing of Peace', clue: 'Stills conflict and fear between those who meet.' },
+      { label: 'Blessing of Kinship', clue: 'Binds those who share blood or bond.' },
+      { label: 'Blessing of Plenty', clue: 'Ensures the pool fills every cup.' },
+      { label: 'Blessing of Silence', clue: 'Stills the restless and ends disturbance.' },
+    ],
+    correctIndex: 0,
+    explanation: 'Deer are wary by nature — their reflex is to startle and flee. Together at the pool, neither one does. This is the absence of conflict, not a bond or shared abundance. Peace is the state in which fear finds no cause to act.',
+  },
+  {
+    difficulty: 'easy',
+    omen: 'A moth lands on the hearthstone but is not burned.',
+    choices: [
+      { label: 'Blessing of Warding', clue: 'Turns aside harm that should rightfully land.' },
+      { label: 'Blessing of Warmth', clue: 'Counters the cold and comforts.' },
+      { label: 'Blessing of Endurance', clue: 'Carries the body past its usual limit.' },
+      { label: 'Blessing of the Veil', clue: 'Hides what must not be found.' },
+    ],
+    correctIndex: 0,
+    explanation: 'The hearthstone should be dangerous to the moth — yet it rests there unharmed. Something has turned the danger aside. Warding keeps what would cause harm from doing so, without the moth needing to endure or conceal itself.',
+  },
+  {
+    difficulty: 'easy',
+    omen: 'Raindrops fall upward from the surface of a still pond.',
+    choices: [
+      { label: 'Blessing of Reversal', clue: 'Turns the natural direction of things against itself.' },
+      { label: 'Blessing of Clarity', clue: 'Shows what was always there, sharpened into sight.' },
+      { label: 'Blessing of Rain', clue: 'Brings nourishment from above.' },
+      { label: 'Blessing of the Deep', clue: 'Draws hidden things to the surface.' },
+    ],
+    correctIndex: 0,
+    explanation: 'Raindrops fall — that is their nature. These rise. The direction they should travel has been inverted. Reversal is not about revealing or nourishing; it is about the order of things running the wrong way against itself.',
+  },
+  {
+    difficulty: 'easy',
+    omen: 'A single candle lights itself in an empty room.',
+    choices: [
+      { label: 'Blessing of Kindling', clue: 'Starts what has not yet begun.' },
+      { label: 'Blessing of Vigilance', clue: 'Holds the watch against what would intrude.' },
+      { label: 'Blessing of Light', clue: 'Illuminates what the dark conceals.' },
+      { label: 'Blessing of Secrets', clue: 'Keeps what must not be known.' },
+    ],
+    correctIndex: 0,
+    explanation: 'No hand lit the candle — a beginning happened without a cause. A spark appeared where none was struck. Kindling is the blessing of starting, of ignition without an igniter. Light illuminates after kindling; this is the act of beginning itself.',
+  },
+
+  // ── MEDIUM (additional) ──────────────────────────────────────────────────────
+
+  {
+    difficulty: 'medium',
+    omen: 'A stone dropped into a still lake makes no ripple. The water closes over it as if nothing passed.',
+    choices: [
+      { label: 'Blessing of Concealment', clue: 'Erases the trace of what passes through.' },
+      { label: 'Blessing of Acceptance', clue: 'Takes what comes without resistance.' },
+      { label: 'Blessing of Silence', clue: 'Stills the restless and ends disturbance.' },
+      { label: 'Blessing of the Deep', clue: 'Draws what sinks below back to the surface again.' },
+    ],
+    correctIndex: 0,
+    explanation: 'The stone entered the water — something should mark its passing. Nothing does. The water has erased the evidence of the event. Concealment removes the trace; Acceptance would mean the water yielded without protest, but this goes further — it hides what happened entirely.',
+  },
+  {
+    difficulty: 'medium',
+    omen: "The elder tree's shadow stretches east at noon, when all other shadows point north.",
+    choices: [
+      { label: 'Blessing of the Wanderer', clue: 'Guides those who have strayed from their path.' },
+      { label: 'Blessing of Aberration', clue: 'Marks what has strayed from the nature of its kind.' },
+      { label: 'Blessing of Defiance', clue: 'Acts against the order by choice.' },
+      { label: 'Blessing of Inversion', clue: 'Turns one direction or state to its opposite.' },
+    ],
+    correctIndex: 1,
+    explanation: 'At noon every shadow obeys the same rule — except this one. The elder has not chosen to disobey; it simply is not what it should be. Aberration marks a deviation from the nature of the thing, without will or intention. Defiance would mean the tree chose this; the shadow cannot choose.',
+  },
+  {
+    difficulty: 'medium',
+    omen: 'A wolf sits at the edge of the grove for three nights and does not enter.',
+    choices: [
+      { label: 'Blessing of Patience', clue: 'Holds the willing still until the right moment arrives.' },
+      { label: 'Blessing of Warding', clue: 'Keeps what threatens at the boundary.' },
+      { label: 'Blessing of the Hunt', clue: "Sharpens the predator's instinct and aim." },
+      { label: 'Blessing of Restraint', clue: 'Recognises what strength should not be used against.' },
+    ],
+    correctIndex: 3,
+    explanation: 'The wolf is a predator — the grove has prey. Three nights pass; it does not cross. This is not patience (which waits for the right moment to act) or warding (which keeps things out by force). The wolf has the power to enter and withholds it. Restraint is when strength declines to act because something deserves to be left alone.',
+  },
+  {
+    difficulty: 'medium',
+    omen: 'A thornbush blooms white in the dead of winter. By morning, the flowers are gone.',
+    choices: [
+      { label: 'Blessing of Transience', clue: 'Marks what is brief and cannot be held.' },
+      { label: 'Blessing of Defiance', clue: 'Acts against the order by choice.' },
+      { label: 'Blessing of Illusion', clue: 'Shows what seems, not what is.' },
+      { label: 'Blessing of Persistence', clue: 'Carries through what would stop most things.' },
+    ],
+    correctIndex: 0,
+    explanation: "The thornbush blooms where nothing should bloom — that is the wonder. But what the blessing marks is the vanishing, not the blooming. Transience is what comes and goes before it can be grasped. Defiance is the act of blooming; Transience is what the bloom itself embodies by being gone before morning.",
+  },
+  {
+    difficulty: 'medium',
+    omen: 'An old wound on your palm begins to ache in the presence of the ancient oak.',
+    choices: [
+      { label: 'Blessing of Warning', clue: 'Signals that something should not be ignored.' },
+      { label: 'Blessing of Memory', clue: 'Carries the trace of what the body has endured.' },
+      { label: 'Blessing of Mending', clue: 'Seals old wounds and cracks.' },
+      { label: 'Blessing of the Past', clue: 'Draws what was hidden in history into the present.' },
+    ],
+    correctIndex: 0,
+    explanation: 'The wound is healed — it should not ache. Yet in the presence of the ancient oak it does. Old wounds sometimes warn us before our minds do; the body holds a memory of danger and calls attention to it. Warning is the signal that commands notice; Memory carries the trace but does not alert.',
+  },
+
+  // ── HARD (additional) ────────────────────────────────────────────────────────
+
+  {
+    difficulty: 'hard',
+    omen: "A bird's nest sits in the lowest branch — within reach of the fox — and goes untouched all season.",
+    choices: [
+      { label: 'Blessing of Luck', clue: "Turns chance in the receiver's favour without cause." },
+      { label: 'Blessing of Sanctuary', clue: 'Makes a place inviolable to those who would enter uninvited.' },
+      { label: 'Blessing of Concealment', clue: 'Hides what is in plain sight from the eyes that would find it.' },
+      { label: 'Blessing of the Overlooked', clue: 'Passes beneath notice without effort or intention.' },
+    ],
+    correctIndex: 1,
+    explanation: "The nest is not hidden — it is in the lowest branch, visible and reachable. The fox knows the grove; it does not take the nest all season. This is not luck (which has no cause), nor concealment (it is plainly there), nor being overlooked (the fox must have seen it). Something has made this place untouchable. Sanctuary is the protection granted by the nature of a space, not by hiding or chance.",
+  },
+  {
+    difficulty: 'hard',
+    omen: 'The river splits around a stone, and where the two currents meet again downstream, the water is still.',
+    choices: [
+      { label: 'Blessing of Reunion', clue: 'Draws what was divided back together.' },
+      { label: 'Blessing of Stillness', clue: 'Quiets what is in motion.' },
+      { label: 'Blessing of Harmony', clue: 'Brings disparate things into accord without erasing their difference.' },
+      { label: 'Blessing of Resolution', clue: 'Ends what was in tension and brings it to a settled state.' },
+    ],
+    correctIndex: 2,
+    explanation: 'The river divides — then meets again, and at the meeting-point it is still. Two flows that separated found a quieter state when rejoined, neither dominating. Harmony is the peace that arises when things that differ stop opposing each other. Reunion merely rejoins; Stillness would quiet the motion without explaining the why — only Harmony captures the accord between the two currents.',
+  },
+  {
+    difficulty: 'hard',
+    omen: "A child's laughter echoes in the grove long after the child has gone home.",
+    choices: [
+      { label: 'Blessing of Echo', clue: 'Carries a sound beyond its source.' },
+      { label: 'Blessing of Memory', clue: 'Carries the trace of what once was.' },
+      { label: 'Blessing of Joy', clue: 'Fills what is hollow with lightness.' },
+      { label: 'Blessing of Lingering', clue: 'Holds what should have passed when its cause is gone.' },
+    ],
+    correctIndex: 3,
+    explanation: 'The child is home — the laughter should have ended with her. The grove holds it past the point it had any right to remain. Echo fades quickly; Memory would be the silent trace, not the living sound; Joy is the feeling, not its peculiar persistence. Lingering is specifically what stays beyond the moment it should have released.',
+  },
+  {
+    difficulty: 'hard',
+    omen: 'A door stands alone in the forest with no wall around it. It is still locked.',
+    choices: [
+      { label: 'Blessing of Threshold', clue: 'Marks the passage between one state and another.' },
+      { label: 'Blessing of Stubbornness', clue: 'Holds against change past any reason to do so.' },
+      { label: 'Blessing of Boundaries', clue: 'Defines what belongs inside and what stays out.' },
+      { label: 'Blessing of Purpose', clue: 'Reveals the use hidden in every form.' },
+    ],
+    correctIndex: 2,
+    explanation: "The door has no wall — it serves no structural function anymore. Yet it is still locked. A lock insists that something is inside and something is outside. Without the wall, only the lock's intention holds that line. Boundaries are what define inside from outside, and this lock is still insisting on that distinction. Threshold marks transitions; Purpose would imply the door still serves passage — but a locked door with no wall serves only separation.",
+  },
+  {
+    difficulty: 'hard',
+    omen: 'Your reflection in the pool wears a serene face while your own expression is afraid.',
+    choices: [
+      { label: 'Blessing of Calm', clue: 'Stills agitation and settles the troubled spirit.' },
+      { label: 'Blessing of Truth', clue: 'Strips away what seems to show what actually is.' },
+      { label: 'Blessing of the Mirror', clue: 'Shows what is, as it is, without interpretation.' },
+      { label: 'Blessing of Knowing', clue: 'Reveals what you did not know you already contained.' },
+    ],
+    correctIndex: 3,
+    explanation: "You did not make your face serene — fear shows on it. Yet the reflection is serene. A mirror should reflect your fear, but this one does not. It shows a stillness already inside you that your surface expression cannot reach. Knowing reveals what was present but unrecognised. The reflection is not lying — it is showing what fear has obscured but not destroyed.",
+  },
 ];
 
 // Each session draws 1 easy + 2 medium + 2 hard from the pool above.
