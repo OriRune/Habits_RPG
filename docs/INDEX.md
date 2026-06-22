@@ -14,7 +14,6 @@ dates (git log) when in doubt about which is current.
 | [`habits-rpg-improvement-plan2.md`](./habits-rpg-improvement-plan2.md) | **Current roadmap (Phases 1–9).** Phases 1–8 complete as of 2026-06-22; Phase 9 deferred. Contains status markers per phase and a "Still open / deferred" tracked-items table. |
 | [`trust-model.md`](./trust-model.md) | **Decided trust model (Phase 6, 2026-06-22): Option A — Friendly Trust.** Documents what the server defends against (clock manipulation, ownership) and what it does not (save editing, leaderboard accuracy). Read before building competitive features. |
 | [`habit-tracking-analysis.md`](./habit-tracking-analysis.md) | Analysis of the habit-tracking core: stat mapping, frequency types, streak/XP formulas, mood/load warning, suspension flow. |
-| [`habit-tracking-improvement-plan.md`](./habit-tracking-improvement-plan.md) | Improvement recommendations for the habit-tracking core derived from the analysis above. |
 | [`placeholder-art-tracking.md`](./placeholder-art-tracking.md) | Art coverage table (updated 2026-06-22): which sprites have real PNGs vs generated placeholders, drop-in asset seam docs, quick-win gaps. Reference before adding new entities. |
 | [`balance-audit.md`](./balance-audit.md) | Stats & resources balance audit (2026-06-17): XP formulas, energy earn/spend rates, minigame reward scales, enemy stats. Reference before changing any numeric formula. |
 
@@ -93,6 +92,7 @@ Superseded docs moved to `docs/archived/`. Kept for historical reference only �
 | [`archived/ancient-library-improvement-plan.md`](./archived/ancient-library-improvement-plan.md) | All gameplay/engine recommendations implemented; only component RTL tests and trivial CSS star animation remain. |
 | [`archived/royal-court-improvement-plan.md`](./archived/royal-court-improvement-plan.md) | All substantive recommendations implemented; remaining gaps (dynamic star thresholds, CH 5th-choice) explicitly optional/speculative. |
 | [`archived/last-stand-improvement-plan.md`](./archived/last-stand-improvement-plan.md) | All Pass 1–6 recommendations implemented; remaining gaps (lane redesign, HP scaling) explicitly lowest-priority/optional. |
+| [`archived/habit-tracking-improvement-plan.md`](./archived/habit-tracking-improvement-plan.md) | All 7 stages fully implemented (2026-06-22): bug fixes, edit UI, balance, integrity, party, UX polish, long-term features. |
 
 ---
 
@@ -120,6 +120,7 @@ dashboard SQL editor, in order, once per environment:
 0006_party_quest_contributions.sql → per-member contribution tracking for party quests
 0007_member_habits.sql             → party-visible habit data (opt-in member_habits table)
 0008_consistency_leaderboard.sql   → 30-day habit consistency score in leaderboard view
+0009_leaderboard_antimanip.sql     → suspect flag + XP-rate trigger; leaderboard view excludes suspect rows
 ```
 
-Each file is additive; apply in order, once per environment. `0005`–`0008` are idempotent.
+Each file is additive; apply in order, once per environment. `0005`–`0009` are idempotent.

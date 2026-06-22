@@ -175,6 +175,14 @@ export interface GameSettings {
   shareHabitNames: boolean;
   /** Show the "before adventure" ritual modal when entering a minigame (reviewable Energy sources). */
   showAdventureRitual: boolean;
+  /**
+   * Show a browser notification at `dailyReminderTime` once per day when a tab is open.
+   * Requires Notification permission (prompted on first enable). Foreground-only — no
+   * service worker; falls back to an in-app toast if permission is denied.
+   */
+  dailyReminderEnabled: boolean;
+  /** 24-hour HH:MM time string for the daily reminder (e.g. '20:00'). */
+  dailyReminderTime: string;
 }
 
 /** Lightweight record of a completed run — kept in `dungeonHistory` (last 10). */
@@ -292,6 +300,8 @@ export interface GameState {
   batchSuspendHabits: (keepIds: Set<string>, untilISO: string) => void;
   /** Flip any suspensions whose date has passed back to active (call on mount). */
   normalizeHabits: () => void;
+  /** Merge imported habits by id; recomputes completionLog from the merged set. */
+  importHabits: (imported: Habit[]) => void;
 
   startBattle: () => void;
   battleAction: (action: CombatAction) => void;
@@ -547,6 +557,8 @@ export function freshSettings(): GameSettings {
     soundEnabled: true,
     shareHabitNames: false,
     showAdventureRitual: true,
+    dailyReminderEnabled: false,
+    dailyReminderTime: '20:00',
   };
 }
 
@@ -580,8 +592,30 @@ export function fighterFor(state: GameState, buffs: Partial<Record<StatId, numbe
   for (const [stat, n] of Object.entries(relicAgg.statBonuses)) {
     merged[stat as StatId] = (merged[stat as StatId] ?? 0) + (n ?? 0);
   }
+  // Persistent run-buff from triggered relics (e.g. onShrine stacking).
+  if (state.dungeon?.runBuff) {
+    for (const [stat, n] of Object.entries(state.dungeon.runBuff)) {
+      merged[stat as StatId] = (merged[stat as StatId] ?? 0) + (n ?? 0);
+    }
+  }
+  // Conditional lowHp triggers — bonus is active while hp/maxHp < threshold.
+  const hp = state.dungeon?.hp ?? 0;
+  const maxHp = state.dungeon?.maxHp ?? 1;
+  const hpRatio = hp / Math.max(1, maxHp);
+  let lowHpDefense = 0;
+  for (const def of relicDefs) {
+    if (!def?.trigger || def.trigger.type !== 'lowHp') continue;
+    if (hpRatio < def.trigger.threshold) {
+      if (def.trigger.statBonuses) {
+        for (const [stat, n] of Object.entries(def.trigger.statBonuses)) {
+          merged[stat as StatId] = (merged[stat as StatId] ?? 0) + (n ?? 0);
+        }
+      }
+      if (def.trigger.defense) lowHpDefense += def.trigger.defense;
+    }
+  }
   const c = deriveCombatant(state.character.statLevels, state.character.level, state.combatStats, merged);
-  c.defense += gear.defense + relicAgg.defense;
+  c.defense += gear.defense + relicAgg.defense + lowHpDefense;
   c.ward += gear.ward + relicAgg.ward;
   c.maxHp += relicAgg.maxHp;
   return { c, weapon: getWeapon(state.equippedWeapon) };

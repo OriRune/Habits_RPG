@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { ChevronLeft, FlaskConical, BarChart3 } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Bell, ChevronLeft, Download, FlaskConical, BarChart3, Upload } from 'lucide-react';
 import { BalanceReportModal } from '@/components/balance/BalanceReportModal';
 import { useGameStore } from '@/store/useGameStore';
 import { STATS, type StatId } from '@/engine/stats';
@@ -27,6 +27,10 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
   const settings = useGameStore((s) => s.settings);
   const updateSettings = useGameStore((s) => s.updateSettings);
   const resetGame = useGameStore((s) => s.resetGame);
+  const habits = useGameStore((s) => s.habits);
+  const completionLog = useGameStore((s) => s.completionLog);
+  const importHabits = useGameStore((s) => s.importHabits);
+  const importFileRef = useRef<HTMLInputElement>(null);
 
   const level = useGameStore((s) => s.character.level);
   const classId = useGameStore((s) => s.character.classId);
@@ -53,6 +57,70 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
     devSpawnTrial(lvl);
     onClose(); // surface the BattleOverlay over the dashboard
   };
+
+  // -------------------------------------------------------------------------
+  // Habit export / import
+  // -------------------------------------------------------------------------
+
+  function handleExport() {
+    const payload = { version: 1, exportedAt: new Date().toISOString(), habits, completionLog };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `habits-rpg-export-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // Reset so the same file can be selected again after dismissal.
+    e.target.value = '';
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const raw = JSON.parse(reader.result as string) as { habits?: unknown; completionLog?: unknown };
+        if (!Array.isArray(raw.habits)) {
+          alert('Invalid export file — no "habits" array found.');
+          return;
+        }
+        // Basic shape coercion: ensure required fields are present.
+        const incoming = (raw.habits as unknown[])
+          .filter((h): h is import('@/engine/habits').Habit =>
+            typeof (h as Record<string, unknown>).id === 'string' &&
+            typeof (h as Record<string, unknown>).name === 'string',
+          );
+
+        if (incoming.length === 0) {
+          alert('No valid habits found in the file.');
+          return;
+        }
+
+        if (!confirm(`Merge ${incoming.length} habit${incoming.length !== 1 ? 's' : ''} from the file? Existing habits with the same ID will be replaced.`)) return;
+        importHabits(incoming);
+      } catch {
+        alert('Could not read the file — make sure it is a valid HabitsRPG export.');
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  // -------------------------------------------------------------------------
+  // Daily reminders
+  // -------------------------------------------------------------------------
+
+  async function handleReminderToggle(enabled: boolean) {
+    if (enabled && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        // Permission denied — enable anyway so the in-app toast fallback fires.
+      }
+    }
+    updateSettings({ dailyReminderEnabled: enabled });
+  }
 
   return (
     <div className="texture-wood fixed inset-0 z-50 overflow-y-auto">
@@ -94,6 +162,28 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             onChange={(v) => updateSettings({ soundEnabled: v })}
           />
 
+          {/* Daily reminder */}
+          <div className="space-y-2">
+            <Toggle
+              label="Daily reminder"
+              description="Show a notification (or in-app alert) at your chosen time to log today's habits. Requires browser notification permission."
+              checked={settings.dailyReminderEnabled}
+              onChange={handleReminderToggle}
+            />
+            {settings.dailyReminderEnabled && (
+              <div className="flex items-center gap-3 pl-1">
+                <Bell className="h-3.5 w-3.5 shrink-0 text-ink-muted" />
+                <input
+                  type="time"
+                  value={settings.dailyReminderTime}
+                  onChange={(e) => updateSettings({ dailyReminderTime: e.target.value })}
+                  className="rounded-md border border-gold-deep/50 bg-parchment-100/80 px-2 py-1 text-xs text-ink focus:border-gold-deep focus:outline-none"
+                  aria-label="Reminder time"
+                />
+              </div>
+            )}
+          </div>
+
           {/* Party habit visibility (only meaningful when signed in) */}
           {isBackendConfigured() && (
             <Toggle
@@ -125,6 +215,40 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             <p className="text-[10px] text-ink-light">
               How fast the boss attacks and moves in the Arena. Auto eases lower levels and quickens
               higher ones.
+            </p>
+          </div>
+
+          {/* Habit data export / import */}
+          <div className="space-y-1.5">
+            <div className="font-display text-xs font-bold uppercase tracking-wider text-ink">
+              Habit data
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="secondary"
+                onClick={handleExport}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs"
+              >
+                <Download className="h-3.5 w-3.5" /> Export
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => importFileRef.current?.click()}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs"
+              >
+                <Upload className="h-3.5 w-3.5" /> Import
+              </Button>
+              <input
+                ref={importFileRef}
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={handleImportFile}
+              />
+            </div>
+            <p className="text-[10px] text-ink-light">
+              Export saves your habits + history as a JSON file. Import merges habits by ID
+              (existing habits with the same ID are replaced).
             </p>
           </div>
 

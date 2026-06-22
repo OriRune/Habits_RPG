@@ -35,18 +35,21 @@ export const NAV_ITEMS: NavItem[] = [
 interface NavProps {
   active: Tab;
   onChange: (tab: Tab) => void;
+  /** Optional per-tab badge dots. Set a Tab key to `true` to show a dot on that tab's icon. */
+  badges?: Partial<Record<Tab, boolean>>;
 }
 
 // ---------------------------------------------------------------------------
 // Bottom bar — mobile / narrow screens (hidden on lg+)
 // ---------------------------------------------------------------------------
 
-export function BottomBar({ active, onChange }: NavProps) {
+export function BottomBar({ active, onChange, badges }: NavProps) {
   return (
     <nav className="texture-wood sticky bottom-0 z-10 border-t-2 border-gold-deep shadow-wood lg:hidden">
       <div className="mx-auto flex max-w-2xl">
         {NAV_ITEMS.map(({ id, label, icon: Icon }) => {
           const isActive = active === id;
+          const hasBadge = badges?.[id] === true;
           return (
             <button
               key={id}
@@ -59,9 +62,14 @@ export function BottomBar({ active, onChange }: NavProps) {
               {isActive && (
                 <span className="absolute top-0 h-0.5 w-10 rounded-full bg-gold-bright shadow-glow" />
               )}
-              <Icon
-                className={cn('h-5 w-5', isActive && 'drop-shadow-[0_0_4px_rgba(232,200,96,0.6)]')}
-              />
+              <span className="relative inline-flex">
+                <Icon
+                  className={cn('h-5 w-5', isActive && 'drop-shadow-[0_0_4px_rgba(232,200,96,0.6)]')}
+                />
+                {hasBadge && (
+                  <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-ember-bright ring-1 ring-wood-800" />
+                )}
+              </span>
               {label}
             </button>
           );
@@ -75,12 +83,13 @@ export function BottomBar({ active, onChange }: NavProps) {
 // Sidebar — desktop / wide screens (hidden below lg)
 // ---------------------------------------------------------------------------
 
-export function Sidebar({ active, onChange }: NavProps) {
+export function Sidebar({ active, onChange, badges }: NavProps) {
   return (
     <nav className="hidden lg:flex lg:w-52 lg:shrink-0 lg:flex-col texture-wood border-r-2 border-gold-deep shadow-wood">
       <div className="flex flex-col py-2">
         {NAV_ITEMS.map(({ id, label, icon: Icon }) => {
           const isActive = active === id;
+          const hasBadge = badges?.[id] === true;
           return (
             <button
               key={id}
@@ -92,12 +101,17 @@ export function Sidebar({ active, onChange }: NavProps) {
                   : 'border-transparent text-on-wood-dim hover:bg-gold/5 hover:text-on-wood-hi',
               )}
             >
-              <Icon
-                className={cn(
-                  'h-5 w-5 shrink-0',
-                  isActive && 'drop-shadow-[0_0_4px_rgba(232,200,96,0.6)]',
+              <span className="relative inline-flex shrink-0">
+                <Icon
+                  className={cn(
+                    'h-5 w-5',
+                    isActive && 'drop-shadow-[0_0_4px_rgba(232,200,96,0.6)]',
+                  )}
+                />
+                {hasBadge && (
+                  <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-ember-bright ring-1 ring-wood-800" />
                 )}
-              />
+              </span>
               <span>{label}</span>
             </button>
           );

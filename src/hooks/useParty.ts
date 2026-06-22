@@ -25,7 +25,8 @@ import {
   type PartyMessage,
   type PartyQuest,
 } from '@/net/party';
-import type { ChallengeDef } from '@/engine/challenges';
+import type { ChallengeDef, ChallengeKind } from '@/engine/challenges';
+import type { StatId } from '@/engine/stats';
 
 /**
  * Party state + realtime orchestration (Phase 2).
@@ -215,28 +216,67 @@ export function useParty(): void {
   }, [partyId, session]);
 }
 
-/** Sum of net habit completions across all days — monotonic up on each completion. */
-function totalCompletions(): number {
-  return Object.values(useGameStore.getState().completionLog).reduce((a, b) => a + b, 0);
+/**
+ * Pure helper: compute a monotonically-increasing metric from the provided state
+ * based on the party quest kind.
+ *
+ *  count    — total habit completions across all days (original v1 behaviour)
+ *  class    — total completions of habits whose stat matches `questStat`
+ *  quantity — total amount logged across all quantity habits (sum of h.log[*].amount)
+ *
+ * Falls back to `count` for any unrecognised kind.
+ * Exported for unit testing without store coupling.
+ */
+export function computeQuestTotal(
+  habits: import('@/engine/habits').Habit[],
+  completionLog: Record<string, number>,
+  kind: ChallengeKind | null,
+  questStat: StatId | null,
+): number {
+  if (kind === 'class' && questStat) {
+    return habits
+      .filter((h) => h.stat === questStat)
+      .reduce((total, h) => total + Object.keys(h.log).length, 0);
+  }
+  if (kind === 'quantity') {
+    return habits.reduce(
+      (total, h) => total + Object.values(h.log).reduce((s, e) => s + (e.amount ?? 0), 0),
+      0,
+    );
+  }
+  // 'count' (default): sum of completionLog values across all days.
+  return Object.values(completionLog).reduce((a, b) => a + b, 0);
+}
+
+/**
+ * Read the relevant metric from the current game store based on the quest kind.
+ * Used inside usePartyQuestReporter's subscription callback.
+ */
+export function totalCompletionsByKind(kind: ChallengeKind | null, questStat: StatId | null): number {
+  const { habits, completionLog } = useGameStore.getState();
+  return computeQuestTotal(habits, completionLog, kind, questStat);
 }
 
 /**
  * Reports habit completions toward the active party quest. Mounted once in App.
- * Counts any completion (the v1 party quest is a 'count' goal); the atomic RPC
- * increments server-side and broadcasts the new progress to all members.
+ * The delta computation is kind-aware (count / class / quantity), allowing party
+ * quests beyond the original v1 'count' kind. The atomic RPC is unchanged —
+ * it accepts any integer delta.
  */
 export function usePartyQuestReporter(): void {
   const partyId = usePartyStore((s) => s.party?.id ?? null);
   const questActive = usePartyStore((s) => s.quest?.status === 'active');
+  const questKind = usePartyStore((s) => (s.quest?.def?.kind as ChallengeKind) ?? null);
+  const questStat = usePartyStore((s) => (s.quest?.def?.stat as StatId | undefined) ?? null);
 
   useEffect(() => {
     if (!partyId || !questActive) return;
-    let prev = totalCompletions();
+    let prev = totalCompletionsByKind(questKind, questStat);
     const unsub = useGameStore.subscribe(() => {
-      const now = totalCompletions();
+      const now = totalCompletionsByKind(questKind, questStat);
       if (now > prev) void incrementPartyQuest(partyId, now - prev);
       prev = now;
     });
     return unsub;
-  }, [partyId, questActive]);
+  }, [partyId, questActive, questKind, questStat]);
 }

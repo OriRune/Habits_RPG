@@ -23,7 +23,8 @@ import {
   selectEnergySummary,
 } from '@/store/selectors';
 import { isCompletedOn, effectiveStatus } from '@/engine/habits';
-import { toISODate, parseISODate, addDays, BACKDATE_WINDOW_DAYS } from '@/engine/date';
+import { toISODate, parseISODate, addDays, daysBetween, BACKDATE_WINDOW_DAYS } from '@/engine/date';
+import { type ActiveChallenge, isExpired } from '@/engine/challenges';
 import { WelcomeCard } from '@/components/onboarding/WelcomeCard';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { HabitCard } from '@/components/habits/HabitCard';
@@ -36,7 +37,14 @@ import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
 import { cn } from '@/lib/cn';
 
-export function DashboardView({ onOpenHistory, onPlanWeek }: { onOpenHistory: () => void; onPlanWeek: () => void }) {
+export function DashboardView({
+  onOpenHistory,
+  onPlanWeek,
+}: {
+  /** Open the Chronicle overlay. Pass a habitId to scroll directly to that habit's card. */
+  onOpenHistory: (habitId?: string) => void;
+  onPlanWeek: () => void;
+}) {
   const today = toISODate();
   const [viewDate, setViewDate] = useState(today);
   const isToday = viewDate === today;
@@ -50,6 +58,11 @@ export function DashboardView({ onOpenHistory, onPlanWeek }: { onOpenHistory: ()
   const summary = useGameStore(selectDailySummary);
   const recovery = useGameStore(selectRecoveryState);
   const accountWarnings = useGameStore(selectAccountHealth);
+  const challenges = useGameStore((s) => s.challenges);
+  // Pick the first active, non-expired challenge for the callout strip.
+  const activeChallenge = isToday
+    ? (challenges.find((c) => c.status === 'active' && !isExpired(c, today)) ?? null)
+    : null;
 
   const [showForm, setShowForm] = useState(false);
   const [showRecovery, setShowRecovery] = useState(false);
@@ -86,6 +99,9 @@ export function DashboardView({ onOpenHistory, onPlanWeek }: { onOpenHistory: ()
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
       <HeroBanner />
+
+      {/* Active challenge callout — compact strip below the hero banner */}
+      {activeChallenge && <ActiveChallengeCallout challenge={activeChallenge} today={today} />}
 
       {pendingLevelUp && (
         <Panel tone="wood" className="flex items-center gap-3 p-4">
@@ -137,7 +153,12 @@ export function DashboardView({ onOpenHistory, onPlanWeek }: { onOpenHistory: ()
       {/* Quest Log panel */}
       <Panel tone="parchment" className="p-4">
         <div className="mb-3 flex items-center gap-2">
-          <SectionTitle className="flex-1">{title}</SectionTitle>
+          <div className="flex-1">
+            <SectionTitle>{title}</SectionTitle>
+            {isToday && (
+              <p className="mt-0.5 font-display text-[11px] text-ink-muted">Your daily habits</p>
+            )}
+          </div>
           {!isToday && (
             <Button
               variant="secondary"
@@ -156,7 +177,7 @@ export function DashboardView({ onOpenHistory, onPlanWeek }: { onOpenHistory: ()
           />
           <Button
             variant="secondary"
-            onClick={onOpenHistory}
+            onClick={() => onOpenHistory()}
             className="flex items-center gap-1 px-2.5 py-1.5"
             aria-label="History"
           >
@@ -199,7 +220,7 @@ export function DashboardView({ onOpenHistory, onPlanWeek }: { onOpenHistory: ()
                   <Star className="h-3 w-3 fill-gold-deep" /> Focus Habits
                 </div>
                 {pendingFocus.map((h) => (
-                  <HabitCard key={h.id} habit={h} viewDate={viewDate} />
+                  <HabitCard key={h.id} habit={h} viewDate={viewDate} onViewHistory={onOpenHistory} />
                 ))}
                 {pendingOther.length > 0 && (
                   <div className="pt-1 font-display text-[11px] uppercase tracking-[0.18em] text-ink-light">
@@ -209,7 +230,7 @@ export function DashboardView({ onOpenHistory, onPlanWeek }: { onOpenHistory: ()
               </>
             )}
             {pendingOther.map((h) => (
-              <HabitCard key={h.id} habit={h} viewDate={viewDate} />
+              <HabitCard key={h.id} habit={h} viewDate={viewDate} onViewHistory={onOpenHistory} />
             ))}
             {done.length > 0 && (
               <>
@@ -217,7 +238,7 @@ export function DashboardView({ onOpenHistory, onPlanWeek }: { onOpenHistory: ()
                   Completed ({done.length})
                 </div>
                 {done.map((h) => (
-                  <HabitCard key={h.id} habit={h} viewDate={viewDate} />
+                  <HabitCard key={h.id} habit={h} viewDate={viewDate} onViewHistory={onOpenHistory} />
                 ))}
               </>
             )}
@@ -227,7 +248,7 @@ export function DashboardView({ onOpenHistory, onPlanWeek }: { onOpenHistory: ()
                   Suspended ({suspended.length})
                 </div>
                 {suspended.map((h) => (
-                  <HabitCard key={h.id} habit={h} viewDate={viewDate} />
+                  <HabitCard key={h.id} habit={h} viewDate={viewDate} onViewHistory={onOpenHistory} />
                 ))}
               </>
             )}
@@ -367,6 +388,50 @@ function StatChip({
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Active Challenge Callout
+// ---------------------------------------------------------------------------
+
+import { Trophy } from 'lucide-react';
+
+function ActiveChallengeCallout({
+  challenge,
+  today,
+}: {
+  challenge: ActiveChallenge;
+  today: string;
+}) {
+  const daysLeft = Math.max(0, challenge.def.durationDays - daysBetween(today, challenge.startISO));
+  const pct = challenge.def.goal > 0
+    ? Math.min(100, Math.round((challenge.progress / challenge.def.goal) * 100))
+    : 0;
+
+  return (
+    <Panel tone="parchment" className="px-4 py-3">
+      <div className="flex items-center gap-2">
+        <Trophy className="h-4 w-4 shrink-0 text-gold-deep" />
+        <span className="min-w-0 flex-1 truncate font-display text-sm font-bold text-ink">
+          {challenge.def.name}
+        </span>
+        <span className="shrink-0 font-display text-xs text-ink-muted">
+          {daysLeft}d left
+        </span>
+      </div>
+      <div className="mt-2 h-2 overflow-hidden rounded-full border border-gold-deep/40 bg-wood-900/20">
+        <div
+          className="h-full rounded-full bg-gradient-to-r from-gold-deep to-gold-bright transition-[width]"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <div className="mt-1 font-display text-[11px] tabular-nums text-ink-muted">
+        {challenge.progress} / {challenge.def.goal} · {pct}%
+      </div>
+    </Panel>
+  );
+}
+
+// ---------------------------------------------------------------------------
 
 import type { RecommendedAction } from '@/engine/dashboard';
 

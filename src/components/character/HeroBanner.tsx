@@ -1,6 +1,6 @@
-import { Coins, Zap } from 'lucide-react';
+import { CheckSquare, Coins, Zap } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
-import { selectLevelProgress, selectTopStats } from '@/store/selectors';
+import { selectLevelProgress, selectTopStats, selectDailySummary } from '@/store/selectors';
 import { MOOD_META } from '@/engine/mood';
 import { MAX_LEVEL } from '@/engine/progression';
 import { avatarCrest } from '@/lib/sprites';
@@ -13,6 +13,7 @@ export function HeroBanner() {
   const character = useGameStore((s) => s.character);
   const progress = useGameStore(selectLevelProgress);
   const topStat = useGameStore(selectTopStats)[0];
+  const summary = useGameStore(selectDailySummary);
   const mood = MOOD_META[character.mood];
 
   const name = character.name || 'Adventurer';
@@ -39,6 +40,12 @@ export function HeroBanner() {
         <div className="mt-0.5 flex items-center gap-2 text-sm text-on-wood-mid">
           <span title={mood.note}>{mood.emoji}</span>
           <span className="italic">{mood.label}</span>
+          {summary.scheduledToday > 0 && (
+            <span className="ml-auto flex items-center gap-1 font-display text-xs text-on-wood-mid">
+              <CheckSquare className="h-3.5 w-3.5 shrink-0" />
+              {summary.completedToday}/{summary.scheduledToday} today
+            </span>
+          )}
         </div>
 
         {/* XP to next level */}
