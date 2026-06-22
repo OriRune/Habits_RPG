@@ -27,6 +27,7 @@ import { scoreToStars } from '@/engine/trials/trials';
 import { useChaseLoop } from '@/hooks/useChaseLoop';
 import { useChaseAudio } from '@/hooks/useChaseAudio';
 import { useGameStore } from '@/store/useGameStore';
+import { FitToWidth } from '@/components/ui/FitToWidth';
 
 type RunOutcome = 'escaped' | 'caught' | 'fell';
 
@@ -644,7 +645,8 @@ function RooftopChaseRun({ onRunDone }: { onRunDone: (r: RunResult) => void }) {
         <strong className="text-ink">Dash</strong> (Shift/D) outrun the beast
       </p>
 
-      {/* ── Play area ───────────────────────────────────────────────────────── */}
+      {/* ── Play area — FitToWidth scales it down on narrow screens ─────────── */}
+      <FitToWidth contentWidth={VIEW_W} contentHeight={VIEW_H}>
       <div
         className="relative overflow-hidden rounded-lg border-2 border-gold-deep/50 select-none cursor-pointer"
         style={{ width: VIEW_W, height: VIEW_H }}
@@ -953,6 +955,7 @@ function RooftopChaseRun({ onRunDone }: { onRunDone: (r: RunResult) => void }) {
           </div>
         )}
       </div>
+      </FitToWidth>
 
       {/* ── Chaser lead meter ──────────────────────────────────────────────────── */}
       {state.chaserActive ? (

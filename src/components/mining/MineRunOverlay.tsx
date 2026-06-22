@@ -13,6 +13,7 @@ import { mineRockSprite, mineFloorTile, mineOreSprite } from '@/lib/minigameArt'
 import { getMaterial } from '@/engine/materials';
 import * as sfx from '@/lib/sfx';
 import { Button } from '@/components/ui/Button';
+import { FitToWidth } from '@/components/ui/FitToWidth';
 import { cn } from '@/lib/cn';
 import { MineControls } from './MineControls';
 import { CrawlerAvatar } from '@/components/minigame/CrawlerAvatar';
@@ -566,7 +567,8 @@ export function MineRunOverlay() {
         </div>
       )}
 
-      {/* Cavern viewport */}
+      {/* Cavern viewport — wrapped in FitToWidth so it scales down on narrow screens */}
+      <FitToWidth contentWidth={BOARD_PX} contentHeight={BOARD_PX}>
       <div
         className="relative shrink-0 overflow-hidden rounded-md border-2 border-gold-deep/60"
         style={{
@@ -1096,6 +1098,7 @@ export function MineRunOverlay() {
           );
         })()}
       </div>
+      </FitToWidth>
 
       {/* Spell ability bar */}
       {mine.knownSpells.length > 0 && mine.status === 'active' && (
