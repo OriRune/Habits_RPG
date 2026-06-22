@@ -65,21 +65,16 @@ improvement plan (recommendations). Read the analysis before the plan.
 | File | Description |
 |---|---|
 | [`lockpicking-minigame-analysis.md`](./lockpicking-minigame-analysis.md) | Analysis of the DX Lockpicking trial. |
-| [`lockpicking-improvement-plan.md`](./lockpicking-improvement-plan.md) | Improvement recommendations. |
 | [`rooftop-chase-minigame-analysis2.md`](./rooftop-chase-minigame-analysis2.md) | **Current** analysis of the AG Rooftop Chase trial (revised 2026-06-). |
-| [`rooftop-chase-improvement-plan.md`](./rooftop-chase-improvement-plan.md) | Improvement recommendations (based on analysis2). |
+| [`rooftop-chase-improvement-plan.md`](./rooftop-chase-improvement-plan.md) | Improvement recommendations (based on analysis2). 6 recommendations still pending. |
 | [`armory-break-minigame-analysis.md`](./armory-break-minigame-analysis.md) | Analysis of the ST Armory Break trial. |
-| [`armory-break-improvement-plan.md`](./armory-break-improvement-plan.md) | Improvement recommendations. |
 | [`long-march-minigame-analysis.md`](./long-march-minigame-analysis.md) | Analysis of the EN Long March trial. |
-| [`long-march-improvement-plan.md`](./long-march-improvement-plan.md) | Improvement recommendations. |
+| [`long-march-improvement-plan.md`](./long-march-improvement-plan.md) | Improvement recommendations. Hard Mode (2.2) and streak indicator (6.3) not yet implemented. |
 | [`spirit-grove-minigame-analysis.md`](./spirit-grove-minigame-analysis.md) | Analysis of the WI Spirit Grove trial. Note: a dedicated `src/engine/trials/spiritGrove.ts` now exists (added Phase 7); all 8 trials follow the same engine-file pattern. |
-| [`spirit-grove-improvement-plan.md`](./spirit-grove-improvement-plan.md) | Improvement recommendations. |
+| [`spirit-grove-improvement-plan.md`](./spirit-grove-improvement-plan.md) | Improvement recommendations. Ambient audio loop (4.1) and WI clue-hiding (6.2) not yet implemented. |
 | [`royal-court-minigame-analysis.md`](./royal-court-minigame-analysis.md) | Analysis of the CH Royal Court trial. |
-| [`royal-court-improvement-plan.md`](./royal-court-improvement-plan.md) | Improvement recommendations. |
 | [`ancient-library-minigame-analysis.md`](./ancient-library-minigame-analysis.md) | Analysis of the KN Ancient Library trial. |
-| [`ancient-library-improvement-plan.md`](./ancient-library-improvement-plan.md) | Improvement recommendations. |
 | [`last-stand-minigame-analysis.md`](./last-stand-minigame-analysis.md) | Analysis of the HP Last Stand trial. |
-| [`last-stand-improvement-plan.md`](./last-stand-improvement-plan.md) | Improvement recommendations. |
 
 ---
 
@@ -93,6 +88,11 @@ Superseded docs moved to `docs/archived/`. Kept for historical reference only â€
 | [`archived/MULTIPLAYER_PLAN.md`](./archived/MULTIPLAYER_PLAN.md) | Original multiplayer design plan. Historical context; superseded in scope by the current roadmap and the multiplayer features now shipped. Co-op clock-offset note still referenced at line 257. |
 | [`archived/arena-minigame-analysis.md`](./archived/arena-minigame-analysis.md) | Pre-Phase-D Arena analysis. Superseded by `arena-minigame-analysis-2.md`. |
 | [`archived/rooftop-chase-minigame-analysis.md`](./archived/rooftop-chase-minigame-analysis.md) | Earlier Rooftop Chase analysis. Superseded by `rooftop-chase-minigame-analysis2.md`. |
+| [`archived/lockpicking-improvement-plan.md`](./archived/lockpicking-improvement-plan.md) | All 19 recommendations fully implemented (2026-06-22 audit). |
+| [`archived/armory-break-improvement-plan.md`](./archived/armory-break-improvement-plan.md) | All structural/mechanic recommendations implemented; only "verify reward balance after playtesting" remains (no code target). |
+| [`archived/ancient-library-improvement-plan.md`](./archived/ancient-library-improvement-plan.md) | All gameplay/engine recommendations implemented; only component RTL tests and trivial CSS star animation remain. |
+| [`archived/royal-court-improvement-plan.md`](./archived/royal-court-improvement-plan.md) | All substantive recommendations implemented; remaining gaps (dynamic star thresholds, CH 5th-choice) explicitly optional/speculative. |
+| [`archived/last-stand-improvement-plan.md`](./archived/last-stand-improvement-plan.md) | All Pass 1â€“6 recommendations implemented; remaining gaps (lane redesign, HP scaling) explicitly lowest-priority/optional. |
 
 ---
 
