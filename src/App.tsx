@@ -68,7 +68,7 @@ export default function App() {
   const authStatus = useAuthStore((s) => s.status);
 
   // Wire the Supabase session ↔ cloud-save lifecycle (no-op without a backend).
-  const { cloudReady } = useCloudSync();
+  const { cloudReady, clockReady } = useCloudSync();
   // Party realtime (presence/chat/quests) + quest-progress reporting (no-op when
   // not in a party / no backend).
   useParty();
@@ -83,12 +83,14 @@ export default function App() {
   }, [paletteId, customPalette, darkMode]);
 
   // Resume elapsed suspensions and surface the weekly report if a new week has begun.
+  // Waits for clockReady so the very first evaluation uses server time (not raw device
+  // clock). Both checks are idempotent — safe to call once clockReady flips true.
   // Only for an established save — a brand-new hero hasn't finished creation yet.
   useEffect(() => {
-    if (!created) return;
+    if (!created || !clockReady) return;
     normalizeHabits();
     checkWeeklyRollover();
-  }, [created, normalizeHabits, checkWeeklyRollover]);
+  }, [created, clockReady, normalizeHabits, checkWeeklyRollover]);
 
   // Auth gate (only when a backend is configured; otherwise pure single-player).
   // Order: wait for the session check → sign in → create character → main app.

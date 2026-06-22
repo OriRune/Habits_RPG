@@ -35,6 +35,26 @@ afterEach(() => {
 
 // ─── 5. Tests: syncServerClock ────────────────────────────────────────────────
 
+describe('syncServerClock — always resolves (clockReady safety)', () => {
+  // `useCloudSync` calls `.finally(() => setClockReady(true))` on the promise
+  // returned by syncServerClock. These tests confirm the function always resolves
+  // (never rejects) so clockReady is always set regardless of backend outcome.
+
+  it('resolves without throwing when the RPC returns an error', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mockRpc.mockResolvedValueOnce({ data: null, error: { message: 'network timeout' } });
+    await expect(syncServerClock()).resolves.toBeUndefined();
+    warnSpy.mockRestore();
+  });
+
+  it('resolves without throwing when the RPC returns null data', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mockRpc.mockResolvedValueOnce({ data: null, error: null });
+    await expect(syncServerClock()).resolves.toBeUndefined();
+    warnSpy.mockRestore();
+  });
+});
+
 describe('syncServerClock', () => {
   it('applies RTT-compensated offset after a successful server_now call', async () => {
     // The mock resolves instantly (rtt ≈ 0), so the offset should be
