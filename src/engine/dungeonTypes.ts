@@ -48,4 +48,7 @@ export interface DungeonRun {
   pendingBoon: string[] | null;
   /** Wares offered in a merchant room (null outside one). */
   merchant: MerchantOffer[] | null;
+  /** Cumulative stat-XP granted to the character during this run (via grantStatXp calls).
+   *  Tracked for the balance ledger; flushed to earnings.xp['dungeon'] at collectDungeon. */
+  earnedXp?: number;
 }

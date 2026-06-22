@@ -7,7 +7,7 @@ import {
   isCompletedOn,
   weekCompletions,
 } from './habits';
-import { addDays, startOfWeek } from './date';
+import { addDays, startOfWeek, weekdayOf } from './date';
 
 export type CellState = 'green' | 'yellow' | 'red' | 'gray' | 'future' | 'none';
 
@@ -187,6 +187,88 @@ export interface HeatWeek {
   cells: HeatCell[];
   /** Month name shown above the column when the month changes. */
   monthLabel?: string;
+}
+
+/**
+ * Completion breakdown by weekday (0=Sun..6=Sat) over the last `windowDays` calendar days.
+ * Only day-scheduled habits (daily / weekdays / custom) are counted — times_per_week and
+ * as_needed return false from `isScheduledOn` so they are naturally excluded. Retired
+ * habits are skipped.
+ */
+export function dayOfWeekBreakdown(
+  habits: Habit[],
+  today: string,
+  windowDays = 84,
+): { weekday: number; scheduled: number; completed: number }[] {
+  const buckets = Array.from({ length: 7 }, (_, wd) => ({ weekday: wd, scheduled: 0, completed: 0 }));
+  const windowStart = addDays(today, -(windowDays - 1));
+
+  for (const habit of habits) {
+    if (habit.status === 'retired') continue;
+    const start = habit.createdISO > windowStart ? habit.createdISO : windowStart;
+    let day = start;
+    for (let i = 0; i < MAX_DAYS && day <= today; i++) {
+      if (effectiveStatus(habit, day) === 'active' && isScheduledOn(habit, day)) {
+        const wd = weekdayOf(day);
+        buckets[wd].scheduled++;
+        if (isCompletedOn(habit, day)) buckets[wd].completed++;
+      }
+      day = addDays(day, 1);
+    }
+  }
+
+  return buckets;
+}
+
+/**
+ * Account-wide habit completion rate (0–100) per week over the last `weeks` Sunday-started
+ * weeks. Day-scheduled habits are included; times_per_week habits are counted only for
+ * complete past weeks; as_needed and retired habits are excluded.
+ * The current (in-progress) week uses partial data up to today.
+ */
+export function consistencyTrend(
+  habits: Habit[],
+  today: string,
+  weeks = 12,
+): { weekStart: string; pct: number }[] {
+  const result: { weekStart: string; pct: number }[] = [];
+  const currentWeek = startOfWeek(today);
+  let ws = addDays(currentWeek, -7 * (weeks - 1));
+
+  for (let w = 0; w < weeks; w++) {
+    const weekEnd = addDays(ws, 6);
+    const clampedEnd = weekEnd <= today ? weekEnd : today;
+    let scheduled = 0;
+    let completed = 0;
+
+    for (const habit of habits) {
+      if (habit.status === 'retired') continue;
+
+      if (habit.frequency === 'times_per_week') {
+        // Only count fully-past weeks
+        if (weekEnd < today && habit.createdISO <= weekEnd) {
+          const target = habit.timesPerWeek ?? 1;
+          scheduled += target;
+          completed += Math.min(weekCompletions(habit, ws), target);
+        }
+      } else if (habit.frequency !== 'as_needed') {
+        const habitStart = habit.createdISO > ws ? habit.createdISO : ws;
+        let day = habitStart;
+        for (let i = 0; i < MAX_DAYS && day <= clampedEnd; i++) {
+          if (effectiveStatus(habit, day) === 'active' && isScheduledOn(habit, day)) {
+            scheduled++;
+            if (isCompletedOn(habit, day)) completed++;
+          }
+          day = addDays(day, 1);
+        }
+      }
+    }
+
+    result.push({ weekStart: ws, pct: scheduled > 0 ? Math.round((completed / scheduled) * 100) : 0 });
+    ws = addDays(ws, 7);
+  }
+
+  return result;
 }
 
 /** Last `weeks` Sunday-started weeks ending with today's week, as heatmap columns. */

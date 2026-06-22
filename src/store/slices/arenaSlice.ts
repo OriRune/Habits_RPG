@@ -18,7 +18,7 @@ import { bossForLevel } from '@/engine/bosses';
 import { MAX_LEVEL } from '@/engine/progression';
 import type { Dir as GridDir, Cell as GridCell } from '@/engine/grid';
 import type { GameState } from '../shared';
-import { fighterFor, commitArena } from '../shared';
+import { fighterFor, commitArena, energySpentPatch } from '../shared';
 
 // ArenaSpeed is re-exported for convenience (settings uses it).
 export type { ArenaSpeed };
@@ -73,6 +73,7 @@ export const createArenaSlice: StateCreator<
           energy: free ? s.character.energy : s.character.energy - ARENA_ENERGY_COST,
         },
         arena,
+        ...(free ? {} : energySpentPatch(s, ARENA_ENERGY_COST)),
       };
     }),
 

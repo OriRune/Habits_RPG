@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { Pickaxe, Zap } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { MINE_ENERGY_COST } from '@/engine/mining';
 import { selectMineStats } from '@/store/selectors';
 import * as sfx from '@/lib/sfx';
+import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
@@ -19,11 +21,13 @@ function milestoneHint(deepest: number): string {
 
 /** Entrance screen for the Deep Mine (the active run renders in MineRunOverlay). */
 export function MiningView() {
+  const [showRitual, setShowRitual] = useState(false);
   const energy = useGameStore((s) => s.character.energy);
   const deepestMineFloor = useGameStore((s) => s.deepestMineFloor);
   const bestMineScore = useGameStore((s) => s.bestMineScore);
   const beginMining = useGameStore((s) => s.beginMining);
   const mineStats = useGameStore(selectMineStats);
+  const showAdventureRitual = useGameStore((s) => s.settings.showAdventureRitual);
 
   const canEnter = energy >= MINE_ENERGY_COST;
 
@@ -95,9 +99,20 @@ export function MiningView() {
           </div>
         </div>
 
-        <Button onClick={() => { void sfx.resume(); beginMining(); }} disabled={!canEnter} className="w-full py-2.5">
+        <Button
+          onClick={() => canEnter && showAdventureRitual ? setShowRitual(true) : (void sfx.resume(), beginMining())}
+          disabled={!canEnter}
+          className="w-full py-2.5"
+        >
           {canEnter ? 'Enter the Mine' : `Need ${MINE_ENERGY_COST} energy (complete habits)`}
         </Button>
+        {showRitual && (
+          <AdventureRitualModal
+            energyCost={MINE_ENERGY_COST}
+            onConfirm={() => { setShowRitual(false); void sfx.resume(); beginMining(); }}
+            onCancel={() => setShowRitual(false)}
+          />
+        )}
       </Panel>
     </div>
   );

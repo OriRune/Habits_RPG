@@ -2,6 +2,13 @@
 // components can compute view data without bloating the store definition.
 import { type StatId } from '@/engine/stats';
 import {
+  buildBalanceReport,
+  buildEnergySummary,
+  freshEarningsLedger,
+  type BalanceReport,
+  type EnergySummary,
+} from '@/engine/balance';
+import {
   type Habit,
   isCompletedOn,
   isLoggableOn,
@@ -13,8 +20,14 @@ import { levelProgress } from '@/engine/leveling';
 import { rankStats } from '@/engine/classes';
 import { deriveCombatant } from '@/engine/combat';
 import { dungeonStamina } from '@/engine/crawl';
-import { consistencyScore } from '@/engine/tracking';
+import { consistencyScore, consistencyTrend, dayOfWeekBreakdown } from '@/engine/tracking';
+import { previewNextGains } from '@/engine/progression';
+import { buildDailySummary, type DailySummary } from '@/engine/dashboard';
+import { accountHealth, recoveryState, type RecoveryState } from '@/engine/habitHealth';
 import { type GameState, totalXp } from './useGameStore';
+
+/** Cheapest minigame entry cost (Skill Trial = 1 energy). Used for the "energy ready" hint. */
+const MIN_MINIGAME_COST = 1;
 
 export function selectTotalXp(s: GameState): number {
   return totalXp(s.character.statXp);
@@ -99,3 +112,54 @@ export function selectHabitLoadWarning(s: GameState): string | null {
   }
   return null;
 }
+
+/**
+ * Preview which stat points the character would gain on the next level-up,
+ * based on Training XP earned since the last level-up.
+ */
+export function selectNextStatGains(s: GameState): Record<StatId, number> {
+  return previewNextGains(s.character);
+}
+
+/** Full daily summary for the dashboard command center. */
+export function selectDailySummary(s: GameState): DailySummary {
+  const today = toISODate();
+  const loadWarning = selectHabitLoadWarning(s) !== null;
+  const recovery = recoveryState(s.habits, today);
+  return buildDailySummary(s.habits, today, {
+    currentEnergy: s.character.energy,
+    minMinigameCost: MIN_MINIGAME_COST,
+    loadWarning,
+    struggling: recovery.struggling,
+  });
+}
+
+/** Recovery state — whether the account appears to be struggling. */
+export function selectRecoveryState(s: GameState): RecoveryState {
+  return recoveryState(s.habits, toISODate());
+}
+
+/** Account-level habit health warnings (load, stat concentration). */
+export function selectAccountHealth(s: GameState) {
+  return accountHealth(s.habits, toISODate());
+}
+
+/** Account completion-rate (0–100) per week over the last 12 weeks. */
+export function selectConsistencyTrend(s: GameState) {
+  return consistencyTrend(s.habits, toISODate());
+}
+
+/** Completion breakdown by weekday (0=Sun..6=Sat) over the last 12 weeks (84 days). */
+export function selectDayOfWeek(s: GameState) {
+  return dayOfWeekBreakdown(s.habits, toISODate());
+}
+
+export function selectBalanceReport(s: GameState): BalanceReport {
+  return buildBalanceReport(s.earnings ?? freshEarningsLedger());
+}
+
+export function selectEnergySummary(s: GameState): EnergySummary {
+  return buildEnergySummary(s.energyLog ?? {}, toISODate());
+}
+
+export type { DailySummary, RecoveryState };

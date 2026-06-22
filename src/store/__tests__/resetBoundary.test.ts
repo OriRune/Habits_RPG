@@ -92,4 +92,70 @@ describe('weekly rollover', () => {
 
     expect(get().lastWeekKey).toBe('2026-01-18');
   });
+
+  it('generates a pendingReport on first rollover', () => {
+    const saturday = new Date(2026, 0, 17);
+    _setNow(() => saturday);
+    get().resetGame();
+    expect(get().pendingReport).toBeNull();
+
+    const nextSunday = new Date(2026, 0, 18);
+    _setNow(() => nextSunday);
+    get().checkWeeklyRollover();
+
+    expect(get().pendingReport).not.toBeNull();
+    // The report covers the week that just ended.
+    expect(get().pendingReport!.weekKey).toBe('2026-01-11');
+  });
+
+  it('does not regenerate the report on a second checkWeeklyRollover in the same new week', () => {
+    // Roll over to a new week, confirm report is set.
+    const saturday = new Date(2026, 0, 17);
+    _setNow(() => saturday);
+    get().resetGame();
+
+    const nextSunday = new Date(2026, 0, 18);
+    _setNow(() => nextSunday);
+    get().checkWeeklyRollover();
+    expect(get().pendingReport).not.toBeNull();
+
+    // Dismiss the report (as the UI would do).
+    get().dismissWeeklyReport();
+    expect(get().pendingReport).toBeNull();
+
+    // Second call in the same week (same Sunday) — guard fires → no-op.
+    get().checkWeeklyRollover();
+    expect(get().pendingReport).toBeNull(); // NOT regenerated
+    expect(get().lastWeekKey).toBe('2026-01-18'); // unchanged
+  });
+
+  it('completeHabit on rollover day also applies the rollover without duplicating', () => {
+    // Seed store on Saturday, then advance to Sunday and complete a habit.
+    // Both completeHabit (via applyWeeklyRollover) and a subsequent
+    // checkWeeklyRollover should each fire at most once.
+    const saturday = new Date(2026, 0, 17);
+    _setNow(() => saturday);
+    get().resetGame();
+
+    // Add a habit so we can complete it.
+    get().addHabit({ name: 'Test habit', stat: 'WI', type: 'binary', frequency: 'daily', difficulty: 'easy' });
+
+    const nextSunday = new Date(2026, 0, 18);
+    _setNow(() => nextSunday);
+
+    // completeHabit internally calls applyWeeklyRollover.
+    get().completeHabit(get().habits[0].id);
+    expect(get().lastWeekKey).toBe('2026-01-18');
+    expect(get().pendingReport).not.toBeNull();
+
+    // The report key should be for the week that ended.
+    const firstReport = get().pendingReport!;
+    expect(firstReport.weekKey).toBe('2026-01-11');
+
+    // A subsequent checkWeeklyRollover call (as App.tsx fires) must be a no-op.
+    get().checkWeeklyRollover();
+    // pendingReport unchanged — not overwritten with a new report.
+    expect(get().pendingReport).toBe(firstReport);
+    expect(get().lastWeekKey).toBe('2026-01-18');
+  });
 });

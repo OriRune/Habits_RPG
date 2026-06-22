@@ -76,13 +76,14 @@ vi.mock('@/net/supabaseClient', () => {
 
 // ─── 3. Now import the modules under test (after mocks are registered) ────────
 
-import { pushCloudSave, pullCloudSave, stopAutoSync } from '../cloudSave';
+import { pushCloudSave, pullCloudSave, stopAutoSync, wipeLocalSave } from '../cloudSave';
 import { useAuthStore } from '../auth';
 import { useGameStore } from '@/store/useGameStore';
 
 // ─── 4. Helpers ───────────────────────────────────────────────────────────────
 
 const STORAGE_KEY = 'habits-rpg-save';
+const OWNER_KEY = 'habits-rpg-owner';
 
 /** A minimal valid localStorage persist envelope. */
 function makeEnvelope(extra: Record<string, unknown> = {}) {
@@ -126,6 +127,8 @@ describe('cloudSave', () => {
 
     // Provide a valid save envelope so durableEnvelope() succeeds
     localStorage.setItem(STORAGE_KEY, makeEnvelope());
+    // Clear the owner tag so each test starts clean
+    localStorage.removeItem(OWNER_KEY);
 
     // Stub out rehydrate so pullCloudSave doesn't try to rehydrate the store
     vi.spyOn(useGameStore.persist, 'rehydrate').mockResolvedValue(undefined);
@@ -350,6 +353,29 @@ describe('cloudSave', () => {
       expect(mocks.maybySingleImpl).not.toHaveBeenCalled();
     });
 
+    it('post-roundtrip hasActiveRun() guard aborts pull if a run starts mid-await', async () => {
+      // Before the network call: no active run → guard at cloudSave.ts:109 passes.
+      // During the SELECT await: a mining run starts (e.g. user tapped "Enter Mine").
+      // After the SELECT resolves: guard at cloudSave.ts:137 fires → no rehydrate.
+      const gs = useGameStore.getState();
+      mocks.maybySingleImpl.mockImplementationOnce(async () => {
+        // Side-effect: inject an active run *inside* the async boundary so the
+        // pre-network guard (line 109) passed but the post-roundtrip guard (line 137)
+        // will now see an active run.
+        useGameStore.setState({ ...gs, mining: { floor: 1 } as typeof gs.mining });
+        return {
+          data: { state: { character: { name: 'Cloud', level: 1, statXp: {}, statLevels: {} }, habits: [] }, version: 5 },
+          error: null,
+        };
+      });
+
+      await pullCloudSave();
+
+      // SELECT was called (pre-network guard passed), but rehydrate was aborted.
+      expect(mocks.maybySingleImpl).toHaveBeenCalledTimes(1);
+      expect(useGameStore.persist.rehydrate).not.toHaveBeenCalled();
+    });
+
     it('pull error → logs and returns without rehydrating', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
@@ -364,6 +390,78 @@ describe('cloudSave', () => {
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[cloudSave]'), expect.any(String));
 
       warnSpy.mockRestore();
+    });
+  });
+
+  // ─── account-switch safety (owner tracking) ──────────────────────────────
+
+  describe('account-switch safety', () => {
+    it('wipeLocalSave removes STORAGE_KEY and OWNER_KEY from localStorage', () => {
+      localStorage.setItem(STORAGE_KEY, makeEnvelope());
+      localStorage.setItem(OWNER_KEY, 'uid-test');
+
+      wipeLocalSave();
+
+      expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+      expect(localStorage.getItem(OWNER_KEY)).toBeNull();
+    });
+
+    it('pullCloudSave stamps OWNER_KEY with the current uid after a successful pull', async () => {
+      // No prior owner (pristine single-player progress or first sign-in)
+      mocks.maybySingleImpl.mockResolvedValueOnce({
+        data: { state: { character: { name: 'Cloud', level: 1, statXp: {}, statLevels: {} }, habits: [] }, version: 1 },
+        error: null,
+      });
+
+      await pullCloudSave();
+
+      expect(localStorage.getItem(OWNER_KEY)).toBe('uid-test');
+    });
+
+    it('pullCloudSave stamps OWNER_KEY even when no cloud row exists (falls back to push)', async () => {
+      // New account — no cloud save yet; pull falls back to insert
+      mocks.maybySingleImpl.mockResolvedValueOnce({ data: null, error: null });
+      mocks.insertImpl.mockResolvedValueOnce({ data: null, error: null });
+
+      await pullCloudSave();
+
+      expect(localStorage.getItem(OWNER_KEY)).toBe('uid-test');
+    });
+
+    it('foreign-owner guard: resetGame is called when OWNER_KEY belongs to a different user', async () => {
+      // A different user's uid is stored as the owner
+      localStorage.setItem(OWNER_KEY, 'some-other-user');
+      // Spy AFTER beforeEach's setState so we're on the current state object
+      const resetSpy = vi.spyOn(useGameStore.getState(), 'resetGame').mockImplementation(() => {});
+
+      mocks.maybySingleImpl.mockResolvedValueOnce({
+        data: { state: { character: { name: 'Cloud', level: 1, statXp: {}, statLevels: {} }, habits: [] }, version: 1 },
+        error: null,
+      });
+
+      await pullCloudSave();
+
+      expect(resetSpy).toHaveBeenCalledTimes(1);
+      // Owner is updated to the current authenticated user after the pull
+      expect(localStorage.getItem(OWNER_KEY)).toBe('uid-test');
+
+      resetSpy.mockRestore();
+    });
+
+    it('same-owner: resetGame is NOT called when OWNER_KEY matches the current uid', async () => {
+      localStorage.setItem(OWNER_KEY, 'uid-test'); // same as signIn()
+      const resetSpy = vi.spyOn(useGameStore.getState(), 'resetGame').mockImplementation(() => {});
+
+      mocks.maybySingleImpl.mockResolvedValueOnce({
+        data: { state: { character: { name: 'Cloud', level: 1, statXp: {}, statLevels: {} }, habits: [] }, version: 1 },
+        error: null,
+      });
+
+      await pullCloudSave();
+
+      expect(resetSpy).not.toHaveBeenCalled();
+
+      resetSpy.mockRestore();
     });
   });
 });

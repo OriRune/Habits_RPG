@@ -23,8 +23,8 @@ import {
   applyMineRemoteAttack,
 } from '@/net/coop/reduce';
 import type { GameState } from '../shared';
-import { fighterFor, gearBonuses, commitMining, commitMineDeath } from '../shared';
-import { getMineRng, getMineBaseSeed, setMineRun } from '../runRng';
+import { fighterFor, gearBonuses, commitMining, commitMineDeath, energySpentPatch } from '../shared';
+import { getMineRng, getMineBaseSeed, setMineRun, acceptMineWorldT } from '../runRng';
 
 export interface MiningSlice {
   mining: MineState | null;
@@ -128,6 +128,7 @@ export const createMiningSlice: StateCreator<
         ownedGear,
         equipment,
         mining,
+        ...(free ? {} : energySpentPatch(s, MINE_ENERGY_COST)),
       };
     }),
 
@@ -195,6 +196,7 @@ export const createMiningSlice: StateCreator<
   coopApplyWorld: (slice) =>
     set((s) => {
       if (!s.mining) return s;
+      if (!acceptMineWorldT(slice.t)) return s;
       return { mining: applyMineWorldSlice(s.mining, slice, { baseSeed: getMineBaseSeed(), rng: getMineRng() }) };
     }),
 

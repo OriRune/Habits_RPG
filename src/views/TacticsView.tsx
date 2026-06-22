@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Grid3x3, Zap, Mountain, Sparkles, Gift } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
+import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
 import { TACTICS_ENERGY_COST, TACTICS_UNLOCK_LEVEL, TACTICS_GRANTED_SPELLS, STA_REGEN_PER_TURN, isTacticsLoadoutSpell, type TacticsSize } from '@/engine/hexBattle';
 import { getSpell } from '@/engine/spells';
 import { Panel } from '@/components/ui/Panel';
@@ -33,6 +34,8 @@ export function TacticsView() {
 
   // Default the loadout to the first LOADOUT_CAP eligible spells.
   const [loadout, setLoadout] = useState<string[]>(() => eligibleSpells.slice(0, LOADOUT_CAP));
+  const [showRitual, setShowRitual] = useState(false);
+  const showAdventureRitual = useGameStore((s) => s.settings.showAdventureRitual);
 
   function toggleSpell(key: string) {
     setLoadout((prev) => {
@@ -200,7 +203,10 @@ export function TacticsView() {
         </div>
 
         <Button
-          onClick={() => { void sfxResume(); beginTactics(eligibleSpells.length > 0 ? loadout : undefined); }}
+          onClick={() => {
+            if (canEnter && showAdventureRitual) { setShowRitual(true); return; }
+            void sfxResume(); beginTactics(eligibleSpells.length > 0 ? loadout : undefined);
+          }}
           disabled={!canEnter}
           className="w-full py-2.5"
         >
@@ -210,6 +216,17 @@ export function TacticsView() {
               ? 'Begin the Skirmish'
               : `Need ${TACTICS_ENERGY_COST} energy (complete habits)`}
         </Button>
+        {showRitual && (
+          <AdventureRitualModal
+            energyCost={TACTICS_ENERGY_COST}
+            onConfirm={() => {
+              setShowRitual(false);
+              void sfxResume();
+              beginTactics(eligibleSpells.length > 0 ? loadout : undefined);
+            }}
+            onCancel={() => setShowRitual(false)}
+          />
+        )}
         {!unlocked && (
           <p className="text-center text-xs text-ink-muted">
             Train your habits to reach Level {TACTICS_UNLOCK_LEVEL} — you'll level up automatically.

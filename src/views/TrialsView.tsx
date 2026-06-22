@@ -12,6 +12,7 @@ import { toISODate } from '@/engine/date';
 import { SectionTitle } from '@/components/ui/Divider';
 import { Panel } from '@/components/ui/Panel';
 import { TrialModal } from '@/components/trials/TrialModal';
+import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
 
 function formatShortDate(iso: string): string {
   const parts = iso.split('-');
@@ -39,7 +40,9 @@ export function TrialsView() {
   const bestTrialScore = useGameStore((s) => s.bestTrialScore);
   const repeatMinigames = useGameStore((s) => s.settings.repeatMinigames);
   const habits = useGameStore((s) => s.habits);
+  const showAdventureRitual = useGameStore((s) => s.settings.showAdventureRitual);
   const [openTrial, setOpenTrial] = useState<TrialId | null>(null);
+  const [pendingTrialId, setPendingTrialId] = useState<TrialId | null>(null);
 
   const today = toISODate();
   const unlocked = level >= TRIALS_UNLOCK_LEVEL;
@@ -78,7 +81,7 @@ export function TrialsView() {
               key={trial.id}
               onClick={() => {
                 if (blocked) return;
-                setOpenTrial(trial.id);
+                if (showAdventureRitual) { setPendingTrialId(trial.id); } else { setOpenTrial(trial.id); }
               }}
               disabled={blocked}
               className={`relative rounded-md border-2 p-3 text-left transition-all ${
@@ -150,7 +153,16 @@ export function TrialsView() {
         })}
       </div>
 
-      {/* Modal */}
+      {/* Adventure ritual gate */}
+      {pendingTrialId && (
+        <AdventureRitualModal
+          energyCost={TRIAL_ENERGY_COST}
+          onConfirm={() => { setOpenTrial(pendingTrialId); setPendingTrialId(null); }}
+          onCancel={() => setPendingTrialId(null)}
+        />
+      )}
+
+      {/* Trial modal */}
       {openTrial && (
         <TrialModal
           trialId={openTrial}

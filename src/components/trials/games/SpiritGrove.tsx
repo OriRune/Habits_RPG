@@ -5,72 +5,26 @@ import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import * as sfx from '@/lib/sfx';
 import {
   SPIRIT_GROVE_ROUNDS,
-  SPIRIT_GROVE_ROUND_COUNT,
-  type SpiritGroveRound,
 } from '@/content/trials';
+import {
+  type RoundResult,
+  prepareRounds,
+  spiritGroveScore,
+  validateSpiritGroveRounds,
+} from '@/engine/trials/spiritGrove';
 
 const ROUND_TRANSITION_MS = 700;
-
-interface PreparedRound {
-  round: SpiritGroveRound;
-  /** displayOrder[displayPos] = originalChoiceIndex — shuffled once per session. */
-  displayOrder: number[];
-}
-
-interface RoundResult {
-  correct: boolean;
-  /** Display-position index the player clicked (maps back via displayOrder). */
-  chosenDisplay: number;
-}
 
 interface SpiritGroveProps {
   onFinish: (score01: number) => void;
 }
 
 if (import.meta.env.DEV) {
-  for (const r of SPIRIT_GROVE_ROUNDS) {
-    if (r.correctIndex >= r.choices.length) {
-      throw new Error(
-        `Spirit Grove: correctIndex ${r.correctIndex} out of range — "${r.omen.slice(0, 40)}…"`,
-      );
-    }
-  }
-}
-
-function fisherYatesShuffle<T>(arr: T[]): T[] {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-function prepareRounds(pool: SpiritGroveRound[]): PreparedRound[] {
-  const byDiff = (d: SpiritGroveRound['difficulty']) =>
-    fisherYatesShuffle(pool.filter((r) => r.difficulty === d));
-
-  // Draw 1 easy + 2 medium + 2 hard, then pad if any tier is short.
-  const selected: SpiritGroveRound[] = [
-    ...byDiff('easy').slice(0, 1),
-    ...byDiff('medium').slice(0, 2),
-    ...byDiff('hard').slice(0, 2),
-  ];
-  if (selected.length < SPIRIT_GROVE_ROUND_COUNT) {
-    const used = new Set(selected);
-    const extras = fisherYatesShuffle(pool.filter((r) => !used.has(r)));
-    selected.push(...extras.slice(0, SPIRIT_GROVE_ROUND_COUNT - selected.length));
-  }
-
-  // Attach a shuffled choice display order to each round.
-  return selected.slice(0, SPIRIT_GROVE_ROUND_COUNT).map((round) => ({
-    round,
-    displayOrder: fisherYatesShuffle(round.choices.map((_, i) => i)),
-  }));
+  validateSpiritGroveRounds(SPIRIT_GROVE_ROUNDS);
 }
 
 export function SpiritGrove({ onFinish }: SpiritGroveProps) {
-  const prepared = useMemo(() => prepareRounds(SPIRIT_GROVE_ROUNDS), []);
+  const prepared = useMemo(() => prepareRounds(SPIRIT_GROVE_ROUNDS, Math.random), []);
 
   const [roundIndex, setRoundIndex] = useState(0);
   const [selectedDisplay, setSelectedDisplay] = useState<number | null>(null);
@@ -114,7 +68,7 @@ export function SpiritGrove({ onFinish }: SpiritGroveProps) {
       advanceFnRef.current = null;
       if (isFinal) {
         setDone(true);
-        onFinish(newCorrect / prepared.length);
+        onFinish(spiritGroveScore(newCorrect, prepared.length));
       } else {
         setRoundIndex((prev) => prev + 1);
         setSelectedDisplay(null);

@@ -78,6 +78,16 @@ import { getBiome, bossFor } from '@/engine/biomes';
 import { getEncounter, startEncounter } from '@/engine/encounters';
 import { enemyFor } from '@/engine/enemies';
 import { type TrialId } from '@/engine/trials/trials';
+import {
+  type EarningSource,
+  type EarningsLedger,
+  type EnergyLogEntry,
+  freshEarningsLedger,
+} from '@/engine/balance';
+
+// Re-export so slices don't need a separate balance import.
+export type { EarningSource, EarningsLedger, EnergyLogEntry };
+export { freshEarningsLedger };
 
 // Re-export TacticsAction so slices don't need a separate hexBattle import.
 export type { TacticsAction };
@@ -163,6 +173,8 @@ export interface GameSettings {
   soundEnabled: boolean;
   /** Opt-in: share active habit names, streaks, and today's status with party members only. */
   shareHabitNames: boolean;
+  /** Show the "before adventure" ritual modal when entering a minigame (reviewable Energy sources). */
+  showAdventureRitual: boolean;
 }
 
 /** Lightweight record of a completed run — kept in `dungeonHistory` (last 10). */
@@ -246,6 +258,13 @@ export interface GameState {
   created: boolean;
   /** Party quest IDs whose gold reward has already been credited locally (prevents double-credit). */
   claimedPartyQuests: string[];
+  /**
+   * Cumulative XP/gold/count tallied per earning source since save v25.
+   * Drives the balance report in Settings → Developer.
+   */
+  earnings: EarningsLedger;
+  /** Per-day Energy earned/spent (ISO date → {earned, spent}), mirrors completionLog format. */
+  energyLog: Record<string, EnergyLogEntry>;
 
   // --- actions ---
   /** Commit the character-creation screen: seed name, starting stat levels, weapon, and spell. */
@@ -264,6 +283,10 @@ export interface GameState {
   retireHabit: (id: string) => void;
   reactivateHabit: (id: string) => void;
   suspendHabit: (id: string, untilISO: string) => void;
+  /** Mark or unmark a habit as a weekly focus. Capped at MAX_FOCUS_HABITS; ignores if at cap and focus=true. */
+  setHabitFocus: (id: string, focus: boolean) => void;
+  /** Suspend every active habit whose id is NOT in keepIds, until untilISO. Recovery helper. */
+  batchSuspendHabits: (keepIds: Set<string>, untilISO: string) => void;
   /** Flip any suspensions whose date has passed back to active (call on mount). */
   normalizeHabits: () => void;
 
@@ -336,6 +359,8 @@ export interface GameState {
    * floor (regenerate on descent) and replace monster positions/HP.
    */
   coopApplyWorld: (slice: {
+    /** Host clock (ms) when produced — used by the staleness guard; ignored by the reducer. */
+    t?: number;
     floor: number;
     monsters: ReadonlyArray<{ id: string; r: number; c: number; hp: number; readyAtMs: number }>;
   }) => void;
@@ -378,6 +403,8 @@ export interface GameState {
   forestShrine: (nowMs: number) => void;
   /** Co-op guest: apply the host's authoritative forest world — follow stage + beasts. */
   coopApplyForestWorld: (slice: {
+    /** Host clock (ms) when produced — used by the staleness guard; ignored by the reducer. */
+    t?: number;
     floor: number;
     monsters: ReadonlyArray<{
       id: string;
@@ -516,6 +543,7 @@ export function freshSettings(): GameSettings {
     darkMode: false,
     soundEnabled: true,
     shareHabitNames: false,
+    showAdventureRitual: true,
   };
 }
 
@@ -679,11 +707,15 @@ export function applyWeeklyRollover(state: GameState, todayIso: string): void {
 // Reward / level helpers
 // ---------------------------------------------------------------------------
 
-export function applyReward(state: GameState, reward: Reward): void {
-  if (reward.gold) state.character.gold += reward.gold;
+export function applyReward(state: GameState, reward: Reward, source?: EarningSource): void {
+  const goldGained = reward.gold ?? 0;
+  if (goldGained) state.character.gold += goldGained;
+  let xpGained = 0;
   if (reward.statXp) {
     for (const [stat, amt] of Object.entries(reward.statXp)) {
-      state.character.statXp[stat as StatId] += amt ?? 0;
+      const n = amt ?? 0;
+      state.character.statXp[stat as StatId] += n;
+      xpGained += n;
     }
   }
   if (reward.items) {
@@ -705,6 +737,12 @@ export function applyReward(state: GameState, reward: Reward): void {
     for (const key of reward.gear) {
       if (!state.ownedGear.includes(key)) state.ownedGear.push(key);
     }
+  }
+  // Record in the balance ledger when a source is tagged.
+  if (source && state.earnings) {
+    state.earnings.xp[source] += xpGained;
+    state.earnings.gold[source] += goldGained;
+    state.earnings.count[source] += 1;
   }
 }
 
@@ -886,6 +924,29 @@ export function finishRun(run: DungeonRun, cleared: boolean, hp: number, keepFac
 // commitRun — shared run-banking helper
 // ---------------------------------------------------------------------------
 
+/**
+ * Returns a `{ earnings, energyLog }` partial-state patch for recording a minigame energy spend.
+ * Designed for use in begin* handlers that return a partial object: `return { ...patch, character, run }`.
+ * No-op (returns {}) when the earnings ledger hasn't been initialized yet.
+ */
+export function energySpentPatch(
+  s: GameState,
+  cost: number,
+): Partial<Pick<GameState, 'earnings' | 'energyLog'>> {
+  if (!s.earnings) return {};
+  const iso = toISODate();
+  const earnings: EarningsLedger = {
+    ...s.earnings,
+    xp: { ...s.earnings.xp },
+    gold: { ...s.earnings.gold },
+    count: { ...s.earnings.count },
+    energySpent: s.earnings.energySpent + cost,
+  };
+  const existing = s.energyLog[iso] ?? { earned: 0, spent: 0 };
+  const energyLog = { ...s.energyLog, [iso]: { earned: existing.earned, spent: existing.spent + cost } };
+  return { earnings, energyLog };
+}
+
 export type CommitRunField = 'mining' | 'forest' | 'arena' | 'tactics';
 export type CommitDeepestField =
   | 'deepestMineFloor'
@@ -919,6 +980,8 @@ export interface CommitRunOpts {
    * materials or weapons.
    */
   cloneMaterials?: boolean;
+  /** Balance-ledger source tag — passed to applyReward so the reward is attributed. */
+  source?: EarningSource;
 }
 
 /**
@@ -945,6 +1008,14 @@ export function commitRun(state: GameState, opts: CommitRunOpts): GameState {
     ...state,
     character: { ...state.character, statXp: { ...state.character.statXp } },
     inventory: { ...state.inventory },
+    ...(state.earnings ? {
+      earnings: {
+        ...state.earnings,
+        xp: { ...state.earnings.xp },
+        gold: { ...state.earnings.gold },
+        count: { ...state.earnings.count },
+      },
+    } : {}),
     ...(opts.cloneMaterials
       ? {
           materials: { ...state.materials },
@@ -962,7 +1033,7 @@ export function commitRun(state: GameState, opts: CommitRunOpts): GameState {
     gold: Math.round((opts.reward.gold ?? 0) * state.character.habitBonus),
     statXp: opts.statXp,
   };
-  applyReward(next, bonusedReward);
+  applyReward(next, bonusedReward, opts.source);
   checkLevelUp(next);
   return next;
 }
@@ -1007,7 +1078,7 @@ export function commitMining(state: GameState, run: MineState): GameState {
     runField: 'mining', reward: run.haul,
     statXp: { ST: Math.ceil(trickle / 2), EN: Math.floor(trickle / 2) },
     deepestField: 'deepestMineFloor', deepestValue: run.deepest,
-    scoreField: 'bestMineScore', scoreValue: finalScore, cloneMaterials: true,
+    scoreField: 'bestMineScore', scoreValue: finalScore, cloneMaterials: true, source: 'mine',
   });
 }
 
@@ -1024,7 +1095,7 @@ export function commitMineDeath(state: GameState, run: MineState): GameState {
     runField: 'mining', reward: kept,
     statXp: { ST: Math.ceil(trickle / 2), EN: Math.floor(trickle / 2) },
     deepestField: 'deepestMineFloor', deepestValue: run.deepest,
-    scoreField: 'bestMineScore', scoreValue: finalScore, cloneMaterials: true,
+    scoreField: 'bestMineScore', scoreValue: finalScore, cloneMaterials: true, source: 'mine',
   });
 }
 
@@ -1036,7 +1107,7 @@ export function commitForest(state: GameState, run: ForestState): GameState {
     runField: 'forest', reward: run.haul,
     statXp: { DX: Math.ceil(trickle / 2), EN: Math.floor(trickle / 2) },
     deepestField: 'deepestForestStage', deepestValue: run.deepest,
-    scoreField: 'bestForestScore', scoreValue: run.score, cloneMaterials: true,
+    scoreField: 'bestForestScore', scoreValue: run.score, cloneMaterials: true, source: 'forest',
   });
 }
 
@@ -1052,7 +1123,7 @@ export function commitForestDeath(state: GameState, run: ForestState): GameState
     runField: 'forest', reward: kept,
     statXp: { DX: Math.ceil(trickle / 2), EN: Math.floor(trickle / 2) },
     deepestField: 'deepestForestStage', deepestValue: run.deepest,
-    scoreField: 'bestForestScore', scoreValue: run.score, cloneMaterials: true,
+    scoreField: 'bestForestScore', scoreValue: run.score, cloneMaterials: true, source: 'forest',
   });
 }
 
@@ -1085,7 +1156,7 @@ export function commitArena(state: GameState, run: ArenaState): GameState {
   return commitRun(state, {
     runField: 'arena', reward: arenaReward(run), statXp,
     deepestField: 'deepestArenaTier', deepestValue: run.tier, gateOnWin: won,
-    cloneMaterials: false,
+    cloneMaterials: false, source: 'arena',
   });
 }
 
@@ -1106,6 +1177,6 @@ export function commitTactics(state: GameState, run: HexBattleState): GameState 
     runField: 'tactics', reward: tacticsReward(run),
     statXp: { AG: each + (rem > 0 ? 1 : 0), DX: each + (rem > 1 ? 1 : 0), EN: each },
     deepestField: 'deepestTacticsTier', deepestValue: run.tier, gateOnWin: won,
-    cloneMaterials: false,
+    cloneMaterials: false, source: 'tactics',
   });
 }

@@ -3,6 +3,8 @@ import { useGameStore } from '@/store/useGameStore';
 import { effectiveStatus } from '@/engine/habits';
 import { toISODate } from '@/engine/date';
 import { HabitHistoryCard } from '@/components/history/HabitHistoryCard';
+import { AccountSummary } from '@/components/history/AccountSummary';
+import { DayOfWeekChart } from '@/components/history/DayOfWeekChart';
 
 const ORDER = { active: 0, suspended: 1, retired: 2 } as const;
 
@@ -25,6 +27,14 @@ export function HistoryView({ onClose }: { onClose: () => void }) {
       </header>
 
       <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
+        {/* Account-level summary — consistency trend and day-of-week chart */}
+        {habits.length > 0 && (
+          <>
+            <AccountSummary habits={habits} />
+            <DayOfWeekChart habits={habits} />
+          </>
+        )}
+
         {sorted.length === 0 ? (
           <div className="rounded-md border border-dashed border-gold-deep/40 p-8 text-center text-sm text-parchment-300/70">
             No habits yet — your chronicle fills in as you complete them.

@@ -23,7 +23,9 @@ import {
   currentRoom,
   enterRoom,
   finishRun,
+  energySpentPatch,
 } from '../shared';
+import { freshEarningsLedger } from '@/engine/balance';
 
 const FLOOR_LOSS_KEEP = 0.25;
 
@@ -91,6 +93,7 @@ export const createDungeonSlice: StateCreator<
         relics: [],
         pendingBoon: null,
         merchant: null,
+        earnedXp: 0,
       };
       return {
         character: {
@@ -98,6 +101,7 @@ export const createDungeonSlice: StateCreator<
           energy: freeEnergy ? s.character.energy : s.character.energy - DUNGEON_ENERGY_COST,
         },
         dungeon: run,
+        ...(freeEnergy ? {} : energySpentPatch(s, DUNGEON_ENERGY_COST)),
       };
     }),
 
@@ -137,8 +141,8 @@ export const createDungeonSlice: StateCreator<
       const floorReward = mergeReward(run.floorReward, step.reward);
 
       // Passing a stat check exercises that stat — award habit XP toward the character level.
-      const statXpPatch =
-        checkedStat && encState.lastOutcome === 'success' ? grantStatXp(s, { [checkedStat]: 10 }) : null;
+      const xpGrant = checkedStat && encState.lastOutcome === 'success' ? 10 : 0;
+      const statXpPatch = xpGrant ? grantStatXp(s, { [checkedStat!]: xpGrant }) : null;
 
       if (hp <= 0) {
         // Fell during the encounter — forfeit most of the floor's loot.
@@ -146,7 +150,10 @@ export const createDungeonSlice: StateCreator<
       }
 
       // Apply boon / curse signals from the encounter step.
-      let next: DungeonRun = { ...run, encounter: encState, hp, mp, sta, floorReward };
+      let next: DungeonRun = {
+        ...run, encounter: encState, hp, mp, sta, floorReward,
+        earnedXp: (run.earnedXp ?? 0) + xpGrant,
+      };
       if (step.grantBoonTier != null) {
         offerBoon(next, step.grantBoonTier);
       }
@@ -221,6 +228,7 @@ export const createDungeonSlice: StateCreator<
         const atkStat = getWeapon(s.equippedWeapon).attackStat;
         const { atkShare, hpShare } = dungeonCombatStatXp(b.bossMaxHp);
         statXpPatch = grantStatXp(s, { [atkStat]: atkShare, HP: hpShare });
+        workingRun = { ...workingRun, earnedXp: (workingRun.earnedXp ?? 0) + atkShare + hpShare };
         if (room.type === 'elite') {
           // Elites drop bonus gold and guarantee a boon.
           eliteWin = true;
@@ -293,6 +301,7 @@ export const createDungeonSlice: StateCreator<
         defeated: !run.cleared && run.hp <= 0,
         date: toISODate(),
       };
+      const baseEarnings = s.earnings ?? freshEarningsLedger();
       const next: GameState = {
         ...s,
         character: { ...s.character, statXp: { ...s.character.statXp } },
@@ -300,14 +309,27 @@ export const createDungeonSlice: StateCreator<
         materials: { ...s.materials },
         ownedWeapons: [...s.ownedWeapons],
         ownedGear: [...s.ownedGear],
+        earnings: {
+          ...baseEarnings,
+          xp: { ...baseEarnings.xp },
+          gold: { ...baseEarnings.gold },
+          count: { ...baseEarnings.count },
+        },
         dungeon: null,
         dungeonHistory: [summary, ...(s.dungeonHistory ?? [])].slice(0, 10),
       };
+      // Record dungeon XP accumulated during the run (via grantStatXp in advance/encounter handlers).
+      const runXp = run.earnedXp ?? 0;
+      if (runXp > 0) next.earnings.xp['dungeon'] += runXp;
+      next.earnings.count['dungeon'] += 1;
       // Apply habit-streak gold multiplier to banked gold (§6.3) — same as commitRun does for minigames.
+      const finalGold = Math.round((run.bankedReward.gold ?? 0) * s.character.habitBonus);
+      if (finalGold > 0) next.earnings.gold['dungeon'] += finalGold;
+      // Apply the reward (no source — earnings already recorded above to avoid double-counting count).
       applyReward(next, {
         ...run.bankedReward,
-        gold: Math.round((run.bankedReward.gold ?? 0) * s.character.habitBonus),
-      }); // gold/materials/items/weapons/gear — no XP
+        gold: finalGold,
+      }); // gold/materials/items/weapons/gear
       return next;
     }),
 

@@ -1,6 +1,8 @@
+import { useState } from 'react';
 import { Trees, Zap, Wind, Shield } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { FOREST_ENERGY_COST } from '@/engine/forest';
+import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
@@ -25,12 +27,14 @@ function bandMaterials(deepest: number): { band: string; mats: string } | null {
 
 /** Entrance screen for the Wild Forest (the active run renders in ForestRunOverlay). */
 export function ForestView() {
+  const [showRitual, setShowRitual] = useState(false);
   const energy = useGameStore((s) => s.character.energy);
   const deepestForestStage = useGameStore((s) => s.deepestForestStage);
   const bestForestScore = useGameStore((s) => s.bestForestScore);
   const beginForest = useGameStore((s) => s.beginForest);
   const ag = useGameStore((s) => s.character.statLevels.AG);
   const en = useGameStore((s) => s.character.statLevels.EN);
+  const showAdventureRitual = useGameStore((s) => s.settings.showAdventureRitual);
 
   const canEnter = energy >= FOREST_ENERGY_COST;
 
@@ -103,9 +107,20 @@ export function ForestView() {
           </span>
         </div>
 
-        <Button onClick={() => beginForest()} disabled={!canEnter} className="w-full py-2.5">
+        <Button
+          onClick={() => canEnter && showAdventureRitual ? setShowRitual(true) : beginForest()}
+          disabled={!canEnter}
+          className="w-full py-2.5"
+        >
           {canEnter ? 'Enter the Forest' : `Need ${FOREST_ENERGY_COST} energy (complete habits)`}
         </Button>
+        {showRitual && (
+          <AdventureRitualModal
+            energyCost={FOREST_ENERGY_COST}
+            onConfirm={() => { setShowRitual(false); beginForest(); }}
+            onCancel={() => setShowRitual(false)}
+          />
+        )}
       </Panel>
     </div>
   );

@@ -15,6 +15,7 @@ import { toISODate, weekKey, _setNow, _resetNow, addDays } from '@/engine/date';
 import { MAX_ENERGY } from '../shared';
 import { completionRatio, COMPLETION_CAP, UNCAPPED_RATIO_CAP } from '@/engine/xp';
 import { statCompletedWithin } from '@/engine/habits';
+import { resetRunRng } from '../runRng';
 
 /** A trivial single-path floor map for tests: one room per layer, linked in sequence. */
 function linearMap(rooms: DungeonRoom[]): FloorMap {
@@ -64,6 +65,8 @@ const get = () => useGameStore.getState();
 
 beforeEach(() => {
   get().resetGame();
+  // Reset module-scope mine/forest RNG globals so state cannot leak between test cases.
+  resetRunRng();
 });
 
 describe('withCharacterDefaults (persist merge guard)', () => {
@@ -81,6 +84,19 @@ describe('withCharacterDefaults (persist merge guard)', () => {
   it('preserves an already-migrated character unchanged', () => {
     const c = withCharacterDefaults(get().character);
     expect(c.statLevels).toEqual(get().character.statLevels);
+  });
+
+  it('backfills focus: false on a habit loaded from a pre-v24 save that lacked the focus field', () => {
+    // Simulate a habit serialised before v24 — no `focus` property.
+    const legacyHabit = {
+      id: 'legacy', name: 'Old Habit', stat: 'ST' as const, type: 'binary' as const,
+      frequency: 'daily' as const, difficulty: 'normal' as const, status: 'active' as const,
+      streak: 0, log: {}, createdISO: '2025-01-01',
+      // `focus` intentionally absent — mirrors a real old save
+    };
+    useGameStore.setState({ habits: [legacyHabit as never] });
+    get().normalizeHabits();
+    expect(get().habits[0].focus).toBe(false);
   });
 });
 
@@ -129,6 +145,29 @@ describe('completeHabit', () => {
     expect(get().character.statXp.KN).toBe(20);
     expect(get().character.energy).toBe(1);
     expect(get().habits[0].streak).toBe(1);
+    // Earnings ledger: habit completion is recorded.
+    expect(get().earnings.xp.habit).toBe(20);
+    expect(get().earnings.count.habit).toBe(1);
+    expect(get().earnings.energyEarned).toBe(1);
+  });
+
+  it('records energy earned in energyLog for today', () => {
+    get().addHabit({ name: 'Read', stat: 'KN', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    get().completeHabit(get().habits[0].id);
+    const today = new Date().toISOString().slice(0, 10);
+    expect(get().energyLog[today]?.earned).toBe(1);
+  });
+
+  it('reverses earnings ledger on uncomplete', () => {
+    get().addHabit({ name: 'Read', stat: 'KN', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    get().completeHabit(id);
+    const xpAfterComplete = get().earnings.xp.habit;
+    get().uncompleteHabit(id);
+    expect(get().earnings.xp.habit).toBe(0);
+    expect(get().earnings.count.habit).toBe(0);
+    expect(get().earnings.energyEarned).toBe(0);
+    void xpAfterComplete; // used above
   });
 
   it('cannot be completed twice in one day', () => {
@@ -852,6 +891,8 @@ describe('deep mine', () => {
     expect(get().mining).not.toBeNull();
     expect(get().mining!.floor).toBe(1);
     expect(get().character.energy).toBe(8); // MINE_ENERGY_COST = 2
+    // Earnings ledger: energySpent bumped on entry.
+    expect(get().earnings.energySpent).toBe(2);
   });
 
   it('beginMining has no level gate — a fresh level-1 character can enter', () => {
@@ -880,6 +921,10 @@ describe('deep mine', () => {
     expect(get().materials.iron_bar).toBe(ironBefore + 3);
     expect(get().deepestMineFloor).toBe(4);
     expect(get().character.statXp.ST).toBeGreaterThan(0); // labour trickle
+    // Earnings ledger: mine source records the committed XP and gold.
+    expect(get().earnings.xp.mine).toBeGreaterThan(0);
+    expect(get().earnings.gold.mine).toBe(50);
+    expect(get().earnings.count.mine).toBe(1);
   });
 
   it('mineTick flips to ended on death; endMining then banks the haul', () => {
@@ -903,8 +948,30 @@ describe('deep mine', () => {
     expect(get().deepestMineFloor).toBe(2);
   });
 
-  it('persists at version 23', () => {
-    expect(useGameStore.persist.getOptions().version).toBe(23);
+  it('persists at version 25', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(25);
+  });
+
+  it('coopApplyWorld drops a stale/duplicate world slice (t guard)', () => {
+    useGameStore.setState({ mining: makeMine() });
+    // First slice: accepted (high-water mark starts at -Infinity).
+    get().coopApplyWorld({ floor: 1, monsters: [], t: 100 });
+    const miningAfterFirst = get().mining;
+    expect(miningAfterFirst).not.toBeNull();
+
+    // Second slice with a lower t: dropped — mining reference must not change.
+    get().coopApplyWorld({ floor: 1, monsters: [], t: 50 });
+    expect(get().mining).toBe(miningAfterFirst);
+
+    // Third slice with a higher t: accepted — reference advances.
+    get().coopApplyWorld({ floor: 1, monsters: [], t: 200 });
+    expect(get().mining).not.toBe(miningAfterFirst);
+  });
+
+  it('coopApplyWorld accepts a slice with no t (back-compat)', () => {
+    useGameStore.setState({ mining: makeMine() });
+    get().coopApplyWorld({ floor: 1, monsters: [] }); // no t field
+    expect(get().mining).not.toBeNull();
   });
 });
 
@@ -1010,6 +1077,28 @@ describe('wild forest', () => {
     expect(get().character.gold).toBe(goldBefore + 5); // floor(10 * 0.5) kept, the rest forfeit
     expect(get().materials.herbs ?? 0).toBe(2); // floor(4 * 0.5)
     expect(get().deepestForestStage).toBe(2);
+  });
+
+  it('coopApplyForestWorld drops a stale/duplicate world slice (t guard)', () => {
+    useGameStore.setState({ forest: makeForest() });
+    // First slice: accepted (WorldSliceInput uses `floor` for both mine and forest stages).
+    get().coopApplyForestWorld({ floor: 1, monsters: [], t: 100 });
+    const forestAfterFirst = get().forest;
+    expect(forestAfterFirst).not.toBeNull();
+
+    // Duplicate t: dropped.
+    get().coopApplyForestWorld({ floor: 1, monsters: [], t: 100 });
+    expect(get().forest).toBe(forestAfterFirst);
+
+    // Higher t: accepted.
+    get().coopApplyForestWorld({ floor: 1, monsters: [], t: 101 });
+    expect(get().forest).not.toBe(forestAfterFirst);
+  });
+
+  it('coopApplyForestWorld accepts a slice with no t (back-compat)', () => {
+    useGameStore.setState({ forest: makeForest() });
+    get().coopApplyForestWorld({ floor: 1, monsters: [] }); // no t field
+    expect(get().forest).not.toBeNull();
   });
 });
 

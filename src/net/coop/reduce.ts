@@ -48,8 +48,15 @@ import type { WorldSlice, PlayerSlice, TacticsIntent } from './protocol';
  * the reducers don't need — only `floor` and `monsters` drive state changes.
  * Using this narrower type lets callers (the store, tests) pass a partial
  * object without constructing a full WorldSlice.
+ *
+ * `t` is included as an optional field so that store actions can read the
+ * ordering timestamp without changing the reducer signatures — reducers simply
+ * never access it.
  */
 export interface WorldSliceInput {
+  /** Host clock (ms) when produced — read by the staleness guard in the store
+   *  actions (`coopApplyWorld` / `coopApplyForestWorld`); ignored by reducers. */
+  t?: number;
   floor: number;
   monsters: ReadonlyArray<{
     id: string;

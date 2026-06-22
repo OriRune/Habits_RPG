@@ -1,36 +1,69 @@
 import { useMemo, useState } from 'react';
-import { Plus, Swords, AlertTriangle, BarChart3, RotateCcw } from 'lucide-react';
+import {
+  AlertTriangle,
+  CalendarDays,
+  Plus,
+  Swords,
+  BarChart3,
+  RotateCcw,
+  Flame,
+  Zap,
+  TrendingUp,
+  Star,
+  Heart,
+  Sparkles,
+  X,
+} from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
-import { makeSelectDashboardHabits, selectHabitLoadWarning } from '@/store/selectors';
+import {
+  makeSelectDashboardHabits,
+  selectDailySummary,
+  selectRecoveryState,
+  selectAccountHealth,
+  selectEnergySummary,
+} from '@/store/selectors';
 import { isCompletedOn, effectiveStatus } from '@/engine/habits';
 import { toISODate, parseISODate, addDays, BACKDATE_WINDOW_DAYS } from '@/engine/date';
 import { HabitCard } from '@/components/habits/HabitCard';
 import { HabitForm } from '@/components/habits/HabitForm';
+import { RecoveryModal } from '@/components/habits/RecoveryModal';
 import { DatePicker } from '@/components/habits/DatePicker';
 import { HeroBanner } from '@/components/character/HeroBanner';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
+import { cn } from '@/lib/cn';
 
-export function DashboardView({ onOpenHistory }: { onOpenHistory: () => void }) {
+export function DashboardView({ onOpenHistory, onPlanWeek }: { onOpenHistory: () => void; onPlanWeek: () => void }) {
   const today = toISODate();
   const [viewDate, setViewDate] = useState(today);
   const isToday = viewDate === today;
 
   const allHabits = useGameStore((s) => s.habits);
   const dashboard = useGameStore(useMemo(() => makeSelectDashboardHabits(viewDate), [viewDate]));
-  const warning = useGameStore(selectHabitLoadWarning);
   const pendingLevelUp = useGameStore((s) => s.pendingLevelUp);
   const startBattle = useGameStore((s) => s.startBattle);
+  const summary = useGameStore(selectDailySummary);
+  const recovery = useGameStore(selectRecoveryState);
+  const accountWarnings = useGameStore(selectAccountHealth);
+
   const [showForm, setShowForm] = useState(false);
+  const [showRecovery, setShowRecovery] = useState(false);
+  // Session-level flag: hide the struggling banner after the user acts on it or dismisses it.
+  const [recoveryDismissed, setRecoveryDismissed] = useState(false);
+  const [dismissedCodes, setDismissedCodes] = useState<Set<string>>(() => new Set());
+
+  const visibleAccountWarnings = accountWarnings.filter((w) => !dismissedCodes.has(w.code));
 
   const suspended = dashboard.filter((h) => effectiveStatus(h, viewDate) === 'suspended');
   const active = dashboard.filter((h) => effectiveStatus(h, viewDate) !== 'suspended');
-  const pending = active.filter((h) => !isCompletedOn(h, viewDate));
+
+  // Focus habits first, then other pending, then done
+  const pendingFocus = active.filter((h) => !isCompletedOn(h, viewDate) && h.focus);
+  const pendingOther = active.filter((h) => !isCompletedOn(h, viewDate) && !h.focus);
   const done = active.filter((h) => isCompletedOn(h, viewDate));
 
-  // Normal backdating window: max(earliestCreated, today − 6 days) = 7-day inclusive window (§4.1).
-  // Corrections beyond 7 days go through "Log older entry…" in the habit's kebab menu.
+  // Normal backdating window
   const earliestCreated = allHabits.reduce<string>(
     (min, h) => (h.createdISO < min ? h.createdISO : min),
     today,
@@ -65,13 +98,36 @@ export function DashboardView({ onOpenHistory }: { onOpenHistory: () => void }) 
         </Panel>
       )}
 
-      {warning && (
-        <div className="flex items-start gap-2 rounded-md border border-gold-deep/50 bg-wood-700/60 p-3 text-sm text-gold-bright/90">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>{warning}</span>
-        </div>
+      {/* Account-level health warnings — dismissible, only shown today */}
+      {isToday && visibleAccountWarnings.length > 0 && (
+        <Panel tone="parchment" className="divide-y divide-gold-deep/20 overflow-hidden p-0">
+          {visibleAccountWarnings.map((w) => (
+            <div key={w.code} className="flex items-start gap-2.5 px-3 py-2.5">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+              <p className="flex-1 text-sm text-ink leading-snug">{w.message}</p>
+              <button
+                onClick={() => setDismissedCodes((prev) => new Set([...prev, w.code]))}
+                className="mt-0.5 shrink-0 text-ink-light/60 hover:text-ink-muted transition-colors"
+                aria-label="Dismiss"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </Panel>
       )}
 
+      {/* Dashboard command center — only shown when viewing today */}
+      {isToday && (
+        <DailySummaryStrip
+          summary={summary}
+          onOpenRecovery={() => setShowRecovery(true)}
+          hideRecovery={recoveryDismissed}
+          onDismissRecovery={() => setRecoveryDismissed(true)}
+        />
+      )}
+
+      {/* Quest Log panel */}
       <Panel tone="parchment" className="p-4">
         <div className="mb-3 flex items-center gap-2">
           <SectionTitle className="flex-1">{title}</SectionTitle>
@@ -99,20 +155,53 @@ export function DashboardView({ onOpenHistory }: { onOpenHistory: () => void }) 
           >
             <BarChart3 className="h-4 w-4" />
           </Button>
+          {isToday && (
+            <Button
+              variant="secondary"
+              onClick={onPlanWeek}
+              className="flex items-center gap-1 px-2.5 py-1.5"
+              aria-label="Plan week"
+            >
+              <CalendarDays className="h-4 w-4" />
+            </Button>
+          )}
           <Button onClick={() => setShowForm(true)} className="flex items-center gap-1 px-3 py-1.5">
             <Plus className="h-4 w-4" /> Habit
           </Button>
         </div>
 
         {dashboard.length === 0 ? (
-          <div className="rounded-md border border-dashed border-ink-light/50 p-8 text-center text-sm text-ink-muted">
-            {isToday
-              ? 'No quests yet. Inscribe your first habit to begin shaping your hero.'
-              : 'No quests were scheduled on this day.'}
+          <div className="rounded-md border border-dashed border-ink-light/50 p-8 text-center">
+            <p className="text-sm text-ink-muted">
+              {isToday
+                ? 'No quests yet. Inscribe your first habit to begin shaping your hero.'
+                : 'No quests were scheduled on this day.'}
+            </p>
+            {isToday && (
+              <Button onClick={() => setShowForm(true)} className="mt-3">
+                <Plus className="mr-1.5 h-4 w-4" /> Add your first habit
+              </Button>
+            )}
           </div>
         ) : (
           <div className="space-y-2">
-            {pending.map((h) => (
+            {/* Focus habits first */}
+            {pendingFocus.length > 0 && (
+              <>
+                <div className="flex items-center gap-1.5 pt-1 pb-0.5 font-display text-[11px] uppercase tracking-[0.18em] text-gold-deep">
+                  <Star className="h-3 w-3 fill-gold-deep" /> Focus Habits
+                </div>
+                {pendingFocus.map((h) => (
+                  <HabitCard key={h.id} habit={h} viewDate={viewDate} />
+                ))}
+                {pendingOther.length > 0 && (
+                  <div className="pt-1 font-display text-[11px] uppercase tracking-[0.18em] text-ink-light">
+                    Other Habits
+                  </div>
+                )}
+              </>
+            )}
+            {pendingOther.map((h) => (
               <HabitCard key={h.id} habit={h} viewDate={viewDate} />
             ))}
             {done.length > 0 && (
@@ -139,7 +228,192 @@ export function DashboardView({ onOpenHistory }: { onOpenHistory: () => void }) 
         )}
       </Panel>
 
+      {/* "I'm struggling" recovery entry point — only shown when not already in recovery */}
+      {isToday && !recovery.struggling && allHabits.some((h) => h.status === 'active') && (
+        <button
+          onClick={() => setShowRecovery(true)}
+          className="mx-auto flex items-center gap-1.5 text-xs text-ink-muted/60 hover:text-ink-muted transition-colors"
+        >
+          <Heart className="h-3 w-3" /> Having a rough week?
+        </button>
+      )}
+
       {showForm && <HabitForm onClose={() => setShowForm(false)} />}
+      {showRecovery && (
+        <RecoveryModal
+          habits={allHabits}
+          onClose={() => setShowRecovery(false)}
+          onConfirm={() => setRecoveryDismissed(true)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Daily Summary Strip
+// ---------------------------------------------------------------------------
+
+import type { DailySummary } from '@/store/selectors';
+
+function DailySummaryStrip({
+  summary,
+  onOpenRecovery,
+  hideRecovery,
+  onDismissRecovery,
+}: {
+  summary: DailySummary;
+  onOpenRecovery: () => void;
+  hideRecovery: boolean;
+  onDismissRecovery: () => void;
+}) {
+  const weeklyPct = Math.round(summary.weeklyCompletionRate * 100);
+  const topStreak = summary.topStreaks[0];
+  const energySummary = useGameStore(selectEnergySummary);
+
+  // Suppress the struggling action once the user has acted on it or dismissed it.
+  const action =
+    hideRecovery && summary.recommendedAction?.kind === 'struggling'
+      ? null
+      : summary.recommendedAction;
+
+  const hasEnergyData = energySummary.weekEarned > 0 || energySummary.weekSpent > 0;
+
+  return (
+    <div className="space-y-2">
+      {/* Stats row */}
+      <div className="grid grid-cols-3 gap-2">
+        <StatChip
+          icon={<Zap className="h-4 w-4 text-gold-bright" />}
+          label="Energy today"
+          value={`+${summary.energyEarnedToday}`}
+          sub={`${summary.completedToday}/${summary.scheduledToday} habits`}
+        />
+        <StatChip
+          icon={<TrendingUp className="h-4 w-4 text-stat-KN" />}
+          label="This week"
+          value={`${weeklyPct}%`}
+          sub="completion rate"
+        />
+        <StatChip
+          icon={<Flame className="h-4 w-4 text-ember" />}
+          label="Best streak"
+          value={topStreak ? `${topStreak.streak}` : '—'}
+          sub={topStreak ? topStreak.habitName : 'no streaks yet'}
+        />
+      </div>
+
+      {/* Energy flow strip */}
+      {hasEnergyData && (
+        <div className="flex items-center gap-1.5 rounded bg-wood-900/40 px-3 py-1.5 text-xs text-ink-muted">
+          <Zap className="h-3 w-3 shrink-0 text-amber-400" />
+          <span>
+            Today{' '}
+            <span className="text-amber-400">+{energySummary.todayEarned}</span>
+            {' / '}
+            <span className="text-ember">−{energySummary.todaySpent}</span>
+            {energySummary.todayNet !== 0 && (
+              <span className={energySummary.todayNet > 0 ? 'text-green-400' : 'text-red-400'}>
+                {' '}({energySummary.todayNet > 0 ? '+' : ''}{energySummary.todayNet})
+              </span>
+            )}
+          </span>
+          <span className="mx-1 text-ink-muted/50">·</span>
+          <span>
+            This week{' '}
+            <span className="text-amber-400">+{energySummary.weekEarned}</span>
+            {' / '}
+            <span className="text-ember">−{energySummary.weekSpent}</span>
+          </span>
+        </div>
+      )}
+
+      {/* Recommended action */}
+      {action && (
+        <RecommendedActionCard
+          action={action}
+          onOpenRecovery={onOpenRecovery}
+          onDismissRecovery={onDismissRecovery}
+        />
+      )}
+    </div>
+  );
+}
+
+function StatChip({
+  icon,
+  label,
+  value,
+  sub,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  sub: string;
+}) {
+  return (
+    <div className="flex flex-col items-center rounded-md border border-gold-deep/20 bg-parchment-100/50 px-2 py-2 text-center">
+      <div className="mb-0.5">{icon}</div>
+      <div className="font-display text-base font-bold text-ink tabular-nums leading-none">{value}</div>
+      <div className="mt-0.5 text-[10px] font-medium text-ink-muted leading-tight">{label}</div>
+      <div className="mt-0.5 text-[9px] text-ink-light leading-tight truncate w-full">{sub}</div>
+    </div>
+  );
+}
+
+import type { RecommendedAction } from '@/engine/dashboard';
+
+function RecommendedActionCard({
+  action,
+  onOpenRecovery,
+  onDismissRecovery,
+}: {
+  action: RecommendedAction;
+  onOpenRecovery: () => void;
+  onDismissRecovery: () => void;
+}) {
+  const isRecovery = action.kind === 'struggling';
+  const isAllDone = action.kind === 'all_done';
+
+  return (
+    <div
+      className={cn(
+        'flex items-start gap-2.5 rounded-md border px-3 py-2.5 text-sm',
+        isRecovery
+          ? 'border-ember/40 bg-ember/10 text-ink'
+          : isAllDone
+            ? 'border-gold-deep/40 bg-gold/10 text-ink'
+            : 'border-gold-deep/30 bg-parchment-100/50 text-ink',
+      )}
+    >
+      <span className="mt-0.5 shrink-0">
+        {isRecovery ? (
+          <Heart className="h-4 w-4 text-ember-bright" />
+        ) : isAllDone ? (
+          <Sparkles className="h-4 w-4 text-gold-bright" />
+        ) : (
+          <Star className="h-4 w-4 text-gold-deep" />
+        )}
+      </span>
+      <p className="flex-1">{action.message}</p>
+      {isRecovery && (
+        <>
+          <Button
+            variant="secondary"
+            onClick={onOpenRecovery}
+            className="shrink-0 px-2.5 py-1 text-xs"
+          >
+            Simplify
+          </Button>
+          <button
+            onClick={onDismissRecovery}
+            className="mt-0.5 shrink-0 text-ink-light/60 hover:text-ink-muted transition-colors"
+            aria-label="Dismiss"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </>
+      )}
     </div>
   );
 }

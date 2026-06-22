@@ -20,6 +20,7 @@ import {
   applyReward,
   checkLevelUp,
 } from '../shared';
+import { freshEarningsLedger } from '@/engine/balance';
 
 export interface ChallengesSlice {
   challenges: ActiveChallenge[];
@@ -70,16 +71,23 @@ export const createChallengesSlice: StateCreator<
       const c = s.challenges[index];
       if (!c || (c.status !== 'completed' && c.status !== 'expired')) return s;
       const outcome = resolveChallenge(c);
+      const baseEarnings = s.earnings ?? freshEarningsLedger();
       const next: GameState = {
         ...s,
         character: { ...s.character, statXp: { ...s.character.statXp } },
         inventory: { ...s.inventory },
         materials: { ...s.materials },
+        earnings: {
+          ...baseEarnings,
+          xp: { ...baseEarnings.xp },
+          gold: { ...baseEarnings.gold },
+          count: { ...baseEarnings.count },
+        },
         challenges: s.challenges.map((x, i) =>
           i === index ? { ...x, status: 'claimed' as const } : x,
         ),
       };
-      if (outcome.reward) applyReward(next, outcome.reward);
+      if (outcome.reward) applyReward(next, outcome.reward, 'challenge');
       checkLevelUp(next);
       return next;
     }),

@@ -47,6 +47,8 @@ export interface Habit {
   /** Per-day completion history, keyed by ISO date. The source of truth for stats. */
   log: Record<string, HabitEntry>;
   createdISO: string;
+  /** Marked as a focus habit for the week — sorted to the top and highlighted. Max 3 per account. */
+  focus?: boolean;
 }
 
 const DAY_SCHEDULED: Frequency[] = ['daily', 'weekdays', 'custom'];

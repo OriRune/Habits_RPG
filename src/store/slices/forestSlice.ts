@@ -24,8 +24,8 @@ import {
   applyForestRemoteAttack,
 } from '@/net/coop/reduce';
 import type { GameState } from '../shared';
-import { fighterFor, gearBonuses, commitForest, commitForestDeath } from '../shared';
-import { getForestRng, getForestBaseSeed, setForestRun } from '../runRng';
+import { fighterFor, gearBonuses, commitForest, commitForestDeath, energySpentPatch } from '../shared';
+import { getForestRng, getForestBaseSeed, setForestRun, acceptForestWorldT } from '../runRng';
 
 export interface ForestSlice {
   forest: ForestState | null;
@@ -126,6 +126,7 @@ export const createForestSlice: StateCreator<
         ownedGear,
         equipment,
         forest,
+        ...(free ? {} : energySpentPatch(s, FOREST_ENERGY_COST)),
       };
     }),
 
@@ -228,6 +229,7 @@ export const createForestSlice: StateCreator<
   coopApplyForestWorld: (slice) =>
     set((s) => {
       if (!s.forest) return s;
+      if (!acceptForestWorldT(slice.t)) return s;
       return { forest: applyForestWorldSlice(s.forest, slice, { baseSeed: getForestBaseSeed(), rng: getForestRng() }) };
     }),
 

@@ -2,7 +2,8 @@
 // of the week that just ended and a fresh rotation of challenges to anticipate.
 import type { StatId } from './stats';
 import { STAT_IDS } from './stats';
-import { type Habit, isCompletedOn } from './habits';
+import { type Habit, isCompletedOn, isScheduledOn, effectiveStatus } from './habits';
+import { habitHealth, accountHealth } from './habitHealth';
 import { addDays, weekKey } from './date';
 import type { Mood } from './mood';
 import { type ChallengeDef, type ActiveChallenge, CHALLENGE_TEMPLATES } from './challenges';
@@ -18,6 +19,12 @@ export interface WeeklyReport {
   bestStreak: { habitName: string; days: number } | null;
   challengesWon: number;
   mood: Mood;
+  /** Most-improved habit vs the prior week (by completion delta). */
+  mostImproved: { habitName: string; delta: number } | null;
+  /** Most-missed habit: scheduled-but-missed days in the closing week. */
+  mostMissed: { habitName: string; missed: number } | null;
+  /** One concrete suggested adjustment from habitHealth / accountHealth, or null. */
+  suggestedAdjustment: string | null;
 }
 
 /** The 7 ISO dates of the week starting at `weekStart`. */
@@ -84,7 +91,67 @@ export function buildWeeklyReport(
     (c) => weekKey(c.startISO) === weekStart && (c.status === 'completed' || c.status === 'claimed'),
   ).length;
 
-  return { weekKey: weekStart, completions, xpByStat, xpTotal, topStat, bestStreak, challengesWon, mood };
+  const priorDates = weekDates(addDays(weekStart, -7));
+  const weekEnd = dates[dates.length - 1]; // addDays(weekStart, 6)
+
+  // Most-improved: habit with the largest positive completion delta vs the prior week.
+  let mostImproved: WeeklyReport['mostImproved'] = null;
+  for (const h of habits) {
+    if (h.status === 'retired') continue;
+    const thisWeek = dates.reduce((n, iso) => n + (isCompletedOn(h, iso) ? 1 : 0), 0);
+    const priorWeek = priorDates.reduce((n, iso) => n + (isCompletedOn(h, iso) ? 1 : 0), 0);
+    const delta = thisWeek - priorWeek;
+    if (delta > 0 && delta > (mostImproved?.delta ?? 0)) {
+      mostImproved = { habitName: h.name, delta };
+    }
+  }
+
+  // Most-missed: active habit with the most scheduled-but-missed days this week.
+  let bestMissedHabit: Habit | null = null;
+  let mostMissed: WeeklyReport['mostMissed'] = null;
+  for (const h of habits) {
+    let missed = 0;
+    for (const iso of dates) {
+      if (isScheduledOn(h, iso) && effectiveStatus(h, iso) === 'active' && !isCompletedOn(h, iso)) {
+        missed++;
+      }
+    }
+    if (missed > 0 && missed > (mostMissed?.missed ?? 0)) {
+      mostMissed = { habitName: h.name, missed };
+      bestMissedHabit = h;
+    }
+  }
+
+  // Suggested adjustment: mostMissed habit first, then any active habit, then account-level.
+  let suggestedAdjustment: string | null = null;
+  if (bestMissedHabit) {
+    const w = habitHealth(bestMissedHabit, weekEnd);
+    if (w.length > 0) suggestedAdjustment = w[0].message;
+  }
+  if (!suggestedAdjustment) {
+    for (const h of habits) {
+      const w = habitHealth(h, weekEnd);
+      if (w.length > 0) { suggestedAdjustment = w[0].message; break; }
+    }
+  }
+  if (!suggestedAdjustment) {
+    const aw = accountHealth(habits, weekEnd);
+    if (aw.length > 0) suggestedAdjustment = aw[0].message;
+  }
+
+  return {
+    weekKey: weekStart,
+    completions,
+    xpByStat,
+    xpTotal,
+    topStat,
+    bestStreak,
+    challengesWon,
+    mood,
+    mostImproved,
+    mostMissed,
+    suggestedAdjustment,
+  };
 }
 
 /** Tiny deterministic string hash (so a week's rotation is stable but rotates across weeks). */

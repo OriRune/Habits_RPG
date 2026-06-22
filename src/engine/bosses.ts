@@ -128,7 +128,7 @@ export const NAMED_BOSSES: Record<number, BossDef> = {
     phases: [
       { hp: 85, attack: 6, defense: 1, attackSchool: 'physical', weakTo: ['KN', 'DX'] },
       {
-        hp: 55, attack: 9, defense: 0, attackSchool: 'magic',
+        hp: 40, attack: 9, defense: 0, attackSchool: 'magic',
         weakTo: ['DX'], recoverMs: 500,
         transitionMsg: "The slime surges — 'Now it's urgent!'",
       },

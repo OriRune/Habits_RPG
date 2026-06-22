@@ -20,6 +20,7 @@ import {
   freshSettings,
   fighterFor,
 } from '../shared';
+import { freshEarningsLedger } from '@/engine/balance';
 
 export interface CoreSlice {
   character: Character;
@@ -29,6 +30,8 @@ export interface CoreSlice {
   bossLosses: Record<number, number>;
   lastActiveISO: string;
   created: boolean;
+  earnings: import('@/engine/balance').EarningsLedger;
+  energyLog: Record<string, import('@/engine/balance').EnergyLogEntry>;
 
   createCharacter: (input: {
     name: string;
@@ -57,6 +60,8 @@ export const createCoreSlice: StateCreator<
   bossLosses: {},
   lastActiveISO: toISODate(),
   created: false,
+  earnings: freshEarningsLedger(),
+  energyLog: {},
 
   createCharacter: ({ name, allocations, weaponKey, spellKey }) =>
     set((s) => {
@@ -161,5 +166,7 @@ export const createCoreSlice: StateCreator<
       lastActiveISO: toISODate(),
       settings: freshSettings(),
       created: false,
+      earnings: freshEarningsLedger(),
+      energyLog: {},
     })),
 });

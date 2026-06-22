@@ -4,6 +4,8 @@ import { BottomBar, Sidebar, type Tab } from '@/components/layout/TabBar';
 import { BoonChoice } from '@/components/dungeon/BoonChoice';
 import { ClassChoiceModal } from '@/components/class/ClassChoiceModal';
 import { WeeklyReportModal } from '@/components/weekly/WeeklyReportModal';
+import { PlanWeekModal } from '@/components/weekly/PlanWeekModal';
+import type { WeeklyReport } from '@/engine/weekly';
 import { CreationView } from '@/views/CreationView';
 import { LoginView } from '@/views/LoginView';
 import { DashboardView } from '@/views/DashboardView';
@@ -48,6 +50,8 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('habits');
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [planWeekOpen, setPlanWeekOpen] = useState(false);
+  const [planWeekReport, setPlanWeekReport] = useState<WeeklyReport | null>(null);
   const created = useGameStore((s) => s.created);
   const battle = useGameStore((s) => s.battle);
   const mining = useGameStore((s) => s.mining);
@@ -55,6 +59,7 @@ export default function App() {
   const arena = useGameStore((s) => s.arena);
   const tactics = useGameStore((s) => s.tactics);
   const classChoice = useGameStore((s) => s.pendingClassChoice);
+  const pendingReport = useGameStore((s) => s.pendingReport) as WeeklyReport | null;
   const normalizeHabits = useGameStore((s) => s.normalizeHabits);
   const checkWeeklyRollover = useGameStore((s) => s.checkWeeklyRollover);
   const paletteId = useGameStore((s) => s.settings.paletteId);
@@ -109,7 +114,7 @@ export default function App() {
         <Sidebar active={tab} onChange={setTab} />
 
         <main className="flex-1">
-          {tab === 'habits'     && <DashboardView onOpenHistory={() => setHistoryOpen(true)} />}
+          {tab === 'habits'     && <DashboardView onOpenHistory={() => setHistoryOpen(true)} onPlanWeek={() => { setPlanWeekReport(null); setPlanWeekOpen(true); }} />}
           {tab === 'challenges' && <ChallengesView />}
           {tab === 'character'  && <CharacterView />}
           {tab === 'skills'     && <TrialsView />}
@@ -134,7 +139,15 @@ export default function App() {
       </Suspense>
       <BoonChoice />
       {classChoice && <ClassChoiceModal />}
-      <WeeklyReportModal />
+      <WeeklyReportModal
+        onPlanWeek={() => {
+          setPlanWeekReport(pendingReport);
+          setPlanWeekOpen(true);
+        }}
+      />
+      {planWeekOpen && (
+        <PlanWeekModal lastReport={planWeekReport} onClose={() => setPlanWeekOpen(false)} />
+      )}
     </div>
   );
 }
