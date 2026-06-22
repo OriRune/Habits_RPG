@@ -24,7 +24,7 @@ import {
   applyForestRemoteAttack,
 } from '@/net/coop/reduce';
 import type { GameState } from '../shared';
-import { fighterFor, gearBonuses, commitForest, commitForestDeath, energySpentPatch } from '../shared';
+import { fighterFor, gearBonuses, commitForest, commitForestDeath, energySpentPatch, stashForest } from '../shared';
 import { getForestRng, getForestBaseSeed, setForestRun, acceptForestWorldT } from '../runRng';
 
 export interface ForestSlice {
@@ -39,9 +39,11 @@ export interface ForestSlice {
   forestDash: (dir: Dir, nowMs: number) => void;
   forestTick: (nowMs: number, coPlayers?: ReadonlyArray<{ r: number; c: number }>) => void;
   beginForestBanking: () => void;
+  /** Stash 80% of the current haul into the economy mid-run. Only works on clearing tiles. */
+  forestStash: () => void;
   forestAdvance: () => void;
   forestCast: (spellKey: string) => void;
-  forestShrine: (nowMs: number) => void;
+  forestShrine: (nowMs: number, allowDenSpawn?: boolean) => void;
   chooseForestBoon: (key: string) => void;
   coopApplyForestWorld: (slice: WorldSliceInput) => void;
   coopApplyForestTile: (stage: number, r: number, c: number, tile: ForestTile) => void;
@@ -190,6 +192,16 @@ export const createForestSlice: StateCreator<
         : s,
     ),
 
+  forestStash: () =>
+    set((s) => {
+      const run = s.forest;
+      if (!run || run.status !== 'active') return s;
+      // Only stashable on a clearing tile — clearings are the natural safe harbours.
+      const { r, c } = run.player;
+      if (run.tiles[r]?.[c]?.kind !== 'clearing') return s;
+      return stashForest(s, run);
+    }),
+
   forestAdvance: () =>
     set((s) => {
       if (!s.forest || s.forest.status !== 'active') return s;
@@ -211,10 +223,10 @@ export const createForestSlice: StateCreator<
       return { forest };
     }),
 
-  forestShrine: (nowMs: number) =>
+  forestShrine: (nowMs: number, allowDenSpawn = true) =>
     set((s) => {
       if (!s.forest || s.forest.status !== 'active') return s;
-      const forest = forestActivateShrine(s.forest, nowMs, getForestRng());
+      const forest = forestActivateShrine(s.forest, nowMs, getForestRng(), allowDenSpawn);
       if (forest === s.forest) return s;
       return { forest };
     }),

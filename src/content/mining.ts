@@ -105,6 +105,13 @@ export const MINE_ORES: Record<string, MineOreDef> = {
     key: 'energy_gem', name: 'Energy Gem', glyph: '⚡', color: '#22d3ee',
     floorMin: 1, weight: 0, durability: 1, grants: { kind: 'stamina', amount: [11, 11] },
   },
+  cave_mushroom: {
+    // weight: 0 excludes this from the weighted ore pool. It is placed by a dedicated
+    // generation step (generateMine step 7b) at ~1 per 3 floors. Breaking it restores
+    // a significant chunk of stamina — giving players a reason to explore every floor.
+    key: 'cave_mushroom', name: 'Cave Mushroom', glyph: '🍄', color: '#d97706',
+    floorMin: 1, weight: 0, durability: 1, grants: { kind: 'stamina', amount: [30, 30] },
+  },
   // --- Frozen Depths band (floors 7–14) ---
   frost_quartz_vein: {
     key: 'frost_quartz_vein', name: 'Frost Quartz Vein', glyph: '❄', color: '#60c8e8',

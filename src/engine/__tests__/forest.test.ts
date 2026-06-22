@@ -656,6 +656,23 @@ describe('activateShrine', () => {
     expect(after).toBe(s);
   });
 
+  it('allowDenSpawn=false: shrine tile is still consumed but no guardian beast is spawned', () => {
+    const tiles = makeForest().tiles;
+    tiles[3][3] = { kind: 'shrine', shrineKey: 'disturbed_den' };
+    const s = makeForest({ tiles, stage: 5 });
+    const after = activateShrine(s, 1000, rngFrom(1), false);
+    expect(after.tiles[3][3].kind).toBe('clearing'); // tile consumed — co-op peers see it vanish
+    expect(after.beasts).toHaveLength(0);            // no beast spawned for the guest
+  });
+
+  it('allowDenSpawn defaults to true (normal solo/host behaviour unchanged)', () => {
+    const tiles = makeForest().tiles;
+    tiles[3][3] = { kind: 'shrine', shrineKey: 'disturbed_den' };
+    const s = makeForest({ tiles, stage: 5 });
+    const after = activateShrine(s, 1000, rngFrom(1)); // no 4th arg — default = true
+    expect(after.beasts.some((b) => b.key === 'forest_bear')).toBe(true);
+  });
+
   it('generateForest: shrines only placed on clearing tiles; maze stays reachable', () => {
     for (const seed of [1, 7, 42, 99, 1234]) {
       const forest = generateForest(3, SNAP, rngFrom(seed));

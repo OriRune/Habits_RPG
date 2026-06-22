@@ -155,7 +155,17 @@ export function useForestLoop(): ForestControlsApi {
           const dmg = (run.weapon.attackStat === 'DX' ? run.rangedPower : run.meleePower) * 1.75;
           coop.send?.({ type: 'attack', userId: myId ?? 'anon', monsterId: facedBeastId(run)!, dmg });
         } else if (isOnShrine(run)) {
-          store.forestShrine(now);
+          // Shrine activation: consume the tile, gate the den beast to host/solo.
+          // Broadcast the consumed tile so co-op peers see the shrine vanish (no re-activation).
+          const { r: sr, c: sc } = run.player;
+          const shrBefore = run.tiles[sr]?.[sc];
+          store.forestShrine(now, !isGuest);
+          if (inCoop) {
+            const shrAfter = useGameStore.getState().forest?.tiles[sr]?.[sc];
+            if (shrAfter && shrAfter !== shrBefore) {
+              coop.send?.({ type: 'tile', userId: myId ?? 'anon', floor: run.stage, r: sr, c: sc, tile: shrAfter });
+            }
+          }
         } else {
           const { r, c } = facedCell(run);
           const before = run.tiles[r]?.[c];
@@ -189,7 +199,17 @@ export function useForestLoop(): ForestControlsApi {
           const dmg = run.weapon.attackStat === 'DX' ? run.rangedPower : run.meleePower;
           coop.send?.({ type: 'attack', userId: myId ?? 'anon', monsterId: beastId, dmg });
         } else if (isOnShrine(run)) {
-          store.forestShrine(now);
+          // Shrine activation: consume the tile, gate the den beast to host/solo.
+          // Broadcast the consumed tile so co-op peers see the shrine vanish (no re-activation).
+          const { r: sr, c: sc } = run.player;
+          const shrBefore = run.tiles[sr]?.[sc];
+          store.forestShrine(now, !isGuest);
+          if (inCoop) {
+            const shrAfter = useGameStore.getState().forest?.tiles[sr]?.[sc];
+            if (shrAfter && shrAfter !== shrBefore) {
+              coop.send?.({ type: 'tile', userId: myId ?? 'anon', floor: run.stage, r: sr, c: sc, tile: shrAfter });
+            }
+          }
         } else {
           // Gather/slash the faced cell locally, then broadcast a changed node tile
           // so harvested nodes disappear for the whole party.

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Heart, Zap, Coins, ChevronsDown, LogOut, Trees, Skull, Sparkles } from 'lucide-react';
+import { Heart, Zap, Coins, ChevronsDown, LogOut, Trees, Skull, Sparkles, Archive } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { useForestLoop } from '@/hooks/useForestLoop';
 import {
@@ -10,6 +10,7 @@ import {
   pendingActKind,
   splitHaul,
   FOREST_DEATH_KEEP,
+  FOREST_STASH_KEEP,
   FOREST_WINDUP_MS,
   type ForestTile,
   type ForestBeast,
@@ -217,6 +218,7 @@ export function ForestRunOverlay() {
   const forestAdvance = useGameStore((s) => s.forestAdvance);
   const chooseForestBoon = useGameStore((s) => s.chooseForestBoon);
   const beginForestBanking = useGameStore((s) => s.beginForestBanking);
+  const forestStash = useGameStore((s) => s.forestStash);
   const remotePlayers = useCoopStore((s) => s.remotePlayers);
   const coopSession = useCoopStore((s) => s.session);
   const coopJoined = useCoopStore((s) => s.joined);
@@ -471,6 +473,10 @@ export function ForestRunOverlay() {
   const band = bandForStage(forest.stage);
   const dead = forest.status === 'ended';
   const onTreeline = canAdvance(forest);
+  const onClearing = forest.tiles[forest.player.r]?.[forest.player.c]?.kind === 'clearing';
+  const hasLoot = (forest.haul.gold ?? 0) > 0 || Object.keys(forest.haul.materials ?? {}).length > 0;
+  /** Stash is available on clearing tiles with a non-empty haul. */
+  const canStash = onClearing && hasLoot;
   const faced = facedCell(forest);
   const haulMats = Object.entries(forest.haul.materials ?? {}).filter(([, n]) => n > 0);
 
@@ -1235,7 +1241,7 @@ export function ForestRunOverlay() {
         </div>
       )}
 
-      {/* Push deeper / leave */}
+      {/* Push deeper / stash / leave */}
       <div className="flex w-full max-w-[600px] flex-col items-center gap-1">
         <div className="flex items-center justify-center gap-2">
           <Button
@@ -1250,12 +1256,39 @@ export function ForestRunOverlay() {
           >
             <ChevronsDown className="h-4 w-4" /> Push deeper
           </Button>
+          <Button
+            variant="secondary"
+            onClick={forestStash}
+            disabled={!canStash}
+            title={
+              !onClearing
+                ? 'Move to a clearing to stash your haul'
+                : !hasLoot
+                  ? 'Nothing to stash yet'
+                  : `Stash ${Math.round(FOREST_STASH_KEEP * 100)}% of your haul and keep going`
+            }
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-1.5 text-xs',
+              !canStash && 'opacity-60',
+              canStash && 'border-amber-500/60 text-amber-200 hover:bg-amber-900/30',
+            )}
+          >
+            <Archive className="h-4 w-4" /> Stash {Math.round(FOREST_STASH_KEEP * 100)}%
+          </Button>
           <Button variant="danger" onClick={beginForestBanking} className="flex items-center gap-1.5 px-3 py-1.5 text-xs">
             <LogOut className="h-4 w-4" /> Bank &amp; leave
           </Button>
         </div>
         {isCoopGuest && (
           <p className="text-[10px] text-parchment-300/50">The host leads the way deeper.</p>
+        )}
+        {canStash && (
+          <p className="text-[10px] text-amber-300/70">
+            ✦ Clearing — stash {Math.round(FOREST_STASH_KEEP * 100)}% of your haul to keep it safe.
+          </p>
+        )}
+        {onClearing && !hasLoot && (
+          <p className="text-[10px] text-parchment-300/40">✦ Clearing</p>
         )}
       </div>
 

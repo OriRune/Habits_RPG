@@ -10,6 +10,7 @@ import {
   descend,
   castSpell as minecastSpellFn,
   applyBoonChoice as applyMineBoonChoice,
+  placeTombstone,
   MINE_ENERGY_COST,
 } from '@/engine/mining';
 import { dungeonStamina } from '@/engine/crawl';
@@ -22,6 +23,8 @@ import {
   applyMineTileSlice,
   applyMineRemoteAttack,
 } from '@/net/coop/reduce';
+import type { Reward } from '@/engine/challenges';
+import { mergeReward } from '@/engine/dungeon';
 import type { GameState } from '../shared';
 import { fighterFor, gearBonuses, commitMining, commitMineDeath, energySpentPatch } from '../shared';
 import { getMineRng, getMineBaseSeed, setMineRun, acceptMineWorldT } from '../runRng';
@@ -30,6 +33,8 @@ export interface MiningSlice {
   mining: MineState | null;
   deepestMineFloor: number;
   bestMineScore: number;
+  /** Lost haul from the most recent death — recovered by reaching the tombstone tile. */
+  mineTombstone: { floor: number; haul: Reward } | null;
 
   beginMining: (seed?: number) => void;
   mineMove: (dir: Dir) => void;
@@ -57,6 +62,7 @@ export const createMiningSlice: StateCreator<
   mining: null,
   deepestMineFloor: 0,
   bestMineScore: 0,
+  mineTombstone: null,
 
   beginMining: (seed) =>
     set((s) => {
@@ -98,7 +104,7 @@ export const createMiningSlice: StateCreator<
       const agBonus = (gearBonuses(stateWithGear).statBonuses.AG ?? 0);
       const agLevel = s.character.statLevels.AG + agBonus;
 
-      const mining = generateMine(
+      let mining = generateMine(
         1,
         {
           meleePower: c.meleePower,
@@ -120,6 +126,10 @@ export const createMiningSlice: StateCreator<
         // falls back to the live mine RNG (Math.random).
         seed !== undefined ? mulberry32(floorSeed(seed, 1)) : getMineRng(),
       );
+      // If a tombstone exists for floor 1, place it on the generated map.
+      if (s.mineTombstone && s.mineTombstone.floor === 1) {
+        mining = placeTombstone(mining, getMineRng());
+      }
       return {
         character: {
           ...s.character,
@@ -143,10 +153,20 @@ export const createMiningSlice: StateCreator<
     set((s) => {
       if (!s.mining || s.mining.status !== 'active') return s;
       const run = s.mining;
+      const { r, c } = run.player;
+      // Tombstone recovery: pressing Strike on a tombstone merges the lost haul back
+      // into the current run and clears the tombstone record.
+      if (run.tiles[r]?.[c]?.kind === 'tombstone' && s.mineTombstone) {
+        const tiles = run.tiles.map((row) => row.slice());
+        tiles[r][c] = { kind: 'floor' };
+        return {
+          mining: { ...run, tiles, haul: mergeReward(run.haul, s.mineTombstone.haul) },
+          mineTombstone: null,
+        };
+      }
       // Boon cache pickup: pressing Strike while standing on a boon tile opens the choice
       // panel instead of swinging. This makes pickup intentional, preventing accidental
       // triggers when sprinting through corridors mid-combat.
-      const { r, c } = run.player;
       if (run.tiles[r]?.[c]?.kind === 'boon') {
         const tiles = run.tiles.map((row) => row.slice());
         tiles[r][c] = { kind: 'floor' };
@@ -223,8 +243,12 @@ export const createMiningSlice: StateCreator<
       const _mineBaseSeed = getMineBaseSeed();
       const genRng =
         _mineBaseSeed !== undefined ? mulberry32(floorSeed(_mineBaseSeed, nextFloor)) : getMineRng();
-      const mining = descend(s.mining, genRng);
+      let mining = descend(s.mining, genRng);
       if (mining === s.mining) return s;
+      // If a tombstone exists for this floor, place it on the newly generated map.
+      if (s.mineTombstone && s.mineTombstone.floor === nextFloor) {
+        mining = placeTombstone(mining, getMineRng());
+      }
       return { mining, deepestMineFloor: Math.max(s.deepestMineFloor, mining.deepest) };
     }),
 

@@ -975,8 +975,8 @@ describe('deep mine', () => {
     expect(get().deepestMineFloor).toBe(2);
   });
 
-  it('persists at version 26', () => {
-    expect(useGameStore.persist.getOptions().version).toBe(26);
+  it('persists at version 27', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(27);
   });
 
   it('coopApplyWorld drops a stale/duplicate world slice (t guard)', () => {

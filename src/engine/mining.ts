@@ -99,7 +99,7 @@ const SPELL_CD_MS = 500;
 // Tile types
 // ---------------------------------------------------------------------------
 
-export type MineTileKind = 'floor' | 'rock' | 'ore' | 'bedrock' | 'shaft' | 'entrance' | 'boon';
+export type MineTileKind = 'floor' | 'rock' | 'ore' | 'bedrock' | 'shaft' | 'entrance' | 'boon' | 'tombstone';
 
 export interface MineTile {
   kind: MineTileKind;
@@ -235,7 +235,7 @@ export function tileAt(state: MineState, r: number, c: number): MineTile | undef
 
 export function isWalkable(tile: MineTile | undefined): boolean {
   return !!tile && (
-    tile.kind === 'floor' || tile.kind === 'entrance' || tile.kind === 'shaft' || tile.kind === 'boon'
+    tile.kind === 'floor' || tile.kind === 'entrance' || tile.kind === 'shaft' || tile.kind === 'boon' || tile.kind === 'tombstone'
   );
 }
 
@@ -523,6 +523,21 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
     }
   }
 
+  // --- Step 7b: cave mushroom (~1 per 3 floors — rare stamina pickup) ---
+  // Reuses the shuffled remainingFloor array, picking a cell after the gem slots so it
+  // never overlaps an energy gem. weight:0 in MINE_ORES keeps it out of the random pool.
+  if (rng() < 0.33) {
+    for (let mi = gemCount; mi < remainingFloor.length; mi++) {
+      const cell = remainingFloor[mi];
+      if (!cell) break;
+      const [mr, mc] = cell;
+      if (floor_[mr][mc].kind === 'floor') {
+        floor_[mr][mc] = { kind: 'ore', oreKey: 'cave_mushroom', durability: 1, maxDurability: 1 };
+        break;
+      }
+    }
+  }
+
   // --- Step 8: monsters ---
   const mFloor: Array<[number, number]> = [];
   for (let r = 0; r < rows; r++) {
@@ -691,6 +706,37 @@ export function descend(state: MineState, rng: RNG): MineState {
     deepest: Math.max(state.deepest, nextFloor),
     score: state.score + 100 * nextFloor,
   };
+}
+
+/**
+ * Place a tombstone tile on a random reachable floor cell away from the entrance.
+ * Called by the store when a run begins/descends on a floor that has a saved tombstone.
+ * The tile is walkable (player can step on it) and is recovered via mineStrike.
+ */
+export function placeTombstone(state: MineState, rng: RNG): MineState {
+  const { rows, cols } = state;
+  // Find the entrance tile to measure distance from the start position.
+  let entR = 2, entC = Math.floor(cols / 2);
+  outer: for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (state.tiles[r]?.[c]?.kind === 'entrance') { entR = r; entC = c; break outer; }
+    }
+  }
+  // Collect floor cells that are far enough from the entrance to feel "hidden".
+  const cands: Array<[number, number]> = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const tile = state.tiles[r]?.[c];
+      if (tile?.kind === 'floor' && manhattan({ r, c }, { r: entR, c: entC }) > 5) {
+        cands.push([r, c]);
+      }
+    }
+  }
+  if (cands.length === 0) return state;
+  const [tr, tc] = cands[Math.floor(rng() * cands.length)];
+  const tiles = state.tiles.map((row) => row.slice());
+  tiles[tr][tc] = { kind: 'tombstone' };
+  return { ...state, tiles };
 }
 
 // ---------------------------------------------------------------------------

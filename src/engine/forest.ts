@@ -83,6 +83,8 @@ export const FOREST_COLS = FOREST_BASE_COLS;
 export const FOREST_ENERGY_COST = 2;
 /** Fraction of the haul a fallen forager keeps; the rest is forfeit on death. */
 export const FOREST_DEATH_KEEP = 0.5;
+/** Fraction of the haul kept when stashing mid-run at a clearing (20% is the "hurry tax"). */
+export const FOREST_STASH_KEEP = 0.8;
 
 /** Invulnerability window after taking a contact hit (ms). */
 export const FOREST_IFRAME_MS = 800;
@@ -1528,8 +1530,12 @@ function weightedShrine(stage: number, rng: RNG): { key: string } {
 /**
  * Activate the shrine the player is standing on.  Consumes it (shrine → clearing).
  * Needs `nowMs` for the blessing duration; provided by the store, not `act()`.
+ *
+ * `allowDenSpawn` — when false, a Disturbed Den shrine is still consumed (the tile changes to
+ * clearing so co-op peers see it vanish) but no guardian beast is spawned.  Pass `false` for
+ * co-op guests so the den beast only ever lives in the host's authoritative world state.
  */
-export function activateShrine(state: ForestState, nowMs: number, rng: RNG): ForestState {
+export function activateShrine(state: ForestState, nowMs: number, rng: RNG, allowDenSpawn = true): ForestState {
   if (state.status !== 'active') return state;
   const tile = tileAt(state, state.player.r, state.player.c);
   if (tile?.kind !== 'shrine' || !tile.shrineKey) return state;
@@ -1566,7 +1572,7 @@ export function activateShrine(state: ForestState, nowMs: number, rng: RNG): For
     };
   }
 
-  if (event.kind === 'den' && event.guardianKey) {
+  if (allowDenSpawn && event.kind === 'den' && event.guardianKey) {
     const def = FOREST_BEASTS[event.guardianKey];
     if (def) {
       // Spawn the guardian on a random adjacent walkable, unoccupied cell.

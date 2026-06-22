@@ -58,6 +58,7 @@ import {
   type ForestTile,
   splitHaul,
   FOREST_DEATH_KEEP,
+  FOREST_STASH_KEEP,
 } from '@/engine/forest';
 import {
   type ArenaState,
@@ -237,6 +238,12 @@ export interface GameState {
   deepestMineFloor: number;
   /** Personal best run score in the Deep Mine. */
   bestMineScore: number;
+  /**
+   * Tombstone from the miner's most recent death — the lost half of the haul, keyed
+   * by the floor number they fell on. Set by commitMineDeath; cleared when recovered.
+   * A new death before recovery replaces the previous tombstone.
+   */
+  mineTombstone: { floor: number; haul: Reward } | null;
   forest: ForestState | null;
   /** Deepest forest stage ever reached — a persistent record (mirrors deepestMineFloor). */
   deepestForestStage: number;
@@ -414,12 +421,17 @@ export interface GameState {
   forestTick: (nowMs: number, coPlayers?: ReadonlyArray<{ r: number; c: number }>) => void;
   /** Pause the run and show the banking summary screen (voluntary leave). */
   beginForestBanking: () => void;
+  /** Stash 80% of the current haul into the economy mid-run. Only works on clearing tiles. */
+  forestStash: () => void;
   /** Push on through the far tree line into a deeper, richer stage. */
   forestAdvance: () => void;
   /** Cast a known spell in the forest run. */
   forestCast: (spellKey: string) => void;
-  /** Activate the shrine the forager is standing on. */
-  forestShrine: (nowMs: number) => void;
+  /**
+   * Activate the shrine the forager is standing on.
+   * `allowDenSpawn` — false for co-op guests so the den beast only lives in the host's world.
+   */
+  forestShrine: (nowMs: number, allowDenSpawn?: boolean) => void;
   /** Co-op guest: apply the host's authoritative forest world — follow stage + beasts. */
   coopApplyForestWorld: (slice: {
     /** Host clock (ms) when produced — used by the staleness guard; ignored by the reducer. */
@@ -1128,18 +1140,23 @@ export function commitMining(state: GameState, run: MineState): GameState {
 /**
  * Bank only the kept half of a fallen miner's haul (the rest is forfeit to the rock) and clear
  * the run. Mirrors commitForestDeath; the overlay shows the split beforehand.
+ * The forfeited portion is saved as a tombstone the player can recover on a future run.
  */
 export function commitMineDeath(state: GameState, run: MineState): GameState {
-  const { kept } = splitHaul(run.haul, MINE_DEATH_KEEP);
+  const { kept, lost } = splitHaul(run.haul, MINE_DEATH_KEEP);
   // Include kept gold in the final score even on death (mirrors commitMining).
   const finalScore = run.score + (kept.gold ?? 0);
   const trickle = CRAWLER_XP_BASE + CRAWLER_XP_PER_DEPTH * run.deepest;
-  return commitRun(state, {
+  const banked = commitRun(state, {
     runField: 'mining', reward: kept,
     statXp: { ST: Math.ceil(trickle / 2), EN: Math.floor(trickle / 2) },
     deepestField: 'deepestMineFloor', deepestValue: run.deepest,
     scoreField: 'bestMineScore', scoreValue: finalScore, cloneMaterials: true, source: 'mine',
   });
+  // Record the tombstone if there is actually anything to recover (a zero-haul death leaves
+  // no tombstone). A new death before recovery replaces the previous tombstone.
+  const hasLoss = (lost.gold ?? 0) > 0 || Object.keys(lost.materials ?? {}).length > 0;
+  return { ...banked, mineTombstone: hasLoss ? { floor: run.deepest, haul: lost } : banked.mineTombstone };
 }
 
 /** Bank a finished forest run's haul into the economy, clear the run, and reconcile level. */
@@ -1152,6 +1169,35 @@ export function commitForest(state: GameState, run: ForestState): GameState {
     deepestField: 'deepestForestStage', deepestValue: run.deepest,
     scoreField: 'bestForestScore', scoreValue: run.score, cloneMaterials: true, source: 'forest',
   });
+}
+
+/**
+ * Mid-run haul stash — banks 80% of the current haul into the economy immediately and resets the
+ * run's haul to empty so the player can press deeper with a clean slate.  The run itself keeps
+ * going (`status` stays `'active'`).  The 20% forfeit is the "hurry tax" that makes full banking
+ * at run end (100%) more valuable than repeated stashing.
+ *
+ * Only callable when standing on a clearing tile (gated by the store action, not here).
+ * No-op if the haul is already empty.
+ */
+export function stashForest(state: GameState, run: ForestState): GameState {
+  const { kept } = splitHaul(run.haul, FOREST_STASH_KEEP);
+  const hasLoot = (kept.gold ?? 0) > 0 || Object.keys(kept.materials ?? {}).length > 0;
+  if (!hasLoot) return state;
+
+  const next: GameState = {
+    ...state,
+    character: { ...state.character, statXp: { ...state.character.statXp } },
+    inventory: { ...state.inventory },
+    materials: { ...state.materials },
+    ownedWeapons: [...state.ownedWeapons],
+    ownedGear: [...state.ownedGear],
+    // Reset the run's haul to empty; the 20% "lost" fraction is simply forfeited.
+    forest: { ...run, haul: {} },
+  };
+  // Mirror commitRun's habit-streak gold multiplier so stashed gold scales with streak bonus.
+  applyReward(next, { ...kept, gold: Math.round((kept.gold ?? 0) * state.character.habitBonus) }, 'forest');
+  return next;
 }
 
 /**
