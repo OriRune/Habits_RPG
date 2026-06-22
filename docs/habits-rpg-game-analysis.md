@@ -381,9 +381,8 @@ allowed to touch the network/environment.
 - `arena.ts`, `grid.ts` — Arena (square grid). `hex.ts`, `hexBattle.ts` — Hex
   Tactics (hex grid).
 - `trials/*.ts` — per-trial logic (`lockpicking`, `rooftopChase`, `armoryBreak`,
-  `longMarch`, `royalCourt`, `ancientLibrary`, `lastStand`; `trials.ts`
-  registry). _(Note: Spirit Grove's logic lives in `content/trials.ts` + the
-  component, not a dedicated engine file.)_
+  `longMarch`, `spiritGrove`, `royalCourt`, `ancientLibrary`, `lastStand`; `trials.ts`
+  registry). All 8 trials have a dedicated engine file (Spirit Grove's was added in Phase 7).
 - `gear.ts`, `weapons.ts`, `materials.ts`, `crafting.ts`, `items.ts`,
   `spells.ts` — items/equipment systems.
 - `date.ts`, `rng.ts` (`mulberry32`, `floorSeed`, `randomSeed`), `mood.ts`,
@@ -635,10 +634,7 @@ persisted game store; `LoginView` gates the app when a backend is configured.
   they're now in use. `coop_sessions.game` comment in 0003 says
   "`'forest'|'arena' reserved" but the final supported set is mine/forest/tactics
   (arena was dropped, forest/tactics added). Onboarding readers will be misled.
-- **Trial engine inconsistency.** Seven trials have a dedicated
-  `engine/trials/*.ts`; **Spirit Grove has none** — its logic is split between
-  `content/trials.ts` and the component. Minor, but breaks the otherwise uniform
-  pattern.
+- ~~**Trial engine inconsistency.** Seven trials have a dedicated `engine/trials/*.ts`; **Spirit Grove has none**.~~ **Fixed (Phase 7, 2026-06-22):** `src/engine/trials/spiritGrove.ts` now exists; all 8 trials are uniform.
 - **Docs sprawl.** `docs/` has ~30 overlapping analysis/plan files (e.g.
   `tactics-minigame-analysis.md` *and* `-analysis-2.md`,
   `rooftop-chase-minigame-analysis.md` *and* `...2.md`). Useful history, but no
@@ -731,8 +727,7 @@ treat as leads to confirm, not confirmed defects.
   trust) is the explicit decision; see `docs/trust-model.md`.
 - Are the duplicate `docs/*-analysis-2.md` files newer than their `-analysis.md`
   counterparts, or abandoned drafts? Their relative authority is unclear.
-- Spirit Grove: is the missing `engine/trials/spiritGrove.ts` intentional
-  (simple enough to live in content) or an inconsistency to fix?
+- ~~Spirit Grove: is the missing `engine/trials/spiritGrove.ts` intentional (simple enough to live in content) or an inconsistency to fix?~~ **Resolved (Phase 7, 2026-06-22):** `src/engine/trials/spiritGrove.ts` now exists; all 8 trials follow the same engine-file pattern.
 - The `member_habits` feature (migration 0007) adds party-visible habit data —
   is the opt-in/opt-out UI implemented in `PartyView`, or is the table populated
   automatically?

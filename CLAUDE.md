@@ -31,6 +31,10 @@ This is a habit-tracking RPG: players log real-life habits to earn XP, level up 
 
 **`src/hooks/`** — Real-time loop hooks (`useMiningLoop`, `useForestLoop`, `useArenaLoop`, `useSmoothCamera`). These hold *no game state*; they only fire store actions on a `requestAnimationFrame` clock based on held keys/buttons. The timing lives here; the rules live in the engine.
 
+**`src/net/`** — Supabase layer: `env.ts` (feature flags), `auth.ts` (session store), `clock.ts` (server-time sync), `cloudSave.ts` (CAS cloud sync), `party.ts` (realtime presence/chat/quests), `coop/` (co-op broadcast reducers for Mine/Forest/Tactics). This is the only layer that reads env vars or calls the network.
+
+**`src/store/runRng.ts`** — Transient PRNG state for active minigame runs. Kept *outside* the Zustand store and localStorage intentionally (see file docstring) — it does not need to survive a page refresh, and keeping it out of the save avoids bloat. Tests must call `resetRunRng()` in `beforeEach`.
+
 **`src/views/`** — Tab-level React components (`DashboardView`, `DungeonView`, etc.), rendered by `App.tsx` based on a local `tab` state variable. Minigame overlays (`MineRunOverlay`, `ForestRunOverlay`, `ArenaOverlay`, `BattleOverlay`) render on top of the tab content.
 
 **`src/components/`** — Feature-grouped UI components consumed by views.
@@ -52,3 +56,7 @@ This is a habit-tracking RPG: players log real-life habits to earn XP, level up 
 **Energy:** Completing any habit awards +1 energy. Minigame entries consume a fixed energy cost (`DUNGEON_ENERGY_COST`, `MINE_ENERGY_COST`, `FOREST_ENERGY_COST`, `ARENA_ENERGY_COST`). The `unlimitedEnergy` dev setting bypasses this.
 
 **Persistence:** All state is in one Zustand store persisted to `localStorage`. `withCharacterDefaults` backfills missing character fields when loading old saves.
+
+**Server time / clock seam:** `src/engine/date.ts::now()` is the single chokepoint for "what time is it right now" — every daily/weekly gate (`toISODate`, `weekKey`, streaks, trial resets, weekly rollover, challenge expiry) routes through it. `src/net/clock.ts::syncServerClock()` fetches `server_now()` from Supabase with RTT compensation and calls `setClockOffset(ms)` to shift `now()`. `App.tsx` gates the startup `normalizeHabits()`/`checkWeeklyRollover()` calls on `clockReady` so the first evaluation uses server time. Trust model: **Option A — friendly trust** (client-trusted saves, server clock for anti-spoof, no save validation). See `docs/trust-model.md`.
+
+**Minigame run completion:** All four real-time minigames (Mine, Forest, Arena, Tactics) share a single `commitRun(state, opts)` helper in `src/store/shared.ts` — banks rewards, clears active run, updates depth records, applies the habit-streak gold multiplier, calls `applyReward` and `checkLevelUp`. Each mode has a thin wrapper (`commitMining`, `commitArena`, etc.). Dungeon Delve uses a separate `finishRun` helper (intentional — its flow is turn-based, not real-time).

@@ -20,7 +20,7 @@ Other scripts:
 ```bash
 npm run build      # type-check + production build to dist/
 npm run preview    # serve the production build
-npm test           # run the Vitest suite (Node env, ~45 test files)
+npm test           # run the Vitest suite (Node env, ~52 test files)
 npm run typecheck  # tsc --noEmit only
 ```
 
