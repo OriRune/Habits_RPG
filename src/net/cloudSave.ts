@@ -19,7 +19,24 @@ import type { SharedHabit } from './party';
  */
 
 const STORAGE_KEY = 'habits-rpg-save';
+const OWNER_KEY = 'habits-rpg-owner';
 const DEBOUNCE_MS = 10_000;
+
+/** Which account uid owns the current local save (null = unowned / never signed in). */
+function getSaveOwner(): string | null { return localStorage.getItem(OWNER_KEY); }
+function setSaveOwner(uid: string): void { localStorage.setItem(OWNER_KEY, uid); }
+function clearSaveOwner(): void { localStorage.removeItem(OWNER_KEY); }
+
+/**
+ * Reset the in-memory store to fresh-game state, then remove the localStorage save
+ * and the owner tag. Call on sign-out so a shared browser is left clean and the next
+ * account always starts from the cloud (or a genuine pristine state).
+ */
+export function wipeLocalSave(): void {
+  useGameStore.getState().resetGame();
+  localStorage.removeItem(STORAGE_KEY);
+  clearSaveOwner();
+}
 
 // Transient run objects are not durable — mirror what migrate() nulls.
 const TRANSIENT_KEYS = ['battle', 'dungeon', 'mining', 'forest', 'arena', 'tactics'] as const;
@@ -93,6 +110,14 @@ export async function pullCloudSave(): Promise<void> {
   const uid = currentUserId();
   if (!uid) return;
 
+  // If the local save was written by a DIFFERENT account, wipe it before we pull.
+  // A null owner means the save is pristine (never signed-in single-player progress)
+  // and is intentionally adopted by the first account that claims it.
+  const owner = getSaveOwner();
+  if (owner !== null && owner !== uid) {
+    useGameStore.getState().resetGame();
+  }
+
   const { data, error } = await supabase
     .from('saves')
     .select('state, version')
@@ -114,10 +139,15 @@ export async function pullCloudSave(): Promise<void> {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data.state));
     await useGameStore.persist.rehydrate();
   } else {
-    // No cloud save yet (new account). Keep local and import it on the next push.
+    // No cloud save yet (new account). The foreign-save guard above already wiped any
+    // stale data from a different account; import whatever local state remains (fresh
+    // or pristine single-player progress) into this account's cloud row.
     lastPulledVersion = null;
     await pushCloudSave();
   }
+  // Record that this uid now owns the local cache so subsequent pulls / account
+  // switches can detect a foreign-owned save and reset before adopting it.
+  setSaveOwner(uid);
 }
 
 /**

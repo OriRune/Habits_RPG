@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { initAuth, useAuthStore } from '@/net/auth';
 import { isBackendConfigured } from '@/net/env';
-import { pullCloudSave, startAutoSync, stopAutoSync } from '@/net/cloudSave';
+import { pullCloudSave, startAutoSync, stopAutoSync, wipeLocalSave } from '@/net/cloudSave';
 import { syncServerClock } from '@/net/clock';
 
 /**
@@ -38,6 +38,11 @@ export function useCloudSync(): { cloudReady: boolean } {
     } else if (!uid && syncingFor.current) {
       syncingFor.current = null;
       stopAutoSync();
+      // Clear the local save so a shared browser is left clean and the next
+      // sign-in always pulls fresh from the cloud instead of seeing leftover data.
+      // Note: SettingsView already flushes a final pushCloudSave() before signOut(),
+      // so nothing is lost — the cloud copy is untouched.
+      wipeLocalSave();
       setCloudReady(!isBackendConfigured());
     }
   }, [session]);
