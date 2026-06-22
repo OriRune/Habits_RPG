@@ -15,6 +15,7 @@ import { toISODate, weekKey, _setNow, _resetNow, addDays } from '@/engine/date';
 import { MAX_ENERGY } from '../shared';
 import { completionRatio, COMPLETION_CAP, UNCAPPED_RATIO_CAP } from '@/engine/xp';
 import { statCompletedWithin } from '@/engine/habits';
+import { resetRunRng } from '../runRng';
 
 /** A trivial single-path floor map for tests: one room per layer, linked in sequence. */
 function linearMap(rooms: DungeonRoom[]): FloorMap {
@@ -64,6 +65,8 @@ const get = () => useGameStore.getState();
 
 beforeEach(() => {
   get().resetGame();
+  // Reset module-scope mine/forest RNG globals so state cannot leak between test cases.
+  resetRunRng();
 });
 
 describe('withCharacterDefaults (persist merge guard)', () => {

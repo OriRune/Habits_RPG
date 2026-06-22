@@ -353,6 +353,29 @@ describe('cloudSave', () => {
       expect(mocks.maybySingleImpl).not.toHaveBeenCalled();
     });
 
+    it('post-roundtrip hasActiveRun() guard aborts pull if a run starts mid-await', async () => {
+      // Before the network call: no active run → guard at cloudSave.ts:109 passes.
+      // During the SELECT await: a mining run starts (e.g. user tapped "Enter Mine").
+      // After the SELECT resolves: guard at cloudSave.ts:137 fires → no rehydrate.
+      const gs = useGameStore.getState();
+      mocks.maybySingleImpl.mockImplementationOnce(async () => {
+        // Side-effect: inject an active run *inside* the async boundary so the
+        // pre-network guard (line 109) passed but the post-roundtrip guard (line 137)
+        // will now see an active run.
+        useGameStore.setState({ ...gs, mining: { floor: 1 } as typeof gs.mining });
+        return {
+          data: { state: { character: { name: 'Cloud', level: 1, statXp: {}, statLevels: {} }, habits: [] }, version: 5 },
+          error: null,
+        };
+      });
+
+      await pullCloudSave();
+
+      // SELECT was called (pre-network guard passed), but rehydrate was aborted.
+      expect(mocks.maybySingleImpl).toHaveBeenCalledTimes(1);
+      expect(useGameStore.persist.rehydrate).not.toHaveBeenCalled();
+    });
+
     it('pull error → logs and returns without rehydrating', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 

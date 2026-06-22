@@ -9,6 +9,10 @@
  * Step 2 of the store slice decomposition: the 4 `let`s that previously lived
  * at module scope in `useGameStore.ts` now live here behind typed accessors.
  * Consumers import the getters/setters; nothing imports this file from `engine/`.
+ *
+ * Testing note: call `resetRunRng()` in `beforeEach` for any test suite that
+ * exercises `beginMining` or `beginForest`, so the module-scope state cannot
+ * leak between test cases.
  */
 import type { RNG } from '@/engine/crawl';
 
@@ -43,4 +47,18 @@ export function getForestBaseSeed(): number | undefined {
 export function setForestRun(rng: RNG, seed?: number): void {
   _forestRng = rng;
   _forestBaseSeed = seed;
+}
+
+// ── Test utility ──────────────────────────────────────────────────────────────
+
+/**
+ * Restore all four globals to their default values (Math.random / undefined).
+ * Call in `beforeEach` for any test suite that exercises beginMining/beginForest
+ * so module-scope state cannot leak between test cases.
+ */
+export function resetRunRng(): void {
+  _mineRng = Math.random;
+  _mineBaseSeed = undefined;
+  _forestRng = Math.random;
+  _forestBaseSeed = undefined;
 }
