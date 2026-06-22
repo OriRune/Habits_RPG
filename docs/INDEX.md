@@ -11,13 +11,11 @@ dates (git log) when in doubt about which is current.
 | File | Description |
 |---|---|
 | [`habits-rpg-game-analysis.md`](./habits-rpg-game-analysis.md) | Comprehensive technical + gameplay overview of the entire project (architecture, all minigames, backend, multiplayer, bugs/debt). **Start here.** |
-| [`habits-rpg-improvement-plan2.md`](./habits-rpg-improvement-plan2.md) | **Current roadmap (Phases 1–9).** Phases 1–8 complete as of 2026-06-22; Phase 9 deferred. Contains status markers per phase and a "Still open / deferred" tracked-items table. **Use this, not the older plan below.** |
-| [`habits-rpg-improvement-plan.md`](./habits-rpg-improvement-plan.md) | ⚠️ **Superseded** by `habits-rpg-improvement-plan2.md`. Earlier staged roadmap (Stage 0–5). Kept for historical reference. |
+| [`habits-rpg-improvement-plan2.md`](./habits-rpg-improvement-plan2.md) | **Current roadmap (Phases 1–9).** Phases 1–8 complete as of 2026-06-22; Phase 9 deferred. Contains status markers per phase and a "Still open / deferred" tracked-items table. |
 | [`trust-model.md`](./trust-model.md) | **Decided trust model (Phase 6, 2026-06-22): Option A — Friendly Trust.** Documents what the server defends against (clock manipulation, ownership) and what it does not (save editing, leaderboard accuracy). Read before building competitive features. |
 | [`habit-tracking-analysis.md`](./habit-tracking-analysis.md) | Analysis of the habit-tracking core: stat mapping, frequency types, streak/XP formulas, mood/load warning, suspension flow. |
 | [`habit-tracking-improvement-plan.md`](./habit-tracking-improvement-plan.md) | Improvement recommendations for the habit-tracking core derived from the analysis above. |
 | [`placeholder-art-tracking.md`](./placeholder-art-tracking.md) | Art coverage table (updated 2026-06-22): which sprites have real PNGs vs generated placeholders, drop-in asset seam docs, quick-win gaps. Reference before adding new entities. |
-| [`MULTIPLAYER_PLAN.md`](./MULTIPLAYER_PLAN.md) | Original plan for publishing as a website and adding accounts, parties, and real-time co-op. Historical context; superseded in scope by the improvement plan. |
 | [`balance-audit.md`](./balance-audit.md) | Stats & resources balance audit (2026-06-17): XP formulas, energy earn/spend rates, minigame reward scales, enemy stats. Reference before changing any numeric formula. |
 
 ---
@@ -53,8 +51,7 @@ improvement plan (recommendations). Read the analysis before the plan.
 ### The Arena
 | File | Description |
 |---|---|
-| [`arena-minigame-analysis.md`](./arena-minigame-analysis.md) | ⚠️ **Superseded** by `arena-minigame-analysis-2.md` (older, pre-Phase-D content). Kept for historical reference. |
-| [`arena-minigame-analysis-2.md`](./arena-minigame-analysis-2.md) | **Current** analysis of the Arena (updated through Phase D: boss glyphs, minion variants, authored layouts). Use this one. |
+| [`arena-minigame-analysis-2.md`](./arena-minigame-analysis-2.md) | **Current** analysis of the Arena (updated through Phase D: boss glyphs, minion variants, authored layouts). |
 
 ### Hex Tactics
 | File | Description |
@@ -69,8 +66,7 @@ improvement plan (recommendations). Read the analysis before the plan.
 |---|---|
 | [`lockpicking-minigame-analysis.md`](./lockpicking-minigame-analysis.md) | Analysis of the DX Lockpicking trial. |
 | [`lockpicking-improvement-plan.md`](./lockpicking-improvement-plan.md) | Improvement recommendations. |
-| [`rooftop-chase-minigame-analysis.md`](./rooftop-chase-minigame-analysis.md) | ⚠️ **Superseded** by `rooftop-chase-minigame-analysis2.md`. Kept for history. |
-| [`rooftop-chase-minigame-analysis2.md`](./rooftop-chase-minigame-analysis2.md) | **Current** analysis of the AG Rooftop Chase trial (revised 2026-06-). Use this one. |
+| [`rooftop-chase-minigame-analysis2.md`](./rooftop-chase-minigame-analysis2.md) | **Current** analysis of the AG Rooftop Chase trial (revised 2026-06-). |
 | [`rooftop-chase-improvement-plan.md`](./rooftop-chase-improvement-plan.md) | Improvement recommendations (based on analysis2). |
 | [`armory-break-minigame-analysis.md`](./armory-break-minigame-analysis.md) | Analysis of the ST Armory Break trial. |
 | [`armory-break-improvement-plan.md`](./armory-break-improvement-plan.md) | Improvement recommendations. |
@@ -84,6 +80,19 @@ improvement plan (recommendations). Read the analysis before the plan.
 | [`ancient-library-improvement-plan.md`](./ancient-library-improvement-plan.md) | Improvement recommendations. |
 | [`last-stand-minigame-analysis.md`](./last-stand-minigame-analysis.md) | Analysis of the HP Last Stand trial. |
 | [`last-stand-improvement-plan.md`](./last-stand-improvement-plan.md) | Improvement recommendations. |
+
+---
+
+## Archived
+
+Superseded docs moved to `docs/archived/`. Kept for historical reference only — do not update.
+
+| File | Why archived |
+|---|---|
+| [`archived/habits-rpg-improvement-plan.md`](./archived/habits-rpg-improvement-plan.md) | Earlier staged roadmap (Stage 0–5). Superseded by `habits-rpg-improvement-plan2.md`. |
+| [`archived/MULTIPLAYER_PLAN.md`](./archived/MULTIPLAYER_PLAN.md) | Original multiplayer design plan. Historical context; superseded in scope by the current roadmap and the multiplayer features now shipped. Co-op clock-offset note still referenced at line 257. |
+| [`archived/arena-minigame-analysis.md`](./archived/arena-minigame-analysis.md) | Pre-Phase-D Arena analysis. Superseded by `arena-minigame-analysis-2.md`. |
+| [`archived/rooftop-chase-minigame-analysis.md`](./archived/rooftop-chase-minigame-analysis.md) | Earlier Rooftop Chase analysis. Superseded by `rooftop-chase-minigame-analysis2.md`. |
 
 ---
 

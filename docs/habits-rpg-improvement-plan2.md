@@ -1328,7 +1328,7 @@ Verified as not yet implemented as of 2026-06-22. Not blocking the current roadm
 
 | Item | Details | Priority |
 |---|---|---|
-| **Co-op staleness guard** | `src/hooks/useTacticsCoopSession.ts:68-71` — guard compares host timestamp `t` against the guest's local `performance.now()` (per-machine, not aligned). Never compares against the current state's own timestamp. Needs a host-relative clock offset per `MULTIPLAYER_PLAN.md:257`. | Real bug |
+| **Co-op staleness guard** | `src/hooks/useTacticsCoopSession.ts:68-71` — guard compares host timestamp `t` against the guest's local `performance.now()` (per-machine, not aligned). Never compares against the current state's own timestamp. Needs a host-relative clock offset per `docs/archived/MULTIPLAYER_PLAN.md:257`. | Real bug |
 | **5 dead Tactics spells** | `rune-fire`, `rune-ice`, `rune-poison`, `ring-of-fire`, `teleport` appear in the Tactics loadout picker, cost MP, and silently no-op — no handler in `playerCastSpell()`. See `docs/tactics-improvement-plan.md:58`. | Real gameplay bug |
 | **5 spellbooks missing from `SPELLBOOK_KEYS`** | `src/lib/sprites.ts:145` — `spellbook_fire_rune`, `_ice_rune`, `_poison_rune`, `_ring_of_fire`, `_chaotic_blink` not in the key array; render as generated placeholders. See `docs/placeholder-art-tracking.md`. | Cosmetic |
 | **Guided onboarding sequence** | Full step-by-step walkthrough (complete first habit → show first reward → unlock dashboard) not yet built. `CreationView` + `WelcomeCard` cover the basics; no enforced tutorial gating. | UX gap |

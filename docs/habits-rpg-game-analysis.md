@@ -587,8 +587,8 @@ persisted game store; `LoginView` gates the app when a backend is configured.
   party `CoopRaidPanel`/`PartyChat`/`PartyQuestPanel`/`CreateJoinPanel`; trials
   `TrialModal` + `components/trials/games/*`.
 - **Notable docs:** `habits_rpg_gameplay_design.md` (the original brief the
-  engine is built from), `docs/MULTIPLAYER_PLAN.md`, and ~28 per-minigame
-  `*-analysis.md` / `*-improvement-plan.md` files.
+  engine is built from), `docs/archived/MULTIPLAYER_PLAN.md` (historical; archived),
+  and ~28 per-minigame `*-analysis.md` / `*-improvement-plan.md` files.
 
 ---
 
@@ -635,10 +635,7 @@ persisted game store; `LoginView` gates the app when a backend is configured.
   "`'forest'|'arena' reserved" but the final supported set is mine/forest/tactics
   (arena was dropped, forest/tactics added). Onboarding readers will be misled.
 - ~~**Trial engine inconsistency.** Seven trials have a dedicated `engine/trials/*.ts`; **Spirit Grove has none**.~~ **Fixed (Phase 7, 2026-06-22):** `src/engine/trials/spiritGrove.ts` now exists; all 8 trials are uniform.
-- **Docs sprawl.** `docs/` has ~30 overlapping analysis/plan files (e.g.
-  `tactics-minigame-analysis.md` *and* `-analysis-2.md`,
-  `rooftop-chase-minigame-analysis.md` *and* `...2.md`). Useful history, but no
-  index; hard to know which is current.
+- ~~**Docs sprawl.** `docs/` has ~30 overlapping analysis/plan files (e.g. `rooftop-chase-minigame-analysis.md` *and* `...2.md`). Useful history, but no index; hard to know which is current.~~ **Addressed (2026-06-22):** superseded docs archived to `docs/archived/`; `docs/INDEX.md` added with current/archived markers for every file.
 - **`colorschemes.txt` / `sprites_needed.md`** are loose working notes checked
   into source.
 
