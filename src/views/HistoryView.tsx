@@ -5,6 +5,7 @@ import { toISODate } from '@/engine/date';
 import { HabitHistoryCard } from '@/components/history/HabitHistoryCard';
 import { AccountSummary } from '@/components/history/AccountSummary';
 import { DayOfWeekChart } from '@/components/history/DayOfWeekChart';
+import { EmptyState } from '@/components/ui/EmptyState';
 
 const ORDER = { active: 0, suspended: 1, retired: 2 } as const;
 
@@ -36,9 +37,7 @@ export function HistoryView({ onClose }: { onClose: () => void }) {
         )}
 
         {sorted.length === 0 ? (
-          <div className="rounded-md border border-dashed border-gold-deep/40 p-8 text-center text-sm text-parchment-300/70">
-            No habits yet — your chronicle fills in as you complete them.
-          </div>
+          <EmptyState message="No habits yet — your chronicle fills in as you complete them." />
         ) : (
           sorted.map((h) => <HabitHistoryCard key={h.id} habit={h} />)
         )}

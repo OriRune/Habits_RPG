@@ -6,6 +6,7 @@ import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { Sprite } from '@/components/ui/Sprite';
 import { SectionTitle } from '@/components/ui/Divider';
+import { EmptyState } from '@/components/ui/EmptyState';
 
 /** Consumable items (potions, spellbooks, etc.) — displayed on the Hero tab. */
 export function ItemsSection() {
@@ -19,7 +20,14 @@ export function ItemsSection() {
     return def !== null && def !== undefined;
   });
 
-  if (owned.length === 0) return null;
+  if (owned.length === 0) {
+    return (
+      <Panel tone="parchment" className="p-4">
+        <SectionTitle className="mb-3">Items</SectionTitle>
+        <EmptyState message="No items yet — buy potions and spellbooks from the Merchant." />
+      </Panel>
+    );
+  }
 
   return (
     <Panel tone="parchment" className="p-4">

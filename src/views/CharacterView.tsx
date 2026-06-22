@@ -12,6 +12,7 @@ import { GearSection } from '@/components/inventory/GearSection';
 import { Panel } from '@/components/ui/Panel';
 import { Sprite } from '@/components/ui/Sprite';
 import { SectionTitle } from '@/components/ui/Divider';
+import { EmptyState } from '@/components/ui/EmptyState';
 import { Trophy, TrendingUp } from 'lucide-react';
 
 // All discoverable classes (unique names from the chart) for the Codex.
@@ -84,7 +85,15 @@ export function CharacterView() {
       </Panel>
 
       {/* Minigame Records */}
-      {hasAnyRecord && (
+      {!hasAnyRecord ? (
+        <Panel tone="parchment" className="p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <Trophy className="h-4 w-4 text-gold-deep/50" />
+            <SectionTitle className="flex-1">Records</SectionTitle>
+          </div>
+          <EmptyState message="Explore a dungeon or minigame to set your first record." />
+        </Panel>
+      ) : (
         <Panel tone="parchment" className="p-4">
           <div className="mb-3 flex items-center gap-2">
             <Trophy className="h-4 w-4 text-gold-deep" />

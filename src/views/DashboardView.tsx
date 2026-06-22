@@ -25,6 +25,7 @@ import {
 import { isCompletedOn, effectiveStatus } from '@/engine/habits';
 import { toISODate, parseISODate, addDays, BACKDATE_WINDOW_DAYS } from '@/engine/date';
 import { WelcomeCard } from '@/components/onboarding/WelcomeCard';
+import { EmptyState } from '@/components/ui/EmptyState';
 import { HabitCard } from '@/components/habits/HabitCard';
 import { HabitForm } from '@/components/habits/HabitForm';
 import { RecoveryModal } from '@/components/habits/RecoveryModal';
@@ -177,18 +178,18 @@ export function DashboardView({ onOpenHistory, onPlanWeek }: { onOpenHistory: ()
         </div>
 
         {dashboard.length === 0 ? (
-          <div className="rounded-md border border-dashed border-ink-light/50 p-8 text-center">
-            <p className="text-sm text-ink-muted">
-              {isToday
+          <EmptyState
+            message={
+              isToday
                 ? 'No quests yet. Inscribe your first habit to begin shaping your hero.'
-                : 'No quests were scheduled on this day.'}
-            </p>
-            {isToday && (
-              <Button onClick={() => setShowForm(true)} className="mt-3">
-                <Plus className="mr-1.5 h-4 w-4" /> Add your first habit
-              </Button>
-            )}
-          </div>
+                : 'No quests were scheduled on this day.'
+            }
+            action={
+              isToday
+                ? { label: '+ Add your first habit', onClick: () => setShowForm(true) }
+                : undefined
+            }
+          />
         ) : (
           <div className="space-y-2">
             {/* Focus habits first */}

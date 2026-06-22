@@ -6,6 +6,7 @@ import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { Sprite } from '@/components/ui/Sprite';
 import { SectionTitle } from '@/components/ui/Divider';
+import { EmptyState } from '@/components/ui/EmptyState';
 
 export function gearBonusText(g: GearDef): string {
   const parts: string[] = [];
@@ -27,7 +28,14 @@ export function GearSection() {
   const equipGear = useGameStore((s) => s.equipGear);
   const unequipGear = useGameStore((s) => s.unequipGear);
 
-  if (ownedGear.length === 0) return null;
+  if (ownedGear.length === 0) {
+    return (
+      <Panel tone="parchment" className="p-4">
+        <SectionTitle className="mb-3">Gear</SectionTitle>
+        <EmptyState message="No gear yet — craft equipment in the Forge or find it in dungeons." />
+      </Panel>
+    );
+  }
 
   return (
     <Panel tone="parchment" className="p-4">

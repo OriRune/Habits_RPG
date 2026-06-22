@@ -12,6 +12,7 @@ import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { Sprite } from '@/components/ui/Sprite';
 import { SectionTitle } from '@/components/ui/Divider';
+import { EmptyState } from '@/components/ui/EmptyState';
 import { ChallengeBuilder } from '@/components/challenges/ChallengeBuilder';
 
 const KIND_LABEL: Record<ChallengeKind, string> = {
@@ -81,6 +82,10 @@ export function ChallengesView() {
           <Plus className="h-4 w-4" /> Create
         </Button>
       </div>
+
+      {challenges.length === 0 && rotationAvail.length === 0 && customAvail.length === 0 && (
+        <EmptyState message="No challenges yet — use the Create button to build one, or wait for the weekly rotation to refresh." />
+      )}
 
       {challenges.length > 0 && (
         <div className="space-y-3">

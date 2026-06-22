@@ -1,4 +1,5 @@
 import { Coins, Snowflake } from 'lucide-react';
+import { EmptyState } from '@/components/ui/EmptyState';
 import { useGameStore, SHOP_ITEMS } from '@/store/useGameStore';
 import { getMaterial } from '@/engine/materials';
 import { WEAPONS } from '@/engine/weapons';
@@ -32,9 +33,11 @@ export function InventoryView() {
       <SectionTitle tone="wood">Crafting</SectionTitle>
 
       {/* Materials */}
-      {ownedMaterials.length > 0 && (
-        <Panel tone="parchment" className="p-4">
-          <SectionTitle className="mb-3">Materials</SectionTitle>
+      <Panel tone="parchment" className="p-4">
+        <SectionTitle className="mb-3">Materials</SectionTitle>
+        {ownedMaterials.length === 0 ? (
+          <EmptyState message="No materials yet — gather ore in the Deep Mine and plants in the Wild Forest." />
+        ) : (
           <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
             {ownedMaterials.map(([key, qty]) => (
               <div key={key} className="flex flex-col items-center gap-1 text-center">
@@ -44,8 +47,8 @@ export function InventoryView() {
               </div>
             ))}
           </div>
-        </Panel>
-      )}
+        )}
+      </Panel>
 
       <ForgeSection />
 
