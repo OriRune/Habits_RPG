@@ -201,7 +201,7 @@ function CoopRaidPanel() {
           <p className="text-xs text-ink-muted">
             Start a shared run — everyone dives the same map together in real time.
           </p>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             <Button
               className="flex items-center justify-center gap-2"
               disabled={busy}

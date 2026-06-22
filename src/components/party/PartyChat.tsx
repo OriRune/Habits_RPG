@@ -57,7 +57,7 @@ export function PartyChat() {
               </span>
               <p
                 className={
-                  'inline-block max-w-[85%] rounded-md px-2 py-1 text-sm ' +
+                  'inline-block max-w-[85%] break-words rounded-md px-2 py-1 text-sm ' +
                   (mine ? 'bg-gold-bright/20 text-ink' : 'bg-wood-900/10 text-ink')
                 }
               >
