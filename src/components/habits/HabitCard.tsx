@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { AlertTriangle, Check, Flame, MoreVertical, Pause, Pencil, Play, Archive, Trash2, CalendarClock, Undo2 } from 'lucide-react';
+import { AlertTriangle, Check, Flame, MoreVertical, Pause, Pencil, Play, Archive, Trash2, CalendarClock, Undo2, Star } from 'lucide-react';
 import { getStat } from '@/engine/stats';
 import { type Habit, isCompletedOn, effectiveStatus, weekCompletions } from '@/engine/habits';
+import { habitHealth, type HabitWarning, type HabitActionCode } from '@/engine/habitHealth';
 import { toISODate, parseISODate, addDays } from '@/engine/date';
 import { useGameStore } from '@/store/useGameStore';
 import { statCrest } from '@/lib/sprites';
@@ -28,16 +29,19 @@ export function HabitCard({ habit, viewDate = toISODate() }: { habit: Habit; vie
   const uncompleteHabit = useGameStore((s) => s.uncompleteHabit);
   const retireHabit = useGameStore((s) => s.retireHabit);
   const reactivateHabit = useGameStore((s) => s.reactivateHabit);
+  const setHabitFocus = useGameStore((s) => s.setHabitFocus);
   const [dialog, setDialog] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [suspendOpen, setSuspendOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [warningOpen, setWarningOpen] = useState(false);
   // Escape hatch: "Log older entry…" opens a full-range DatePicker for genuine backdated corrections.
   const [logOlderOpen, setLogOlderOpen] = useState(false);
   const [olderDate, setOlderDate] = useState<string | null>(null);
 
   const done = isCompletedOn(habit, viewDate);
+  const warnings = habitHealth(habit, viewDate);
   const suspended = effectiveStatus(habit, viewDate) === 'suspended';
   const retired = habit.status === 'retired';
   const stat = getStat(habit.stat);
@@ -93,8 +97,11 @@ export function HabitCard({ habit, viewDate = toISODate() }: { habit: Habit; vie
         />
 
         <div className="min-w-0 flex-1">
-          <div className={cn('truncate font-medium text-ink', done && 'text-ink-muted line-through')}>
-            {habit.name}
+          <div className={cn('flex items-center gap-1.5 truncate font-medium text-ink', done && 'text-ink-muted line-through')}>
+            {habit.focus && (
+              <Star className="h-3 w-3 shrink-0 fill-gold-bright text-gold-bright" aria-label="Focus habit" />
+            )}
+            <span className="truncate">{habit.name}</span>
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-ink-muted">
             <span className="font-semibold" style={{ color: stat.color }}>
@@ -131,6 +138,17 @@ export function HabitCard({ habit, viewDate = toISODate() }: { habit: Habit; vie
           </div>
         </div>
 
+        {/* Health-insight badge — amber triangle when the engine detects a pattern worth noting */}
+        {warnings.length > 0 && (
+          <button
+            onClick={() => setWarningOpen(true)}
+            className="shrink-0 text-amber-500 hover:text-amber-600 transition-colors"
+            aria-label={`${warnings.length} habit insight${warnings.length > 1 ? 's' : ''}`}
+          >
+            <AlertTriangle className="h-4 w-4" />
+          </button>
+        )}
+
         {/* Kebab menu */}
         <div className="relative shrink-0">
           <button
@@ -145,6 +163,13 @@ export function HabitCard({ habit, viewDate = toISODate() }: { habit: Habit; vie
               <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
               <div className="absolute right-0 top-6 z-20 w-40 overflow-hidden rounded-md border border-gold-deep/40 bg-parchment-100 shadow-gold-sm">
                 <MenuItem icon={Pencil} label="Edit…" onClick={() => { setEditOpen(true); setMenuOpen(false); }} />
+                {!retired && !suspended && (
+                  <MenuItem
+                    icon={Star}
+                    label={habit.focus ? 'Remove focus' : 'Mark as focus'}
+                    onClick={() => { setHabitFocus(habit.id, !habit.focus); setMenuOpen(false); }}
+                  />
+                )}
                 {done && (
                   <MenuItem icon={Undo2} label="Mark incomplete" onClick={() => { uncompleteHabit(habit.id, viewDate); setMenuOpen(false); }} />
                 )}
@@ -168,6 +193,16 @@ export function HabitCard({ habit, viewDate = toISODate() }: { habit: Habit; vie
 
       {dialog && <CompleteHabitDialog habit={habit} viewDate={viewDate} onClose={() => setDialog(false)} />}
       {editOpen && <HabitForm habit={habit} onClose={() => setEditOpen(false)} />}
+      {warningOpen && (
+        <HabitInsightsModal
+          warnings={warnings}
+          onClose={() => setWarningOpen(false)}
+          onEdit={() => { setWarningOpen(false); setEditOpen(true); }}
+          onSuspend={() => { setWarningOpen(false); setSuspendOpen(true); }}
+          onRetire={() => { setWarningOpen(false); retireHabit(habit.id); }}
+          onFocus={() => { setWarningOpen(false); setHabitFocus(habit.id, true); }}
+        />
+      )}
       {suspendOpen && <SuspendDialog habitId={habit.id} onClose={() => setSuspendOpen(false)} />}
       {deleteOpen && <DeleteHabitDialog habit={habit} onClose={() => setDeleteOpen(false)} />}
       {logOlderOpen && (
@@ -212,6 +247,72 @@ function MenuItem({
     >
       <Icon className="h-4 w-4" /> {label}
     </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Habit insights modal — lists warnings from habitHealth() with suggested fix actions
+// ---------------------------------------------------------------------------
+
+const ACTION_LABELS: Record<HabitActionCode, string> = {
+  lower_target: 'Lower target',
+  change_frequency: 'Change frequency',
+  change_difficulty: 'Change difficulty',
+  edit: 'Edit habit',
+  suspend: 'Suspend',
+  retire: 'Retire',
+  mark_focus: 'Mark as focus',
+};
+
+function HabitInsightsModal({
+  warnings,
+  onClose,
+  onEdit,
+  onSuspend,
+  onRetire,
+  onFocus,
+}: {
+  warnings: HabitWarning[];
+  onClose: () => void;
+  onEdit: () => void;
+  onSuspend: () => void;
+  onRetire: () => void;
+  onFocus: () => void;
+}) {
+  function handleAction(code: HabitActionCode) {
+    if (code === 'lower_target' || code === 'change_frequency' || code === 'change_difficulty' || code === 'edit') {
+      onEdit();
+    } else if (code === 'suspend') {
+      onSuspend();
+    } else if (code === 'retire') {
+      onRetire();
+    } else if (code === 'mark_focus') {
+      onFocus();
+    }
+  }
+
+  return (
+    <Modal title="Habit Insights" onClose={onClose}>
+      <div className="space-y-4">
+        {warnings.map((w, i) => (
+          <div key={i} className="space-y-2">
+            <p className="text-sm text-ink leading-snug">{w.message}</p>
+            <div className="flex flex-wrap gap-2">
+              {w.suggestedActions.map((code) => (
+                <Button
+                  key={code}
+                  variant="secondary"
+                  onClick={() => handleAction(code)}
+                  className="px-2.5 py-1 text-xs"
+                >
+                  {ACTION_LABELS[code]}
+                </Button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Modal>
   );
 }
 

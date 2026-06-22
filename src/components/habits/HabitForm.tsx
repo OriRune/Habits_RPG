@@ -1,16 +1,19 @@
 import { useState } from 'react';
-import { STATS } from '@/engine/stats';
-import { type Difficulty } from '@/engine/xp';
+import { ChevronLeft, Sparkles, Pencil } from 'lucide-react';
+import { STATS, getStat } from '@/engine/stats';
+import { type Difficulty, BASE_XP, HABIT_GOLD } from '@/engine/xp';
 import { type Habit, type HabitType, type Frequency } from '@/engine/habits';
 import { useGameStore, type NewHabitInput } from '@/store/useGameStore';
+import { HABIT_TEMPLATE_GROUPS, type HabitTemplateGroup } from '@/content/habitTemplates';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
+import { cn } from '@/lib/cn';
 
-const DIFFICULTIES: { id: Difficulty; label: string; xp: number }[] = [
-  { id: 'easy', label: 'Easy', xp: 10 },
-  { id: 'normal', label: 'Normal', xp: 20 },
-  { id: 'hard', label: 'Hard', xp: 35 },
-  { id: 'epic', label: 'Epic', xp: 50 },
+const DIFFICULTIES: { id: Difficulty; label: string; guidance: string; xp: number }[] = [
+  { id: 'easy', label: 'Easy', guidance: 'Small enough to do even on a bad day.', xp: BASE_XP.easy },
+  { id: 'normal', label: 'Normal', guidance: 'A solid daily effort.', xp: BASE_XP.normal },
+  { id: 'hard', label: 'Hard', guidance: 'Requires planning or discipline.', xp: BASE_XP.hard },
+  { id: 'epic', label: 'Epic', guidance: 'A major effort — not for every habit.', xp: BASE_XP.epic },
 ];
 
 const TAGS = ['Health', 'Fitness', 'Study', 'Creativity', 'Social', 'Chores', 'Mental health', 'Work', 'Sleep'];
@@ -19,7 +22,157 @@ const fieldCls =
   'w-full rounded-md border border-ink-light/40 bg-parchment-100 px-3 py-2 text-sm text-ink focus:border-gold-deep focus:outline-none';
 const labelCls = 'mb-1 block font-display text-[11px] font-semibold uppercase tracking-wide text-ink-muted';
 
+type FormMode = 'choose' | 'templates' | 'template_detail' | 'custom';
+
 export function HabitForm({ habit, onClose }: { habit?: Habit; onClose: () => void }) {
+  const addHabit = useGameStore((s) => s.addHabit);
+  const isEdit = habit !== undefined;
+
+  // Start in 'choose' mode for new habits, skip to 'custom' for edits
+  const [mode, setMode] = useState<FormMode>(isEdit ? 'custom' : 'choose');
+  const [selectedGroup, setSelectedGroup] = useState<HabitTemplateGroup | null>(null);
+
+  if (mode === 'choose') {
+    return (
+      <Modal title="New Habit" onClose={onClose}>
+        <div className="space-y-3">
+          <p className="text-sm text-ink-muted">How would you like to add a habit?</p>
+          <button
+            onClick={() => setMode('templates')}
+            className="flex w-full items-center gap-3 rounded-md border border-gold-deep/40 bg-gold/10 px-4 py-3 text-left hover:bg-gold/20 transition-colors"
+          >
+            <Sparkles className="h-5 w-5 shrink-0 text-gold-bright" />
+            <div>
+              <div className="font-semibold text-ink">Quick Start from Template</div>
+              <div className="text-xs text-ink-muted">
+                Pick a ready-made habit set — Fitness, Reading, Study, and more.
+              </div>
+            </div>
+          </button>
+          <button
+            onClick={() => setMode('custom')}
+            className="flex w-full items-center gap-3 rounded-md border border-ink-light/40 px-4 py-3 text-left hover:border-gold-deep/60 transition-colors"
+          >
+            <Pencil className="h-5 w-5 shrink-0 text-ink-muted" />
+            <div>
+              <div className="font-semibold text-ink">Custom Habit</div>
+              <div className="text-xs text-ink-muted">Build from scratch with full control.</div>
+            </div>
+          </button>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (mode === 'templates') {
+    return (
+      <Modal title="Templates" onClose={onClose}>
+        <div className="space-y-2">
+          <button
+            onClick={() => setMode('choose')}
+            className="flex items-center gap-1 text-xs text-ink-muted hover:text-ink mb-1"
+          >
+            <ChevronLeft className="h-3 w-3" /> Back
+          </button>
+          <p className="text-sm text-ink-muted">Choose a template set to get started:</p>
+          {HABIT_TEMPLATE_GROUPS.map((group) => {
+            const stat = getStat(group.primaryStat);
+            return (
+              <button
+                key={group.id}
+                onClick={() => { setSelectedGroup(group); setMode('template_detail'); }}
+                className="flex w-full items-start gap-3 rounded-md border border-ink-light/40 px-3 py-2.5 text-left hover:border-gold-deep/60 transition-colors"
+              >
+                <div
+                  className="mt-0.5 h-3 w-3 shrink-0 rounded-full"
+                  style={{ background: stat.color }}
+                />
+                <div>
+                  <div className="font-semibold text-sm text-ink">{group.label}</div>
+                  <div className="text-xs text-ink-muted">{group.description}</div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </Modal>
+    );
+  }
+
+  if (mode === 'template_detail' && selectedGroup) {
+    return (
+      <Modal title={selectedGroup.label} onClose={onClose}>
+        <div className="space-y-2">
+          <button
+            onClick={() => setMode('templates')}
+            className="flex items-center gap-1 text-xs text-ink-muted hover:text-ink mb-1"
+          >
+            <ChevronLeft className="h-3 w-3" /> Back
+          </button>
+          <p className="text-sm text-ink-muted">
+            Add individual habits from this template, or add them all at once.
+          </p>
+          <div className="space-y-1.5">
+            {selectedGroup.habits.map((template, i) => {
+              const stat = getStat(template.stat);
+              const xp = BASE_XP[template.difficulty];
+              return (
+                <div
+                  key={i}
+                  className="flex items-center gap-3 rounded-md border border-ink-light/30 px-3 py-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium text-ink">{template.name}</div>
+                    <div className="flex items-center gap-2 mt-0.5 text-[10px] text-ink-muted">
+                      <span style={{ color: stat.color }} className="font-semibold">{stat.name}</span>
+                      <span>·</span>
+                      <span>{template.difficulty}</span>
+                      <span>·</span>
+                      <span>{xp} XP + 1 ⚡</span>
+                    </div>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    onClick={() => { addHabit(template as NewHabitInput); }}
+                    className="shrink-0 px-2.5 py-1 text-xs"
+                  >
+                    Add
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+          <Button
+            onClick={() => {
+              for (const t of selectedGroup.habits) addHabit(t as NewHabitInput);
+              onClose();
+            }}
+            className="w-full py-2 mt-1"
+          >
+            Add all {selectedGroup.habits.length} habits
+          </Button>
+        </div>
+      </Modal>
+    );
+  }
+
+  // Custom / edit form
+  return <HabitFormFields habit={habit} onClose={onClose} onBack={!isEdit ? () => setMode('choose') : undefined} />;
+}
+
+// ---------------------------------------------------------------------------
+// Actual form fields (custom / edit path)
+// ---------------------------------------------------------------------------
+
+function HabitFormFields({
+  habit,
+  onClose,
+  onBack,
+}: {
+  habit?: Habit;
+  onClose: () => void;
+  onBack?: () => void;
+}) {
   const addHabit = useGameStore((s) => s.addHabit);
   const updateHabit = useGameStore((s) => s.updateHabit);
   const isEdit = habit !== undefined;
@@ -66,9 +219,24 @@ export function HabitForm({ habit, onClose }: { habit?: Habit; onClose: () => vo
     onClose();
   }
 
+  // Reward preview values
+  const xpPerCompletion = BASE_XP[difficulty];
+  const goldPerCompletion = HABIT_GOLD[difficulty];
+  const freq = frequency === 'daily' ? 7 : frequency === 'weekdays' ? 5 : frequency === 'times_per_week' ? Math.min(7, Number(timesPerWeek) || 1) : null;
+  const weeklyXp = freq !== null ? xpPerCompletion * freq : null;
+
   return (
     <Modal title={isEdit ? 'Edit Habit' : 'New Habit'} onClose={onClose}>
       <div className="space-y-4">
+        {onBack && (
+          <button
+            onClick={onBack}
+            className="flex items-center gap-1 text-xs text-ink-muted hover:text-ink"
+          >
+            <ChevronLeft className="h-3 w-3" /> Back to templates
+          </button>
+        )}
+
         <div>
           <label className={labelCls}>Habit name</label>
           <input
@@ -82,7 +250,7 @@ export function HabitForm({ habit, onClose }: { habit?: Habit; onClose: () => vo
 
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className={labelCls}>Stat</label>
+            <label className={labelCls}>Stat (Training XP)</label>
             <select className={fieldCls} value={stat} onChange={(e) => setStat(e.target.value as typeof stat)}>
               {STATS.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -118,11 +286,13 @@ export function HabitForm({ habit, onClose }: { habit?: Habit; onClose: () => vo
                 onClick={() => !isEdit && setType(t)}
                 disabled={isEdit}
                 title={isEdit ? "Type can't be changed after creation" : undefined}
-                className={`flex-1 rounded-md border px-3 py-2 text-sm ${
+                className={cn(
+                  'flex-1 rounded-md border px-3 py-2 text-sm',
                   type === t
                     ? 'border-gold-deep bg-gold/15 font-semibold text-ink'
-                    : 'border-ink-light/40 text-ink-muted hover:border-gold-deep/60'
-                } ${isEdit ? 'cursor-not-allowed opacity-50' : ''}`}
+                    : 'border-ink-light/40 text-ink-muted hover:border-gold-deep/60',
+                  isEdit && 'cursor-not-allowed opacity-50',
+                )}
               >
                 {t === 'binary' ? 'Yes / No' : 'Quantity'}
               </button>
@@ -172,11 +342,12 @@ export function HabitForm({ habit, onClose }: { habit?: Habit; onClose: () => vo
                 <button
                   key={i}
                   onClick={() => toggleDay(i)}
-                  className={`h-9 flex-1 rounded-md border text-sm font-semibold ${
+                  className={cn(
+                    'h-9 flex-1 rounded-md border text-sm font-semibold',
                     days.includes(i)
                       ? 'border-gold-deep bg-gold/15 text-ink'
-                      : 'border-ink-light/40 text-ink-muted hover:border-gold-deep/60'
-                  }`}
+                      : 'border-ink-light/40 text-ink-muted hover:border-gold-deep/60',
+                  )}
                 >
                   {d}
                 </button>
@@ -206,21 +377,53 @@ export function HabitForm({ habit, onClose }: { habit?: Habit; onClose: () => vo
               <button
                 key={d.id}
                 onClick={() => setDifficulty(d.id)}
-                className={`rounded-md border px-2 py-2 text-center text-xs ${
+                title={d.guidance}
+                className={cn(
+                  'rounded-md border px-2 py-2 text-center text-xs',
                   difficulty === d.id
                     ? 'border-gold-deep bg-gold/15 text-ink'
-                    : 'border-ink-light/40 text-ink-muted hover:border-gold-deep/60'
-                }`}
+                    : 'border-ink-light/40 text-ink-muted hover:border-gold-deep/60',
+                )}
               >
                 <div className="font-display font-semibold">{d.label}</div>
                 <div className="text-[10px] text-ink-light">{d.xp} XP</div>
               </button>
             ))}
           </div>
+          <p className="mt-1.5 text-xs text-ink-muted italic">
+            {DIFFICULTIES.find((d) => d.id === difficulty)?.guidance}
+          </p>
           {isEdit && (
-            <p className="mt-1.5 text-xs text-ink-muted">Changes future XP only — past entries are unchanged.</p>
+            <p className="mt-0.5 text-xs text-ink-muted">Changes future XP only — past entries are unchanged.</p>
           )}
         </div>
+
+        {/* Reward preview — only for new habits */}
+        {!isEdit && (
+          <div className="rounded-md border border-gold-deep/30 bg-gold/5 px-3 py-2.5 space-y-1">
+            <p className="font-display text-[11px] font-semibold uppercase tracking-wide text-gold-deep">
+              Reward preview
+            </p>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs text-ink-muted">
+              <span>XP per completion</span>
+              <span className="font-semibold text-ink">{xpPerCompletion} XP → {getStat(stat).name}</span>
+              <span>Energy per completion</span>
+              <span className="font-semibold text-ink">+1 ⚡</span>
+              {goldPerCompletion > 0 && (
+                <>
+                  <span>Gold per completion</span>
+                  <span className="font-semibold text-ink">{goldPerCompletion} gold</span>
+                </>
+              )}
+              {weeklyXp !== null && (
+                <>
+                  <span>Expected weekly XP</span>
+                  <span className="font-semibold text-ink">~{weeklyXp} XP</span>
+                </>
+              )}
+            </div>
+          </div>
+        )}
 
         <Button onClick={submit} disabled={!name.trim()} className="w-full py-2.5">
           {isEdit ? 'Save Changes' : 'Inscribe Habit'}

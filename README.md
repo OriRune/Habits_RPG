@@ -20,7 +20,7 @@ Other scripts:
 ```bash
 npm run build      # type-check + production build to dist/
 npm run preview    # serve the production build
-npm test           # run the Vitest suite (Node env, ~38 test files)
+npm test           # run the Vitest suite (Node env, ~45 test files)
 npm run typecheck  # tsc --noEmit only
 ```
 
@@ -36,33 +36,44 @@ npm run typecheck  # tsc --noEmit only
   on repeated losses).
 - **Classes** — at level 10 your two highest stats pick from an 8×8 class chart
   (ties prompt a choice). Discovered classes fill a **Class Codex**.
-- **Challenges** — local single-player weekly challenges (count/streak/rival/etc.),
-  custom-authored challenges with auto-balanced rewards, weekly rotation.
+- **Challenges** — weekly challenges (count/streak/rival/etc.), custom-authored
+  challenges with auto-balanced rewards, weekly rotation.
 - **Economy** — gold, materials, crafting, gear (armor/trinket/tool), weapons,
   spells, and a shop.
+- **Mood & load warning** — 7-day consistency mood tracker; warns at ≥12 active
+  daily habits.
 
 ### Minigames (spend Energy earned from habits)
 | Minigame | Type | Co-op? |
 |---|---|---|
 | **Dungeon Delve** | Turn-based branching floor descent | No |
-| **Deep Mine** | Real-time grid crawler, dig ore, fight monsters | Yes (Mine) |
-| **Wild Forest** | Real-time grid crawler, forage, fight beasts | Yes (Forest) |
+| **Deep Mine** | Real-time grid crawler, dig ore, fight monsters | Yes |
+| **Wild Forest** | Real-time grid crawler, forage, fight beasts | Yes |
 | **The Arena** | Real-time hex boss duel | No |
-| **Hex Tactics** | Turn-based hex skirmish with height advantage | Yes (Tactics) |
+| **Hex Tactics** | Turn-based hex skirmish with height advantage | Yes |
 
 ### Skill Trials
 Eight stat-specific daily microgames (free, once per calendar day):
 Lockpicking (DX), Rooftop Chase (AG), Armory Break (ST), Long March (EN),
 Spirit Grove (WI), Royal Court (CH), Ancient Library (KN), Last Stand (HP).
+Score 1–3 stars; rewards scale with score and character level.
 
 ### Optional multiplayer backend (Supabase)
 When `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` are set, the app adds:
-- **Accounts** — username/password auth (synthetic-email pattern, no email needed).
-- **Cloud save** — debounced CAS sync to Supabase; existing localStorage save is
-  always the fast path.
-- **Parties** — create/join (6-char invite code), party chat, shared party quests,
-  kick/rename controls, presence (online/activity labels).
-- **Leaderboard** — party or global, sorted by total XP.
+- **Accounts** — username/password auth (synthetic-email pattern, no email
+  address required). Account-switching guard wipes local save before pulling a
+  different user's cloud save, preventing data leaks on shared devices.
+- **Cloud save** — debounced compare-and-swap sync to Supabase; localStorage is
+  always the fast path; transient run state is never uploaded.
+- **Parties** — create/join (6-char invite code), party chat, shared party
+  quests with per-member contribution tracking (gold rewards only go to
+  contributing members), kick/rename controls, presence labels ("In the Mine",
+  "In battle", …).
+- **Member habit visibility** — party members can opt-in to publishing their
+  active habit names, streaks, and daily completion status, visible only to
+  co-party members.
+- **Leaderboard** — party or global, sorted by total XP, deepest dungeon/mine/
+  forest/arena/tactics floors, or 30-day habit consistency score.
 - **Real-time co-op** — Broadcast-channel sync for Deep Mine, Wild Forest, and
   Hex Tactics (mine/forest = 10 Hz host-authoritative; tactics = event-driven).
 
@@ -76,7 +87,7 @@ src/
   engine/        Pure, framework-free game rules (deterministic, RNG-injected)
   engine/__tests__/  Unit tests for all engine modules
   content/       Static data tables (items, weapons, gear, spells, biomes, …)
-  store/         Single Zustand store orchestrating the engine; selectors
+  store/         Thin Zustand shell + 12 domain slices; selectors
   store/__tests__/   Store integration tests
   hooks/         RAF timing loops (mining/forest/arena/chase) + network hooks
   net/           Supabase layer — env, auth, cloudSave, party, coop/
@@ -97,7 +108,7 @@ Supabase (optional).
 
 1. Copy `.env.example` → `.env.local` and fill in your Supabase URL + anon key.
 2. Apply the SQL migrations **manually** in the Supabase dashboard SQL editor, in
-   order: `supabase/migrations/0001` → `0002` → `0003` → `0004` → `0005`.
+   order: `supabase/migrations/0001` → `0002` → … → `0008`.
    (There is no migration runner — apply each file once.)
 3. `npm run dev` — the auth gate and multiplayer features will activate.
 

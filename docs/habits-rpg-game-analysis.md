@@ -5,8 +5,8 @@
 > files/functions in the repo. Where something is ambiguous or could not be
 > verified, it is called out explicitly.
 
-_Snapshot basis: branch `feature/multiplayer`, persist store schema version 22,
-~47,800 lines of TypeScript/TSX across `src/`, 38 test files._
+_Snapshot basis: branch `feature/multiplayer`, persist store schema version 23,
+~54,900 lines of TypeScript/TSX across `src/`, 45 test files._
 
 ---
 
@@ -145,9 +145,16 @@ backed by `supabase/migrations/0002_phase2_parties.sql`.
     (`SYSTEM_MSG_PREFIX`) to avoid a schema column.
   - **Party quests** — one active shared goal at a time (`party_quests`).
     `usePartyQuestReporter` increments it atomically on every habit completion
-    via the `increment_party_quest` RPC.
+    via the `increment_party_quest` RPC. Per-member contribution amounts are
+    tracked in a `contributions` JSONB column so gold rewards credit only
+    contributing members (added in migration 0006).
+- **Member habit visibility** — `member_habits` table (migration 0007): members
+  can opt-in to publishing their active habit names, streaks, and today's
+  completion status, readable only by co-party members (not the public snapshot).
 - **Leaderboard** — a Postgres `view` over `profiles.public_snapshot`
   (`security_invoker`), scoped to party members or global; sorted by total XP.
+  Also exposes `deepestTacticsTier` (migration 0005) and `habitScore`
+  (30-day habit completion rate 0–100, migration 0008).
 - **Co-op raids** — launched from `CoopRaidPanel` in `PartyView` (Deep Mine,
   Wild Forest, Hex Tactics buttons). See §7 + §15 for the protocol.
 
@@ -336,14 +343,14 @@ HabitsRPG/
 ├─ .github/workflows/ci.yml
 ├─ README.md  (stale), CLAUDE.md, habits_rpg_gameplay_design.md, sprites_needed.md
 ├─ test/setup.ts
-├─ supabase/migrations/         0001..0004 SQL (auth+saves, parties, coop, coop-tactics)
+├─ supabase/migrations/         0001..0008 SQL (auth+saves, parties, coop, coop-tactics, tactics-leaderboard, quest-contributions, member-habits, consistency-leaderboard)
 ├─ docs/                        ~30 design/analysis/improvement-plan markdown files
 └─ src/
    ├─ App.tsx, main.tsx, index.css, vite-env.d.ts, colorschemes.txt
    ├─ engine/        Pure game logic (no React/store imports) + __tests__/
    │   └─ trials/    Per-trial pure logic + __tests__/
    ├─ content/       Static data tables (items, weapons, gear, spells, biomes, …)
-   ├─ store/         useGameStore.ts (the hub), selectors.ts, __tests__/
+   ├─ store/         useGameStore.ts (thin shell), selectors.ts, shared.ts, runRng.ts, slices/ (12 domain slices), __tests__/
    ├─ hooks/         RAF loops + cloud/party/coop orchestration hooks
    ├─ net/           Supabase layer (env, client, auth, cloudSave, party, coop/)
    ├─ views/         Tab-level screens
@@ -386,9 +393,14 @@ allowed to touch the network/environment.
 `biomes`, `boons`, `encounters`, `forest`, `gear`, `items`, `materials`,
 `mining`, `recipes`, `relics`, `spells`, `trials`, `weapons`.
 
-**Store (`src/store/`):** `useGameStore.ts` (2,742 lines) — the single source of
-truth: full `GameState`, every action, persist config + `migrate`/`merge`.
-`selectors.ts` — derived read helpers used by components.
+**Store (`src/store/`):** `useGameStore.ts` (~171 lines) — the thin shell that
+assembles the persisted Zustand store (config, `migrate`, `merge`) from 12
+domain slices in `src/store/slices/` (habitsSlice, challengesSlice,
+dungeonSlice, miningSlice, forestSlice, arenaSlice, tacticsSlice, battleSlice,
+economySlice, trialsSlice, coreSlice, settingsSlice; ~2,011 lines total across
+all slices). `shared.ts` holds cross-slice helpers; `runRng.ts` holds the
+module-scope mutable RNG state. `selectors.ts` — derived read helpers used by
+components.
 
 **Hooks (`src/hooks/`):** `useMiningLoop`/`useForestLoop`/`useArenaLoop`/
 `useChaseLoop` (RAF clocks, no game state), `useSmoothCamera`, audio hooks
@@ -458,6 +470,18 @@ Schema (`supabase/migrations/`):
   sync is **not** in Postgres — it's Realtime Broadcast). Host-owned RLS.
 - **0004 — coop tactics:** adds a CHECK constraint enumerating co-op games
   (`mine`/`forest`/`tactics`).
+- **0005 — tactics leaderboard:** adds a generated `tactics_tier` column on
+  `profiles` (extracted from `public_snapshot.deepestTacticsTier`) and updates
+  the `leaderboard` view to expose it.
+- **0006 — party quest contributions:** adds a `contributions` JSONB column to
+  `party_quests` and redefines `increment_party_quest` to accumulate per-member
+  amounts atomically, enabling contribution-gated gold rewards.
+- **0007 — member habits:** new `member_habits` table where party members can
+  publish their habit list (name, streak, completion status); RLS restricts
+  reads to co-party members only.
+- **0008 — consistency leaderboard:** adds a generated `habit_score` column on
+  `profiles` (extracted from `public_snapshot.habitScore`, the 30-day
+  completion rate) and updates the `leaderboard` view to include it.
 
 Server authority is deliberately thin: business logic mostly runs client-side;
 the DB enforces ownership/membership via RLS + SECURITY DEFINER RPCs, and
@@ -468,11 +492,12 @@ the DB enforces ownership/membership via RLS + SECURITY DEFINER RPCs, and
 ## 14. How data is stored, loaded, updated, shared
 
 **Local (always):** the entire `GameState` is persisted to `localStorage` under
-key `habits-rpg-save` via Zustand `persist` (schema **version 22**). The store
+key `habits-rpg-save` via Zustand `persist` (schema **version 23**). The store
 mutates ~10 Hz during minigames, so localStorage is the high-frequency cache.
-- **`migrate`** runs the versioned upgrade chain (documented inline v2→v22):
+- **`migrate`** runs the versioned upgrade chain (documented inline v2→v23):
   transient run objects are nulled, material keys remapped, challenge `metric`→
-  `kind`, `statLevels` derived from old `statXp`, etc.
+  `kind`, `statLevels` derived from old `statXp`, v23 added `claimedPartyQuests`
+  tracking, etc.
 - **`merge`** deep-merges nested `character`/`settings`/trial records so
   fields added in later versions fall back to defaults, and **preserves an
   in-memory live run** over a stale snapshot on rehydrate.
@@ -487,11 +512,19 @@ are stripped before upload, and **a pull is refused while a run is live**
 (`hasActiveRun`) to avoid clobbering an in-progress board. Autosync flushes on
 store changes, on a periodic interval, and on tab `visibilitychange`.
 
+**Account-switching guard** (`wipeLocalSave`, `getSaveOwner`/`setSaveOwner`/
+`clearSaveOwner` in `net/cloudSave.ts`, wired in `hooks/useCloudSync.ts`):
+the cloud-save owner's uid is stamped to a separate `localStorage` key on every
+pull. If a different user signs in and attempts a pull, the foreign local save
+is wiped first to prevent data leaking across accounts on shared devices.
+Sign-out also triggers `wipeLocalSave()` to clear the cache.
+
 **Shared between users:**
 - A **public snapshot** (`buildPublicSnapshot`: name, level, total XP, top
-  stats, class, deepest mine/forest/arena, last active) is written to
-  `profiles.public_snapshot` on the same cadence — this is what parties and the
-  leaderboard read. The full save is never exposed to other users.
+  stats, class, deepest mine/forest/arena/tactics tier, habit score, last
+  active) is written to `profiles.public_snapshot` on the same cadence — this
+  is what parties and the leaderboard read. The full save is never exposed to
+  other users.
 - **Chat/quests** are normal table rows with realtime subscriptions.
 - **Co-op world state** is **never persisted** — it streams peer-to-peer over a
   Realtime Broadcast channel (§15).
@@ -548,7 +581,7 @@ persisted game store; `LoginView` gates the app when a backend is configured.
   `preview`, `test`, `test:watch`, `typecheck`.
 - **Config:** `vite.config.ts`, `tailwind.config.js`, `postcss.config.js`,
   `tsconfig.json`, `vercel.json`, `.env.example`, `.github/workflows/ci.yml`.
-- **Data/“DB” files:** `supabase/migrations/0001..0004.sql` (the only DB
+- **Data/”DB” files:** `supabase/migrations/0001..0008.sql` (the only DB
   schema). All game content data lives in `src/content/*.ts`.
 - **Key UI components:** overlays `MineRunOverlay`, `ForestRunOverlay`,
   `ArenaOverlay`, `TacticsOverlay`, `BattleOverlay`; hubs `HubGrid`/`TabBar`;
@@ -573,24 +606,27 @@ persisted game store; `LoginView` gates the app when a backend is configured.
 - **CI:** GitHub Actions on push-to-main + all PRs: install → build → test.
 - **Deploy:** Vercel, static `dist/` with SPA fallback. Env vars must be set in
   the host for the backend to activate in production.
-- **Tests:** `npm test` (Vitest, Node env). 38 test files, concentrated in
+- **Tests:** `npm test` (Vitest, Node env). 45 test files, concentrated in
   `engine/__tests__` + `store/__tests__` (the pure layers).
 
 ---
 
 ## 18. Fragile / incomplete / duplicated / confusing / poorly organized parts
 
-- **`useGameStore.ts` is a 2,742-line god-module.** Despite clean engine
-  layering, *all* actions for *every* system live in one file. It's the obvious
-  refactor target (e.g. slice the store per domain). High merge-conflict risk and
-  hard to navigate.
+- **Store has been split into 12 domain slices** (`src/store/slices/`). The
+  former god-module is gone — `useGameStore.ts` is now ~171 lines. The
+  `dungeonSlice.ts` (399 lines) and the `miningSlice`/`forestSlice` (~260 lines
+  each) are the largest slices and still contain dense orchestration logic, but
+  the merge-conflict risk and navigation cost are substantially reduced.
 - **Repeated `commitX` boilerplate.** `commitMining`/`commitMineDeath`/
   `commitForest`/`commitForestDeath`/`commitArena`/`commitTactics` share a large
   amount of near-identical clone-and-applyReward-and-checkLevelUp structure that
-  could be unified.
+  could be unified (now spread across their respective slices).
 - **Module-scope mutable RNG state** (`mineRng`/`mineBaseSeed`/`forestRng`/
-  `forestBaseSeed`) lives outside the store to stay out of the save. It works,
-  but it's hidden global state that can surprise (e.g. two runs, tests).
+  `forestBaseSeed`) lives in `src/store/runRng.ts` outside the store to stay
+  out of the save. It works, but it's hidden global state that can surprise
+  (e.g. two runs, tests). The extraction to its own module makes it easier to
+  find than before.
 - **Two XP concepts (`statXp` ledger vs `statLevels`)** are genuinely
   confusing and a frequent source of "why didn't my stat change" reasoning;
   it's well-commented but conceptually heavy.
@@ -644,9 +680,6 @@ treat as leads to confirm, not confirmed defects.
   `state.battle` is set (a trial boss), and dungeon XP only *flags* a level-up
   to apply after the run (`grantStatXp` comment). This interplay is subtle and a
   likely source of edge-case bugs around leveling mid-dungeon.
-- **Leaderboard omits Tactics.** `public_snapshot`/`leaderboard` track deepest
-  mine/forest/arena but **not** `deepestTacticsTier`, even though Tactics is a
-  headline (and co-op) mode. Looks like an oversight.
 - **Single party cap.** `getMyParty` assumes one membership row
   (`maybeSingle()`); the schema's composite PK technically allows multiple, so a
   data anomaly would surface as a runtime fetch error.
@@ -675,9 +708,9 @@ treat as leads to confirm, not confirmed defects.
   activity label) — keep new subscribers cheap and gated.
 - **Good first improvements (low-risk, high-value):** rewrite `README.md`;
   add a `docs/` index and prune duplicate analysis files; wire `server_now()`
-  into daily gating; add `deepestTacticsTier` to the snapshot/leaderboard;
-  split `useGameStore.ts` into per-domain slices; add tests around the co-op
-  protocol reducers (they're pure enough to test).
+  into daily gating; add tests around the co-op protocol reducers (they're pure
+  enough to test). _(Already done: store split into per-domain slices;
+  `deepestTacticsTier` and `habitScore` added to snapshot/leaderboard.)_
 - **The design brief (`habits_rpg_gameplay_design.md`) is the canonical spec.**
   Many engine comments cite it by section ("brief §7.2", "Section 14"). Read it
   before changing formulas — the numbers are deliberate and tested against it.
@@ -693,3 +726,6 @@ treat as leads to confirm, not confirmed defects.
   counterparts, or abandoned drafts? Their relative authority is unclear.
 - Spirit Grove: is the missing `engine/trials/spiritGrove.ts` intentional
   (simple enough to live in content) or an inconsistency to fix?
+- The `member_habits` feature (migration 0007) adds party-visible habit data —
+  is the opt-in/opt-out UI implemented in `PartyView`, or is the table populated
+  automatically?

@@ -61,7 +61,7 @@ export const useGameStore = create<GameState>()(
     }),
     {
       name: 'habits-rpg-save',
-      version: 23,
+      version: 24,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -110,6 +110,8 @@ export const useGameStore = create<GameState>()(
       //      now also reset on character wipe (no migration needed — existing deepestFloor kept).
       // v23: Party quest rewards — new `claimedPartyQuests` array (defaults to []) tracks
       //      quest IDs already credited locally, preventing double-credit across sessions.
+      // v24: Focus habits — new `focus?: boolean` field on Habit (defaults to false/undefined
+      //      for existing habits; capped at MAX_FOCUS_HABITS per account).
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {
@@ -117,7 +119,7 @@ export const useGameStore = create<GameState>()(
           if (h.lastCompletedISO && log[h.lastCompletedISO] === undefined) {
             log[h.lastCompletedISO] = { xp: 0 };
           }
-          return { ...h, status: h.status ?? 'active', log } as Habit;
+          return { ...h, status: h.status ?? 'active', focus: h.focus ?? false, log } as Habit;
         });
         const RENAME: Record<string, string> = { iron: 'iron_bar', cloth: 'cloth_roll', herb: 'herbs', essence: 'crystals' };
         const materials: Record<string, number> = {};

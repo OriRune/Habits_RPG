@@ -264,6 +264,10 @@ export interface GameState {
   retireHabit: (id: string) => void;
   reactivateHabit: (id: string) => void;
   suspendHabit: (id: string, untilISO: string) => void;
+  /** Mark or unmark a habit as a weekly focus. Capped at MAX_FOCUS_HABITS; ignores if at cap and focus=true. */
+  setHabitFocus: (id: string, focus: boolean) => void;
+  /** Suspend every active habit whose id is NOT in keepIds, until untilISO. Recovery helper. */
+  batchSuspendHabits: (keepIds: Set<string>, untilISO: string) => void;
   /** Flip any suspensions whose date has passed back to active (call on mount). */
   normalizeHabits: () => void;
 

@@ -82,6 +82,19 @@ describe('withCharacterDefaults (persist merge guard)', () => {
     const c = withCharacterDefaults(get().character);
     expect(c.statLevels).toEqual(get().character.statLevels);
   });
+
+  it('backfills focus: false on a habit loaded from a pre-v24 save that lacked the focus field', () => {
+    // Simulate a habit serialised before v24 — no `focus` property.
+    const legacyHabit = {
+      id: 'legacy', name: 'Old Habit', stat: 'ST' as const, type: 'binary' as const,
+      frequency: 'daily' as const, difficulty: 'normal' as const, status: 'active' as const,
+      streak: 0, log: {}, createdISO: '2025-01-01',
+      // `focus` intentionally absent — mirrors a real old save
+    };
+    useGameStore.setState({ habits: [legacyHabit as never] });
+    get().normalizeHabits();
+    expect(get().habits[0].focus).toBe(false);
+  });
 });
 
 describe('createCharacter (onboarding)', () => {
@@ -903,8 +916,8 @@ describe('deep mine', () => {
     expect(get().deepestMineFloor).toBe(2);
   });
 
-  it('persists at version 23', () => {
-    expect(useGameStore.persist.getOptions().version).toBe(23);
+  it('persists at version 24', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(24);
   });
 });
 

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { type Habit, type HabitEntry } from '../habits';
-import { dayCell, habitStats, series, consistencyScore } from '../tracking';
+import { dayCell, habitStats, series, consistencyScore, dayOfWeekBreakdown, consistencyTrend } from '../tracking';
+import { addDays } from '../date';
 
 function makeHabit(over: Partial<Habit> = {}): Habit {
   return {
@@ -199,5 +200,99 @@ describe('consistencyScore (Stage 5.3)', () => {
       log: log({ '2026-06-14': { xp: 20 } }),
     });
     expect(consistencyScore([h], TODAY, 1)).toBe(100);
+  });
+});
+
+// TODAY = '2026-06-14' (Sunday = weekday 0).
+// Weekdays: Sun=0, Mon=1, Tue=2, Wed=3, Thu=4, Fri=5, Sat=6
+
+describe('dayOfWeekBreakdown', () => {
+  it('returns 7 buckets covering all weekdays', () => {
+    const result = dayOfWeekBreakdown([], TODAY);
+    expect(result).toHaveLength(7);
+    expect(result.map((b) => b.weekday)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+  });
+
+  it('counts scheduled and completed days per weekday for a daily habit', () => {
+    // Daily habit, 7-day window. Today is Sunday (0). Use windowDays=7 to limit scope.
+    const h = makeHabit({
+      createdISO: '2026-06-08', // Monday of the week
+      log: log({
+        '2026-06-09': { xp: 20 }, // Tuesday (2) — completed
+        '2026-06-11': { xp: 20 }, // Thursday (4) — completed
+        // other days scheduled but not completed
+      }),
+    });
+    const result = dayOfWeekBreakdown([h], TODAY, 7);
+    // Monday 2026-06-08 = weekday 1, in window (today - 6 = 2026-06-08)
+    const mon = result.find((b) => b.weekday === 1)!;
+    expect(mon.scheduled).toBe(1);
+    expect(mon.completed).toBe(0);
+    const tue = result.find((b) => b.weekday === 2)!;
+    expect(tue.scheduled).toBe(1);
+    expect(tue.completed).toBe(1);
+  });
+
+  it('excludes retired habits', () => {
+    const h = makeHabit({
+      status: 'retired',
+      createdISO: '2026-01-01',
+      log: log({ '2026-06-14': { xp: 20 } }),
+    });
+    const result = dayOfWeekBreakdown([h], TODAY, 7);
+    expect(result.every((b) => b.scheduled === 0 && b.completed === 0)).toBe(true);
+  });
+
+  it('excludes times_per_week and as_needed habits (isScheduledOn returns false)', () => {
+    const weekly = makeHabit({ frequency: 'times_per_week', timesPerWeek: 2, log: log({ '2026-06-14': { xp: 20 } }) });
+    const asNeeded = makeHabit({ id: 'an', frequency: 'as_needed', log: log({ '2026-06-14': { xp: 20 } }) });
+    const result = dayOfWeekBreakdown([weekly, asNeeded], TODAY, 7);
+    expect(result.every((b) => b.scheduled === 0)).toBe(true);
+  });
+});
+
+describe('consistencyTrend', () => {
+  it('returns `weeks` entries in ascending weekStart order', () => {
+    const result = consistencyTrend([], TODAY, 4);
+    expect(result).toHaveLength(4);
+    // Each weekStart should be a Sunday (7 days apart)
+    for (let i = 1; i < result.length; i++) {
+      expect(addDays(result[i - 1].weekStart, 7)).toBe(result[i].weekStart);
+    }
+  });
+
+  it('returns 0 pct for all weeks when no habits exist', () => {
+    const result = consistencyTrend([], TODAY, 4);
+    expect(result.every((w) => w.pct === 0)).toBe(true);
+  });
+
+  it('returns 100 for a week where every scheduled day was completed', () => {
+    // Use a 1-week window to test a fully-completed past week.
+    // Last full week before TODAY (2026-06-14 = Sun): week of 2026-06-08 (Mon).
+    // But startOfWeek(TODAY) = 2026-06-14 itself. So the prior week is 2026-06-07.
+    // For simplicity, test with 1-week window (just the current week partial).
+    const h = makeHabit({
+      createdISO: '2026-06-08',
+      log: log({
+        '2026-06-08': { xp: 20 }, '2026-06-09': { xp: 20 }, '2026-06-10': { xp: 20 },
+        '2026-06-11': { xp: 20 }, '2026-06-12': { xp: 20 }, '2026-06-13': { xp: 20 },
+        '2026-06-14': { xp: 20 },
+      }),
+    });
+    // weeks=1 → single bucket for the current week (2026-06-14 start of week = TODAY)
+    const result = consistencyTrend([h], TODAY, 1);
+    expect(result).toHaveLength(1);
+    expect(result[0].pct).toBe(100);
+  });
+
+  it('current week uses partial data up to today', () => {
+    // Today = Sunday 2026-06-14. Current week start = 2026-06-14.
+    // Only today (1 day) is in window; habit created 06-14 and completed.
+    const h = makeHabit({
+      createdISO: '2026-06-14',
+      log: log({ '2026-06-14': { xp: 20 } }),
+    });
+    const result = consistencyTrend([h], TODAY, 1);
+    expect(result[0].pct).toBe(100);
   });
 });

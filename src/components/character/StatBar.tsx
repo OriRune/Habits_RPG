@@ -5,13 +5,15 @@ interface StatBarProps {
   stat: StatId;
   /** The stat's current value (1–STAT_CAP), granted on level-up. */
   level: number;
-  /** Lifetime XP invested in this stat — steers where future level-up points go. */
+  /** Lifetime Training XP invested in this stat — steers where future level-up points go. */
   xp: number;
+  /** If > 0, shows a "+N on next level" badge to preview upcoming stat gains. */
+  nextGain?: number;
   /** Optional extra context shown after the stat's base description in the hover tooltip. */
   hint?: string;
 }
 
-export function StatBar({ stat, level, xp, hint }: StatBarProps) {
+export function StatBar({ stat, level, xp, nextGain, hint }: StatBarProps) {
   const meta = getStat(stat);
   const pct = Math.max(4, Math.round((level / STAT_CAP) * 100));
   const tooltip = hint ? `${meta.represents} — ${hint}` : meta.represents;
@@ -27,9 +29,15 @@ export function StatBar({ stat, level, xp, hint }: StatBarProps) {
           }}
         />
       </div>
-      <div className="w-[4.5rem] shrink-0 text-right tabular-nums text-ink" title={`${xp} XP invested`}>
+      <div className="w-[5.5rem] shrink-0 text-right tabular-nums text-ink" title={`${xp} Training XP invested`}>
         <span className="text-xs font-semibold">Lv {level}</span>
-        <span className="ml-1 text-[10px] text-ink-light">{xp}xp</span>
+        {nextGain && nextGain > 0 ? (
+          <span className="ml-1 text-[10px] font-semibold text-gold-deep" title="Likely gain on next level-up">
+            +{nextGain}↑
+          </span>
+        ) : (
+          <span className="ml-1 text-[10px] text-ink-light">{xp}xp</span>
+        )}
       </div>
     </div>
   );

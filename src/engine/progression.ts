@@ -6,6 +6,7 @@
 // level) plus a nudge toward the character's class. Between level-ups, stat values are frozen.
 // Pure + deterministic so it can be unit-tested.
 import { STAT_IDS, statPoints, type StatId } from './stats';
+import { rankStats } from './classes';
 
 /** Stat points granted per character level-up. */
 export const POINTS_PER_LEVEL = 3;
@@ -119,4 +120,23 @@ export function allocateStatGains(
   }
 
   return gains;
+}
+
+/**
+ * Preview which stat points the character would gain on their *next* level-up, based on
+ * XP earned since the last level-up. Identical logic to `applyLevelUp` in shared.ts —
+ * kept pure here so the Character view can show the forecast without mutating state.
+ */
+export function previewNextGains(character: {
+  statXp: Record<StatId, number>;
+  statXpAtLastLevel: Record<StatId, number>;
+  statLevels: Record<StatId, number>;
+  classId: string | null;
+}): Record<StatId, number> {
+  const delta = STAT_IDS.reduce((acc, s) => {
+    acc[s] = Math.max(0, (character.statXp[s] ?? 0) - (character.statXpAtLastLevel[s] ?? 0));
+    return acc;
+  }, {} as Record<StatId, number>);
+  const favored: StatId[] = character.classId ? (rankStats(character.statXp).slice(0, 2) as StatId[]) : [];
+  return allocateStatGains(POINTS_PER_LEVEL, delta, character.statLevels, favored);
 }

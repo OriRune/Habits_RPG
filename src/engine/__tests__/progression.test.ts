@@ -4,6 +4,7 @@ import {
   creationStatLevels,
   emptyStatLevels,
   statLevelsFromXp,
+  previewNextGains,
   POINTS_PER_LEVEL,
   STAT_CAP,
   BASE_STAT_LEVEL,
@@ -121,5 +122,45 @@ describe('allocateStatGains', () => {
     }, {} as Record<StatId, number>);
     const gains = allocateStatGains(POINTS_PER_LEVEL, { ...emptyStatXP(), ST: 100 }, current, []);
     expect(sum(gains)).toBe(0);
+  });
+});
+
+describe('previewNextGains', () => {
+  it('returns the same gains that applyLevelUp would grant given identical state', () => {
+    // A character who has trained ST heavily since last level-up.
+    const statXpAtLastLevel = emptyStatXP();
+    const statXp = { ...emptyStatXP(), ST: 200, EN: 80 };
+    const statLevels = emptyStatLevels();
+    const character = { statXp, statXpAtLastLevel, statLevels, classId: null };
+    const preview = previewNextGains(character);
+    // ST trained most heavily -> should get at least 2 points
+    expect(preview.ST).toBeGreaterThanOrEqual(2);
+    // total points granted = POINTS_PER_LEVEL
+    expect(sum(preview)).toBe(POINTS_PER_LEVEL);
+  });
+
+  it('grants 0 for a stat if no XP was earned since last level-up', () => {
+    const statXp = emptyStatXP();
+    const character = {
+      statXp,
+      statXpAtLastLevel: emptyStatXP(),
+      statLevels: emptyStatLevels(),
+      classId: null,
+    };
+    // Falls back to HP when no effort registered
+    const preview = previewNextGains(character);
+    expect(sum(preview)).toBe(POINTS_PER_LEVEL);
+    expect(preview.HP).toBe(POINTS_PER_LEVEL);
+  });
+
+  it('respects the stat cap: capped stat receives 0 gain, overflow goes to a second trained stat', () => {
+    // ST is maxed; EN also has effort → overflow should land on EN rather than ST.
+    const statLevels = { ...emptyStatLevels(), ST: STAT_CAP };
+    const statXp = { ...emptyStatXP(), ST: 5000, EN: 500 };
+    const character = { statXp, statXpAtLastLevel: emptyStatXP(), statLevels, classId: null };
+    const preview = previewNextGains(character);
+    expect(preview.ST).toBe(0); // capped, no gain
+    expect(sum(preview)).toBe(POINTS_PER_LEVEL); // all points still distributed
+    expect(preview.EN).toBeGreaterThan(0); // overflow went to the next-best trained stat
   });
 });

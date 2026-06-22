@@ -1,4 +1,5 @@
 import { useGameStore } from '@/store/useGameStore';
+import { selectNextStatGains } from '@/store/selectors';
 import { STATS } from '@/engine/stats';
 import { CLASS_CHART, ADVANCED_CLASSES } from '@/engine/classes';
 import { classCrest } from '@/lib/sprites';
@@ -11,7 +12,7 @@ import { GearSection } from '@/components/inventory/GearSection';
 import { Panel } from '@/components/ui/Panel';
 import { Sprite } from '@/components/ui/Sprite';
 import { SectionTitle } from '@/components/ui/Divider';
-import { Trophy } from 'lucide-react';
+import { Trophy, TrendingUp } from 'lucide-react';
 
 // All discoverable classes (unique names from the chart) for the Codex.
 const ALL_CLASSES = Array.from(
@@ -20,6 +21,7 @@ const ALL_CLASSES = Array.from(
 
 export function CharacterView() {
   const character = useGameStore((s) => s.character);
+  const nextGains = useGameStore(selectNextStatGains);
   const codex = useGameStore((s) => s.codex);
   const deepestFloor = useGameStore((s) => s.deepestFloor);
   const deepestMineFloor = useGameStore((s) => s.deepestMineFloor);
@@ -44,10 +46,29 @@ export function CharacterView() {
 
       {/* Attributes */}
       <Panel tone="parchment" className="p-4">
-        <SectionTitle className="mb-3">Attributes</SectionTitle>
-        <p className="mb-2 text-[11px] text-ink-muted">
-          Stat points are earned at each level-up, steered toward the stats you've trained most.
-        </p>
+        <div className="mb-3 flex items-center gap-2">
+          <SectionTitle className="flex-1">Hero Stats</SectionTitle>
+          <TrendingUp className="h-4 w-4 text-gold-deep" />
+        </div>
+
+        {/* Training XP explanation */}
+        <div className="mb-3 rounded-md border border-gold-deep/30 bg-wood-800/30 px-3 py-2 text-[11px] text-ink-muted space-y-0.5">
+          <p>
+            <span className="font-semibold text-ink-light">Habits</span> grant{' '}
+            <span className="font-semibold text-gold-bright">Training XP</span> — the <span className="italic">xp</span> shown on each row.
+          </p>
+          <p>
+            Training XP drives your{' '}
+            <span className="font-semibold text-ink-light">Hero Level</span>. When you level up,{' '}
+            <span className="font-semibold text-gold-bright">Hero Stats</span> (the <span className="italic">Lv</span> values) increase based on which habits you trained most.
+          </p>
+          {Object.values(nextGains).some((v) => v > 0) && (
+            <p className="text-gold-deep font-semibold">
+              ↑ Your next level-up will raise the stats marked in gold.
+            </p>
+          )}
+        </div>
+
         <div className="space-y-2.5">
           {STATS.map((s) => (
             <StatBar
@@ -55,6 +76,7 @@ export function CharacterView() {
               stat={s.id}
               level={character.statLevels[s.id]}
               xp={character.statXp[s.id]}
+              nextGain={nextGains[s.id]}
               hint={s.id === 'AG' ? 'Sets move range & climb height in Hex Tactics' : undefined}
             />
           ))}

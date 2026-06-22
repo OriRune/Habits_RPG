@@ -5,14 +5,16 @@ import { addDays, parseISODate } from '@/engine/date';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { SceneArt } from '@/components/ui/SceneArt';
+import { AlertTriangle, Lightbulb, TrendingUp, Zap } from 'lucide-react';
+import type { WeeklyReport } from '@/engine/weekly';
 
 function fmt(iso: string): string {
   return parseISODate(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 /** End-of-week recap (brief §2). Auto-pops on the first app open of a new week. */
-export function WeeklyReportModal() {
-  const report = useGameStore((s) => s.pendingReport);
+export function WeeklyReportModal({ onPlanWeek }: { onPlanWeek?: () => void } = {}) {
+  const report = useGameStore((s) => s.pendingReport) as WeeklyReport | null;
   const dismiss = useGameStore((s) => s.dismissWeeklyReport);
   if (!report) return null;
 
@@ -20,6 +22,11 @@ export function WeeklyReportModal() {
   const statRows = (Object.entries(report.xpByStat) as [StatId, number][])
     .filter(([, v]) => v > 0)
     .sort((a, b) => b[1] - a[1]);
+
+  function handleBeginNewWeek() {
+    onPlanWeek?.();
+    dismiss();
+  }
 
   return (
     <Modal title="Weekly Report" dismissable={false}>
@@ -71,6 +78,42 @@ export function WeeklyReportModal() {
               {report.bestStreak.days} days
             </p>
           )}
+
+          {/* Most-improved vs prior week */}
+          {report.mostImproved && report.mostImproved.delta > 0 && (
+            <p className="mb-2 flex items-center gap-1.5 text-sm text-ink">
+              <TrendingUp className="h-3.5 w-3.5 shrink-0 text-stat-KN" />
+              Most improved:{' '}
+              <span className="font-semibold">{report.mostImproved.habitName}</span>
+              <span className="text-ink-muted">+{report.mostImproved.delta} vs last week</span>
+            </p>
+          )}
+
+          {/* Most-missed */}
+          {report.mostMissed && report.mostMissed.missed > 0 && (
+            <p className="mb-3 flex items-center gap-1.5 text-sm text-ink-muted">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+              Needs attention:{' '}
+              <span className="font-semibold text-ink">{report.mostMissed.habitName}</span>
+              <span>— {report.mostMissed.missed} missed day{report.mostMissed.missed !== 1 ? 's' : ''}</span>
+            </p>
+          )}
+
+          {/* Energy note */}
+          <p className="mb-3 flex items-center gap-1.5 text-sm text-ink-muted">
+            <Zap className="h-3.5 w-3.5 shrink-0 text-gold-bright" />
+            Earned{' '}
+            <span className="font-semibold text-gold-bright">{report.completions}</span>{' '}
+            Energy from habit completions this week.
+          </p>
+
+          {/* Suggested adjustment */}
+          {report.suggestedAdjustment && (
+            <div className="mb-4 flex items-start gap-2 rounded-md border border-gold-deep/30 bg-parchment-100/60 p-2.5 text-sm text-ink">
+              <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-gold-deep" />
+              <span>{report.suggestedAdjustment}</span>
+            </div>
+          )}
         </>
       )}
 
@@ -81,7 +124,7 @@ export function WeeklyReportModal() {
         </span>
       </div>
 
-      <Button onClick={dismiss} className="w-full py-2.5">
+      <Button onClick={handleBeginNewWeek} className="w-full py-2.5">
         Begin a New Week
       </Button>
     </Modal>
