@@ -30,9 +30,11 @@ export interface CoreSlice {
   bossLosses: Record<number, number>;
   lastActiveISO: string;
   created: boolean;
+  hasSeenWelcome: boolean;
   earnings: import('@/engine/balance').EarningsLedger;
   energyLog: Record<string, import('@/engine/balance').EnergyLogEntry>;
 
+  dismissWelcome: () => void;
   createCharacter: (input: {
     name: string;
     allocations: Partial<Record<StatId, number>>;
@@ -60,8 +62,11 @@ export const createCoreSlice: StateCreator<
   bossLosses: {},
   lastActiveISO: toISODate(),
   created: false,
+  hasSeenWelcome: false,
   earnings: freshEarningsLedger(),
   energyLog: {},
+
+  dismissWelcome: () => set(() => ({ hasSeenWelcome: true })),
 
   createCharacter: ({ name, allocations, weaponKey, spellKey }) =>
     set((s) => {
@@ -166,6 +171,7 @@ export const createCoreSlice: StateCreator<
       lastActiveISO: toISODate(),
       settings: freshSettings(),
       created: false,
+      hasSeenWelcome: false,
       earnings: freshEarningsLedger(),
       energyLog: {},
     })),

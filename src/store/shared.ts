@@ -256,6 +256,8 @@ export interface GameState {
   settings: GameSettings;
   /** False until the player finishes the character-creation screen (gates onboarding). */
   created: boolean;
+  /** False until the player dismisses the first-run welcome card on the dashboard. */
+  hasSeenWelcome: boolean;
   /** Party quest IDs whose gold reward has already been credited locally (prevents double-credit). */
   claimedPartyQuests: string[];
   /**
@@ -268,6 +270,7 @@ export interface GameState {
 
   // --- actions ---
   /** Commit the character-creation screen: seed name, starting stat levels, weapon, and spell. */
+  dismissWelcome: () => void;
   createCharacter: (input: {
     name: string;
     allocations: Partial<Record<StatId, number>>;

@@ -24,6 +24,7 @@ import {
 } from '@/store/selectors';
 import { isCompletedOn, effectiveStatus } from '@/engine/habits';
 import { toISODate, parseISODate, addDays, BACKDATE_WINDOW_DAYS } from '@/engine/date';
+import { WelcomeCard } from '@/components/onboarding/WelcomeCard';
 import { HabitCard } from '@/components/habits/HabitCard';
 import { HabitForm } from '@/components/habits/HabitForm';
 import { RecoveryModal } from '@/components/habits/RecoveryModal';
@@ -43,6 +44,8 @@ export function DashboardView({ onOpenHistory, onPlanWeek }: { onOpenHistory: ()
   const dashboard = useGameStore(useMemo(() => makeSelectDashboardHabits(viewDate), [viewDate]));
   const pendingLevelUp = useGameStore((s) => s.pendingLevelUp);
   const startBattle = useGameStore((s) => s.startBattle);
+  const created = useGameStore((s) => s.created);
+  const hasSeenWelcome = useGameStore((s) => s.hasSeenWelcome);
   const summary = useGameStore(selectDailySummary);
   const recovery = useGameStore(selectRecoveryState);
   const accountWarnings = useGameStore(selectAccountHealth);
@@ -116,6 +119,9 @@ export function DashboardView({ onOpenHistory, onPlanWeek }: { onOpenHistory: ()
           ))}
         </Panel>
       )}
+
+      {/* Welcome card — shown once after character creation, dismissed and persisted */}
+      {isToday && created && !hasSeenWelcome && <WelcomeCard />}
 
       {/* Dashboard command center — only shown when viewing today */}
       {isToday && (

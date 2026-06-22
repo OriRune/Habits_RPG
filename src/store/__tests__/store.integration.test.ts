@@ -134,6 +134,33 @@ describe('createCharacter (onboarding)', () => {
     expect(get().created).toBe(false);
     expect(get().character.name).toBe('Adventurer');
   });
+
+  it('a fresh store has hasSeenWelcome === false', () => {
+    expect(get().hasSeenWelcome).toBe(false);
+  });
+
+  it('dismissWelcome flips hasSeenWelcome to true', () => {
+    expect(get().hasSeenWelcome).toBe(false);
+    get().dismissWelcome();
+    expect(get().hasSeenWelcome).toBe(true);
+  });
+
+  it('resetGame resets hasSeenWelcome to false', () => {
+    get().dismissWelcome();
+    expect(get().hasSeenWelcome).toBe(true);
+    get().resetGame();
+    expect(get().hasSeenWelcome).toBe(false);
+  });
+
+  it('addHabit seeds starter habits before createCharacter completes', () => {
+    get().addHabit({ name: 'Walk 10 minutes', stat: 'AG', type: 'binary', frequency: 'daily', difficulty: 'easy' });
+    get().addHabit({ name: 'Stretch', stat: 'AG', type: 'binary', frequency: 'daily', difficulty: 'easy' });
+    expect(get().habits.length).toBe(2);
+    get().createCharacter({ name: 'Seeded', allocations: {}, weaponKey: 'worn_sword', spellKey: '' });
+    // habits survive createCharacter; created flips
+    expect(get().created).toBe(true);
+    expect(get().habits.length).toBe(2);
+  });
 });
 
 describe('completeHabit', () => {
@@ -948,8 +975,8 @@ describe('deep mine', () => {
     expect(get().deepestMineFloor).toBe(2);
   });
 
-  it('persists at version 25', () => {
-    expect(useGameStore.persist.getOptions().version).toBe(25);
+  it('persists at version 26', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(26);
   });
 
   it('coopApplyWorld drops a stale/duplicate world slice (t guard)', () => {
