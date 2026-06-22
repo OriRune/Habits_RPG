@@ -1127,6 +1127,74 @@ describe('wild forest', () => {
     get().coopApplyForestWorld({ floor: 1, monsters: [] }); // no t field
     expect(get().forest).not.toBeNull();
   });
+
+  describe('forestStash — mid-run haul banking at clearings', () => {
+    // Note: makeForest() places the player at [r:2, c:2].
+
+    it('banks 80% of gold into inventory and resets the run haul, run stays active', () => {
+      const tiles = makeForest().tiles;
+      tiles[2][2] = { kind: 'clearing' }; // player is at [2,2]
+      useGameStore.setState({ forest: makeForest({ tiles, haul: { gold: 100 } }) });
+      const goldBefore = get().character.gold;
+      get().forestStash();
+      expect(get().character.gold).toBe(goldBefore + 80); // 80% of 100
+      expect(get().forest).not.toBeNull();                 // run still alive
+      expect(get().forest!.status).toBe('active');
+      expect(get().forest!.haul.gold ?? 0).toBe(0);       // haul reset
+    });
+
+    it('banks 80% of materials into inventory', () => {
+      const tiles = makeForest().tiles;
+      tiles[2][2] = { kind: 'clearing' };
+      useGameStore.setState({ forest: makeForest({ tiles, haul: { materials: { herbs: 10 } } }) });
+      const herbsBefore = get().materials.herbs ?? 0;
+      get().forestStash();
+      expect(get().materials.herbs ?? 0).toBe(herbsBefore + 8); // floor(10 * 0.8)
+      expect(get().forest!.haul.materials?.herbs ?? 0).toBe(0);
+    });
+
+    it('is a no-op when the player is not on a clearing tile', () => {
+      // Default makeForest() places trail at [2,2], so no tile override needed.
+      useGameStore.setState({ forest: makeForest({ haul: { gold: 50 } }) });
+      const goldBefore = get().character.gold;
+      get().forestStash();
+      expect(get().character.gold).toBe(goldBefore); // nothing banked
+      expect(get().forest!.haul.gold).toBe(50);      // haul unchanged
+    });
+
+    it('is a no-op when the haul is empty', () => {
+      const tiles = makeForest().tiles;
+      tiles[2][2] = { kind: 'clearing' };
+      useGameStore.setState({ forest: makeForest({ tiles, haul: {} }) });
+      const goldBefore = get().character.gold;
+      get().forestStash();
+      expect(get().character.gold).toBe(goldBefore);
+    });
+
+    it('after stashing, a subsequent death only risks the post-stash remainder', () => {
+      const tiles = makeForest().tiles;
+      tiles[2][2] = { kind: 'clearing' };
+      // Start with 100 gold — stash 80, then die; remaining 0 gold → death keeps 0.
+      useGameStore.setState({
+        forest: makeForest({
+          tiles,
+          hp: 3,
+          haul: { gold: 100 },
+          beasts: [{ id: 'a', key: 'wild_boar', r: 1, c: 2, hp: 8, maxHp: 8, readyAtMs: 999999, asleep: false }],
+        }),
+      });
+      const goldBefore = get().character.gold;
+      get().forestStash();
+      expect(get().character.gold).toBe(goldBefore + 80); // 80 safely banked
+      // Kill the player with two ticks.
+      get().forestTick(1000);
+      get().forestTick(1000 + FOREST_WINDUP_MS + 50);
+      expect(get().forest!.status).toBe('ended');
+      get().endForest();
+      // The post-stash haul was 0, so death forfeits nothing extra.
+      expect(get().character.gold).toBe(goldBefore + 80);
+    });
+  });
 });
 
 describe('habit lifecycle', () => {
