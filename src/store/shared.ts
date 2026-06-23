@@ -521,6 +521,14 @@ export interface GameState {
   devSpawnTrial: (level: number) => void;
   /** Strip the current class so it can be reassigned. */
   devClearClass: () => void;
+  /** Fill energy to the cap (for testing economy without Unlimited Energy). */
+  devFillEnergy: () => void;
+  /** Add a specific gold amount (for testing shop/craft flows). */
+  devAddGold: (amount: number) => void;
+  /** Rewind the week sentinel so the next checkWeeklyRollover fires immediately. */
+  devForceWeeklyRollover: () => void;
+  /** Reset the earnings ledger and energy log in isolation (no full game reset needed). */
+  devResetEarnings: () => void;
 
   resetGame: () => void;
 }

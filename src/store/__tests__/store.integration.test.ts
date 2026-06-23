@@ -13,6 +13,8 @@ import { type ForestState, type ForestTile, FOREST_WINDUP_MS } from '@/engine/fo
 import { getEncounter, startEncounter } from '@/engine/encounters';
 import { toISODate, weekKey, _setNow, _resetNow, addDays } from '@/engine/date';
 import { MAX_ENERGY } from '../shared';
+import { BASE_STAT_LEVEL } from '@/engine/progression';
+import { freshEarningsLedger } from '@/engine/balance';
 import { completionRatio, COMPLETION_CAP, UNCAPPED_RATIO_CAP } from '@/engine/xp';
 import { statCompletedWithin } from '@/engine/habits';
 import { resetRunRng } from '../runRng';
@@ -868,6 +870,73 @@ describe('developer testing tools', () => {
     expect(get().character.classId).toBe('Knight');
     get().devClearClass();
     expect(get().character.classId).toBeNull();
+  });
+
+  it('devSetLevel synthesizes statLevels — stat levels rise above base after a level jump', () => {
+    get().resetGame();
+    // Fresh character has all stat levels at BASE_STAT_LEVEL.
+    STAT_IDS.forEach((id) => {
+      expect(get().character.statLevels[id]).toBe(BASE_STAT_LEVEL);
+    });
+
+    // After a level jump, stat levels must be above base (the key regression check —
+    // before the fix, devSetLevel left statLevels frozen at BASE_STAT_LEVEL).
+    get().devSetLevel(10);
+    STAT_IDS.forEach((id) => {
+      expect(get().character.statLevels[id]).toBeGreaterThan(BASE_STAT_LEVEL);
+    });
+
+    // Lv 5 jump must give lower or equal stat levels than Lv 10 (no regressions in ordering).
+    get().devSetLevel(5);
+    const lv5Levels = { ...get().character.statLevels };
+    get().devSetLevel(10);
+    STAT_IDS.forEach((id) => {
+      expect(get().character.statLevels[id]).toBeGreaterThanOrEqual(lv5Levels[id]);
+    });
+  });
+
+  it('resetGame clears mineTombstone and claimedPartyQuests', () => {
+    useGameStore.setState({
+      mineTombstone: { floor: 3, haul: { gold: 50 } },
+      claimedPartyQuests: ['quest-abc'],
+    });
+    get().resetGame();
+    expect(get().mineTombstone).toBeNull();
+    expect(get().claimedPartyQuests).toEqual([]);
+  });
+
+  it('devFillEnergy sets energy to MAX_ENERGY', () => {
+    get().resetGame();
+    useGameStore.setState({ character: { ...get().character, energy: 0 } });
+    get().devFillEnergy();
+    expect(get().character.energy).toBe(MAX_ENERGY);
+  });
+
+  it('devAddGold increments gold by the given amount and ignores negatives', () => {
+    get().resetGame();
+    useGameStore.setState({ character: { ...get().character, gold: 200 } });
+    get().devAddGold(500);
+    expect(get().character.gold).toBe(700);
+    get().devAddGold(-999);
+    expect(get().character.gold).toBe(700); // negative amount is a no-op
+  });
+
+  it('devResetEarnings zeros the earnings ledger and energy log', () => {
+    const e = get().earnings;
+    useGameStore.setState({
+      earnings: { ...e, xp: { ...e.xp, habit: 500 }, gold: { ...e.gold, mine: 200 } },
+      energyLog: { [toISODate()]: { earned: 5, spent: 3 } },
+    });
+    get().devResetEarnings();
+    expect(get().earnings).toEqual(freshEarningsLedger());
+    expect(get().energyLog).toEqual({});
+  });
+
+  it('devForceWeeklyRollover then checkWeeklyRollover emits a weekly report', () => {
+    get().resetGame();
+    get().devForceWeeklyRollover();
+    get().checkWeeklyRollover();
+    expect(get().pendingReport).not.toBeNull();
   });
 });
 

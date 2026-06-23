@@ -17,9 +17,15 @@ import { pushCloudSave } from '@/net/cloudSave';
 const LEVEL_JUMPS = [3, 5, 10, 20, 50];
 const FLOOR_JUMPS = [0, 5, 8, 10];
 const TRIALS = [
-  { level: 5, label: 'Slime (Lv 5)' },
-  { level: 10, label: 'Guardian (Lv 10)' },
-  { level: 20, label: 'Golem (Lv 20)' },
+  { level: 5,  label: 'Procrastination Slime (Lv 5)'  },
+  { level: 8,  label: 'Drill Sergeant Rex (Lv 8)'      },
+  { level: 12, label: 'Comfort Blob (Lv 12)'           },
+  { level: 15, label: 'Anxiety Wraith (Lv 15)'         },
+  { level: 20, label: 'Burnout Golem (Lv 20)'          },
+  { level: 25, label: 'Mirror Demon (Lv 25)'           },
+  { level: 30, label: 'Clockwork Tyrant (Lv 30)'       },
+  { level: 40, label: 'Trial Guardian (Lv 40)'         },
+  { level: 50, label: 'Trial Guardian (Lv 50)'         },
 ];
 
 /** Full-screen Settings overlay: general options + a Developer "creative mode" section. */
@@ -39,6 +45,11 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
   const devSetDeepestFloor = useGameStore((s) => s.devSetDeepestFloor);
   const devSpawnTrial = useGameStore((s) => s.devSpawnTrial);
   const devClearClass = useGameStore((s) => s.devClearClass);
+  const devFillEnergy = useGameStore((s) => s.devFillEnergy);
+  const devAddGold = useGameStore((s) => s.devAddGold);
+  const devForceWeeklyRollover = useGameStore((s) => s.devForceWeeklyRollover);
+  const battle = useGameStore((s) => s.battle);
+  const checkWeeklyRollover = useGameStore((s) => s.checkWeeklyRollover);
   const chooseClass = useGameStore((s) => s.chooseClass);
 
   const [primary, setPrimary] = useState<StatId>('ST');
@@ -218,6 +229,14 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             </p>
           </div>
 
+          {/* Adventure Ritual — pre-entry checklist before each minigame. */}
+          <Toggle
+            label="Adventure Ritual"
+            description="Show a pre-entry checklist before each minigame that lists today's habits and the energy cost."
+            checked={settings.showAdventureRitual}
+            onChange={(v) => updateSettings({ showAdventureRitual: v })}
+          />
+
           {/* Habit data export / import */}
           <div className="space-y-1.5">
             <div className="font-display text-xs font-bold uppercase tracking-wider text-ink">
@@ -281,12 +300,6 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
           </p>
           <div className="space-y-2">
             <Toggle
-              label="Adventure Ritual"
-              description="Show a pre-entry checklist before each minigame that lists today's habits and the energy cost."
-              checked={settings.showAdventureRitual}
-              onChange={(v) => updateSettings({ showAdventureRitual: v })}
-            />
-            <Toggle
               label="Unlimited Gold"
               description="Purchases and crafting ignore their gold cost."
               checked={settings.unlimitedGold}
@@ -306,7 +319,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             />
             <Toggle
               label="Repeat Skill Trials"
-              description="Skip the once-per-day gate — trials can be replayed immediately."
+              description="Skip the once-per-day gate and the stat-activity requirement — trials can be replayed immediately without matching habits."
               checked={settings.repeatMinigames}
               onChange={(v) => updateSettings({ repeatMinigames: v })}
             />
@@ -326,8 +339,8 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
 
           {/* Testing tools — jump straight to level-locked content. */}
           <div className="space-y-4 border-t border-gold-deep/20 pt-3">
-            <p className="text-xs text-ink-muted">
-              Testing jumps — set progression directly to reach gated content.
+            <p className="text-xs font-bold uppercase tracking-wider text-ink-muted">
+              Progression
             </p>
 
             {/* Level jump */}
@@ -353,7 +366,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
                 ))}
               </div>
               <p className="text-[10px] text-ink-light">
-                Opens dungeons (3), trials (5), and class assignment (10).
+                Opens dungeons (3), trials (5), and class assignment (10). Also updates combat stat levels.
               </p>
             </div>
 
@@ -390,6 +403,11 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
               <span className="font-display text-xs font-bold uppercase tracking-wider text-ink">
                 Spawn boss trial
               </span>
+              {battle && (
+                <p className="text-[10px] text-ember">
+                  A battle is already active — dismiss it first.
+                </p>
+              )}
               <div className="flex flex-wrap gap-1.5">
                 {TRIALS.map((t) => (
                   <Button
@@ -397,6 +415,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
                     variant="secondary"
                     onClick={() => spawn(t.level)}
                     className="px-3 py-1 text-xs"
+                    disabled={!!battle}
                   >
                     {t.label}
                   </Button>
@@ -462,6 +481,67 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
                 >
                   Clear
                 </Button>
+              </div>
+            </div>
+
+            {/* Resources */}
+            <div className="space-y-4 border-t border-gold-deep/20 pt-3">
+              <p className="text-xs font-bold uppercase tracking-wider text-ink-muted">
+                Resources
+              </p>
+
+              {/* Energy */}
+              <div className="space-y-1.5">
+                <span className="font-display text-xs font-bold uppercase tracking-wider text-ink">
+                  Energy
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  <Button
+                    variant="secondary"
+                    onClick={() => devFillEnergy()}
+                    className="px-3 py-1 text-xs"
+                  >
+                    Fill to max
+                  </Button>
+                </div>
+              </div>
+
+              {/* Gold */}
+              <div className="space-y-1.5">
+                <span className="font-display text-xs font-bold uppercase tracking-wider text-ink">
+                  Gold
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {[100, 500, 2000].map((amt) => (
+                    <Button
+                      key={amt}
+                      variant="secondary"
+                      onClick={() => devAddGold(amt)}
+                      className="px-3 py-1 text-xs"
+                    >
+                      +{amt}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Weekly rollover */}
+              <div className="space-y-1.5">
+                <span className="font-display text-xs font-bold uppercase tracking-wider text-ink">
+                  Weekly rollover
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  <Button
+                    variant="secondary"
+                    onClick={() => { devForceWeeklyRollover(); checkWeeklyRollover(); onClose(); }}
+                    className="px-3 py-1 text-xs"
+                  >
+                    Force rollover
+                  </Button>
+                </div>
+                <p className="text-[10px] text-ink-light">
+                  Rewinds the week sentinel so the weekly report fires immediately.
+                </p>
               </div>
             </div>
           </div>

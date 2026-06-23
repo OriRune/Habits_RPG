@@ -1,4 +1,5 @@
 import { Modal } from '@/components/ui/Modal';
+import { Button } from '@/components/ui/Button';
 import { useGameStore } from '@/store/useGameStore';
 import { selectBalanceReport } from '@/store/selectors';
 import { EARNING_SOURCES } from '@/engine/balance';
@@ -39,14 +40,24 @@ interface Props {
 /** Developer-only balance report. Opened from Settings → Developer panel. */
 export function BalanceReportModal({ onClose }: Props) {
   const report = useGameStore(selectBalanceReport);
+  const devResetEarnings = useGameStore((s) => s.devResetEarnings);
 
   const hasData = report.totalXp > 0 || report.totalGold > 0;
 
   return (
     <Modal title="Balance Report" onClose={onClose}>
-      <p className="mb-3 text-[11px] text-ink-muted">
-        Tracking started at save v25 — figures are cumulative since then.
-      </p>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <p className="text-[11px] text-ink-muted">
+          Tracking started at save v25 — figures are cumulative since then.
+        </p>
+        <Button
+          variant="secondary"
+          onClick={() => devResetEarnings()}
+          className="shrink-0 px-2 py-1 text-[11px] text-ember"
+        >
+          Reset ledger
+        </Button>
+      </div>
 
       {!hasData && (
         <p className="py-6 text-center text-sm text-ink-muted">
