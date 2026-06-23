@@ -1,5 +1,12 @@
 # Developer Tools Analysis
 
+> **Status (2026-06-23): all bugs and gaps identified in this document have been resolved.**
+> The improvement plan (`docs/archived/developer-tools-improvement-plan.md`) was fully implemented in the
+> same session. This document is kept as historical context. For current behaviour, see the README's
+> "Developer (creative) mode" section.
+
+---
+
 > Settings → Developer section. All tools live in `src/views/SettingsView.tsx` (lines 271–468); backing actions are in `src/store/slices/coreSlice.ts`.
 
 ---

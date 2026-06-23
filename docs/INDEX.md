@@ -93,6 +93,8 @@ Superseded docs moved to `docs/archived/`. Kept for historical reference only �
 | [`archived/royal-court-improvement-plan.md`](./archived/royal-court-improvement-plan.md) | All substantive recommendations implemented; remaining gaps (dynamic star thresholds, CH 5th-choice) explicitly optional/speculative. |
 | [`archived/last-stand-improvement-plan.md`](./archived/last-stand-improvement-plan.md) | All Pass 1–6 recommendations implemented; remaining gaps (lane redesign, HP scaling) explicitly lowest-priority/optional. |
 | [`archived/habit-tracking-improvement-plan.md`](./archived/habit-tracking-improvement-plan.md) | All 7 stages fully implemented (2026-06-22): bug fixes, edit UI, balance, integrity, party, UX polish, long-term features. |
+| [`archived/developer-tools-improvement-plan.md`](./archived/developer-tools-improvement-plan.md) | All 14 steps fully implemented (2026-06-23): `devSetLevel` statLevels fix, resetGame fields, expanded boss roster, Fill Energy / Add Gold / Force Rollover / Reset Ledger tools, state inspector, layout polish. |
+| [`developer-tools-analysis.md`](./developer-tools-analysis.md) | Pre-improvement analysis of Settings → Developer (written 2026-06-23 before fixes). All identified bugs and gaps have been resolved. Read as historical context only; current tool behaviour is documented in the README. |
 
 ---
 
