@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { Bell, ChevronLeft, Download, FlaskConical, BarChart3, Upload } from 'lucide-react';
 import { BalanceReportModal } from '@/components/balance/BalanceReportModal';
+import { DevStateInspector } from '@/components/dev/DevStateInspector';
 import { useGameStore } from '@/store/useGameStore';
 import { STATS, type StatId } from '@/engine/stats';
 import type { ArenaSpeed } from '@/engine/arena';
@@ -545,6 +546,8 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
               </div>
             </div>
           </div>
+
+          <DevStateInspector />
         </Panel>
       </div>
 
