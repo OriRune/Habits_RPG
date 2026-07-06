@@ -20,7 +20,7 @@ export interface CoopSession {
   game: CoopGame;
   seed: number;
   host_id: string;
-  status: 'lobby' | 'active' | 'ended';
+  status: 'active' | 'ended';
   /** Wire-protocol version the host is running (MP-24). Optional: rows created
    *  before the column existed report `undefined` — treated as compatible. */
   protocol_version?: number;
@@ -129,14 +129,14 @@ export async function leaveCoop(isHost: boolean): Promise<void> {
   setJoined(false);
 }
 
-/** The active (lobby/active) co-op session for a party, if one exists. */
+/** The active co-op session for a party, if one exists. */
 export async function getActiveCoopSession(partyId: string): Promise<CoopSession | null> {
   if (!supabase) return null;
   const { data } = await supabase
     .from('coop_sessions')
     .select('*')
     .eq('party_id', partyId)
-    .in('status', ['lobby', 'active'])
+    .eq('status', 'active')
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();

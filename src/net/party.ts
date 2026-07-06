@@ -286,6 +286,13 @@ export async function incrementPartyQuest(partyId: string, amount: number): Prom
   await supabase.rpc('increment_party_quest', { p_party: partyId, p_amount: amount });
 }
 
+/** Flip any past-deadline 'active' quests to 'expired' (server-side `now()`), so the
+ *  reload path below returns null for a lapsed quest instead of a stale active one (MP-18). */
+export async function expireStaleQuests(partyId: string): Promise<void> {
+  if (!supabase) return;
+  await supabase.rpc('expire_stale_party_quests', { p_party: partyId });
+}
+
 /** Global leaderboard, or party-scoped when `memberIds` is provided.
  *  `track` controls the sort column: 'xp' (default) or 'consistency' (habit_score). */
 export async function getLeaderboard(

@@ -8,6 +8,20 @@ import { STATS, type StatId } from '@/engine/stats';
 import { partyActions, usePartyStore } from '@/hooks/useParty';
 import { useGameStore } from '@/store/useGameStore';
 import { useAuthStore } from '@/net/auth';
+import { now } from '@/engine/date';
+
+/** Human-readable time-left until a party quest's deadline (MP-18). Uses the
+ *  server-synced clock so it matches the deadline the RPC enforces. */
+function formatDeadline(endsAt: string | null): string | null {
+  if (!endsAt) return null;
+  const ms = new Date(endsAt).getTime() - now().getTime();
+  if (Number.isNaN(ms)) return null;
+  if (ms <= 0) return 'Expired';
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours >= 48) return `Ends in ${Math.floor(hours / 24)}d`;
+  if (hours >= 1) return `Ends in ${hours}h`;
+  return 'Ends in <1h';
+}
 
 // Kinds that aggregate cleanly across party members (i.e. summing each player's
 // contributions is meaningful). streak/recovery/rival are per-player concepts and
@@ -33,6 +47,7 @@ export function PartyQuestPanel({ isLead }: { isLead: boolean }) {
   const [showForm, setShowForm] = useState(false);
 
   const reward = Math.min(200, 50 + 10 * memberCount);
+  const deadline = quest && quest.status === 'active' ? formatDeadline(quest.ends_at) : null;
   const iContributed = quest ? (quest.contributions?.[myId ?? ''] ?? 0) > 0 : false;
   const alreadyClaimed = quest ? claimedPartyQuests.includes(quest.id) : false;
 
@@ -45,6 +60,11 @@ export function PartyQuestPanel({ isLead }: { isLead: boolean }) {
           <div className="flex items-center gap-2">
             <Scroll size={16} className="text-gold-deep" />
             <span className="font-display text-sm font-bold text-ink">{quest.def.name}</span>
+            {deadline && (
+              <span className="ml-auto text-[11px] font-semibold tabular-nums text-ink-muted">
+                {deadline}
+              </span>
+            )}
           </div>
           <p className="text-xs text-ink-muted">{quest.def.description}</p>
           <ProgressBar value={quest.progress} target={quest.target} />

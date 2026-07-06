@@ -75,7 +75,7 @@ roughly this order.
 depth-20 run with all boons held can always bank; sign-out offline warns instead of
 wiping; migrate chain has regression fixtures.
 
-# Phase 2 — Co-op correctness ⏳
+# Phase 2 — Co-op correctness ✅ 2026-07-06
 
 **Goal:** a co-op session survives refresh, rejoin, background, and end without
 desync or contamination. Fix shapes are specified per finding in `05-multiplayer.md`.
@@ -88,11 +88,11 @@ desync or contamination. Fix shapes are specified per finding in `05-multiplayer
 | 2.4 | Intent validation: replace wire `dmg` with `{charged}` computed host-side (interim: clamp); reject Tactics intents whose `heroId` isn't in `players`; hoist the re-anchor above `computeTargetable` in `playerAttack`/`playerCastSpell` | MP-11, MP-23, MP-13 | ✅ |
 | 2.5 | Join hygiene: clear any existing run in `joinCoop` before `beginRun`; add `PROTOCOL_VERSION` to the session row and refuse mismatched joins; one-shot changed-tiles snapshot when a new player appears | MP-12, MP-24, MP-25 | ✅ |
 | 2.6 | Party layer: quest reporter re-baselines on hydration with a high-water mark; chat loads newest-100; `party_members` realtime + surfaced send failures; depend on `session.user.id` not the session object | MP-14, MP-15, MP-19, MP-20 | ✅ |
-| 2.7 | Server predicates (the whole anti-abuse budget): quest-deadline check in `increment_party_quest`, `p_amount` ceiling, verify 0009 is live in production | MP-18, MP-27, trust-model | ⏳ |
-| 2.8 | Broadcast hygiene: skip selection-only Tactics broadcasts and strip/tail the `log`; `hostPaused` flag for hidden hosts; the MP-29 one-liners (send-after-SUBSCRIBED, discovery guard, floor-mismatch merge guard) | MP-21, MP-22, MP-29 | ⏳ |
-| 2.9 | Tests where the bugs were: extract + test the tactics message handler, `session.ts` transitions, `useCoopSession` routing, cloudSave conflict/offline scenarios, quest-reporter delta loop (MP-28's ranked list) | MP-28 | ⏳ |
-| 2.10 | Refresh `docs/trust-model.md`: document 0009, the grown leaderboard surface, quest forgery paths, clock caveats; restate Option A for saves | MP-27 | ⏳ |
-| 2.11 | Fix TacticsOverlay weak/resist hints to read the per-hero weapon | ARCH-16 | ⏳ |
+| 2.7 | Server predicates (the whole anti-abuse budget): quest-deadline check in `increment_party_quest`, `p_amount` ceiling, verify 0009 is live in production | MP-18, MP-27, trust-model | ✅ |
+| 2.8 | Broadcast hygiene: skip selection-only Tactics broadcasts and strip/tail the `log`; `hostPaused` flag for hidden hosts; the MP-29 one-liners (send-after-SUBSCRIBED, discovery guard, floor-mismatch merge guard) | MP-21, MP-22, MP-29 | ✅ |
+| 2.9 | Tests where the bugs were: extract + test the tactics message handler, `session.ts` transitions, `useCoopSession` routing, cloudSave conflict/offline scenarios, quest-reporter delta loop (MP-28's ranked list) | MP-28 | ✅ |
+| 2.10 | Refresh `docs/trust-model.md`: document 0009, the grown leaderboard surface, quest forgery paths, clock caveats; restate Option A for saves | MP-27 | ✅ |
+| 2.11 | Fix TacticsOverlay weak/resist hints to read the per-hero weapon | ARCH-16 | ✅ |
 
 **Acceptance:** host refresh mid-run doesn't freeze guests; a guest can rejoin Tactics;
 ending a raid detaches everyone; a party of two on different app versions can't corrupt

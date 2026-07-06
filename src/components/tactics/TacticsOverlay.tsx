@@ -342,7 +342,7 @@ export function TacticsOverlay() {
   // Which stat the player's current action governs (for weak/resist affinity display).
   const activeAttackStat: StatId | null = (() => {
     if (!sel || locked) return null;
-    if (sel.kind === 'attack') return tactics.weapon.attackStat;
+    if (sel.kind === 'attack') return weapon.attackStat;
     if (sel.kind === 'spell') {
       const sp = getSpell(sel.spellKey);
       if (!sp || sp.school === 'support') return null; // heals don't check affinities

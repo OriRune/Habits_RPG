@@ -19,8 +19,9 @@ const mocks = vi.hoisted(() => {
   // In Vitest 2.x vi.fn takes a single function-type generic.
   /** Configurable response for saves SELECT … .maybeSingle() */
   const maybySingleImpl = vi.fn<() => Promise<{ data: unknown; error: unknown }>>();
-  /** Configurable response for saves INSERT */
-  const insertImpl = vi.fn<() => Promise<{ data: unknown; error: unknown }>>();
+  /** Configurable response for saves INSERT (receives the insert payload so tests
+   *  can assert the pushed envelope). */
+  const insertImpl = vi.fn<(payload?: unknown) => Promise<{ data: unknown; error: unknown }>>();
   /** Configurable response for saves UPDATE … .select('version') */
   const updateSelectImpl = vi.fn<() => Promise<{ data: unknown; error: unknown }>>();
   /** Spy capturing the last eq() arg on the CAS update (so we can assert the guard value). */
@@ -45,7 +46,7 @@ vi.mock('@/net/supabaseClient', () => {
         maybeSingle: () => mocks.maybySingleImpl(),
       }),
     }),
-    insert: (_payload: unknown) => mocks.insertImpl(),
+    insert: (payload: unknown) => mocks.insertImpl(payload),
     update: (_payload: unknown) => ({
       eq: (_col: string, _val: unknown) => ({
         eq: (col: string, val: unknown) => {
@@ -160,7 +161,10 @@ describe('cloudSave', () => {
 
   describe('durableEnvelope (via pushCloudSave)', () => {
     it('nulls all TRANSIENT_KEYS in the inserted state', async () => {
-      // Put a save that contains every transient key
+      // TRANSIENT_KEYS enumerated from cloudSave.ts — every live run object durableEnvelope() nulls.
+      const TRANSIENT_KEYS = ['battle', 'dungeon', 'mining', 'forest', 'arena', 'tactics'] as const;
+
+      // Put a save that contains every transient key as a non-null object.
       const envelope = makeEnvelope({
         mining: { floor: 3 },
         forest: { stage: 2 },
@@ -171,28 +175,27 @@ describe('cloudSave', () => {
       });
       localStorage.setItem(STORAGE_KEY, envelope);
 
-      // Test indirectly: push should succeed without error.
-      // The durableEnvelope() call strips transient keys from the in-memory copy before
-      // insert; it never modifies localStorage itself, so we verify localStorage separately.
       mocks.insertImpl.mockResolvedValueOnce({ data: null, error: null });
 
       await pushCloudSave();
 
-      // The push succeeded → now capture the payload by observing what select returns
-      // after a re-pull. The actual stripe is tested below via the env content check.
+      // Capture the payload actually handed to insert — durableEnvelope() strips
+      // transients from the in-memory copy before this call. The row's `state`
+      // column holds the full persist envelope ({ state, version }), so the game
+      // state lives at payload.state.state.
+      expect(mocks.insertImpl).toHaveBeenCalledTimes(1);
+      const payload = mocks.insertImpl.mock.calls[0][0] as {
+        state: { state: Record<string, unknown> };
+      };
+      for (const k of TRANSIENT_KEYS) {
+        expect(payload.state.state[k]).toBeNull();
+      }
+      // Durable fields survive.
+      expect(payload.state.state['character']).toBeTruthy();
 
-      // Parse the envelope that would be pushed: reconstruct durableEnvelope logic.
-      const raw = localStorage.getItem(STORAGE_KEY);
-      expect(raw).toBeTruthy();
-      const parsed = JSON.parse(raw!) as { state: Record<string, unknown>; version: number };
-      // After insert, localStorage was NOT modified by cloudSave (it only reads it).
-      // But we CAN verify that the envelope the module READS has transients if present.
-      // What we actually want: call the module's internal durableEnvelope indirectly.
-      // The simplest assertion: localStorage still has the transient keys (cloudSave
-      // only reads them, it doesn't overwrite localStorage). The purge happens in-memory
-      // before the insert payload. We test behavior via a pullCloudSave round-trip below.
-      // For now just confirm the push completed without throwing.
-      expect(parsed.state['mining']).toEqual({ floor: 3 }); // localStorage unchanged
+      // localStorage itself is only read, never rewritten by the push.
+      const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY)!) as { state: Record<string, unknown> };
+      expect(parsed.state['mining']).toEqual({ floor: 3 });
     });
 
     it('strips TRANSIENT_KEYS: if pull adopts remote save, transients are absent on push', async () => {

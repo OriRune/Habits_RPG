@@ -17,6 +17,7 @@ const mockMessages = vi.hoisted(() =>
   vi.fn<() => Promise<{ data: unknown; error: unknown }>>(),
 );
 const mockOrder = vi.hoisted(() => vi.fn());
+const mockRpc = vi.hoisted(() => vi.fn(() => Promise.resolve({ data: null, error: null })));
 
 // ─── 2. Stub Supabase ─────────────────────────────────────────────────────────
 
@@ -35,14 +36,14 @@ vi.mock('@/net/supabaseClient', () => {
     }),
   };
   return {
-    supabase: { from: (_table: string) => chain },
-    requireSupabase: () => ({ from: (_table: string) => chain }),
+    supabase: { from: (_table: string) => chain, rpc: mockRpc },
+    requireSupabase: () => ({ from: (_table: string) => chain, rpc: mockRpc }),
   };
 });
 
 // ─── 3. Import under test ─────────────────────────────────────────────────────
 
-import { getClaimableQuests, getMessages } from '../party';
+import { getClaimableQuests, getMessages, expireStaleQuests, incrementPartyQuest } from '../party';
 import type { PartyQuest, PartyMessage } from '../party';
 
 // ─── 4. Test helpers ──────────────────────────────────────────────────────────
@@ -51,6 +52,7 @@ beforeEach(() => {
   mockSelect.mockReset();
   mockMessages.mockReset();
   mockOrder.mockReset();
+  mockRpc.mockClear();
 });
 
 function makeMessage(id: string, created_at: string): PartyMessage {
@@ -147,5 +149,24 @@ describe('getMessages (MP-15)', () => {
   it('returns empty when supabase response data is null', async () => {
     mockMessages.mockResolvedValueOnce({ data: null, error: null });
     expect(await getMessages('party-1')).toEqual([]);
+  });
+});
+
+// Guards the client↔migration-0012 RPC contract: the function names and argument
+// shapes here must match the SQL in supabase/migrations/0012_party_quest_predicates.sql.
+describe('quest RPC wrappers (MP-18, MP-27)', () => {
+  it('expireStaleQuests calls expire_stale_party_quests with the party id', async () => {
+    await expireStaleQuests('party-1');
+    expect(mockRpc).toHaveBeenCalledWith('expire_stale_party_quests', { p_party: 'party-1' });
+  });
+
+  it('incrementPartyQuest calls increment_party_quest with party id and amount', async () => {
+    await incrementPartyQuest('party-1', 3);
+    expect(mockRpc).toHaveBeenCalledWith('increment_party_quest', { p_party: 'party-1', p_amount: 3 });
+  });
+
+  it('incrementPartyQuest short-circuits on a non-positive amount (never hits the RPC)', async () => {
+    await incrementPartyQuest('party-1', 0);
+    expect(mockRpc).not.toHaveBeenCalled();
   });
 });

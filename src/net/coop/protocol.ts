@@ -51,7 +51,9 @@ export interface WorldSlice {
    *  Wall clock so the value keeps increasing across a host page reload. */
   t: number;
   floor: number;
-  status: 'active' | 'banking' | 'ended';
+  /** MP-21: host's tab is hidden (monster sim frozen) — guests keep it in the roster
+   *  through the alt-tab throttle instead of evicting it. Absent means not paused. */
+  hostPaused?: boolean;
   monsters: MonsterSlice[];
 }
 
@@ -170,3 +172,10 @@ export const COOP_BROADCAST_HZ = 10;
 export const COOP_BROADCAST_MS = Math.round(1000 / COOP_BROADCAST_HZ);
 /** Drop a remote player from the roster if we haven't heard from them in this long. */
 export const COOP_PLAYER_TIMEOUT_MS = 5000;
+/**
+ * MP-21: extended eviction window for a host that flagged itself paused (tab hidden).
+ * Above Chrome's ~60s intensive-throttle tick so a genuinely-backgrounded host survives
+ * alt-tab, but a closed/dropped tab (no `bye`, no further slice) is still reaped within
+ * ~2 min instead of lingering forever.
+ */
+export const PAUSED_HOST_TIMEOUT_MS = 120000;

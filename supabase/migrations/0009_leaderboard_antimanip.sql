@@ -10,12 +10,17 @@
 -- suspect players from the visible leaderboard. A human admin can clear the flag
 -- manually (set suspect = false) after review.
 --
--- Live-Supabase verification is required before enabling in production; this
--- migration is included in the repo as the authoritative DB artifact.
---
 -- Threshold rationale: 5 000 XP requires ~250 normal-difficulty completions or
 -- ~17 full trial sweeps. In a 10-second debounce window that is practically
 -- impossible through legitimate play.
+--
+-- APPLIED LIVE 2026-07-06 (project rclrnxeazvlqenskaqzv). CORRECTION: the original
+-- step-4 below `create or replace`d the view with RENAMED columns
+-- (mine_floor/forest_stage/arena_tier/tactics_tier) and a RETYPED total_xp
+-- (numeric → bigint) — both forbidden by `create or replace view` (ERROR 42P16) and
+-- mismatched against the client's LeaderboardRow (deepest_mine/deepest_forest/
+-- deepest_arena). Step 4 now matches 0008's client-correct shape and only appends the
+-- suspect + not-null filter, so it applies cleanly on top of 0008 and matches the app.
 
 -- 1. Add tracking columns to profiles.
 alter table public.profiles
@@ -28,6 +33,7 @@ create or replace function public.check_xp_rate_limit()
 returns trigger
 language plpgsql
 security definer
+set search_path = public
 as $$
 declare
   v_new_xp       bigint;
@@ -70,23 +76,22 @@ create trigger trg_check_xp_rate_limit
   for each row
   execute function public.check_xp_rate_limit();
 
--- 4. Redefine the leaderboard view to exclude suspect rows.
---    Replaces the 0008 definition; all columns are identical.
+-- 4. Redefine the leaderboard view to exclude suspect rows. Column names/types/order
+--    match 0008 (the client's LeaderboardRow); this only appends the suspect filter.
 create or replace view public.leaderboard as
   select
     p.id,
     p.username,
     coalesce((p.public_snapshot ->> 'level')::integer, 1)              as level,
-    coalesce((p.public_snapshot ->> 'totalXp')::bigint, 0)             as total_xp,
-    coalesce((p.public_snapshot ->> 'deepestMineFloor')::integer, 0)   as mine_floor,
-    coalesce((p.public_snapshot ->> 'deepestForestStage')::integer, 0) as forest_stage,
-    coalesce((p.public_snapshot ->> 'deepestArenaTier')::integer, 0)   as arena_tier,
-    coalesce((p.public_snapshot ->> 'deepestTacticsTier')::integer, 0) as tactics_tier,
-    coalesce((p.public_snapshot ->> 'habitScore')::integer, 0)         as habit_score,
-    p.public_snapshot
+    coalesce((p.public_snapshot ->> 'totalXp')::numeric, 0::numeric)   as total_xp,
+    coalesce((p.public_snapshot ->> 'deepestMineFloor')::integer, 0)   as deepest_mine,
+    coalesce((p.public_snapshot ->> 'deepestForestStage')::integer, 0) as deepest_forest,
+    coalesce((p.public_snapshot ->> 'deepestArenaTier')::integer, 0)   as deepest_arena,
+    p.public_snapshot,
+    coalesce((p.public_snapshot ->> 'habitScore')::integer, 0)         as habit_score
   from public.profiles p
   where p.public_snapshot is not null
     and p.suspect = false;   -- exclude flagged rows
 
 comment on view public.leaderboard is
-  'Public leaderboard — one row per player. Excludes rows flagged as suspect by the XP rate-limit trigger. Exposes public_snapshot plus numeric fields for sorting. Tracks: XP (total_xp) and Consistency (habit_score). No sensitive data.';
+  'Public leaderboard — one row per player. Excludes suspect (XP rate-limit flagged) rows and null snapshots. Tracks XP (total_xp) and Consistency (habit_score). No sensitive data.';
