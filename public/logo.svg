@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!--
+    HabitsRPG emblem: a stylized serif H over a parchment scroll, scaled up from
+    the 32x32 favicon design. Source for all generated PWA icons (npm run
+    generate-pwa-assets). Art stays within the central ~70% so the maskable
+    variant survives circular cropping.
+  -->
+  <defs>
+    <linearGradient id="parchment" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ecd9ab"/>
+      <stop offset="0.55" stop-color="#dfc48c"/>
+      <stop offset="1" stop-color="#c9a86a"/>
+    </linearGradient>
+    <linearGradient id="roll" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#a97f45"/>
+      <stop offset="0.35" stop-color="#d9bd85"/>
+      <stop offset="0.65" stop-color="#c4a065"/>
+      <stop offset="1" stop-color="#8a6134"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5b3a1c"/>
+      <stop offset="1" stop-color="#3d2410"/>
+    </linearGradient>
+  </defs>
+
+  <!-- parchment sheet between the two rolls -->
+  <path d="M118 184
+           Q 256 174 394 184
+           L 394 328
+           Q 256 338 118 328
+           Z"
+        fill="url(#parchment)" stroke="#8a6134" stroke-width="6"/>
+  <!-- subtle aging lines on the sheet -->
+  <path d="M140 214 Q 256 206 372 214" fill="none" stroke="#b8925a" stroke-width="3" opacity="0.5"/>
+  <path d="M140 300 Q 256 308 372 300" fill="none" stroke="#b8925a" stroke-width="3" opacity="0.5"/>
+
+  <!-- left roll -->
+  <rect x="86" y="164" width="44" height="184" rx="22" fill="url(#roll)" stroke="#6f4a24" stroke-width="6"/>
+  <ellipse cx="108" cy="186" rx="13" ry="12" fill="#f0e0b4" stroke="#6f4a24" stroke-width="5"/>
+  <!-- right roll -->
+  <rect x="382" y="164" width="44" height="184" rx="22" fill="url(#roll)" stroke="#6f4a24" stroke-width="6"/>
+  <ellipse cx="404" cy="326" rx="13" ry="12" fill="#f0e0b4" stroke="#6f4a24" stroke-width="5"/>
+
+  <!-- slab-serif H -->
+  <g fill="url(#ink)">
+    <!-- left stem with serifs -->
+    <rect x="184" y="202" width="60" height="14" rx="3"/>
+    <rect x="201" y="206" width="26" height="100" rx="2"/>
+    <rect x="184" y="296" width="60" height="14" rx="3"/>
+    <!-- right stem with serifs -->
+    <rect x="268" y="202" width="60" height="14" rx="3"/>
+    <rect x="285" y="206" width="26" height="100" rx="2"/>
+    <rect x="268" y="296" width="60" height="14" rx="3"/>
+    <!-- crossbar -->
+    <rect x="219" y="247" width="74" height="18" rx="2"/>
+  </g>
+</svg>

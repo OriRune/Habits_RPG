@@ -15,7 +15,19 @@ import '@fontsource/eb-garamond/latin-500.css';
 import '@fontsource/eb-garamond/latin-600.css';
 import '@fontsource/eb-garamond/latin-400-italic.css';
 import './index.css';
+import { registerSW } from 'virtual:pwa-register';
 import { applyPalette, resolvePalette } from '@/engine/palettes';
+
+// PWA service worker (precache-only app shell; see vite.config.ts). autoUpdate
+// swaps in new builds on activation. Android keeps installed PWAs resumed for
+// days, so also check for a new build whenever the app returns to foreground.
+registerSW({
+  onRegisteredSW(_url, registration) {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') registration?.update();
+    });
+  },
+});
 
 // Apply the saved palette before the first paint so a non-default theme never
 // flashes the default. Read straight from the persisted save; any failure just
