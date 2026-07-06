@@ -113,7 +113,7 @@ export function useMiningLoop(): MiningControls {
 
       // Spell cast (instant, gated by spell's own SPELL_CD_MS in the engine)
       if (spellQueue.current) {
-        store.mineCast(spellQueue.current);
+        store.mineCast(spellQueue.current, now);
         spellQueue.current = null;
       }
 
@@ -167,7 +167,7 @@ export function useMiningLoop(): MiningControls {
         } else {
           const { r, c } = facedCell(run);
           const before = run.tiles[r]?.[c];
-          store.mineStrikeCharged();
+          store.mineStrikeCharged(now);
           if (inCoop) {
             const after = useGameStore.getState().mining?.tiles[r]?.[c];
             if (after && after !== before) {

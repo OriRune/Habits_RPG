@@ -250,6 +250,51 @@ export interface ArenaState {
   seq: number;
 }
 
+/**
+ * Re-anchor a persisted run's timestamps for a fresh page session.
+ *
+ * Every `*Ms` field is stamped from `performance.now()` (ms since page load),
+ * which restarts near 0 on reload — a rehydrated run would otherwise stall
+ * until the new session's clock caught up to the old session's uptime.
+ * Cooldowns reset to "ready" (mirroring the fresh-run init values) and
+ * transient timed effects (telegraphs, projectiles, runes, ring of fire,
+ * statuses, freezes, DoTs) simply expire. The boss restarts on its opening
+ * grace so the player can re-orient, exactly as at run start.
+ */
+export function rebaseArenaRun(run: ArenaState): ArenaState {
+  return {
+    ...run,
+    bossFrozenUntilMs: 0,
+    playerFrozenUntilMs: 0,
+    minions: (run.minions ?? []).map((m) => ({
+      ...m,
+      nextMoveMs: 0,
+      nextHitMs: 0,
+      frozenUntilMs: 0,
+      poisonDmg: 0,
+      poisonNextTickMs: 0,
+      poisonExpiresMs: 0,
+    })),
+    projectiles: [],
+    telegraphs: [],
+    playerStatuses: [],
+    enemyStatuses: [],
+    runes: [],
+    ringOfFire: null,
+    ringNextHitMs: {},
+    startedAtMs: 0,
+    lastTickMs: 0,
+    lastHitAtMs: -Infinity,
+    lastDodgedAtMs: -Infinity,
+    cooldownUntilMs: 0,
+    spellCooldownUntilMs: 0,
+    itemCooldownUntilMs: 0,
+    bossNextActionMs: BOSS_OPENING_GRACE_MS,
+    bossNextMoveMs: BOSS_OPENING_GRACE_MS,
+    nextSummonMs: SUMMON_CD_MS / (run.speed || 1),
+  };
+}
+
 // --- Small helpers --------------------------------------------------------------------------
 const cellKey = (h: Cell) => `${h.x},${h.y}`;
 

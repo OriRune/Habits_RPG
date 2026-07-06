@@ -21,6 +21,7 @@ import {
   type WorldSliceInput,
   applyMineWorldSlice,
   applyMineTileSlice,
+  applyMineTileSnapshot,
   applyMineRemoteAttack,
 } from '@/net/coop/reduce';
 import type { Reward } from '@/engine/challenges';
@@ -39,15 +40,19 @@ export interface MiningSlice {
   beginMining: (seed?: number) => void;
   mineMove: (dir: Dir) => void;
   mineStrike: () => void;
-  mineStrikeCharged: () => void;
+  /** `nowMs` is the caller's rAF-clock timestamp — same timebase as mineTick. */
+  mineStrikeCharged: (nowMs: number) => void;
   mineDash: (dir: Dir, nowMs: number) => void;
   mineTick: (nowMs: number, coPlayers?: ReadonlyArray<{ r: number; c: number }>) => void;
   coopClientTick: (nowMs: number) => void;
   coopApplyWorld: (slice: WorldSliceInput) => void;
   coopApplyTile: (floor: number, r: number, c: number, tile: MineTile) => void;
+  /** MP-25: apply a host's one-shot changed-tiles snapshot when joining mid-run. */
+  coopApplyTileSnapshot: (floor: number, entries: ReadonlyArray<{ r: number; c: number; tile: MineTile }>) => void;
   coopApplyRemoteAttack: (monsterId: string, dmg: number) => void;
   mineDescend: () => void;
-  mineCast: (spellKey: string) => void;
+  /** `nowMs` is the caller's rAF-clock timestamp — same timebase as mineTick. */
+  mineCast: (spellKey: string, nowMs: number) => void;
   chooseMineBoon: (key: string) => void;
   /** Dismiss the boon panel without picking — escape hatch if no option appeals (or none exist). */
   skipMineBoon: () => void;
@@ -71,8 +76,13 @@ export const createMiningSlice: StateCreator<
       // Seed the run's RNG: shared mulberry32 for co-op, Math.random for solo.
       setMineRun(seed !== undefined ? mulberry32(seed) : Math.random, seed);
       const free = s.settings.unlimitedEnergy;
-      if (s.mining) return s;
-      if (!free && s.character.energy < MINE_ENERGY_COST) return s;
+      // Solo re-entry keeps an in-progress run; a co-op join (explicit `seed`) must
+      // replace any leftover/orphan run — keeping the stale map would merge it against
+      // the shared co-op seed and desync the party (MP-12). If the joiner can't afford
+      // entry, clear the orphan too so they don't linger on a stale run — the runless
+      // guard in useCoopSession then leaves the session (as for any energy-gated join).
+      if (s.mining && seed === undefined) return s;
+      if (!free && s.character.energy < MINE_ENERGY_COST) return s.mining ? { ...s, mining: null } : s;
 
       // Grant the stone_pickaxe if the player has no mining tool yet
       let ownedGear = s.ownedGear;
@@ -187,10 +197,10 @@ export const createMiningSlice: StateCreator<
       return { mining: strike(run, getMineRng()) };
     }),
 
-  mineStrikeCharged: () =>
+  mineStrikeCharged: (nowMs) =>
     set((s) =>
       s.mining && s.mining.status === 'active'
-        ? { mining: strike(s.mining, getMineRng(), Date.now(), true) }
+        ? { mining: strike(s.mining, getMineRng(), nowMs, true) }
         : s,
     ),
 
@@ -231,6 +241,13 @@ export const createMiningSlice: StateCreator<
       return mining !== s.mining ? { mining } : s;
     }),
 
+  coopApplyTileSnapshot: (floor, entries) =>
+    set((s) => {
+      if (!s.mining) return s;
+      const mining = applyMineTileSnapshot(s.mining, floor, entries);
+      return mining !== s.mining ? { mining } : s;
+    }),
+
   coopApplyRemoteAttack: (monsterId, dmg) =>
     set((s) => {
       if (!s.mining) return s;
@@ -256,10 +273,10 @@ export const createMiningSlice: StateCreator<
       return { mining, deepestMineFloor: Math.max(s.deepestMineFloor, mining.deepest) };
     }),
 
-  mineCast: (spellKey: string) =>
+  mineCast: (spellKey, nowMs) =>
     set((s) => {
       if (!s.mining || s.mining.status !== 'active') return s;
-      const mining = minecastSpellFn(s.mining, spellKey, Date.now(), getMineRng());
+      const mining = minecastSpellFn(s.mining, spellKey, nowMs, getMineRng());
       if (mining === s.mining) return s;
       return { mining };
     }),

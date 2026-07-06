@@ -429,7 +429,8 @@ export function ForestRunOverlay() {
   // Drive drone intensity from visible, awake predators.
   useEffect(() => {
     if (!forest || forest.status !== 'active') { sfx.setDroneIntensity(0); return; }
-    const now = Date.now();
+    const now = performance.now(); // engine timebase — windupUntilMs is rAF-clock
+
     const sight = sightRadiusFor(forest);
     const nearby = forest.beasts.filter((b) => {
       if (b.asleep || FOREST_BEASTS[b.key]?.flees) return false;
@@ -810,8 +811,8 @@ export function ForestRunOverlay() {
         {/* Ranged shot tracer — a brief arrow streak along the shot path */}
         {(() => {
           const shot = forest.lastShot;
-          if (!shot || Date.now() - shot.at > 180) return null;
-          const progress = Math.max(0, 1 - (Date.now() - shot.at) / 180);
+          if (!shot || performance.now() - shot.at > 180) return null;
+          const progress = Math.max(0, 1 - (performance.now() - shot.at) / 180);
           // Trace each cell along the path (horizontal or vertical corridor).
           const cells: React.ReactNode[] = [];
           const dr = shot.toR === shot.fromR ? 0 : shot.toR > shot.fromR ? 1 : -1;
@@ -931,10 +932,10 @@ export function ForestRunOverlay() {
           if (!isVisible(forest, b.r, b.c)) return null;
           if (!inView(b.r, b.c)) return null;
           const def = FOREST_BEASTS[b.key];
-          const frozen = (b.frozenUntilMs ?? 0) > Date.now();
-          const windingUp = b.windupUntilMs !== undefined && b.windupUntilMs > Date.now();
+          const frozen = (b.frozenUntilMs ?? 0) > performance.now();
+          const windingUp = b.windupUntilMs !== undefined && b.windupUntilMs > performance.now();
           const windupProgress = windingUp && b.windupUntilMs
-            ? Math.max(0, Math.min(1, 1 - (b.windupUntilMs - Date.now()) / FOREST_WINDUP_MS))
+            ? Math.max(0, Math.min(1, 1 - (b.windupUntilMs - performance.now()) / FOREST_WINDUP_MS))
             : 0;
           return (
             <div

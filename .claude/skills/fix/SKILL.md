@@ -33,11 +33,13 @@ You are executing items from `docs/habits-rpg-improvement-plan3.md` (the roadmap
 
 | Mode | When | Why |
 |---|---|---|
-| **Direct** (main session) | The four P0s; anything touching persist `migrate`/`merge` or the persist version; co-op wire/protocol changes (message shapes, reducers, staleness/epoch logic); the timebase pass (2.1); cross-file refactors (7.1, 7.2, 7.4); anything the scout flags as persist- or wire-impacting | Highest blast radius; needs the strongest model with full conversational context |
+| **Direct** (main session) | Anything touching persist `migrate`/`merge` or the persist version (or scout-flagged as persist-impacting); wire/protocol message-shape changes; cross-file refactors (7.1, 7.2, 7.4); items whose fix shape is an open design decision (4.1, 4.10) | Highest blast radius or open design; the session's full conversational context matters |
 | **Delegate — opus** (`fix-implementer` default) | Self-contained items with a clear fix shape that still involve logic or design judgment: most of Phases 3–6, UI/legibility features, content that must be *designed* (moveset authoring 5.2, recipe stats 4.4), P2 batches touching store/net | Keeps big-file reads out of this context; opus is fully adequate with a good brief |
 | **Delegate — sonnet** (`fix-implementer` with `model: "sonnet"` override) | Items where the finding already specifies the exact values or text and the diff is transcription: copy/tooltip honesty fixes (the theme-5 class — MINI-40, HABIT-21, BAL-08 label deletions), mechanical data-table edits with values given in the finding, P3 polish batches (HABIT-18–22, MINI-38/40 copy halves), doc passes (2.10, 7.7) | Same agent, same brief, same test policy — ~40% cheaper where judgment isn't the bottleneck |
 
 Tier rule of thumb: if the scout's SUGGESTED APPROACH contains a decision ("choose", "design", "depends"), it's opus or Direct; if it's a transcription of the finding's fix shape, sonnet is fine. When in doubt, opus — a failed verify cycle costs more than the tier delta saves.
+
+**Scout-skip rule:** skip the `finding-scout` when the current session already mapped the item's territory while executing a previous item (the 1.4–1.6 pattern) — note "no scout (territory mapped)" in the execution log. Never skip it in a fresh session.
 
 **Cheap sweeps (`repo-sweeper`, haiku):** for enumeration-shaped subtasks, spawn `repo-sweeper` instead of burning scout/main-session tokens: the 2.1 timebase inventory (every `Date.now()`/`performance.now()`/rAF-timestamp usage by layer), 7.6's dead-export and duplication verification, theme-5 copy sweeps (find every tooltip/label string making a numeric claim), and full-suite runs at `check <phase>` when you only need a failure digest. It inventories; it never judges or edits.
 
@@ -45,7 +47,7 @@ Tier rule of thumb: if the scout's SUGGESTED APPROACH contains a decision ("choo
 
 | Severity of item's top finding | Verifier |
 |---|---|
-| P0, or any Phase 1 data-safety item | `fix-verifier` with `model: "fable"` override |
+| P0, or a wire/protocol-shape change implemented in an Opus session | `fix-verifier` with `model: "fable"` override |
 | P1 | `fix-verifier` (its default, opus) |
 | P2 | `fix-verifier` (opus) only if the diff touched store/net/persist; otherwise tests + typecheck suffice |
 | P3 | No verifier — tests + typecheck |
@@ -59,6 +61,9 @@ Tier rule of thumb: if the scout's SUGGESTED APPROACH contains a decision ("choo
 
 ## Session cost guide (advisory, tell the user when relevant)
 
-- Run the **main session on Fable** for Phases 1, 2, and 7.1/7.4 — that's where Direct-mode correctness work concentrates.
-- An **Opus session is fine** for Phases 3, 5, 6, 8 and most of 4 — nearly everything there is Delegate-mode, so the orchestrator mostly routes briefs and bookkeeps.
+*Updated 2026-07-06, after Phase 1 + items 2.1/2.2 landed — the Fable-mandatory core (data-safety cluster, timebase convention, world-merge rewrite) is complete.*
+
+- **Default session model is Opus** for all remaining work, including the rest of Phase 2. The conventions those items build on are now installed and documented in the execution log; the fix shapes are specified per finding.
+- **Fable is bought by the call, not the session:** protocol-shape changes done on Opus (2.4-class) get a `fix-verifier` with `model: "fable"` override — one verifier invocation instead of a whole Fable session. Same pattern for the 7.1 hoist: Opus session, fable verifier pass at the end.
+- **Reserve actual Fable sessions** (or single planning turns) for open design decisions where the *fix shape itself* must be chosen: 4.1's XP-scaling knob and 4.10's recorded decisions. Decide the numbers on Fable, implement on Opus/sonnet.
 - Phase 4 re-modeling: after 4.1–4.4 land, re-check reward-per-minute parity by spawning `game-design-auditor` with the numeric-balance lens and `model: "opus"` override (its frontmatter pins fable; the override halves that cost) against section 03's NUMBERS.

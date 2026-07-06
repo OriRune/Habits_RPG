@@ -905,7 +905,7 @@ export function MineRunOverlay() {
                   ))}
                 </div>
               )}
-              {(m.frozenUntilMs ?? 0) > Date.now() && (
+              {(m.frozenUntilMs ?? 0) > performance.now() && (
                 <div className="absolute inset-0 rounded bg-blue-400/25 ring-1 ring-blue-300" />
               )}
             </div>

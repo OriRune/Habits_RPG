@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { useGameStore } from '../useGameStore';
-import { computeQuestTotal } from '@/hooks/useParty';
+import { computeQuestTotal, questDeltaToReport, nextQuestBaseline } from '@/hooks/useParty';
 import { _setNow, _resetNow } from '@/engine/date';
 import type { Habit } from '@/engine/habits';
 
@@ -159,5 +159,30 @@ describe('computeQuestTotal (7.3)', () => {
   it('falls back to count for unrecognised / null kind', () => {
     expect(computeQuestTotal(habits, completionLog, null, null)).toBe(5);
     expect(computeQuestTotal(habits, completionLog, 'streak', null)).toBe(5);
+  });
+});
+
+describe('questDeltaToReport + nextQuestBaseline (MP-14)', () => {
+  it('reports only positive movement — a decrease reports nothing', () => {
+    expect(questDeltaToReport(5, 8)).toBe(3);
+    expect(questDeltaToReport(5, 5)).toBe(0);
+    expect(questDeltaToReport(5, 3)).toBe(0); // uncompleteHabit lowers the metric
+  });
+
+  it('baseline is a high-water mark that never decreases', () => {
+    expect(nextQuestBaseline(5, 8)).toBe(8);
+    expect(nextQuestBaseline(5, 3)).toBe(5); // uncomplete keeps the high mark
+  });
+
+  it('complete→uncomplete→complete reports one net completion, not two', () => {
+    let prev = 5;
+    let reported = 0;
+    for (const now of [6, 5, 6]) {
+      // complete (+1), uncomplete (0), recomplete (0 — already at the high mark)
+      reported += questDeltaToReport(prev, now);
+      prev = nextQuestBaseline(prev, now);
+    }
+    expect(reported).toBe(1);
+    expect(prev).toBe(6);
   });
 });

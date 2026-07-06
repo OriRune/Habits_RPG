@@ -999,6 +999,33 @@ describe('deep mine', () => {
     expect(get().mining).not.toBeNull();
   });
 
+  it('beginMining with an explicit co-op seed replaces a leftover orphan run (MP-12)', () => {
+    // A persisted/solo run left on state before the join must not survive: keeping it
+    // would merge a stale map against the shared co-op seed.
+    useGameStore.setState({ mining: makeMine({ floor: 5 }), character: { ...get().character, energy: 10 } });
+    const stale = get().mining;
+    get().beginMining(4242); // co-op join passes the shared seed
+    expect(get().mining).not.toBe(stale);
+    expect(get().mining!.floor).toBe(1); // rebuilt from the shared seed, not the stale floor 5
+  });
+
+  it('beginMining without a seed keeps an in-progress solo run (re-entry)', () => {
+    const existing = makeMine({ floor: 3 });
+    useGameStore.setState({ mining: existing });
+    get().beginMining();
+    expect(get().mining).toBe(existing);
+  });
+
+  it('beginMining with a co-op seed but no energy clears the orphan so auto-leave fires (MP-12)', () => {
+    useGameStore.setState({
+      mining: makeMine({ floor: 5 }),
+      character: { ...get().character, energy: 0 },
+      settings: { ...get().settings, unlimitedEnergy: false },
+    });
+    get().beginMining(4242);
+    expect(get().mining).toBeNull();
+  });
+
   it('mineStrike breaks the faced ore vein and accrues the haul', () => {
     const tiles = makeMine().tiles;
     tiles[2][3] = { kind: 'ore', oreKey: 'rubble', durability: 1 };
@@ -1161,11 +1188,29 @@ describe('wild forest', () => {
     expect(get().forest).not.toBeNull();
   });
 
+  it('beginForest with an explicit co-op seed replaces a leftover orphan run (MP-12)', () => {
+    useGameStore.setState({ forest: makeForest({ stage: 5 }), character: { ...get().character, energy: 10 } });
+    const stale = get().forest;
+    get().beginForest(4242);
+    expect(get().forest).not.toBe(stale);
+    expect(get().forest!.stage).toBe(1);
+  });
+
+  it('beginForest with a co-op seed but no energy clears the orphan (MP-12)', () => {
+    useGameStore.setState({
+      forest: makeForest({ stage: 5 }),
+      character: { ...get().character, energy: 0 },
+      settings: { ...get().settings, unlimitedEnergy: false },
+    });
+    get().beginForest(4242);
+    expect(get().forest).toBeNull();
+  });
+
   it('forestAct gathers a faced node into the haul', () => {
     const tiles = makeForest().tiles;
     tiles[2][3] = { kind: 'node', nodeKey: 'flower_bush' };
     useGameStore.setState({ forest: makeForest({ tiles }) });
-    get().forestAct();
+    get().forestAct(1000);
     expect(get().forest!.tiles[2][3].kind).toBe('trail');
     expect(get().forest!.haul.materials?.herbs ?? 0).toBeGreaterThan(0);
   });
@@ -1698,6 +1743,19 @@ describe('claimPartyQuestReward (Stage 5.1)', () => {
     useGameStore.setState({ character: { ...get().character, gold: 0 }, claimedPartyQuests: [] });
     get().claimPartyQuestReward('quest-big', 50); // 50 + 500 = 550 → capped at 200
     expect(get().character.gold).toBe(200);
+  });
+});
+
+describe('beginTacticsCoop no-op invariant (MP-10)', () => {
+  it('returns the existing board unchanged when a tactics fight already exists', () => {
+    // MP-10 leans on this contract: once a board exists, beginTacticsCoop is a
+    // no-op (same reference), so the store subscription never re-broadcasts. The
+    // Tactics host-join handler therefore resends the current state directly for a
+    // rejoin/reconnect/second-guest instead of relying on a second beginTacticsCoop.
+    const sentinel = { board: 'existing' } as never;
+    useGameStore.setState({ tactics: sentinel });
+    get().beginTacticsCoop({ heroes: [], seed: 7 });
+    expect(get().tactics).toBe(sentinel); // unchanged → no mutation → no broadcast
   });
 });
 

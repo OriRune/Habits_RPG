@@ -371,8 +371,9 @@ export interface GameState {
   mineMove: (dir: Dir) => void;
   /** Swing the pick at the faced cell (dig rock/ore or hit a monster). */
   mineStrike: () => void;
-  /** Charged heavy swing — higher damage, staggers monsters, clears rock faster. */
-  mineStrikeCharged: () => void;
+  /** Charged heavy swing — higher damage, staggers monsters, clears rock faster.
+   *  `nowMs` is the caller's rAF-clock timestamp — same timebase as mineTick. */
+  mineStrikeCharged: (nowMs: number) => void;
   /** Dash in `dir` (AG-gated cooldown; grants brief i-frame). */
   mineDash: (dir: Dir, nowMs: number) => void;
   /** Advance monsters on the loop's clock; commits the haul if the miner falls. */
@@ -392,12 +393,14 @@ export interface GameState {
   }) => void;
   /** Co-op: apply a peer's tile change (shared resource nodes). */
   coopApplyTile: (floor: number, r: number, c: number, tile: MineTile) => void;
+  /** Co-op: apply a host's one-shot changed-tiles snapshot when joining mid-run (MP-25). */
+  coopApplyTileSnapshot: (floor: number, entries: ReadonlyArray<{ r: number; c: number; tile: MineTile }>) => void;
   /** Co-op host: resolve a remote player's melee attack on a monster (once). */
   coopApplyRemoteAttack: (monsterId: string, dmg: number) => void;
   /** Descend the shaft to a deeper, richer floor. */
   mineDescend: () => void;
-  /** Cast a known spell by key (costs MP). */
-  mineCast: (spellKey: string) => void;
+  /** Cast a known spell by key (costs MP). `nowMs` is the caller's rAF-clock timestamp. */
+  mineCast: (spellKey: string, nowMs: number) => void;
   /** Pick a boon from the pending 3-card choice (mine). */
   chooseMineBoon: (key: string) => void;
   /** Dismiss the boon panel without picking (mine) — escape hatch if no option appeals (or none exist). */
@@ -412,10 +415,12 @@ export interface GameState {
   beginForest: (seed?: number) => void;
   /** Step/turn the forager one cell (re-lights the fog). */
   forestMove: (dir: Dir) => void;
-  /** Act on the faced cell (slash a beast or gather a node). */
-  forestAct: () => void;
-  /** Charged heavy act — higher damage, staggers beasts, chops trees faster. */
-  forestActCharged: () => void;
+  /** Act on the faced cell (slash a beast or gather a node).
+   *  `nowMs` is the caller's rAF-clock timestamp — same timebase as forestTick. */
+  forestAct: (nowMs: number) => void;
+  /** Charged heavy act — higher damage, staggers beasts, chops trees faster.
+   *  `nowMs` is the caller's rAF-clock timestamp — same timebase as forestTick. */
+  forestActCharged: (nowMs: number) => void;
   /** Dash in `dir` in the forest (AG-gated cooldown; grants brief i-frame + re-lights fog). */
   forestDash: (dir: Dir, nowMs: number) => void;
   /** Advance beasts on the loop's clock; flips the run to 'ended' if the forager falls. */
@@ -427,8 +432,8 @@ export interface GameState {
   forestStash: () => void;
   /** Push on through the far tree line into a deeper, richer stage. */
   forestAdvance: () => void;
-  /** Cast a known spell in the forest run. */
-  forestCast: (spellKey: string) => void;
+  /** Cast a known spell in the forest run. `nowMs` is the caller's rAF-clock timestamp. */
+  forestCast: (spellKey: string, nowMs: number) => void;
   /**
    * Activate the shrine the forager is standing on.
    * `allowDenSpawn` — false for co-op guests so the den beast only lives in the host's world.
@@ -450,6 +455,8 @@ export interface GameState {
   }) => void;
   /** Co-op: apply a peer's forest tile change (shared resource nodes). */
   coopApplyForestTile: (stage: number, r: number, c: number, tile: ForestTile) => void;
+  /** Co-op: apply a host's one-shot changed-tiles snapshot when joining mid-run (MP-25). */
+  coopApplyForestTileSnapshot: (stage: number, entries: ReadonlyArray<{ r: number; c: number; tile: ForestTile }>) => void;
   /** Co-op host: resolve a remote player's melee attack on a beast (once). */
   coopApplyForestAttack: (beastId: string, dmg: number) => void;
   /** Co-op guest per-tick: advance only own body (regen + contact damage). */

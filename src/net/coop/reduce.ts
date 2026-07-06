@@ -15,6 +15,7 @@ import { boonConsolation, type RNG } from '@/engine/crawl';
 import {
   type MineState,
   type MineTile,
+  type MineMonster,
   generateMine,
   mineSnapshot,
   damageMonsterById,
@@ -22,6 +23,7 @@ import {
 import {
   type ForestState,
   type ForestTile,
+  type ForestBeast,
   generateForest,
   forestSnapshot,
   damageBeastById,
@@ -41,6 +43,7 @@ import {
 } from '@/engine/hexBattle';
 import type { Hex } from '@/engine/hex';
 import type { WorldSlice, PlayerSlice, TacticsIntent } from './protocol';
+import type { CoopSession } from './session'; // type-only: no runtime import cycle
 
 /**
  * The fields of a WorldSlice that the mine/forest reducers actually consume.
@@ -60,9 +63,14 @@ export interface WorldSliceInput {
   floor: number;
   monsters: ReadonlyArray<{
     id: string;
+    /** Needed to rebuild an entity missing locally. Optional only for
+     *  tolerance of malformed/ancient slices — the wire always carries it. */
+    key?: string;
     r: number;
     c: number;
     hp: number;
+    /** Optional: slices from a pre-maxHp host omit it (rebuild falls back to `hp`). */
+    maxHp?: number;
     readyAtMs: number;
     asleep?: boolean;
   }>;
@@ -84,7 +92,9 @@ export type RemotePlayers = Record<string, PlayerSlice & { lastSeen: number }>;
  * - If the host has advanced to a new floor, regenerate that floor from its
  *   per-floor seed (identical to the host's seeded map) and carry our own
  *   hp/haul/boons forward.
- * - Merge monster positions/HP from the host; drop host-killed monsters.
+ * - Rebuild the monster list from the host's authoritative slice: update
+ *   positions/HP, drop host-killed monsters, re-instantiate host-alive
+ *   monsters missing locally.
  * - Detect a guardian kill on the host side so the guest can trigger a boon
  *   choice.
  *
@@ -114,16 +124,32 @@ export function applyMineWorldSlice(
     };
   }
 
-  const byId = new Map(slice.monsters.map((m) => [m.id, m]));
-
-  // Update positions/HP from the host; drop monsters the host has killed.
-  // New host monsters not present locally are ignored — seeded maps match.
-  const merged = current.monsters
-    .filter((m) => byId.has(m.id))
-    .map((m) => {
-      const sl = byId.get(m.id)!;
-      return { ...m, r: sl.r, c: sl.c, hp: sl.hp, readyAtMs: sl.readyAtMs };
-    });
+  // Host-authoritative rebuild: walk the host's list, matching local monsters
+  // by id (the spread preserves guest-visible status fields) and
+  // re-instantiating any host-alive monster missing locally — an intersection
+  // could never resurrect one after a one-sided local kill, leaving the two
+  // worlds permanently diverged. Monsters absent from the slice stay dropped
+  // (the host killed them).
+  const localById = new Map(current.monsters.map((m) => [m.id, m]));
+  const merged: MineMonster[] = [];
+  for (const sl of slice.monsters) {
+    const local = localById.get(sl.id);
+    if (local) {
+      merged.push({ ...local, r: sl.r, c: sl.c, hp: sl.hp, readyAtMs: sl.readyAtMs });
+    } else if (sl.key) {
+      // Fresh status fields (frozen/poison) are correct — the guest never
+      // observed any. `maxHp ?? hp` tolerates a pre-maxHp host (cosmetic only).
+      merged.push({
+        id: sl.id,
+        key: sl.key,
+        r: sl.r,
+        c: sl.c,
+        hp: sl.hp,
+        maxHp: sl.maxHp ?? sl.hp,
+        readyAtMs: sl.readyAtMs,
+      });
+    }
+  }
 
   // Detect guardian kill on the host side so the guest can trigger its own
   // boon choice. A guardian is gone when its id was present locally and is
@@ -167,6 +193,76 @@ export function applyMineTileSlice(
   return { ...mining, tiles };
 }
 
+/** Structural tile equality — pristine-regen and live tiles are always distinct
+ *  object references, so compare by value (small plain objects). */
+function tilesEqual(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * MP-25: diff the mine's current floor against a pristine regen from the shared
+ * seed, returning only the cells that diverge (dug/harvested/decayed). This is the
+ * one-shot backfill sent to a late joiner, who regenerates the same pristine floor
+ * and never saw the party's earlier per-cell TileSlices.
+ */
+export function diffMineTiles(
+  mining: MineState,
+  baseSeed: number,
+): Array<{ r: number; c: number; tile: MineTile }> {
+  const pristine = generateMine(
+    mining.floor,
+    mineSnapshot(mining),
+    mulberry32(floorSeed(baseSeed, mining.floor)),
+  );
+  const out: Array<{ r: number; c: number; tile: MineTile }> = [];
+  for (let r = 0; r < mining.tiles.length; r++) {
+    const row = mining.tiles[r];
+    const prow = pristine.tiles[r];
+    for (let c = 0; c < row.length; c++) {
+      const cell = row[c];
+      // A tombstone is the host's own death-recovery marker (placed post-gen, per
+      // player) — never propagate it: a joiner has no matching lost haul to recover
+      // and it would just litter their map with a dead tile.
+      if (cell.kind === 'tombstone') continue;
+      if (!tilesEqual(prow?.[c], cell)) out.push({ r, c, tile: cell });
+    }
+  }
+  return out;
+}
+
+/**
+ * Apply a one-shot tile snapshot onto a freshly-regenerated floor (late joiner).
+ * Returns the original reference if the snapshot is for another floor or empty.
+ */
+export function applyMineTileSnapshot(
+  mining: MineState,
+  floor: number,
+  entries: ReadonlyArray<{ r: number; c: number; tile: MineTile }>,
+): MineState {
+  if (mining.floor !== floor || entries.length === 0) return mining;
+  const tiles = mining.tiles.map((row) => row.slice());
+  let changed = false;
+  for (const e of entries) {
+    if (tiles[e.r]?.[e.c] !== undefined) {
+      tiles[e.r][e.c] = e.tile;
+      changed = true;
+    }
+  }
+  return changed ? { ...mining, tiles } : mining;
+}
+
+/**
+ * MP-11: clamp a guest-supplied per-hit damage value to a sane ceiling — the
+ * target's own max HP. Under the friendly-trust model the wire still carries
+ * client-computed `dmg` (`AttackIntent`); this bounds a buggy or modified client
+ * to at most the target's total health in one hit, preventing absurd/overflow
+ * values from reaching the host-authoritative world. The deferred full fix
+ * recomputes damage host-side from the guest's known stats.
+ */
+export function clampRemoteDamage(dmg: number, maxHp: number): number {
+  return Math.min(dmg, maxHp);
+}
+
 /**
  * Apply a guest's remote attack to the host's mine (host-side resolution).
  * Returns the original reference if nothing changed.
@@ -178,7 +274,9 @@ export function applyMineRemoteAttack(
   rng: RNG,
 ): MineState {
   if (mining.status !== 'active') return mining;
-  return damageMonsterById(mining, monsterId, dmg, rng);
+  const mon = mining.monsters.find((m) => m.id === monsterId);
+  const capped = mon ? clampRemoteDamage(dmg, mon.maxHp) : dmg;
+  return damageMonsterById(mining, monsterId, capped, rng);
 }
 
 // ---------------------------------------------------------------------------
@@ -214,23 +312,36 @@ export function applyForestWorldSlice(
     };
   }
 
-  const byId = new Map(slice.monsters.map((m) => [m.id, m]));
-
-  // Merge beast positions/HP; carry the host's `asleep` so a woken beast
-  // shows its HP bar on the guest.
-  const merged = current.beasts
-    .filter((b) => byId.has(b.id))
-    .map((b) => {
-      const sl = byId.get(b.id)!;
-      return {
-        ...b,
+  // Host-authoritative rebuild (mirrors applyMineWorldSlice): match local
+  // beasts by id, re-instantiate host-alive beasts missing locally (e.g. after
+  // a one-sided local ranged kill), drop beasts absent from the slice.
+  // The host's `asleep` is carried so a woken beast shows its HP bar.
+  const localById = new Map(current.beasts.map((b) => [b.id, b]));
+  const merged: ForestBeast[] = [];
+  for (const sl of slice.monsters) {
+    const local = localById.get(sl.id);
+    if (local) {
+      merged.push({
+        ...local,
         r: sl.r,
         c: sl.c,
         hp: sl.hp,
         readyAtMs: sl.readyAtMs,
-        asleep: sl.asleep ?? b.asleep,
-      };
-    });
+        asleep: sl.asleep ?? local.asleep,
+      });
+    } else if (sl.key) {
+      merged.push({
+        id: sl.id,
+        key: sl.key,
+        r: sl.r,
+        c: sl.c,
+        hp: sl.hp,
+        maxHp: sl.maxHp ?? sl.hp,
+        readyAtMs: sl.readyAtMs,
+        asleep: sl.asleep ?? false,
+      });
+    }
+  }
 
   // Detect guardian kill for the boon-choice trigger.
   const hostBeastIds = new Set(slice.monsters.map((m) => m.id));
@@ -270,6 +381,45 @@ export function applyForestTileSlice(
   return { ...forest, tiles };
 }
 
+/** MP-25 forest twin of diffMineTiles — diff the current stage against a pristine regen. */
+export function diffForestTiles(
+  forest: ForestState,
+  baseSeed: number,
+): Array<{ r: number; c: number; tile: ForestTile }> {
+  const pristine = generateForest(
+    forest.stage,
+    forestSnapshot(forest),
+    mulberry32(floorSeed(baseSeed, forest.stage)),
+  );
+  const out: Array<{ r: number; c: number; tile: ForestTile }> = [];
+  for (let r = 0; r < forest.tiles.length; r++) {
+    const row = forest.tiles[r];
+    const prow = pristine.tiles[r];
+    for (let c = 0; c < row.length; c++) {
+      if (!tilesEqual(prow?.[c], row[c])) out.push({ r, c, tile: row[c] });
+    }
+  }
+  return out;
+}
+
+/** MP-25 forest twin of applyMineTileSnapshot. */
+export function applyForestTileSnapshot(
+  forest: ForestState,
+  stage: number,
+  entries: ReadonlyArray<{ r: number; c: number; tile: ForestTile }>,
+): ForestState {
+  if (forest.stage !== stage || entries.length === 0) return forest;
+  const tiles = forest.tiles.map((row) => row.slice());
+  let changed = false;
+  for (const e of entries) {
+    if (tiles[e.r]?.[e.c] !== undefined) {
+      tiles[e.r][e.c] = e.tile;
+      changed = true;
+    }
+  }
+  return changed ? { ...forest, tiles } : forest;
+}
+
 /**
  * Apply a guest's remote attack to the host's forest.
  * Returns the original reference if nothing changed.
@@ -281,7 +431,9 @@ export function applyForestRemoteAttack(
   rng: RNG,
 ): ForestState {
   if (forest.status !== 'active') return forest;
-  return damageBeastById(forest, beastId, dmg, rng);
+  const beast = forest.beasts.find((b) => b.id === beastId);
+  const capped = beast ? clampRemoteDamage(dmg, beast.maxHp) : dmg;
+  return damageBeastById(forest, beastId, capped, rng);
 }
 
 // ---------------------------------------------------------------------------
@@ -334,8 +486,10 @@ export function applyTacticsState(
  * Returns the new state if the action changed anything, otherwise the same
  * reference.
  *
- * The caller is responsible for ownership validation (the heroId must belong
- * to the guest, not the host) and status guard (battle must be 'active').
+ * Membership floor (MP-23): intents whose `heroId` isn't in `tactics.players`
+ * are rejected here so an unknown/stale id can't fall through to the host's hero.
+ * The caller remains responsible for ownership validation (the heroId must belong
+ * to the sending guest, not merely be a roster member) and the status guard.
  *
  * @param tactics The current authoritative battle state.
  * @param intent  The guest's action intent.
@@ -346,6 +500,11 @@ export function resolveTacticsIntent(
   intent: TacticsIntent,
   rng: () => number,
 ): HexBattleState {
+  // MP-23: reject intents whose heroId isn't a member of the current roster, so a
+  // stale/malformed heroId can't fall through to acting as the host's hero (every
+  // engine entry point resolves an unknown heroId to state.player). Skip the check
+  // for solo/legacy state that carries no players roster.
+  if (tactics.players && !tactics.players.some((p) => p.id === intent.heroId)) return tactics;
   switch (intent.action) {
     case 'move':
       return intent.to ? tacticsMoveFn(tactics, intent.to as Hex, intent.heroId) : tactics;
@@ -362,6 +521,58 @@ export function resolveTacticsIntent(
     default:
       return tactics;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Session lifecycle helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * MP-08: compute the next {session, joined} when the discovered session changes.
+ * `joined` is preserved only while the *same* session id stays active; if the
+ * session disappears (null) or its id changes, `joined` resets to false so a
+ * guest isn't silently auto-attached to the party's next raid (which would leak
+ * a live solo run's slices into it). The host/guest join paths call
+ * `setSession(newSession)` then `setJoined(true)`, so a deliberate join re-sets
+ * `joined` immediately after this reset.
+ */
+export function nextSessionState(
+  prev: { session: CoopSession | null; joined: boolean },
+  incoming: CoopSession | null,
+): { session: CoopSession | null; joined: boolean } {
+  const sameSession = !!incoming && !!prev.session && incoming.id === prev.session.id;
+  return { session: incoming, joined: sameSession ? prev.joined : false };
+}
+
+/**
+ * MP-09: whether a discovered session is my own orphaned row that should be
+ * reaped (marked ended). It's an orphan when I'm the host but haven't joined it —
+ * e.g. I closed the tab mid-raid and the row is still `active`, or an old row
+ * resurfaces after a later session ended. Reaping stops dead raids from being
+ * offered as joinable zombies.
+ */
+export function shouldReapOrphan(
+  session: CoopSession | null,
+  myId: string,
+  joined: boolean,
+): boolean {
+  return !!session && session.host_id === myId && !joined;
+}
+
+/**
+ * MP-24: whether this client's wire protocol is compatible with a discovered
+ * session. A version mismatch means the host and I disagree on message shapes, so
+ * joining would silently desync — refuse instead. Legacy rows created before the
+ * `protocol_version` column existed report `undefined`; treat those as compatible
+ * so a rollout doesn't lock everyone out (only an explicit mismatch is refused).
+ */
+export function canJoinSession(
+  session: { protocol_version?: number | null } | null,
+  myVersion: number,
+): boolean {
+  if (!session) return false;
+  if (session.protocol_version === undefined || session.protocol_version === null) return true;
+  return session.protocol_version === myVersion;
 }
 
 // ---------------------------------------------------------------------------
@@ -447,7 +658,10 @@ export function buildWorldSlice(run: MineState | ForestState): WorldSlice {
   const entities = 'monsters' in run ? run.monsters : run.beasts;
   return {
     type: 'world',
-    t: performance.now(),
+    // Wall clock, not performance.now(): the stamp crosses machines and must
+    // survive a host reload (performance.now() restarts at 0, which would make
+    // every new slice look stale to a guest's high-water mark).
+    t: Date.now(),
     floor: depth,
     // 'choosing' is a UI sub-status; from the guest's perspective the world is still 'active'.
     status: run.status === 'choosing' ? 'active' : (run.status as WorldSlice['status']),
@@ -457,6 +671,7 @@ export function buildWorldSlice(run: MineState | ForestState): WorldSlice {
       r: m.r,
       c: m.c,
       hp: m.hp,
+      maxHp: m.maxHp,
       readyAtMs: m.readyAtMs,
       asleep: (m as { asleep?: boolean }).asleep,
     })),

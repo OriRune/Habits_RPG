@@ -114,9 +114,10 @@ export const partyActions = {
     if (party) await renameParty(party.id, name);
     await reloadParty();
   },
-  send: async (body: string): Promise<void> => {
+  send: async (body: string): Promise<ApiResult<null>> => {
     const party = usePartyStore.getState().party;
-    if (party) await sendMessage(party.id, body); // realtime INSERT appends it
+    if (!party) return { ok: false, error: 'no party' };
+    return sendMessage(party.id, body); // realtime INSERT appends it
   },
   createQuest: async (def: ChallengeDef, target: number, days: number): Promise<void> => {
     const party = usePartyStore.getState().party;
@@ -147,7 +148,10 @@ export function useParty(): void {
   useEffect(() => {
     if (session) void reloadParty();
     else usePartyStore.setState({ ...INITIAL, loading: false });
-  }, [session]);
+    // Depend on the user id, not the session object: TOKEN_REFRESHED (~hourly) mints a
+    // new session identity with the same user, which would otherwise re-run the full
+    // reload and churn presence/realtime for the whole party (MP-20).
+  }, [session?.user?.id]);
 
   useEffect(() => {
     if (!partyId || !supabase) return;
@@ -192,6 +196,16 @@ export function useParty(): void {
           void getActiveQuest(partyId).then((quest) => usePartyStore.setState({ quest }));
         },
       )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'party_members', filter: `party_id=eq.${partyId}` },
+        () => {
+          // A join/leave/kick changes the roster (and the leaderboard set); pull the
+          // full snapshot so every member sees it live instead of only after their own
+          // next mutation or the next reload (MP-19).
+          void reloadParty();
+        },
+      )
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
           void channel.track({ user_id: userId, username, activity: deriveActivity() });
@@ -213,7 +227,9 @@ export function useParty(): void {
       unsub();
       void sb.removeChannel(channel);
     };
-  }, [partyId, session]);
+    // Same as above: resubscribing the channel on every hourly token refresh drops
+    // realtime messages during the gap — key on the stable user id instead (MP-20).
+  }, [partyId, session?.user?.id]);
 }
 
 /**
@@ -258,6 +274,23 @@ export function totalCompletionsByKind(kind: ChallengeKind | null, questStat: St
 }
 
 /**
+ * Delta to report to the party-quest RPC given the previous high-water baseline and
+ * the current metric. Only positive movement counts — a decrease (uncompleteHabit)
+ * reports nothing (MP-14). Exported for unit testing without store coupling.
+ */
+export function questDeltaToReport(prev: number, now: number): number {
+  return now > prev ? now - prev : 0;
+}
+
+/**
+ * The next baseline after observing `now`: a high-water mark that never decreases, so
+ * a complete→uncomplete→complete cycle reports one net completion, not two (MP-14).
+ */
+export function nextQuestBaseline(prev: number, now: number): number {
+  return Math.max(prev, now);
+}
+
+/**
  * Reports habit completions toward the active party quest. Mounted once in App.
  * The delta computation is kind-aware (count / class / quantity), allowing party
  * quests beyond the original v1 'count' kind. The atomic RPC is unchanged —
@@ -272,11 +305,30 @@ export function usePartyQuestReporter(): void {
   useEffect(() => {
     if (!partyId || !questActive) return;
     let prev = totalCompletionsByKind(questKind, questStat);
-    const unsub = useGameStore.subscribe(() => {
-      const now = totalCompletionsByKind(questKind, questStat);
-      if (now > prev) void incrementPartyQuest(partyId, now - prev);
-      prev = now;
+    let hydrating = false;
+    // A cloud re-pull (pullCloudSave → persist.rehydrate) replaces the whole store, and
+    // the subscribe below fires DURING that setState — before onFinishHydration. Suppress
+    // sends while hydrating, then re-baseline to the rehydrated total, so cloud totals
+    // ahead of the local baseline aren't miscounted as fresh contributions (MP-14a).
+    const unHydrate = useGameStore.persist.onHydrate(() => {
+      hydrating = true;
     });
-    return unsub;
+    const unFinish = useGameStore.persist.onFinishHydration(() => {
+      prev = totalCompletionsByKind(questKind, questStat);
+      hydrating = false;
+    });
+    const unsub = useGameStore.subscribe(() => {
+      if (hydrating) return;
+      const now = totalCompletionsByKind(questKind, questStat);
+      const delta = questDeltaToReport(prev, now);
+      if (delta > 0) void incrementPartyQuest(partyId, delta);
+      // High-water mark: an uncomplete lowers `now` but not the baseline (MP-14b).
+      prev = nextQuestBaseline(prev, now);
+    });
+    return () => {
+      unHydrate();
+      unFinish();
+      unsub();
+    };
   }, [partyId, questActive, questKind, questStat]);
 }

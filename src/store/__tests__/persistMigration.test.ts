@@ -246,7 +246,126 @@ describe('persist merge (ARCH-08)', () => {
 
     const out = merge({ mining: persistedMining }, current) as GameState;
 
-    expect(out.mining).toBe(persistedMining);
+    // Not the same reference — the run is adopted via the timestamp rebase.
+    expect(out.mining).toMatchObject({ floor: 2, hp: 3 });
     expect(out.battle).toBeNull();
+  });
+
+  it('rebases a persisted mine run\'s rAF timestamps so a reload does not stall it (MINI-02)', () => {
+    const { merge, store } = getPersistFns();
+    const current = store.getState();
+    // Timestamps from a previous session's uptime (~83 minutes) — far ahead of
+    // the fresh session's rAF clock, which restarts near 0 on reload.
+    const persistedMining = {
+      floor: 3,
+      hp: 20,
+      staNextRegenMs: 5_000_000,
+      mpNextRegenMs: 5_000_000,
+      lastSpellMs: 4_999_500,
+      lastDashMs: 4_998_000,
+      lastHitAtMs: 4_999_900,
+      runes: [{ id: 1, r: 2, c: 2, kind: 'fire', power: 3, expiresAtMs: 5_020_000 }],
+      ringOfFire: { expiresAtMs: 5_005_000, dmg: 2 },
+      ringNextHitMs: { a: 5_000_400 },
+      playerStatuses: [{ key: 'bless', magnitude: 1, expiresAtMs: 5_009_000 }],
+      monsters: [
+        {
+          id: 'a', key: 'cave_slug', r: 1, c: 1, hp: 5, maxHp: 5,
+          readyAtMs: 5_000_200, frozenUntilMs: 5_000_300,
+          poisonDmg: 2, poisonNextTickMs: 5_000_150, poisonExpiresMs: 5_003_000,
+        },
+      ],
+    } as unknown as GameState['mining'];
+
+    const out = merge({ mining: persistedMining }, current) as GameState;
+    const run = out.mining!;
+
+    // Cooldowns/regen are ready immediately on the new clock…
+    expect(run.staNextRegenMs).toBe(0);
+    expect(run.mpNextRegenMs).toBe(0);
+    expect(run.lastSpellMs).toBeLessThanOrEqual(0);
+    expect(run.lastDashMs).toBeLessThanOrEqual(0);
+    expect(run.lastHitAtMs).toBeLessThanOrEqual(0);
+    // …transient timed effects expire rather than persisting for ~83 minutes…
+    expect(run.runes).toEqual([]);
+    expect(run.ringOfFire).toBeNull();
+    expect(run.ringNextHitMs).toEqual({});
+    expect(run.playerStatuses).toEqual([]);
+    // …and monsters act on the new clock instead of being frozen/poisoned until it catches up.
+    expect(run.monsters[0].readyAtMs).toBe(0);
+    expect(run.monsters[0].frozenUntilMs).toBeUndefined();
+    expect(run.monsters[0].poisonDmg).toBeUndefined();
+    expect(run.monsters[0].poisonExpiresMs).toBeUndefined();
+    // Non-timestamp fields are untouched.
+    expect(run.floor).toBe(3);
+    expect(run.hp).toBe(20);
+    expect(run.monsters[0].hp).toBe(5);
+  });
+
+  it('rebases a persisted forest run — including windups and the shot tracer', () => {
+    const { merge, store } = getPersistFns();
+    const current = store.getState();
+    const persistedForest = {
+      stage: 2,
+      hp: 30,
+      staNextRegenMs: 5_000_000,
+      lastShot: { fromR: 3, fromC: 3, toR: 3, toC: 5, at: 4_999_900 },
+      beasts: [
+        {
+          id: 'b', key: 'wild_boar', r: 1, c: 1, hp: 10, maxHp: 10, asleep: false,
+          readyAtMs: 5_000_200, windupUntilMs: 5_000_100, frozenUntilMs: 5_000_300,
+        },
+      ],
+    } as unknown as GameState['forest'];
+
+    const out = merge({ forest: persistedForest }, current) as GameState;
+    const run = out.forest!;
+
+    expect(run.staNextRegenMs).toBe(0);
+    expect(run.lastShot).toBeNull();
+    expect(run.beasts[0].readyAtMs).toBe(0);
+    expect(run.beasts[0].windupUntilMs).toBeUndefined();
+    expect(run.beasts[0].frozenUntilMs).toBeUndefined();
+    expect(run.stage).toBe(2);
+    expect(run.beasts[0].hp).toBe(10);
+  });
+
+  it('rebases a persisted arena run\'s perf-clock timestamps on adoption', () => {
+    const { merge, store } = getPersistFns();
+    const current = store.getState();
+    const persistedArena = {
+      tier: 2,
+      hp: 40,
+      speed: 1,
+      bossFrozenUntilMs: 5_000_300,
+      cooldownUntilMs: 5_000_400,
+      lastTickMs: 5_000_000,
+      telegraphs: [{ id: 1, kind: 'slam', tiles: [], startedAtMs: 4_999_000, firesAtMs: 5_000_600, raw: 8, school: 'physical' }],
+      minions: [{ id: 1, pos: { x: 0, y: 0 }, hp: 5, maxHp: 5, attack: 2, variant: 'bat', nextMoveMs: 5_000_100, nextHitMs: 5_000_200, frozenUntilMs: 5_000_300, poisonDmg: 2, poisonNextTickMs: 5_000_150, poisonExpiresMs: 5_003_000 }],
+    } as unknown as GameState['arena'];
+
+    const out = merge({ arena: persistedArena }, current) as GameState;
+    const run = out.arena!;
+
+    expect(run.bossFrozenUntilMs).toBe(0);
+    expect(run.cooldownUntilMs).toBe(0);
+    expect(run.lastTickMs).toBe(0);
+    expect(run.telegraphs).toEqual([]);
+    expect(run.minions[0].nextMoveMs).toBe(0);
+    expect(run.minions[0].frozenUntilMs).toBe(0);
+    expect(run.minions[0].poisonExpiresMs).toBe(0);
+    expect(run.tier).toBe(2);
+    expect(run.hp).toBe(40);
+    expect(run.minions[0].hp).toBe(5);
+  });
+
+  it('a live in-memory run is NOT rebased (rebase only applies to runs adopted from storage)', () => {
+    const { merge, store } = getPersistFns();
+    const liveMining = { floor: 1, staNextRegenMs: 123_456 } as unknown as GameState['mining'];
+    const current = { ...store.getState(), mining: liveMining } as GameState;
+
+    const out = merge({ mining: { floor: 9 } as unknown as GameState['mining'] }, current) as GameState;
+
+    expect(out.mining).toBe(liveMining); // same reference — live clock still valid
   });
 });

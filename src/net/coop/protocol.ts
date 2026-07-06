@@ -22,6 +22,13 @@ import type { Hex } from '@/engine/hex';
 
 export type CoopGame = 'mine' | 'forest' | 'tactics';
 
+/**
+ * Wire-compatibility version stamped on the session row and checked at join time.
+ * Bump whenever a CoopMessage shape changes in a way an older client can't parse,
+ * so a mismatched peer is refused up front rather than desyncing mid-run (MP-24).
+ */
+export const PROTOCOL_VERSION = 1;
+
 /** Minimal per-monster state needed to render + target. */
 export interface MonsterSlice {
   id: string;
@@ -29,6 +36,9 @@ export interface MonsterSlice {
   r: number;
   c: number;
   hp: number;
+  /** Lets the guest rebuild an entity it no longer has locally (host-authoritative
+   *  world merge). Optional on receive for slices from a pre-maxHp host. */
+  maxHp?: number;
   readyAtMs: number;
   /** Forest beasts only: whether still dormant — drives the guest's HP-bar/dim render. */
   asleep?: boolean;
@@ -37,7 +47,8 @@ export interface MonsterSlice {
 /** Host → everyone: the authoritative dynamic world for this frame. */
 export interface WorldSlice {
   type: 'world';
-  /** Host clock (ms) when produced — used for ordering / staleness. */
+  /** Host wall clock (`Date.now()`, ms) when produced — used for ordering / staleness.
+   *  Wall clock so the value keeps increasing across a host page reload. */
   t: number;
   floor: number;
   status: 'active' | 'banking' | 'ended';
@@ -81,6 +92,31 @@ export interface TileSlice {
   tile: MineTile | ForestTile;
 }
 
+/**
+ * Host → a newly-arrived peer (broadcast to all): the cells on the current floor that
+ * diverge from a pristine regen — the dug/harvested/decayed handful. A late joiner
+ * regenerates the floor from the shared seed (pristine) and never saw the party's
+ * earlier digs (TileSlices are not replayed); this one-shot snapshot backfills them
+ * so resource nodes/openings match. `floor` lets a receiver on a different depth drop it.
+ */
+export interface TileSnapshot {
+  type: 'tile-snapshot';
+  userId: string;
+  floor: number;
+  tiles: Array<{ r: number; c: number; tile: MineTile | ForestTile }>;
+}
+
+/**
+ * A (re)joining peer → the host: "I just regenerated a pristine floor from the shared
+ * seed — send me the party's changed-tiles snapshot." Sent on channel subscribe. The
+ * host replies with a TileSnapshot. Request-driven rather than host-side new-player
+ * detection so a quick refresh-rejoin (still inside the roster timeout) is backfilled (MP-25).
+ */
+export interface SnapshotRequest {
+  type: 'snapshot-request';
+  userId: string;
+}
+
 /** Any player → everyone: a clean departure, so peers drop the avatar + toast at once
  *  (rather than waiting out the stale-player timeout, which still covers hard disconnects). */
 export interface ByeIntent {
@@ -101,7 +137,8 @@ export interface HeroJoin {
 /** Host → everyone: the full authoritative tactics battle state after each resolved action. */
 export interface TacticsState {
   type: 'tactics-state';
-  /** Host clock (ms) when produced — used to drop stale messages. */
+  /** Host wall clock (`Date.now()`, ms) when produced — used to drop stale messages.
+   *  Wall clock so the value keeps increasing across a host page reload. */
   t: number;
   state: HexBattleState;
 }
@@ -121,7 +158,7 @@ export interface TacticsIntent {
   spellKey?: string;
 }
 
-export type CoopMessage = WorldSlice | PlayerSlice | AttackIntent | TileSlice | ByeIntent | HeroJoin | TacticsState | TacticsIntent;
+export type CoopMessage = WorldSlice | PlayerSlice | AttackIntent | TileSlice | TileSnapshot | SnapshotRequest | ByeIntent | HeroJoin | TacticsState | TacticsIntent;
 
 /** The Realtime channel name for a session's world sync. */
 export function coopChannelName(sessionId: string): string {

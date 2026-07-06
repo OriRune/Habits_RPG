@@ -4,6 +4,9 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 import { emptyStatXP } from '@/engine/stats';
+import { rebaseMineRun } from '@/engine/mining';
+import { rebaseForestRun } from '@/engine/forest';
+import { rebaseArenaRun } from '@/engine/arena';
 import type { Habit } from '@/engine/habits';
 import { statLevelsFromXp } from '@/engine/progression';
 import { ITEMS } from '@/engine/items';
@@ -167,9 +170,12 @@ export function createGameStore() {
           // transient fields are null in `current`, so this is a no-op on first load.
           battle:  current.battle  ?? p.battle  ?? null,
           dungeon: current.dungeon ?? p.dungeon ?? null,
-          mining:  current.mining  ?? p.mining  ?? null,
-          forest:  current.forest  ?? p.forest  ?? null,
-          arena:   current.arena   ?? p.arena   ?? null,
+          // Mine/forest/arena run timestamps are rAF-clock values (ms since page
+          // load), so a run adopted from storage carries the *previous* session's
+          // uptime — rebase them or the run stalls until the new clock catches up.
+          mining:  current.mining  ?? (p.mining ? rebaseMineRun(p.mining) : null),
+          forest:  current.forest  ?? (p.forest ? rebaseForestRun(p.forest) : null),
+          arena:   current.arena   ?? (p.arena ? rebaseArenaRun(p.arena) : null),
           tactics: current.tactics ?? p.tactics ?? null,
           character: withCharacterDefaults(p.character),
           settings: { ...current.settings, ...(p.settings ?? {}) },

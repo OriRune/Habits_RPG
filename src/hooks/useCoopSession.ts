@@ -6,25 +6,33 @@ import { useGameStore } from '@/store/useGameStore';
 import {
   coopGameName,
   getActiveCoopSession,
+  endCoopSession,
   leaveCoop,
   pushCoopNotice,
   setSession,
   useCoopStore,
+  type CoopSession,
 } from '@/net/coop/session';
 import {
   COOP_BROADCAST_MS,
   COOP_PLAYER_TIMEOUT_MS,
   coopChannelName,
   type CoopMessage,
+  type TileSnapshot,
+  type SnapshotRequest,
 } from '@/net/coop/protocol';
 import type { MineTile } from '@/engine/mining';
 import type { ForestTile } from '@/engine/forest';
+import { getMineBaseSeed, getForestBaseSeed } from '@/store/runRng';
 import {
   applyPlayerSlice,
   applyBye,
   pruneStalePlayers,
   buildPlayerSlice,
   buildWorldSlice,
+  diffMineTiles,
+  diffForestTiles,
+  shouldReapOrphan,
 } from '@/net/coop/reduce';
 
 /**
@@ -51,8 +59,20 @@ export function useCoopSession(): void {
     }
     const sb = supabase;
     let active = true;
+    // Apply a discovered session; if it's my own orphaned row (I'm the host but
+    // haven't joined it — e.g. a tab-close left the row `active`), reap it instead
+    // of surfacing a hostless zombie raid as joinable (MP-09).
+    const applyDiscovered = (s: CoopSession | null) => {
+      const myId = useAuthStore.getState().session?.user?.id ?? 'anon';
+      if (shouldReapOrphan(s, myId, useCoopStore.getState().joined)) {
+        void endCoopSession(s!.id);
+        setSession(null);
+        return;
+      }
+      setSession(s);
+    };
     void getActiveCoopSession(partyId).then((s) => {
-      if (active) setSession(s);
+      if (active) applyDiscovered(s);
     });
     const lobby = sb
       .channel(`coop-lobby:${partyId}`)
@@ -60,7 +80,9 @@ export function useCoopSession(): void {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'coop_sessions', filter: `party_id=eq.${partyId}` },
         () => {
-          void getActiveCoopSession(partyId).then(setSession);
+          void getActiveCoopSession(partyId).then((s) => {
+            if (active) applyDiscovered(s);
+          });
         },
       )
       .subscribe();
@@ -95,6 +117,27 @@ export function useCoopSession(): void {
           if (isNew) pushCoopNotice(`${msg.username} joined the raid`);
           return { remotePlayers: roster };
         });
+      } else if (msg.type === 'snapshot-request') {
+        // Host-only: a peer just (re)joined and regenerated a pristine floor from the
+        // shared seed — it never saw the party's earlier per-cell TileSlices. Backfill
+        // them with a one-shot changed-tiles snapshot so resource nodes/openings match.
+        // Request-driven (not host-side isNew detection) so a quick refresh-rejoin —
+        // still inside the roster timeout — is backfilled too (MP-25).
+        if (isHost && msg.userId !== userId) sendTileSnapshot();
+      } else if (msg.type === 'tile-snapshot') {
+        if (msg.userId !== userId) {
+          if (game === 'forest') {
+            useGameStore.getState().coopApplyForestTileSnapshot(
+              msg.floor,
+              msg.tiles as ReadonlyArray<{ r: number; c: number; tile: ForestTile }>,
+            );
+          } else {
+            useGameStore.getState().coopApplyTileSnapshot(
+              msg.floor,
+              msg.tiles as ReadonlyArray<{ r: number; c: number; tile: MineTile }>,
+            );
+          }
+        }
       } else if (msg.type === 'bye') {
         if (msg.userId === userId) return;
         useCoopStore.setState((st) => {
@@ -123,12 +166,35 @@ export function useCoopSession(): void {
         }
       }
     });
-    void channel.subscribe();
 
     const send = (msg: CoopMessage) => {
       void channel.send({ type: 'broadcast', event: 'msg', payload: msg });
     };
     useCoopStore.setState({ send });
+
+    // Host-only: send the current floor's divergence from a pristine regen to a peer
+    // that requested it (just (re)joined), so they don't miss the party's earlier digs (MP-25).
+    const sendTileSnapshot = () => {
+      const st = useGameStore.getState();
+      if (game === 'forest') {
+        const base = getForestBaseSeed();
+        if (base === undefined || !st.forest) return;
+        const tiles = diffForestTiles(st.forest, base);
+        if (tiles.length) send({ type: 'tile-snapshot', userId, floor: st.forest.stage, tiles } satisfies TileSnapshot);
+      } else {
+        const base = getMineBaseSeed();
+        if (base === undefined || !st.mining) return;
+        const tiles = diffMineTiles(st.mining, base);
+        if (tiles.length) send({ type: 'tile-snapshot', userId, floor: st.mining.floor, tiles } satisfies TileSnapshot);
+      }
+    };
+
+    // Subscribe last, so `send` exists when a guest fires its snapshot request on join.
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED' && !isHost) {
+        send({ type: 'snapshot-request', userId } satisfies SnapshotRequest);
+      }
+    });
 
     const interval = setInterval(() => {
       const st = useGameStore.getState();

@@ -695,7 +695,11 @@ function resolvePlayerStrike(s: HexBattleState, hero: PlayerUnit, enemy: EnemyUn
 export function playerAttack(state: HexBattleState, target: Hex, rng: RNG = Math.random, heroId?: string): HexBattleState {
   const heroToCheck = heroId ? (state.players?.find((p) => p.id === heroId) ?? state.player) : state.player;
   if (state.turn !== 'player' || state.status !== 'active' || heroToCheck.hasActed) return state;
-  if (!computeTargetable(state, { kind: 'attack' }).some((h) => hexEquals(h, target))) return state;
+  // MP-13: validate targetability against the acting hero, not the host's anchored
+  // hero. computeTargetable only reads s.player, so shallow-swap it for the check;
+  // state's own reference is preserved on the no-op path below.
+  const anchored = heroToCheck === state.player ? state : { ...state, player: heroToCheck };
+  if (!computeTargetable(anchored, { kind: 'attack' }).some((h) => hexEquals(h, target))) return state;
   const s = clone(state);
   // Re-anchor s.player to the acting hero when heroId differs from activeHeroId.
   if (heroId && heroId !== s.activeHeroId) {
@@ -765,13 +769,16 @@ export function playerCastSpell(
   const spell = getSpell(spellKey);
   if (!spell || heroToCheck.mp < spell.mpCost) return state;
 
+  // MP-13: targetability must validate against the acting hero, not the host's
+  // anchored hero (shallow-swap for the check only; preserves state reference on no-op).
+  const anchored = heroToCheck === state.player ? state : { ...state, player: heroToCheck };
   // Cleave and blink are self-targeting (no enemy hex needed); push targets an enemy like illusion.
   const needsTarget = spell.school !== 'support' && spell.mechanic !== 'cleave';
-  if (needsTarget && (!target || !computeTargetable(state, { kind: 'spell', spellKey }).some((h) => hexEquals(h, target!)))) {
+  if (needsTarget && (!target || !computeTargetable(anchored, { kind: 'spell', spellKey }).some((h) => hexEquals(h, target!)))) {
     return state;
   }
   // Blink requires a valid destination tile even though it is school:support.
-  if (spell.mechanic === 'blink' && (!target || !computeTargetable(state, { kind: 'spell', spellKey }).some((h) => hexEquals(h, target!)))) {
+  if (spell.mechanic === 'blink' && (!target || !computeTargetable(anchored, { kind: 'spell', spellKey }).some((h) => hexEquals(h, target!)))) {
     return state;
   }
 

@@ -226,6 +226,39 @@ export interface MineState {
   shaftPos?: { r: number; c: number };
 }
 
+/**
+ * Re-anchor a persisted run's timestamps for a fresh page session.
+ *
+ * Every `*Ms` field is stamped from the rAF clock (ms since page load), which
+ * restarts near 0 on reload — a rehydrated run would otherwise stall until the
+ * new session's clock caught up to the old session's uptime. Cooldowns reset
+ * to "ready" (mirroring the fresh-run init values) and transient timed effects
+ * (runes, ring of fire, statuses, freezes, DoTs) simply expire: losing a few
+ * seconds of buffs on reload beats a stalled run.
+ */
+export function rebaseMineRun(run: MineState): MineState {
+  return {
+    ...run,
+    staNextRegenMs: 0,
+    mpNextRegenMs: 0,
+    lastHitAtMs: -MINE_IFRAME_MS,
+    lastSpellMs: -SPELL_CD_MS,
+    lastDashMs: -DASH_BASE_CD_MS,
+    runes: [],
+    ringOfFire: null,
+    ringNextHitMs: {},
+    playerStatuses: [],
+    monsters: (run.monsters ?? []).map((m) => ({
+      ...m,
+      readyAtMs: 0,
+      frozenUntilMs: undefined,
+      poisonDmg: undefined,
+      poisonNextTickMs: undefined,
+      poisonExpiresMs: undefined,
+    })),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

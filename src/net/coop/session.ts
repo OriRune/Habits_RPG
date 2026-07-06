@@ -5,6 +5,8 @@ import { useAuthStore } from '@/net/auth';
 import { sendSystemMessage } from '@/net/party';
 import { randomSeed } from '@/engine/rng';
 import type { CoopGame, CoopMessage, PlayerSlice } from './protocol';
+import { PROTOCOL_VERSION } from './protocol';
+import { canJoinSession, nextSessionState } from './reduce';
 
 /**
  * Co-op session lobby/discovery (Phase 3). The `coop_sessions` row holds only the
@@ -19,6 +21,9 @@ export interface CoopSession {
   seed: number;
   host_id: string;
   status: 'lobby' | 'active' | 'ended';
+  /** Wire-protocol version the host is running (MP-24). Optional: rows created
+   *  before the column existed report `undefined` — treated as compatible. */
+  protocol_version?: number;
 }
 
 interface CoopState {
@@ -54,7 +59,12 @@ export function pushCoopNotice(text: string): void {
 }
 
 export function setSession(session: CoopSession | null): void {
-  useCoopStore.setState({ session });
+  useCoopStore.setState((s) => {
+    const next = nextSessionState(s, session);
+    // Mirror setJoined(false): once we're no longer joined, drop stale peers from
+    // the previous session (remotePlayers are only populated while joined).
+    return next.joined ? next : { ...next, remotePlayers: {} };
+  });
 }
 
 export function setJoined(joined: boolean): void {
@@ -92,6 +102,11 @@ export async function startCoop(partyId: string, game: CoopGame): Promise<CoopSe
 
 /** Join an existing co-op run: regenerate the host's map from the shared seed. */
 export function joinCoop(session: CoopSession): void {
+  // Refuse a raid on an incompatible wire protocol rather than desyncing mid-run (MP-24).
+  if (!canJoinSession(session, PROTOCOL_VERSION)) {
+    pushCoopNotice('This raid is running a different game version — update to join.');
+    return;
+  }
   setSession(session);
   beginRun(session.game, session.seed);
   setJoined(true);
@@ -138,7 +153,7 @@ export async function createCoopSession(
   const { data: uid } = await supabase.auth.getUser();
   const { data, error } = await supabase
     .from('coop_sessions')
-    .insert({ party_id: partyId, seed, host_id: uid.user?.id, game, status: 'active', started_at: new Date().toISOString() })
+    .insert({ party_id: partyId, seed, host_id: uid.user?.id, game, status: 'active', started_at: new Date().toISOString(), protocol_version: PROTOCOL_VERSION })
     .select('*')
     .single();
   if (error) {
