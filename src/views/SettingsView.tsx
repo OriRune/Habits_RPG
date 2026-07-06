@@ -8,6 +8,7 @@ import type { ArenaSpeed } from '@/engine/arena';
 import { classFor } from '@/engine/classes';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
+import { Modal } from '@/components/ui/Modal';
 import { Toggle } from '@/components/ui/Toggle';
 import { SectionTitle } from '@/components/ui/Divider';
 import { AppearanceSection } from '@/components/settings/AppearanceSection';
@@ -59,9 +60,16 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
   const [showBalanceReport, setShowBalanceReport] = useState(false);
 
   const username = useAuthStore((s) => s.username);
+  const [signOutWarnOpen, setSignOutWarnOpen] = useState(false);
   const handleSignOut = async () => {
-    // Flush a final save so nothing since the last debounce is lost, then sign out.
-    await pushCloudSave();
+    // Flush a final save so nothing since the last debounce is lost. If the flush
+    // fails (offline, cloud conflict), warn before signing out — the sign-out
+    // wipe would delete whatever never reached the cloud.
+    const flushed = await pushCloudSave();
+    if (!flushed) {
+      setSignOutWarnOpen(true);
+      return;
+    }
     await signOut();
   };
 
@@ -159,6 +167,36 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             <p className="text-[11px] text-ink-muted">
               Your progress syncs to this account across devices.
             </p>
+            {signOutWarnOpen && (
+              <Modal title="Couldn't save to the cloud" onClose={() => setSignOutWarnOpen(false)}>
+                <p className="mb-4 text-sm text-ink-muted">
+                  Your latest progress could not be saved to your account — you may be
+                  offline. Signing out now will{' '}
+                  <span className="font-medium text-ink">
+                    delete the unsaved progress on this device
+                  </span>
+                  . Staying signed in keeps it and retries in the background.
+                </p>
+                <div className="flex flex-col gap-2">
+                  <Button
+                    variant="secondary"
+                    onClick={() => setSignOutWarnOpen(false)}
+                    className="w-full"
+                  >
+                    Stay signed in
+                  </Button>
+                  <Button
+                    onClick={() => {
+                      setSignOutWarnOpen(false);
+                      void signOut();
+                    }}
+                    className="w-full bg-ember hover:bg-ember/90 text-white border-ember"
+                  >
+                    Sign out anyway
+                  </Button>
+                </div>
+              </Modal>
+            )}
           </Panel>
         )}
 

@@ -29,9 +29,22 @@ export function useCloudSync(): { cloudReady: boolean; clockReady: boolean } {
 
   useEffect(() => {
     initAuth();
-    // Sync server clock once on mount so all daily gating uses server time.
+    // Sync server clock on mount so all daily gating uses server time.
     // No-op when the backend is unconfigured — clockReady starts true in that case.
     void syncServerClock().finally(() => setClockReady(true));
+    // Re-sync when the tab becomes visible and hourly (MP-17): a device-clock
+    // change or NTP correction after the mount sync would otherwise shift every
+    // daily/weekly boundary 1:1 for the rest of the session — the exact spoof
+    // vector the server-clock seam exists to close.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void syncServerClock();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    const resyncId = setInterval(() => void syncServerClock(), 60 * 60_000);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(resyncId);
+    };
   }, []);
 
   useEffect(() => {
@@ -47,8 +60,10 @@ export function useCloudSync(): { cloudReady: boolean; clockReady: boolean } {
       stopAutoSync();
       // Clear the local save so a shared browser is left clean and the next
       // sign-in always pulls fresh from the cloud instead of seeing leftover data.
-      // Note: SettingsView already flushes a final pushCloudSave() before signOut(),
-      // so nothing is lost — the cloud copy is untouched.
+      // SettingsView flushes a final pushCloudSave() before signOut() and warns
+      // the user when that flush fails (offline / conflict), so reaching this
+      // wipe means either the cloud copy is current or the loss was confirmed.
+      // Saves never adopted by any account survive it (see wipeLocalSave).
       wipeLocalSave();
       setCloudReady(!isBackendConfigured());
     }

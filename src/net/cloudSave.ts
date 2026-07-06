@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { supabase } from './supabaseClient';
 import { useAuthStore } from './auth';
 import { useGameStore, type GameState } from '@/store/useGameStore';
+import { useToastStore } from '@/store/useToastStore';
 import { selectLevelProgress, selectTopStats, selectTotalXp, selectHabitScore, isHabitDoneToday } from '@/store/selectors';
 import type { SharedHabit } from './party';
 
@@ -233,8 +234,8 @@ export async function pullCloudSave(): Promise<void> {
     // fall through to the pull so the cloud copy is restored.
     if (cloudVersion === getLastSyncedVersion() && isDirty() && durableEnvelope() !== null) {
       lastPulledVersion = cloudVersion;
-      setSaveOwner(uid);
-      await pushCloudSave();
+      // Ownership is stamped by the push's success arm, same as every other path.
+      await doPushCloudSave();
       return;
     }
     // First sign-in on this browser (never synced: no owner tag, no sync marker)
@@ -251,7 +252,9 @@ export async function pullCloudSave(): Promise<void> {
         const cloudSummary = summarizeSaveState(cloudEnv?.state);
         if (!isNonTrivialSummary(cloudSummary)) {
           lastPulledVersion = cloudVersion;
-          await pushCloudSave();
+          // Adoption happens in the push's success arm — a failed push stamps
+          // nothing, so the next launch simply retries this branch.
+          await doPushCloudSave();
           return;
         }
         conflictStash = { cloudEnvelope: data.state, cloudVersion };
@@ -259,35 +262,98 @@ export async function pullCloudSave(): Promise<void> {
         return;
       }
     }
+    // If this device had synced before AND holds unsynced changes, applying the
+    // cloud row ROLLS THOSE CHANGES BACK (another device won the CAS race or
+    // wrote while we were offline past our marker). Capture that before the
+    // apply — the rehydrate below re-marks dirty — and tell the player after.
+    const rolledBack = isDirty() && getLastSyncedVersion() !== null && durableEnvelope() !== null;
     lastPulledVersion = cloudVersion;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data.state));
     await useGameStore.persist.rehydrate();
     // Local now mirrors cloud@cloudVersion (the rehydrate itself marked dirty; undo that).
     setLastSyncedVersion(cloudVersion);
     clearDirty();
+    if (rolledBack) {
+      useToastStore.getState().pushToast({
+        text: 'Another device updated this account — unsynced changes on this device were rolled back.',
+        ttlMs: 8000,
+      });
+    }
   } else {
     // No cloud save yet (new account). The foreign-save guard above already wiped any
     // stale data from a different account; import whatever local state remains (fresh
-    // or pristine single-player progress) into this account's cloud row.
+    // or pristine single-player progress) into this account's cloud row. Stamp
+    // ownership only once the import lands — an owner-stamped save that never
+    // reached the cloud would be wiped without warning on a non-interactive
+    // session loss; unstamped, the next launch just retries the import. (On a
+    // 23505 the adoption re-pull stamps ownership itself.)
     lastPulledVersion = null;
-    await pushCloudSave();
+    if (!(await doPushCloudSave())) return;
   }
   // Record that this uid now owns the local cache so subsequent pulls / account
   // switches can detect a foreign-owned save and reset before adopting it.
   setSaveOwner(uid);
 }
 
+// ---- Push coalescing (MP-26) --------------------------------------------------
+
+/** The push currently on the wire, if any. */
+let pushInFlight: Promise<boolean> | null = null;
+/** At most one follow-up push queued behind the in-flight one. */
+let pushQueued: Promise<boolean> | null = null;
+
 /**
- * Push the durable save to the cloud with optimistic-concurrency CAS. Safe to call
- * repeatedly; the autosync debounces it. On a version conflict it re-pulls (the
- * other device's write wins) rather than clobbering.
+ * Public push entry point. The debounce, 30 s interval, visibility flush, and
+ * sign-out flush can fire concurrently, and two overlapping pushes would read
+ * the same CAS version — the loser's "conflict" re-pull then rolls back every
+ * change made between the two envelope reads, on a single device (MP-26).
+ * Callers arriving while a push is on the wire share ONE queued follow-up that
+ * re-reads the envelope when it runs, so late mutations still get flushed
+ * (the sign-out flush relies on that). Return semantics: see doPushCloudSave.
  */
-export async function pushCloudSave(): Promise<void> {
-  if (!supabase) return;
+export function pushCloudSave(): Promise<boolean> {
+  if (!pushInFlight) {
+    pushInFlight = doPushCloudSave()
+      .catch((err) => {
+        // Never leave a rejected promise cached — sync would brick until reload.
+        console.warn('[cloudSave] push failed:', err);
+        return false;
+      })
+      .finally(() => {
+        pushInFlight = null;
+      });
+    return pushInFlight;
+  }
+  if (!pushQueued) {
+    pushQueued = pushInFlight.then(() => {
+      pushQueued = null; // pushInFlight's .finally already cleared it → fresh push
+      return pushCloudSave();
+    });
+  }
+  return pushQueued;
+}
+
+/**
+ * Push the durable save to the cloud with optimistic-concurrency CAS. On a
+ * version conflict it re-pulls (the other device's write wins) rather than
+ * clobbering. Internal: external callers go through pushCloudSave() above;
+ * pullCloudSave's import/keep-local branches call this directly BOTH because
+ * they cannot overlap another push (autosync is not armed during them) AND
+ * because going through the coalescer from inside an in-flight push (push →
+ * conflict re-pull → push) would await our own promise and deadlock.
+ *
+ * Returns true only when THIS call landed the local envelope in the cloud row —
+ * false on any error, missing session, or version conflict (the re-pull adopted
+ * the other device's row instead). With no local envelope there is nothing that
+ * could be lost, so that path returns true. Callers that destroy local state
+ * afterwards (sign-out) must check this instead of assuming the flush worked.
+ */
+async function doPushCloudSave(): Promise<boolean> {
+  if (!supabase) return false;
   const uid = currentUserId();
-  if (!uid) return;
+  if (!uid) return false;
   const env = durableEnvelope();
-  if (!env) return;
+  if (!env) return true;
   // If a mutation lands while the write is in flight, dirtyGen moves and the
   // dirty flag survives for the next push/launch instead of being lost.
   const genAtRead = dirtyGen;
@@ -304,13 +370,18 @@ export async function pushCloudSave(): Promise<void> {
       // adopt it instead of failing.
       if (error.code === '23505') {
         await pullCloudSave();
-        return;
+        return false;
       }
       console.warn('[cloudSave] insert failed:', error.message);
-      return;
+      return false;
     }
     lastPulledVersion = 1;
     setLastSyncedVersion(1);
+    // Invariant: owner set ⟺ this account's cloud row contains this save. A
+    // deferred first sync (keep-local/import whose immediate push failed but a
+    // later autosync push landed) must adopt here, or the save stays unowned —
+    // dodging the sign-out wipe and account-switch reset forever.
+    if (getSaveOwner() === null) setSaveOwner(uid);
     if (dirtyGen === genAtRead) clearDirty();
   } else {
     const next = lastPulledVersion + 1;
@@ -322,17 +393,21 @@ export async function pushCloudSave(): Promise<void> {
       .select('version');
     if (error) {
       console.warn('[cloudSave] update failed:', error.message);
-      return;
+      return false;
     }
     if (!data || data.length === 0) {
-      // Someone else wrote first — re-pull to adopt their version, then let the
-      // next debounce push merged local changes on top.
+      // Someone else wrote first — adopt their version. There is NO merge: the
+      // re-pull REPLACES local state, and pullCloudSave surfaces the rollback
+      // notice to the player. If a run is active the re-pull is guard-blocked;
+      // the rollback (and its notice) then land on the next successful pull.
       console.info('[cloudSave] version conflict; re-pulling.');
       await pullCloudSave();
-      return;
+      return false;
     }
     lastPulledVersion = next;
     setLastSyncedVersion(next);
+    // Same adopt-on-success invariant as the insert arm above.
+    if (getSaveOwner() === null) setSaveOwner(uid);
     if (dirtyGen === genAtRead) clearDirty();
   }
 
@@ -354,6 +429,8 @@ export async function pushCloudSave(): Promise<void> {
   await supabase
     .from('member_habits')
     .upsert({ user_id: uid, habits: habitData, updated_at: new Date().toISOString() });
+
+  return true;
 }
 
 /**
@@ -379,10 +456,11 @@ export async function resolveSaveConflict(choice: 'keep-local' | 'keep-cloud'): 
     clearDirty();
     setSaveOwner(uid);
   } else {
-    // Sync markers are recorded only by a successful push — if it fails (e.g.
-    // offline), nothing is stamped and the next launch re-raises the choice
-    // rather than pulling the old row over the kept local save. Ownership is
-    // stamped by the next launch's normal pull once the markers exist.
+    // Ownership and sync markers are stamped only by a SUCCESSFUL push (its
+    // success arm). If this one fails, a later autosync push completes the
+    // choice and adopts; if every push fails all session, nothing is stamped
+    // and the next launch re-raises the choice rather than pulling the old
+    // row over the kept local save.
     await pushCloudSave();
   }
   startAutoSync();

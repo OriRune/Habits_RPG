@@ -44,7 +44,13 @@ import { createMiningSlice } from './slices/miningSlice';
 import { createForestSlice } from './slices/forestSlice';
 import { createDungeonSlice } from './slices/dungeonSlice';
 
-export const useGameStore = create<GameState>()(
+/**
+ * Builds a standalone store instance identical in shape to `useGameStore`.
+ * Used by `useGameStore` itself, and by tests that need a pristine reference
+ * state (e.g. asserting `resetGame()` deep-equals a freshly created store).
+ */
+export function createGameStore() {
+  return create<GameState>()(
   persist(
     (set, get, api) => ({
       ...createTrialsSlice(set, get, api),
@@ -173,7 +179,10 @@ export const useGameStore = create<GameState>()(
       },
     },
   ),
-);
+  );
+}
+
+export const useGameStore = createGameStore();
 
 /** Convenience export for the shop view. */
 export const SHOP_ITEMS = Object.values(ITEMS).filter((i) => i.price !== undefined);

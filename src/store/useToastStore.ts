@@ -10,7 +10,8 @@ export interface Toast {
 
 interface ToastStore {
   toasts: Toast[];
-  pushToast: (opts: Omit<Toast, 'id'>) => void;
+  /** `ttlMs` overrides the default expiry — e.g. sync notices that must outlive an XP blip. */
+  pushToast: (opts: Omit<Toast, 'id'> & { ttlMs?: number }) => void;
   removeToast: (id: string) => void;
 }
 
@@ -25,12 +26,12 @@ const TTL_MS = 2200;
 export const useToastStore = create<ToastStore>((set) => ({
   toasts: [],
 
-  pushToast({ text, color }) {
+  pushToast({ text, color, ttlMs }) {
     const id = String(++_seq);
     set((s) => ({ toasts: [...s.toasts, { id, text, color }] }));
     setTimeout(() => {
       set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
-    }, TTL_MS);
+    }, ttlMs ?? TTL_MS);
   },
 
   removeToast(id) {

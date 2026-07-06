@@ -87,6 +87,7 @@ import {
 } from '../cloudSave';
 import { useAuthStore } from '../auth';
 import { useGameStore } from '@/store/useGameStore';
+import { useToastStore } from '@/store/useToastStore';
 
 // ─── 4. Helpers ───────────────────────────────────────────────────────────────
 
@@ -143,8 +144,13 @@ describe('cloudSave', () => {
     // the module-level subscription, so this must come after it.
     localStorage.removeItem(SYNCED_VERSION_KEY);
     localStorage.removeItem(DIRTY_KEY);
-    // Clear any MP-06 conflict left by a prior test
+    // Clear any MP-06 conflict left by a prior test — wipeLocalSave clears the
+    // module-private conflictStash too (with OWNER_KEY already null it returns
+    // before touching the store or STORAGE_KEY).
+    wipeLocalSave();
     useSaveConflictStore.setState({ conflict: null });
+    // Clear MP-05 rollback notices left by a prior test
+    useToastStore.setState({ toasts: [] });
 
     // Stub out rehydrate so pullCloudSave doesn't try to rehydrate the store
     vi.spyOn(useGameStore.persist, 'rehydrate').mockResolvedValue(undefined);
@@ -691,6 +697,8 @@ describe('cloudSave', () => {
       expect(localStorage.getItem(DIRTY_KEY)).toBeNull();
       expect(localStorage.getItem(OWNER_KEY)).toBe('uid-test');
       expect(useSaveConflictStore.getState().conflict).toBeNull();
+      // A user-chosen adoption is not a rollback — no notice.
+      expect(useToastStore.getState().toasts).toEqual([]);
     });
 
     it('keep-local CAS-pushes local over the stashed cloud version', async () => {
@@ -706,9 +714,41 @@ describe('cloudSave', () => {
       expect(localStorage.getItem(SYNCED_VERSION_KEY)).toBe('6');
       expect(localStorage.getItem(DIRTY_KEY)).toBeNull();
       expect(useSaveConflictStore.getState().conflict).toBeNull();
-      // Owner is intentionally NOT stamped here — only a completed sync path
-      // records ownership, so a failed push re-raises the choice next launch.
+      // Ownership is stamped because the push landed (MP-07's success signal).
+      expect(localStorage.getItem(OWNER_KEY)).toBe('uid-test');
+    });
+
+    it('keep-local with a failed push stamps nothing — the choice re-raises next launch', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const { localEnvelope } = await triggerConflict();
+      mocks.updateSelectImpl.mockResolvedValueOnce({ data: null, error: { message: 'offline' } });
+
+      await resolveSaveConflict('keep-local');
+
+      expect(localStorage.getItem(STORAGE_KEY)).toBe(localEnvelope);
       expect(localStorage.getItem(OWNER_KEY)).toBeNull();
+      expect(localStorage.getItem(SYNCED_VERSION_KEY)).toBeNull();
+
+      warnSpy.mockRestore();
+    });
+
+    it('a later successful autosync push completes a failed keep-local — markers AND ownership stamped', async () => {
+      // The cross-item drift the phase audit caught: sync markers were stamped by
+      // any successful push, but ownership only by the immediate one — leaving a
+      // fully-synced, permanently unowned save that dodges the sign-out wipe.
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      await triggerConflict();
+      mocks.updateSelectImpl.mockResolvedValueOnce({ data: null, error: { message: 'offline' } });
+      await resolveSaveConflict('keep-local'); // immediate push fails; nothing stamped
+
+      // Back online: the next (autosync-style) push lands.
+      mocks.updateSelectImpl.mockResolvedValueOnce({ data: [{ version: 6 }], error: null });
+      await pushCloudSave();
+
+      expect(localStorage.getItem(SYNCED_VERSION_KEY)).toBe('6');
+      expect(localStorage.getItem(OWNER_KEY)).toBe('uid-test'); // adopted on success
+
+      warnSpy.mockRestore();
     });
 
     it('non-trivial local + fresh untouched cloud row → keeps local automatically, no dialog', async () => {
@@ -728,6 +768,7 @@ describe('cloudSave', () => {
       expect(mocks.eqSpy).toHaveBeenCalledWith('version', 5);
       expect(localStorage.getItem(STORAGE_KEY)).toBe(localEnvelope);
       expect(localStorage.getItem(SYNCED_VERSION_KEY)).toBe('6');
+      expect(localStorage.getItem(OWNER_KEY)).toBe('uid-test'); // stamped on push success
     });
 
     it('a device that has synced before (marker present) never re-raises the dialog', async () => {
@@ -765,6 +806,205 @@ describe('cloudSave', () => {
         vi.useRealTimers();
       }
 
+      expect(mocks.insertImpl).not.toHaveBeenCalled();
+      expect(mocks.updateSelectImpl).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── MP-26: overlapping push triggers coalesce ─────────────────────────────
+
+  describe('push coalescing (MP-26)', () => {
+    it('overlapping pushes run sequentially with fresh CAS versions instead of self-conflicting', async () => {
+      // Prime lastPulledVersion = 1.
+      mocks.insertImpl.mockResolvedValueOnce({ data: null, error: null });
+      await pushCloudSave();
+
+      // First CAS update stays on the wire until the other callers have piled in.
+      let releaseFirst!: (v: { data: unknown; error: unknown }) => void;
+      mocks.updateSelectImpl.mockImplementationOnce(
+        () => new Promise((res) => { releaseFirst = res; }),
+      );
+      mocks.updateSelectImpl.mockResolvedValueOnce({ data: [{ version: 3 }], error: null });
+
+      const p1 = pushCloudSave();
+      const p2 = pushCloudSave();
+      const p3 = pushCloudSave();
+      expect(p2).toBe(p3); // waiters share one queued follow-up
+
+      releaseFirst({ data: [{ version: 2 }], error: null });
+      await expect(p1).resolves.toBe(true);
+      await expect(p2).resolves.toBe(true);
+
+      // Two writes total (in-flight + one coalesced trailing), CAS-guarded on
+      // version 1 then 2. Pre-fix, all three read version 1 concurrently and the
+      // losers' "conflict" re-pulls rolled local state back.
+      expect(mocks.updateSelectImpl).toHaveBeenCalledTimes(2);
+      expect(mocks.eqSpy.mock.calls).toEqual([
+        ['version', 1],
+        ['version', 2],
+      ]);
+      expect(mocks.maybySingleImpl).not.toHaveBeenCalled(); // no conflict re-pull
+      expect(localStorage.getItem(SYNCED_VERSION_KEY)).toBe('3');
+    });
+  });
+
+  // ─── MP-05: visible rollback notice when another device wins ──────────────
+
+  describe('rollback notice (MP-05)', () => {
+    const hasRollbackToast = () =>
+      useToastStore.getState().toasts.some((t) => /rolled back/i.test(t.text));
+
+    it('CAS conflict re-pull surfaces the rollback notice', async () => {
+      const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+      // Prime a synced device: insert lands → lastSynced '1', dirty cleared.
+      mocks.insertImpl.mockResolvedValueOnce({ data: null, error: null });
+      await pushCloudSave();
+      // Local mutation since the sync → dirty.
+      useGameStore.setState({ mining: null });
+      // Next push loses the CAS race; the re-pull adopts the other device's row.
+      mocks.updateSelectImpl.mockResolvedValueOnce({ data: [], error: null });
+      mocks.maybySingleImpl.mockResolvedValueOnce({
+        data: { state: JSON.parse(makeEnvelope()) as Record<string, unknown>, version: 2 },
+        error: null,
+      });
+
+      await pushCloudSave();
+
+      expect(hasRollbackToast()).toBe(true);
+      expect(localStorage.getItem(SYNCED_VERSION_KEY)).toBe('2');
+      expect(localStorage.getItem(DIRTY_KEY)).toBeNull();
+
+      infoSpy.mockRestore();
+    });
+
+    it('startup pull that reverts unsynced local progress surfaces the notice', async () => {
+      localStorage.setItem(OWNER_KEY, 'uid-test');
+      localStorage.setItem(SYNCED_VERSION_KEY, '3'); // synced before…
+      localStorage.setItem(DIRTY_KEY, '1'); // …with changes the cloud never saw
+      mocks.maybySingleImpl.mockResolvedValueOnce({
+        data: { state: JSON.parse(makeEnvelope()) as Record<string, unknown>, version: 5 },
+        error: null,
+      });
+
+      await pullCloudSave();
+
+      expect(hasRollbackToast()).toBe(true);
+    });
+
+    it('no notice on a first sign-in adoption (device never synced)', async () => {
+      localStorage.setItem(DIRTY_KEY, '1'); // dirty, but no sync marker → nothing of this account reverted
+      mocks.maybySingleImpl.mockResolvedValueOnce({
+        data: { state: JSON.parse(makeEnvelope()) as Record<string, unknown>, version: 5 },
+        error: null,
+      });
+
+      await pullCloudSave();
+
+      expect(useToastStore.getState().toasts).toEqual([]);
+    });
+
+    it('no notice on a clean pull (nothing unsynced to lose)', async () => {
+      localStorage.setItem(OWNER_KEY, 'uid-test');
+      localStorage.setItem(SYNCED_VERSION_KEY, '3');
+      mocks.maybySingleImpl.mockResolvedValueOnce({
+        data: { state: JSON.parse(makeEnvelope()) as Record<string, unknown>, version: 5 },
+        error: null,
+      });
+
+      await pullCloudSave();
+
+      expect(useToastStore.getState().toasts).toEqual([]);
+    });
+  });
+
+  // ─── MP-07: pushCloudSave reports success/failure ─────────────────────────
+
+  describe('pushCloudSave return value (MP-07)', () => {
+    it('returns true when the first-write insert lands', async () => {
+      mocks.insertImpl.mockResolvedValueOnce({ data: null, error: null });
+
+      await expect(pushCloudSave()).resolves.toBe(true);
+    });
+
+    it('returns false on a non-23505 insert error', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      mocks.insertImpl.mockResolvedValueOnce({
+        data: null,
+        error: { code: '42P01', message: 'relation does not exist' },
+      });
+
+      await expect(pushCloudSave()).resolves.toBe(false);
+
+      warnSpy.mockRestore();
+    });
+
+    it('returns false on insert 23505 (adopted the concurrent row instead of pushing)', async () => {
+      mocks.insertImpl.mockResolvedValueOnce({
+        data: null,
+        error: { code: '23505', message: 'duplicate key value' },
+      });
+      mocks.maybySingleImpl.mockResolvedValueOnce({
+        data: { state: JSON.parse(makeEnvelope()) as Record<string, unknown>, version: 1 },
+        error: null,
+      });
+
+      await expect(pushCloudSave()).resolves.toBe(false);
+    });
+
+    it('returns true when the CAS update lands', async () => {
+      mocks.insertImpl.mockResolvedValueOnce({ data: null, error: null });
+      await pushCloudSave(); // prime lastPulledVersion = 1
+      mocks.updateSelectImpl.mockResolvedValueOnce({ data: [{ version: 2 }], error: null });
+
+      await expect(pushCloudSave()).resolves.toBe(true);
+    });
+
+    it('returns false on a CAS version conflict (the other device won)', async () => {
+      const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+      mocks.insertImpl.mockResolvedValueOnce({ data: null, error: null });
+      await pushCloudSave(); // prime lastPulledVersion = 1
+      mocks.updateSelectImpl.mockResolvedValueOnce({ data: [], error: null });
+      mocks.maybySingleImpl.mockResolvedValueOnce({
+        data: { state: JSON.parse(makeEnvelope()) as Record<string, unknown>, version: 2 },
+        error: null,
+      });
+
+      await expect(pushCloudSave()).resolves.toBe(false);
+
+      infoSpy.mockRestore();
+    });
+
+    it('returns false on a CAS update error', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      mocks.insertImpl.mockResolvedValueOnce({ data: null, error: null });
+      await pushCloudSave(); // prime lastPulledVersion = 1
+      mocks.updateSelectImpl.mockResolvedValueOnce({ data: null, error: { message: 'network error' } });
+
+      await expect(pushCloudSave()).resolves.toBe(false);
+
+      warnSpy.mockRestore();
+    });
+
+    it('no-row branch: a failed import insert leaves the save unowned (retries next launch)', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      mocks.maybySingleImpl.mockResolvedValueOnce({ data: null, error: null });
+      mocks.insertImpl.mockResolvedValueOnce({
+        data: null,
+        error: { code: '42P01', message: 'relation does not exist' },
+      });
+
+      await pullCloudSave();
+
+      expect(localStorage.getItem(OWNER_KEY)).toBeNull();
+      expect(localStorage.getItem(SYNCED_VERSION_KEY)).toBeNull();
+
+      warnSpy.mockRestore();
+    });
+
+    it('returns true when there is no local envelope (nothing that could be lost)', async () => {
+      localStorage.removeItem(STORAGE_KEY);
+
+      await expect(pushCloudSave()).resolves.toBe(true);
       expect(mocks.insertImpl).not.toHaveBeenCalled();
       expect(mocks.updateSelectImpl).not.toHaveBeenCalled();
     });

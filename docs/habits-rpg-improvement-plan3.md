@@ -53,7 +53,7 @@ habits. Two audit-driven amendments:
 
 ---
 
-# Phase 1 — Data safety ⏳
+# Phase 1 — Data safety ✅ 2026-07-06
 
 **Goal:** no sequence of normal actions destroys saved progress or bricks a mode.
 Everything here is small, surgical, and independently shippable; do it first and in
@@ -64,12 +64,12 @@ roughly this order.
 | 1.1 | Startup sync: persist `lastSyncedVersion` + dirty flag; when cloud is unchanged and local differs, **push** local instead of pulling | MP-01 (P0) | ✅ |
 | 1.2 | Crawler soft-lock: skip the `'choosing'` transition when the boon roll returns `[]` (consolation heal/gold); add a Skip button to the boon panel | MINI-01 (P0) | ✅ |
 | 1.3 | First sign-in with a non-trivial local save + existing cloud row: prompt keep-local vs keep-cloud (or keep newer by `lastActiveISO`); fix the test at `cloudSave.test.ts:317` that asserts the clobber | MP-06 | ✅ |
-| 1.4 | `pushCloudSave` returns success/failure; sign-out confirms before wiping on a failed flush; fix the untrue "nothing is lost" comment path | MP-07 | ⏳ |
-| 1.5 | CAS conflict: surface a visible "another device won; progress reverted" notice; fix the lying comment; optionally field-wise max-merge monotonic fields | MP-05 | ⏳ |
-| 1.6 | Single in-flight push promise — coalesce the debounce/interval/visibility triggers | MP-26 | ⏳ |
-| 1.7 | `resetGame`: add `ownedGear`/`equipment` to the reset object + a deep-equals-initial-state test | ARCH-01 | ⏳ |
-| 1.8 | Clock hardening: `Number.isFinite` guard on the server-now payload; re-sync on visibilitychange + hourly | MP-16, MP-17 | ⏳ |
-| 1.9 | Fixture tests for the persist `migrate`/`merge` chain (v3/v6/v24-era JSON through `migrate`; merge's live-run rule) — the highest-blast-radius untested code in the project | ARCH-08 | ⏳ |
+| 1.4 | `pushCloudSave` returns success/failure; sign-out confirms before wiping on a failed flush; fix the untrue "nothing is lost" comment path | MP-07 | ✅ |
+| 1.5 | CAS conflict: surface a visible "another device won; progress reverted" notice; fix the lying comment; optionally field-wise max-merge monotonic fields | MP-05 | ✅ |
+| 1.6 | Single in-flight push promise — coalesce the debounce/interval/visibility triggers | MP-26 | ✅ |
+| 1.7 | `resetGame`: add `ownedGear`/`equipment` to the reset object + a deep-equals-initial-state test | ARCH-01 | ✅ |
+| 1.8 | Clock hardening: `Number.isFinite` guard on the server-now payload; re-sync on visibilitychange + hourly | MP-16, MP-17 | ✅ |
+| 1.9 | Fixture tests for the persist `migrate`/`merge` chain (v3/v6/v24-era JSON through `migrate`; merge's live-run rule) — the highest-blast-radius untested code in the project | ARCH-08 | ✅ |
 
 **Acceptance:** offline session → close → relaunch keeps the offline progress; a
 depth-20 run with all boons held can always bank; sign-out offline warns instead of

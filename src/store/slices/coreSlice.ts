@@ -163,6 +163,8 @@ export const createCoreSlice: StateCreator<
       knownSpells: [...STARTER_SPELLS],
       equippedWeapon: STARTER_WEAPON,
       ownedWeapons: [STARTER_WEAPON],
+      ownedGear: [],
+      equipment: { armor: null, trinket: null, tool: null },
       combatStats: emptyCombatStats(),
       codex: [],
       challenges: [],
