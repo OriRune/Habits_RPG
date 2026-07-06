@@ -13,7 +13,7 @@ import {
   placeTombstone,
   MINE_ENERGY_COST,
 } from '@/engine/mining';
-import { dungeonStamina } from '@/engine/crawl';
+import { dungeonStamina, boonConsolation } from '@/engine/crawl';
 import { mulberry32, floorSeed } from '@/engine/rng';
 import { getGear } from '@/engine/gear';
 import { rollBoonChoices } from '@/content/boons';
@@ -49,6 +49,8 @@ export interface MiningSlice {
   mineDescend: () => void;
   mineCast: (spellKey: string) => void;
   chooseMineBoon: (key: string) => void;
+  /** Dismiss the boon panel without picking — escape hatch if no option appeals (or none exist). */
+  skipMineBoon: () => void;
   beginBanking: () => void;
   endMining: () => void;
 }
@@ -171,6 +173,8 @@ export const createMiningSlice: StateCreator<
         const tiles = run.tiles.map((row) => row.slice());
         tiles[r][c] = { kind: 'floor' };
         const choices = rollBoonChoices('mine', run.activeBoons, getMineRng());
+        // Exhausted pool rolls [] — consolation instead of an unpickable panel.
+        if (choices.length === 0) return { mining: boonConsolation({ ...run, tiles }) };
         return {
           mining: {
             ...run,
@@ -266,6 +270,13 @@ export const createMiningSlice: StateCreator<
       const mining = applyMineBoonChoice(s.mining, key);
       return mining !== s.mining ? { mining } : s;
     }),
+
+  skipMineBoon: () =>
+    set((s) =>
+      s.mining && s.mining.status === 'choosing'
+        ? { mining: { ...s.mining, pendingBoonChoice: null, status: 'active' as const } }
+        : s,
+    ),
 
   beginBanking: () =>
     set((s) =>

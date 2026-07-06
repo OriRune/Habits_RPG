@@ -217,6 +217,7 @@ export function ForestRunOverlay() {
   const endForest = useGameStore((s) => s.endForest);
   const forestAdvance = useGameStore((s) => s.forestAdvance);
   const chooseForestBoon = useGameStore((s) => s.chooseForestBoon);
+  const skipForestBoon = useGameStore((s) => s.skipForestBoon);
   const beginForestBanking = useGameStore((s) => s.beginForestBanking);
   const forestStash = useGameStore((s) => s.forestStash);
   const remotePlayers = useCoopStore((s) => s.remotePlayers);
@@ -1142,6 +1143,12 @@ export function ForestRunOverlay() {
                 );
               })}
             </div>
+            <button
+              onClick={() => skipForestBoon()}
+              className="rounded-md border border-parchment-300/40 px-4 py-1.5 text-sm text-parchment-300 hover:bg-parchment-300/20 transition-colors"
+            >
+              Skip
+            </button>
           </div>
         )}
 

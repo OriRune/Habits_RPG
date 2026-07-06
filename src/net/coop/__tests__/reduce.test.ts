@@ -39,8 +39,15 @@ import {
   type Tile,
 } from '@/engine/hexBattle';
 import type { PlayerSlice } from '../protocol';
-import { STA_REGEN_MS, MP_REGEN_MS, DASH_BASE_CD_MS } from '@/engine/crawl';
+import {
+  STA_REGEN_MS,
+  MP_REGEN_MS,
+  DASH_BASE_CD_MS,
+  BOON_CONSOLATION_HEAL,
+  BOON_CONSOLATION_GOLD,
+} from '@/engine/crawl';
 import { getWeapon, STARTER_WEAPON } from '@/engine/weapons';
+import { BOONS } from '@/content/boons';
 import type { RNG } from '@/engine/crawl';
 
 // ---------------------------------------------------------------------------
@@ -229,6 +236,28 @@ describe('applyMineWorldSlice', () => {
     // Without a seed we cannot regen, so floor stays as-is
     expect(result.floor).toBe(1);
   });
+
+  it('host guardian kill — guest enters choosing while eligible boons remain', () => {
+    const guardian = { id: 'g-1', key: 'stone_golem', r: 2, c: 2, hp: 20, maxHp: 50, readyAtMs: 0 };
+    const mine = makeMineState({ monsters: [guardian] });
+    // Guardian absent from the host slice → killed on the host side.
+    const result = applyMineWorldSlice(mine, { floor: 1, monsters: [] }, { baseSeed: 42, rng: rngFrom(1) });
+    expect(result.status).toBe('choosing');
+    expect(result.pendingBoonChoice?.length).toBeGreaterThan(0);
+  });
+
+  it('host guardian kill with exhausted boon pool — consolation, never a zero-option choosing (MINI-01)', () => {
+    const allMineBoons = Object.values(BOONS)
+      .filter((b) => b.game === 'mine' || b.game === 'both')
+      .map((b) => b.key);
+    const guardian = { id: 'g-1', key: 'stone_golem', r: 2, c: 2, hp: 20, maxHp: 50, readyAtMs: 0 };
+    const mine = makeMineState({ hp: 20, monsters: [guardian], activeBoons: allMineBoons });
+    const result = applyMineWorldSlice(mine, { floor: 1, monsters: [] }, { baseSeed: 42, rng: rngFrom(1) });
+    expect(result.status).toBe('active');
+    expect(result.pendingBoonChoice).toBeNull();
+    expect(result.hp).toBe(20 + BOON_CONSOLATION_HEAL);
+    expect(result.haul.gold ?? 0).toBe(BOON_CONSOLATION_GOLD);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -335,6 +364,21 @@ describe('applyForestWorldSlice', () => {
     expect(result.stage).toBe(2);
     expect(result.hp).toBe(35);
     expect(result.haul.materials?.['wood']).toBe(10);
+  });
+
+  it('host guardian kill with exhausted boon pool — consolation, never a zero-option choosing (MINI-01)', () => {
+    const allForestBoons = Object.values(BOONS)
+      .filter((b) => b.game === 'forest' || b.game === 'both')
+      .map((b) => b.key);
+    const guardian = {
+      id: 'g-1', key: 'grove_sentinel', r: 2, c: 2, hp: 20, maxHp: 40, readyAtMs: 0, asleep: false,
+    };
+    const forest = makeForestState({ hp: 20, beasts: [guardian], activeBoons: allForestBoons });
+    const result = applyForestWorldSlice(forest, { floor: 1, monsters: [] }, { baseSeed: 42, rng: rngFrom(1) });
+    expect(result.status).toBe('active');
+    expect(result.pendingBoonChoice).toBeNull();
+    expect(result.hp).toBe(20 + BOON_CONSOLATION_HEAL);
+    expect(result.haul.gold ?? 0).toBe(BOON_CONSOLATION_GOLD);
   });
 });
 

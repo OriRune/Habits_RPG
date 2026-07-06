@@ -76,7 +76,15 @@ vi.mock('@/net/supabaseClient', () => {
 
 // ─── 3. Now import the modules under test (after mocks are registered) ────────
 
-import { pushCloudSave, pullCloudSave, stopAutoSync, wipeLocalSave } from '../cloudSave';
+import {
+  pushCloudSave,
+  pullCloudSave,
+  startAutoSync,
+  stopAutoSync,
+  wipeLocalSave,
+  resolveSaveConflict,
+  useSaveConflictStore,
+} from '../cloudSave';
 import { useAuthStore } from '../auth';
 import { useGameStore } from '@/store/useGameStore';
 
@@ -84,6 +92,8 @@ import { useGameStore } from '@/store/useGameStore';
 
 const STORAGE_KEY = 'habits-rpg-save';
 const OWNER_KEY = 'habits-rpg-owner';
+const SYNCED_VERSION_KEY = 'habits-rpg-last-synced-version';
+const DIRTY_KEY = 'habits-rpg-dirty';
 
 /** A minimal valid localStorage persist envelope. */
 function makeEnvelope(extra: Record<string, unknown> = {}) {
@@ -129,6 +139,12 @@ describe('cloudSave', () => {
     localStorage.setItem(STORAGE_KEY, makeEnvelope());
     // Clear the owner tag so each test starts clean
     localStorage.removeItem(OWNER_KEY);
+    // Clear the MP-01 sync markers — the setState above already marked dirty via
+    // the module-level subscription, so this must come after it.
+    localStorage.removeItem(SYNCED_VERSION_KEY);
+    localStorage.removeItem(DIRTY_KEY);
+    // Clear any MP-06 conflict left by a prior test
+    useSaveConflictStore.setState({ conflict: null });
 
     // Stub out rehydrate so pullCloudSave doesn't try to rehydrate the store
     vi.spyOn(useGameStore.persist, 'rehydrate').mockResolvedValue(undefined);
@@ -314,7 +330,10 @@ describe('cloudSave', () => {
   // ─── pullCloudSave ────────────────────────────────────────────────────────
 
   describe('pullCloudSave', () => {
-    it('applies remote save to localStorage and calls rehydrate', async () => {
+    // The beforeEach local save is TRIVIAL (level 1, no habits) — silently adopting
+    // the cloud row is safe and intended. The non-trivial case raises a conflict
+    // dialog instead; see the 'first sign-in conflict (MP-06)' block.
+    it('applies remote save to localStorage and calls rehydrate (trivial local)', async () => {
       const remoteState = {
         character: { name: 'Cloud', level: 10, statXp: {}, statLevels: {} },
         habits: [],
@@ -331,6 +350,7 @@ describe('cloudSave', () => {
       const parsed = JSON.parse(stored!) as typeof remoteState;
       expect(parsed).toEqual(remoteState);
       expect(useGameStore.persist.rehydrate).toHaveBeenCalled();
+      expect(useSaveConflictStore.getState().conflict).toBeNull();
     });
 
     it('when no cloud row exists → falls back to pushCloudSave (insert path)', async () => {
@@ -396,14 +416,18 @@ describe('cloudSave', () => {
   // ─── account-switch safety (owner tracking) ──────────────────────────────
 
   describe('account-switch safety', () => {
-    it('wipeLocalSave removes STORAGE_KEY and OWNER_KEY from localStorage', () => {
+    it('wipeLocalSave removes STORAGE_KEY, OWNER_KEY, and the sync markers from localStorage', () => {
       localStorage.setItem(STORAGE_KEY, makeEnvelope());
       localStorage.setItem(OWNER_KEY, 'uid-test');
+      localStorage.setItem(SYNCED_VERSION_KEY, '5');
+      localStorage.setItem(DIRTY_KEY, '1');
 
       wipeLocalSave();
 
       expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
       expect(localStorage.getItem(OWNER_KEY)).toBeNull();
+      expect(localStorage.getItem(SYNCED_VERSION_KEY)).toBeNull();
+      expect(localStorage.getItem(DIRTY_KEY)).toBeNull();
     });
 
     it('pullCloudSave stamps OWNER_KEY with the current uid after a successful pull', async () => {
@@ -462,6 +486,287 @@ describe('cloudSave', () => {
       expect(resetSpy).not.toHaveBeenCalled();
 
       resetSpy.mockRestore();
+    });
+  });
+
+  // ─── MP-01: startup push-not-pull (offline session must not be rolled back) ─
+
+  describe('startup push-not-pull (MP-01)', () => {
+    const remoteData = () => ({
+      data: { state: { character: { name: 'StaleCloud', level: 1, statXp: {}, statLevels: {} }, habits: [] }, version: 5 },
+      error: null,
+    });
+
+    it('dirty local + cloud unchanged since last sync → pushes local instead of pulling', async () => {
+      localStorage.setItem(OWNER_KEY, 'uid-test');
+      localStorage.setItem(SYNCED_VERSION_KEY, '5');
+      localStorage.setItem(DIRTY_KEY, '1'); // offline session left unsynced changes
+      const localEnvelope = localStorage.getItem(STORAGE_KEY);
+
+      mocks.maybySingleImpl.mockResolvedValueOnce(remoteData());
+      mocks.updateSelectImpl.mockResolvedValueOnce({ data: [{ version: 6 }], error: null });
+
+      await pullCloudSave();
+
+      // The stale cloud row was NOT applied — local survived.
+      expect(useGameStore.persist.rehydrate).not.toHaveBeenCalled();
+      expect(localStorage.getItem(STORAGE_KEY)).toBe(localEnvelope);
+      // A CAS push went up instead, guarded on the matching version.
+      expect(mocks.updateSelectImpl).toHaveBeenCalledTimes(1);
+      expect(mocks.eqSpy).toHaveBeenCalledWith('version', 5);
+      // Successful push advances the marker and clears the dirty flag.
+      expect(localStorage.getItem(SYNCED_VERSION_KEY)).toBe('6');
+      expect(localStorage.getItem(DIRTY_KEY)).toBeNull();
+    });
+
+    it('dirty local but cloud is NEWER than last sync → still pulls (other device won)', async () => {
+      localStorage.setItem(OWNER_KEY, 'uid-test');
+      localStorage.setItem(SYNCED_VERSION_KEY, '3'); // cloud moved 3 → 5 on another device
+      localStorage.setItem(DIRTY_KEY, '1');
+
+      mocks.maybySingleImpl.mockResolvedValueOnce(remoteData());
+
+      await pullCloudSave();
+
+      expect(useGameStore.persist.rehydrate).toHaveBeenCalled();
+      expect(mocks.updateSelectImpl).not.toHaveBeenCalled();
+      expect(localStorage.getItem(SYNCED_VERSION_KEY)).toBe('5');
+      expect(localStorage.getItem(DIRTY_KEY)).toBeNull();
+    });
+
+    it('cloud unchanged but local NOT dirty → pulls normally', async () => {
+      localStorage.setItem(OWNER_KEY, 'uid-test');
+      localStorage.setItem(SYNCED_VERSION_KEY, '5');
+
+      mocks.maybySingleImpl.mockResolvedValueOnce(remoteData());
+
+      await pullCloudSave();
+
+      expect(useGameStore.persist.rehydrate).toHaveBeenCalled();
+      expect(mocks.updateSelectImpl).not.toHaveBeenCalled();
+    });
+
+    it('markers set but local envelope missing → pulls (nothing local to protect)', async () => {
+      localStorage.setItem(OWNER_KEY, 'uid-test');
+      localStorage.setItem(SYNCED_VERSION_KEY, '5');
+      localStorage.setItem(DIRTY_KEY, '1');
+      localStorage.removeItem(STORAGE_KEY); // save evicted; sidecars survived
+
+      mocks.maybySingleImpl.mockResolvedValueOnce(remoteData());
+
+      await pullCloudSave();
+
+      // Must restore the cloud copy, not prime a push of a blank save.
+      expect(useGameStore.persist.rehydrate).toHaveBeenCalled();
+      expect(mocks.updateSelectImpl).not.toHaveBeenCalled();
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toEqual(remoteData().data.state);
+    });
+
+    it('any store mutation sets the persisted dirty flag (module-level subscription)', () => {
+      expect(localStorage.getItem(DIRTY_KEY)).toBeNull();
+
+      useGameStore.setState({ mining: null });
+
+      expect(localStorage.getItem(DIRTY_KEY)).toBe('1');
+    });
+
+    it('a failed push leaves the dirty flag and sync marker untouched', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      localStorage.setItem(DIRTY_KEY, '1');
+
+      mocks.insertImpl.mockResolvedValueOnce({
+        data: null,
+        error: { code: '42P01', message: 'relation does not exist' },
+      });
+
+      await pushCloudSave();
+
+      expect(localStorage.getItem(DIRTY_KEY)).toBe('1');
+      expect(localStorage.getItem(SYNCED_VERSION_KEY)).toBeNull();
+
+      warnSpy.mockRestore();
+    });
+
+    it('a mutation racing an in-flight push keeps the dirty flag set', async () => {
+      // Prime lastPulledVersion = 1 via a successful insert.
+      mocks.insertImpl.mockResolvedValueOnce({ data: null, error: null });
+      await pushCloudSave();
+
+      mocks.updateSelectImpl.mockImplementationOnce(async () => {
+        // A habit gets logged while the CAS update is on the wire.
+        useGameStore.setState({ mining: null });
+        return { data: [{ version: 2 }], error: null };
+      });
+
+      await pushCloudSave();
+
+      expect(localStorage.getItem(SYNCED_VERSION_KEY)).toBe('2');
+      expect(localStorage.getItem(DIRTY_KEY)).toBe('1'); // racing change still unsynced
+    });
+
+    it('foreign-owner sign-in clears the markers — a wiped save is never pushed over the new account', async () => {
+      localStorage.setItem(OWNER_KEY, 'some-other-user');
+      localStorage.setItem(SYNCED_VERSION_KEY, '5'); // previous owner's marker matches the cloud row
+      localStorage.setItem(DIRTY_KEY, '1');
+      const resetSpy = vi.spyOn(useGameStore.getState(), 'resetGame').mockImplementation(() => {});
+
+      mocks.maybySingleImpl.mockResolvedValueOnce(remoteData());
+
+      await pullCloudSave();
+
+      // Pulled the new account's cloud row rather than pushing the reset state up.
+      expect(useGameStore.persist.rehydrate).toHaveBeenCalled();
+      expect(mocks.updateSelectImpl).not.toHaveBeenCalled();
+
+      resetSpy.mockRestore();
+    });
+  });
+
+  // ─── MP-06: first sign-in conflict (pre-account progress vs existing row) ──
+
+  describe('first sign-in conflict (MP-06)', () => {
+    const nonTrivialLocal = () =>
+      makeEnvelope({
+        character: { name: 'Local', level: 5, statXp: {}, statLevels: {} },
+        lastActiveISO: '2026-07-01',
+      });
+
+    const nonTrivialCloudRow = (version = 5) => ({
+      data: {
+        state: JSON.parse(
+          makeEnvelope({
+            character: { name: 'Cloud', level: 10, statXp: {}, statLevels: {} },
+            lastActiveISO: '2026-07-03',
+          }),
+        ) as Record<string, unknown>,
+        version,
+      },
+      error: null,
+    });
+
+    /** Seed non-trivial local + non-trivial cloud and run the startup pull. */
+    async function triggerConflict() {
+      const localEnvelope = nonTrivialLocal();
+      localStorage.setItem(STORAGE_KEY, localEnvelope);
+      const row = nonTrivialCloudRow();
+      mocks.maybySingleImpl.mockResolvedValueOnce(row);
+      await pullCloudSave();
+      return { localEnvelope, row };
+    }
+
+    it('real progress on both sides → raises the dialog and applies nothing', async () => {
+      const { localEnvelope } = await triggerConflict();
+
+      expect(useGameStore.persist.rehydrate).not.toHaveBeenCalled();
+      expect(localStorage.getItem(STORAGE_KEY)).toBe(localEnvelope);
+      expect(localStorage.getItem(OWNER_KEY)).toBeNull();
+      expect(localStorage.getItem(SYNCED_VERSION_KEY)).toBeNull();
+      expect(mocks.insertImpl).not.toHaveBeenCalled();
+      expect(mocks.updateSelectImpl).not.toHaveBeenCalled();
+      expect(useSaveConflictStore.getState().conflict).toEqual({
+        local: { level: 5, habitCount: 0, lastActiveISO: '2026-07-01' },
+        cloud: { level: 10, habitCount: 0, lastActiveISO: '2026-07-03' },
+      });
+    });
+
+    it('unanswered dialog: a relaunch re-detects the conflict, still applying nothing', async () => {
+      const { localEnvelope } = await triggerConflict();
+      mocks.maybySingleImpl.mockResolvedValueOnce(nonTrivialCloudRow());
+
+      await pullCloudSave(); // simulated next launch
+
+      expect(useGameStore.persist.rehydrate).not.toHaveBeenCalled();
+      expect(localStorage.getItem(STORAGE_KEY)).toBe(localEnvelope);
+      expect(useSaveConflictStore.getState().conflict).not.toBeNull();
+    });
+
+    it('keep-cloud adopts the held-back cloud row exactly like a normal pull', async () => {
+      const { row } = await triggerConflict();
+
+      await resolveSaveConflict('keep-cloud');
+
+      expect(localStorage.getItem(STORAGE_KEY)).toBe(JSON.stringify(row.data.state));
+      expect(useGameStore.persist.rehydrate).toHaveBeenCalled();
+      expect(localStorage.getItem(SYNCED_VERSION_KEY)).toBe('5');
+      expect(localStorage.getItem(DIRTY_KEY)).toBeNull();
+      expect(localStorage.getItem(OWNER_KEY)).toBe('uid-test');
+      expect(useSaveConflictStore.getState().conflict).toBeNull();
+    });
+
+    it('keep-local CAS-pushes local over the stashed cloud version', async () => {
+      const { localEnvelope } = await triggerConflict();
+      mocks.updateSelectImpl.mockResolvedValueOnce({ data: [{ version: 6 }], error: null });
+
+      await resolveSaveConflict('keep-local');
+
+      expect(mocks.updateSelectImpl).toHaveBeenCalledTimes(1);
+      expect(mocks.eqSpy).toHaveBeenCalledWith('version', 5);
+      expect(localStorage.getItem(STORAGE_KEY)).toBe(localEnvelope);
+      expect(useGameStore.persist.rehydrate).not.toHaveBeenCalled();
+      expect(localStorage.getItem(SYNCED_VERSION_KEY)).toBe('6');
+      expect(localStorage.getItem(DIRTY_KEY)).toBeNull();
+      expect(useSaveConflictStore.getState().conflict).toBeNull();
+      // Owner is intentionally NOT stamped here — only a completed sync path
+      // records ownership, so a failed push re-raises the choice next launch.
+      expect(localStorage.getItem(OWNER_KEY)).toBeNull();
+    });
+
+    it('non-trivial local + fresh untouched cloud row → keeps local automatically, no dialog', async () => {
+      const localEnvelope = nonTrivialLocal();
+      localStorage.setItem(STORAGE_KEY, localEnvelope);
+      mocks.maybySingleImpl.mockResolvedValueOnce({
+        data: { state: JSON.parse(makeEnvelope()) as Record<string, unknown>, version: 5 },
+        error: null,
+      });
+      mocks.updateSelectImpl.mockResolvedValueOnce({ data: [{ version: 6 }], error: null });
+
+      await pullCloudSave();
+
+      expect(useSaveConflictStore.getState().conflict).toBeNull();
+      expect(useGameStore.persist.rehydrate).not.toHaveBeenCalled();
+      expect(mocks.updateSelectImpl).toHaveBeenCalledTimes(1);
+      expect(mocks.eqSpy).toHaveBeenCalledWith('version', 5);
+      expect(localStorage.getItem(STORAGE_KEY)).toBe(localEnvelope);
+      expect(localStorage.getItem(SYNCED_VERSION_KEY)).toBe('6');
+    });
+
+    it('a device that has synced before (marker present) never re-raises the dialog', async () => {
+      localStorage.setItem(SYNCED_VERSION_KEY, '6'); // e.g. keep-local push succeeded last session
+      localStorage.setItem(STORAGE_KEY, nonTrivialLocal());
+      mocks.maybySingleImpl.mockResolvedValueOnce(nonTrivialCloudRow(6));
+
+      await pullCloudSave();
+
+      expect(useSaveConflictStore.getState().conflict).toBeNull();
+      expect(useGameStore.persist.rehydrate).toHaveBeenCalled();
+    });
+
+    it('session loss while the dialog is pending leaves the unowned local save intact', async () => {
+      const { localEnvelope } = await triggerConflict();
+
+      wipeLocalSave(); // what useCloudSync runs on session loss
+
+      // The never-adopted save survives; only the conflict state is cleared so a
+      // stale conflict cannot block startAutoSync on the next sign-in.
+      expect(localStorage.getItem(STORAGE_KEY)).toBe(localEnvelope);
+      expect(useSaveConflictStore.getState().conflict).toBeNull();
+    });
+
+    it('autosync stays off while the dialog is pending', async () => {
+      await triggerConflict();
+      mocks.insertImpl.mockResolvedValue({ data: null, error: null });
+
+      vi.useFakeTimers();
+      try {
+        startAutoSync();
+        useGameStore.setState({ mining: null }); // would schedule a debounced push
+        await vi.advanceTimersByTimeAsync(40_000); // past debounce (10s) and interval (30s)
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(mocks.insertImpl).not.toHaveBeenCalled();
+      expect(mocks.updateSelectImpl).not.toHaveBeenCalled();
     });
   });
 });

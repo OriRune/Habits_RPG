@@ -58,6 +58,7 @@ import {
   CHARGE_DAMAGE_MULT,
   dashCooldown,
   moveInterval,
+  boonConsolation,
 } from './crawl';
 
 export type { Dir, RNG } from './crawl';
@@ -417,8 +418,11 @@ function killBeast(state: ForestState, beast: ForestBeast, rng: RNG): ForestStat
     score: state.score + 10 * state.stage + (isGuardian ? GUARDIAN_SCORE_BONUS : 0),
   };
   // Guardian kill: offer a boon choice (pauses the run via 'choosing' status).
+  // An exhausted pool rolls [] — grant a consolation instead; entering
+  // 'choosing' with zero options would soft-lock the run.
   if (isGuardian) {
     const choices = rollBoonChoices('forest', afterKill.activeBoons, rng);
+    if (choices.length === 0) return boonConsolation(afterKill);
     return { ...afterKill, pendingBoonChoice: choices, status: 'choosing' };
   }
   return afterKill;

@@ -8,7 +8,8 @@ import { type DungeonRoom, merchantOffers } from '@/engine/dungeon';
 import { type FloorMap } from '@/engine/dungeonMap';
 import { type MineState, type MineTile } from '@/engine/mining';
 import { getWeapon, STARTER_WEAPON } from '@/engine/weapons';
-import { STA_REGEN_MS, MP_REGEN_MS } from '@/engine/crawl';
+import { STA_REGEN_MS, MP_REGEN_MS, BOON_CONSOLATION_HEAL, BOON_CONSOLATION_GOLD } from '@/engine/crawl';
+import { BOONS } from '@/content/boons';
 import { type ForestState, type ForestTile, FOREST_WINDUP_MS } from '@/engine/forest';
 import { getEncounter, startEncounter } from '@/engine/encounters';
 import { toISODate, weekKey, _setNow, _resetNow, addDays } from '@/engine/date';
@@ -1069,6 +1070,39 @@ describe('deep mine', () => {
     get().coopApplyWorld({ floor: 1, monsters: [] }); // no t field
     expect(get().mining).not.toBeNull();
   });
+
+  it('boon cache pickup with exhausted pool grants a consolation instead of a zero-option choosing (MINI-01)', () => {
+    const allMineBoons = Object.values(BOONS)
+      .filter((b) => b.game === 'mine' || b.game === 'both')
+      .map((b) => b.key);
+    const tiles = makeMine().tiles;
+    tiles[2][2] = { kind: 'boon' }; // player stands here; Strike triggers the pickup
+    useGameStore.setState({ mining: makeMine({ tiles, hp: 20, activeBoons: allMineBoons }) });
+    get().mineStrike();
+    const mine = get().mining!;
+    expect(mine.tiles[2][2].kind).toBe('floor'); // cache still consumed
+    expect(mine.status).toBe('active');           // no soft-lock
+    expect(mine.pendingBoonChoice).toBeNull();
+    expect(mine.hp).toBe(20 + BOON_CONSOLATION_HEAL);
+    expect(mine.haul.gold ?? 0).toBe(BOON_CONSOLATION_GOLD);
+  });
+
+  it('skipMineBoon dismisses the boon panel without granting a boon', () => {
+    useGameStore.setState({
+      mining: makeMine({ status: 'choosing', pendingBoonChoice: ['iron_arm', 'stone_skin'] }),
+    });
+    get().skipMineBoon();
+    expect(get().mining!.status).toBe('active');
+    expect(get().mining!.pendingBoonChoice).toBeNull();
+    expect(get().mining!.activeBoons).toHaveLength(0);
+  });
+
+  it('skipMineBoon is a no-op outside the choosing state', () => {
+    const mine = makeMine();
+    useGameStore.setState({ mining: mine });
+    get().skipMineBoon();
+    expect(get().mining).toBe(mine);
+  });
 });
 
 describe('wild forest', () => {
@@ -1195,6 +1229,40 @@ describe('wild forest', () => {
     useGameStore.setState({ forest: makeForest() });
     get().coopApplyForestWorld({ floor: 1, monsters: [] }); // no t field
     expect(get().forest).not.toBeNull();
+  });
+
+  it('boon cache pickup with exhausted pool grants a consolation instead of a zero-option choosing (MINI-01)', () => {
+    const allForestBoons = Object.values(BOONS)
+      .filter((b) => b.game === 'forest' || b.game === 'both')
+      .map((b) => b.key);
+    const tiles = makeForest().tiles;
+    tiles[2][3] = { kind: 'boon' }; // walking onto the cache triggers the pickup
+    useGameStore.setState({ forest: makeForest({ tiles, hp: 20, activeBoons: allForestBoons }) });
+    get().forestMove('right');
+    const forest = get().forest!;
+    expect(forest.player).toMatchObject({ r: 2, c: 3 });
+    expect(forest.tiles[2][3].kind).toBe('trail'); // cache still consumed
+    expect(forest.status).toBe('active');           // no soft-lock
+    expect(forest.pendingBoonChoice).toBeNull();
+    expect(forest.hp).toBe(20 + BOON_CONSOLATION_HEAL);
+    expect(forest.haul.gold ?? 0).toBe(BOON_CONSOLATION_GOLD);
+  });
+
+  it('skipForestBoon dismisses the boon panel without granting a boon', () => {
+    useGameStore.setState({
+      forest: makeForest({ status: 'choosing', pendingBoonChoice: ['lantern', 'forager'] }),
+    });
+    get().skipForestBoon();
+    expect(get().forest!.status).toBe('active');
+    expect(get().forest!.pendingBoonChoice).toBeNull();
+    expect(get().forest!.activeBoons).toHaveLength(0);
+  });
+
+  it('skipForestBoon is a no-op outside the choosing state', () => {
+    const forest = makeForest();
+    useGameStore.setState({ forest });
+    get().skipForestBoon();
+    expect(get().forest).toBe(forest);
   });
 
   describe('forestStash — mid-run haul banking at clearings', () => {

@@ -23,6 +23,8 @@ import { useGameStore } from '@/store/useGameStore';
 import { applyPalette, resolvePalette } from '@/engine/palettes';
 import { isBackendConfigured } from '@/net/env';
 import { useAuthStore } from '@/net/auth';
+import { useSaveConflictStore } from '@/net/cloudSave';
+import { SaveConflictModal } from '@/components/settings/SaveConflictModal';
 import { useCloudSync } from '@/hooks/useCloudSync';
 import { useParty, usePartyQuestReporter } from '@/hooks/useParty';
 import { useCoopSession } from '@/hooks/useCoopSession';
@@ -71,6 +73,7 @@ export default function App() {
   const customPalette = useGameStore((s) => s.settings.customPalette);
   const darkMode = useGameStore((s) => s.settings.darkMode);
   const authStatus = useAuthStore((s) => s.status);
+  const saveConflict = useSaveConflictStore((s) => s.conflict);
   const challenges = useGameStore((s) => s.challenges);
 
   // Expiry badge: highlight the Trials tab when any active challenge expires in ≤ 2 days.
@@ -119,6 +122,9 @@ export default function App() {
       );
     }
     if (authStatus === 'signedOut') return <LoginView />;
+    // First sign-in found real progress both locally and in the cloud — block the
+    // app until the player picks a side (see cloudSave.ts, MP-06).
+    if (saveConflict) return <SaveConflictModal conflict={saveConflict} />;
   }
 
   if (!created) return <CreationView />;

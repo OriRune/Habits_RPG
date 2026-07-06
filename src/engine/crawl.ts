@@ -370,6 +370,28 @@ export interface CrawlBoon {
   maxHpBonus?: number;
 }
 
+/** Heal granted when a boon roll comes up empty (pool exhausted). */
+export const BOON_CONSOLATION_HEAL = 15;
+/** Gold granted when a boon roll comes up empty (pool exhausted). */
+export const BOON_CONSOLATION_GOLD = 40;
+
+/**
+ * Consolation prize when `rollBoonChoices` returns `[]` (every eligible boon
+ * already held): a modest heal + gold instead of the choice panel.  Callers
+ * MUST use this in place of the `status:'choosing'` transition whenever the
+ * roll is empty — entering 'choosing' with zero options soft-locks the run
+ * (no button to pick, no skip, banking gated on 'active').
+ */
+export function boonConsolation<
+  T extends { hp: number; maxHp: number; haul: { gold?: number } },
+>(state: T): T {
+  return {
+    ...state,
+    hp: Math.min(state.maxHp, state.hp + BOON_CONSOLATION_HEAL),
+    haul: { ...state.haul, gold: (state.haul.gold ?? 0) + BOON_CONSOLATION_GOLD },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Phase 6 — Screen-shake helper
 // ---------------------------------------------------------------------------

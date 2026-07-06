@@ -147,6 +147,7 @@ export function MineRunOverlay() {
   const beginBanking = useGameStore((s) => s.beginBanking);
   const mineDescend = useGameStore((s) => s.mineDescend);
   const chooseMineBoon = useGameStore((s) => s.chooseMineBoon);
+  const skipMineBoon = useGameStore((s) => s.skipMineBoon);
   const isFirstRun = useGameStore((s) => s.deepestMineFloor === 0);
   const mineTombstone = useGameStore((s) => s.mineTombstone);
   const remotePlayers = useCoopStore((s) => s.remotePlayers);
@@ -1110,6 +1111,12 @@ export function MineRunOverlay() {
                 );
               })}
             </div>
+            <button
+              onClick={() => skipMineBoon()}
+              className="rounded-md border border-parchment-300/40 px-4 py-1.5 text-sm text-parchment-300 hover:bg-parchment-300/20 transition-colors"
+            >
+              Skip
+            </button>
           </div>
         )}
 

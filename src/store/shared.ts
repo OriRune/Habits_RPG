@@ -400,6 +400,8 @@ export interface GameState {
   mineCast: (spellKey: string) => void;
   /** Pick a boon from the pending 3-card choice (mine). */
   chooseMineBoon: (key: string) => void;
+  /** Dismiss the boon panel without picking (mine) — escape hatch if no option appeals (or none exist). */
+  skipMineBoon: () => void;
   /** Pause the run and show the banking summary screen. */
   beginBanking: () => void;
   /** Commit the haul into the economy and close the run (death or confirmed banking). */
@@ -454,6 +456,8 @@ export interface GameState {
   coopForestClientTick: (nowMs: number) => void;
   /** Pick a boon from the pending 3-card choice (forest). */
   chooseForestBoon: (key: string) => void;
+  /** Dismiss the boon panel without picking (forest) — escape hatch if no option appeals (or none exist). */
+  skipForestBoon: () => void;
   /** Commit the haul and close the run — full on confirmed banking, halved on death. */
   endForest: () => void;
 

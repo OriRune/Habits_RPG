@@ -2,6 +2,8 @@
 
 Based on `docs/spirit-grove-minigame-analysis.md`.
 
+> **Archived 2026-06-22, re-verified 2026-07-05.** Star system fix, round-count/difficulty-tier expansion (now ~30 rounds vs. the 15–20 target), keyboard nav, per-round recap, dev-mode content validation, and — beyond the original scope — WI-gated clue visibility (§6.2) and a new mastery mode all shipped (commit `5a8bdee`). One named item was **not** implemented despite the original archive note claiming full completion: **§4.1 ambient audio loop** — only one-shot `groveCorrect`/`groveWrong` SFX exist (`src/lib/sfx.ts`), no ambient drone. Pick this up as a small standalone task if still wanted.
+
 ---
 
 ## 1. Highest-Priority Improvements

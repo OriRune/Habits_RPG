@@ -13,7 +13,7 @@ import {
   coopClientStep as forestCoopClientStep,
   FOREST_ENERGY_COST,
 } from '@/engine/forest';
-import { dungeonStamina } from '@/engine/crawl';
+import { dungeonStamina, boonConsolation } from '@/engine/crawl';
 import { mulberry32, floorSeed } from '@/engine/rng';
 import { getGear } from '@/engine/gear';
 import { rollBoonChoices } from '@/content/boons';
@@ -45,6 +45,8 @@ export interface ForestSlice {
   forestCast: (spellKey: string) => void;
   forestShrine: (nowMs: number, allowDenSpawn?: boolean) => void;
   chooseForestBoon: (key: string) => void;
+  /** Dismiss the boon panel without picking — escape hatch if no option appeals (or none exist). */
+  skipForestBoon: () => void;
   coopApplyForestWorld: (slice: WorldSliceInput) => void;
   coopApplyForestTile: (stage: number, r: number, c: number, tile: ForestTile) => void;
   coopApplyForestAttack: (beastId: string, dmg: number) => void;
@@ -143,6 +145,8 @@ export const createForestSlice: StateCreator<
           const tiles = forest.tiles.map((row) => row.slice());
           tiles[r][c] = { kind: 'trail' };
           const choices = rollBoonChoices('forest', forest.activeBoons, getForestRng());
+          // Exhausted pool rolls [] — consolation instead of an unpickable panel.
+          if (choices.length === 0) return { forest: boonConsolation({ ...forest, tiles }) };
           return {
             forest: {
               ...forest,
@@ -237,6 +241,13 @@ export const createForestSlice: StateCreator<
       const forest = applyForestBoonChoice(s.forest, key);
       return forest !== s.forest ? { forest } : s;
     }),
+
+  skipForestBoon: () =>
+    set((s) =>
+      s.forest && s.forest.status === 'choosing'
+        ? { forest: { ...s.forest, pendingBoonChoice: null, status: 'active' as const } }
+        : s,
+    ),
 
   coopApplyForestWorld: (slice) =>
     set((s) => {

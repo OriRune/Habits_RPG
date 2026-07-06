@@ -11,7 +11,7 @@
  * module-global RNG / seed values as arguments.
  */
 
-import type { RNG } from '@/engine/crawl';
+import { boonConsolation, type RNG } from '@/engine/crawl';
 import {
   type MineState,
   type MineTile,
@@ -138,6 +138,9 @@ export function applyMineWorldSlice(
 
   if (guardianJustKilled) {
     const choices = rollBoonChoices('mine', current.activeBoons, deps.rng);
+    // Exhausted pool rolls [] — consolation instead of a zero-option 'choosing'
+    // soft-lock (mirrors the host-side guard in engine/mining.ts killMonster).
+    if (choices.length === 0) return boonConsolation({ ...current, monsters: merged });
     return { ...current, monsters: merged, pendingBoonChoice: choices, status: 'choosing' as const };
   }
 
@@ -240,6 +243,9 @@ export function applyForestWorldSlice(
 
   if (guardianJustKilled) {
     const choices = rollBoonChoices('forest', current.activeBoons, deps.rng);
+    // Exhausted pool rolls [] — consolation instead of a zero-option 'choosing'
+    // soft-lock (mirrors the host-side guard in engine/forest.ts killBeast).
+    if (choices.length === 0) return boonConsolation({ ...current, beasts: merged });
     return { ...current, beasts: merged, pendingBoonChoice: choices, status: 'choosing' as const };
   }
 

@@ -58,6 +58,7 @@ import {
   CHARGE_DAMAGE_MULT,
   dashCooldown,
   moveInterval,
+  boonConsolation,
 } from './crawl';
 
 export type { Dir, RNG } from './crawl';
@@ -817,8 +818,11 @@ function killMonster(state: MineState, mon: MineMonster, rng: RNG): MineState {
     score: state.score + 10 * state.floor + (isGuardian ? GUARDIAN_SCORE_BONUS : 0),
   };
   // Guardian kill: offer a boon choice (pauses the run via 'choosing' status).
+  // An exhausted pool rolls [] — grant a consolation instead; entering
+  // 'choosing' with zero options would soft-lock the run.
   if (isGuardian) {
     const choices = rollBoonChoices('mine', afterKill.activeBoons, rng);
+    if (choices.length === 0) return boonConsolation(afterKill);
     return { ...afterKill, pendingBoonChoice: choices, status: 'choosing' };
   }
   return afterKill;

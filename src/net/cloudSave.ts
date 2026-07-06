@@ -1,3 +1,4 @@
+import { create } from 'zustand';
 import { supabase } from './supabaseClient';
 import { useAuthStore } from './auth';
 import { useGameStore, type GameState } from '@/store/useGameStore';
@@ -20,6 +21,8 @@ import type { SharedHabit } from './party';
 
 const STORAGE_KEY = 'habits-rpg-save';
 const OWNER_KEY = 'habits-rpg-owner';
+const SYNCED_VERSION_KEY = 'habits-rpg-last-synced-version';
+const DIRTY_KEY = 'habits-rpg-dirty';
 const DEBOUNCE_MS = 10_000;
 
 /** Which account uid owns the current local save (null = unowned / never signed in). */
@@ -28,14 +31,95 @@ function setSaveOwner(uid: string): void { localStorage.setItem(OWNER_KEY, uid);
 function clearSaveOwner(): void { localStorage.removeItem(OWNER_KEY); }
 
 /**
+ * The CAS version at which local and cloud last agreed, persisted so it survives
+ * a relaunch (unlike `lastPulledVersion`). Together with the dirty flag it lets
+ * startup detect "cloud is unchanged but local has unsynced progress" and push
+ * instead of pulling — otherwise an offline session is silently rolled back.
+ */
+function getLastSyncedVersion(): number | null {
+  const raw = localStorage.getItem(SYNCED_VERSION_KEY);
+  if (raw === null) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+function setLastSyncedVersion(v: number): void { localStorage.setItem(SYNCED_VERSION_KEY, String(v)); }
+function clearLastSyncedVersion(): void { localStorage.removeItem(SYNCED_VERSION_KEY); }
+
+/** Bumped on every store mutation; lets a push clear the dirty flag only when no mutation raced it. */
+let dirtyGen = 0;
+
+function isDirty(): boolean { return localStorage.getItem(DIRTY_KEY) !== null; }
+function markDirty(): void {
+  dirtyGen++;
+  localStorage.setItem(DIRTY_KEY, '1');
+}
+function clearDirty(): void { localStorage.removeItem(DIRTY_KEY); }
+
+// Mark dirty on every mutation from module load — before autosync starts and
+// regardless of network state — so the NEXT launch knows local has changes the
+// cloud never saw, even if every push this session failed.
+if (supabase) {
+  useGameStore.subscribe(() => markDirty());
+}
+
+// ---- First-sign-in save conflict (MP-06) -------------------------------------
+
+/** What each side holds, shown in the keep-local vs keep-cloud dialog. */
+export type SaveConflictSummary = {
+  local: { level: number; habitCount: number; lastActiveISO: string | null };
+  cloud: { level: number; habitCount: number; lastActiveISO: string | null };
+};
+
+/**
+ * Pending first-sign-in conflict: this browser has never synced (no owner tag,
+ * no sync marker), the local save has real progress, and the account already
+ * has a cloud row with real progress. Neither side is applied until the player
+ * chooses — closing the tab just re-detects the conflict on the next launch.
+ */
+export const useSaveConflictStore = create<{ conflict: SaveConflictSummary | null }>(() => ({
+  conflict: null,
+}));
+
+/** The cloud row held back while the conflict dialog is open. */
+let conflictStash: { cloudEnvelope: unknown; cloudVersion: number } | null = null;
+
+function summarizeSaveState(state: Record<string, unknown> | null | undefined) {
+  const character = (state?.character ?? null) as { level?: number } | null;
+  const habits = state?.habits;
+  return {
+    level: typeof character?.level === 'number' ? character.level : 1,
+    habitCount: Array.isArray(habits) ? habits.length : 0,
+    lastActiveISO: typeof state?.lastActiveISO === 'string' ? state.lastActiveISO : null,
+  };
+}
+
+/** A save worth protecting: the player has leveled up or created any habit. */
+function isNonTrivialSummary(s: { level: number; habitCount: number }): boolean {
+  return s.level > 1 || s.habitCount > 0;
+}
+
+/**
  * Reset the in-memory store to fresh-game state, then remove the localStorage save
  * and the owner tag. Call on sign-out so a shared browser is left clean and the next
- * account always starts from the cloud (or a genuine pristine state).
+ * account always starts from the cloud (or a genuine pristine state). Saves no
+ * account ever adopted (null owner) are left untouched — see the body comment.
  */
 export function wipeLocalSave(): void {
+  // A pending first-sign-in conflict dies with the session — clear it regardless,
+  // or a stale conflict would block startAutoSync on the next sign-in.
+  conflictStash = null;
+  useSaveConflictStore.setState({ conflict: null });
+  // An UNOWNED save was never adopted by any account (e.g. the session expired
+  // while the first-sign-in conflict dialog was still open). Wiping it here would
+  // be MP-06's data loss through a side door — leave it; the next sign-in
+  // re-detects and re-raises the choice. (resetGame would also clobber it: the
+  // persist middleware immediately rewrites localStorage with the fresh state.)
+  if (getSaveOwner() === null) return;
   useGameStore.getState().resetGame();
   localStorage.removeItem(STORAGE_KEY);
   clearSaveOwner();
+  clearLastSyncedVersion();
+  clearDirty();
 }
 
 // Transient run objects are not durable — mirror what migrate() nulls.
@@ -111,11 +195,16 @@ export async function pullCloudSave(): Promise<void> {
   if (!uid) return;
 
   // If the local save was written by a DIFFERENT account, wipe it before we pull.
-  // A null owner means the save is pristine (never signed-in single-player progress)
-  // and is intentionally adopted by the first account that claims it.
+  // A null owner means the save is never-signed-in single-player progress: trivial
+  // ones are silently adopted by the first account that claims it; ones with real
+  // progress raise the MP-06 conflict dialog below instead.
   const owner = getSaveOwner();
   if (owner !== null && owner !== uid) {
     useGameStore.getState().resetGame();
+    // The sync markers belonged to the previous owner's save; a fresh account must
+    // never see "dirty local at the same version" and push this wiped state upward.
+    clearLastSyncedVersion();
+    clearDirty();
   }
 
   const { data, error } = await supabase
@@ -135,9 +224,47 @@ export async function pullCloudSave(): Promise<void> {
     // rehydrate() here would clobber the live in-memory board even though merge()
     // tries to preserve it (race: current.dungeon is still null during rehydrate).
     if (hasActiveRun()) return;
-    lastPulledVersion = data.version as number;
+    const cloudVersion = data.version as number;
+    // Cloud row is exactly what we last synced, but local has unsynced changes
+    // (e.g. an offline session whose pushes all failed): pulling would roll those
+    // changes back, so push local up instead. A genuinely newer cloud row (another
+    // device won a CAS race) never matches lastSyncedVersion and still pulls.
+    // If the local envelope is gone (storage evicted) there is nothing to protect —
+    // fall through to the pull so the cloud copy is restored.
+    if (cloudVersion === getLastSyncedVersion() && isDirty() && durableEnvelope() !== null) {
+      lastPulledVersion = cloudVersion;
+      setSaveOwner(uid);
+      await pushCloudSave();
+      return;
+    }
+    // First sign-in on this browser (never synced: no owner tag, no sync marker)
+    // with real pre-account progress, and the account already has a cloud row —
+    // never silently pick a side (MP-06). If the cloud row is a fresh untouched
+    // save, keeping local loses nothing, so push local up; otherwise hold both
+    // sides and ask the player. Nothing is applied, owned, or stamped until the
+    // choice lands, so closing the tab re-raises the choice on the next launch.
+    const localEnv = durableEnvelope();
+    if (owner === null && getLastSyncedVersion() === null && localEnv !== null) {
+      const localSummary = summarizeSaveState(localEnv.state);
+      if (isNonTrivialSummary(localSummary)) {
+        const cloudEnv = data.state as PersistEnvelope | null;
+        const cloudSummary = summarizeSaveState(cloudEnv?.state);
+        if (!isNonTrivialSummary(cloudSummary)) {
+          lastPulledVersion = cloudVersion;
+          await pushCloudSave();
+          return;
+        }
+        conflictStash = { cloudEnvelope: data.state, cloudVersion };
+        useSaveConflictStore.setState({ conflict: { local: localSummary, cloud: cloudSummary } });
+        return;
+      }
+    }
+    lastPulledVersion = cloudVersion;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data.state));
     await useGameStore.persist.rehydrate();
+    // Local now mirrors cloud@cloudVersion (the rehydrate itself marked dirty; undo that).
+    setLastSyncedVersion(cloudVersion);
+    clearDirty();
   } else {
     // No cloud save yet (new account). The foreign-save guard above already wiped any
     // stale data from a different account; import whatever local state remains (fresh
@@ -161,6 +288,9 @@ export async function pushCloudSave(): Promise<void> {
   if (!uid) return;
   const env = durableEnvelope();
   if (!env) return;
+  // If a mutation lands while the write is in flight, dirtyGen moves and the
+  // dirty flag survives for the next push/launch instead of being lost.
+  const genAtRead = dirtyGen;
 
   const snapshot = buildPublicSnapshot(useGameStore.getState());
 
@@ -180,6 +310,8 @@ export async function pushCloudSave(): Promise<void> {
       return;
     }
     lastPulledVersion = 1;
+    setLastSyncedVersion(1);
+    if (dirtyGen === genAtRead) clearDirty();
   } else {
     const next = lastPulledVersion + 1;
     const { data, error } = await supabase
@@ -200,6 +332,8 @@ export async function pushCloudSave(): Promise<void> {
       return;
     }
     lastPulledVersion = next;
+    setLastSyncedVersion(next);
+    if (dirtyGen === genAtRead) clearDirty();
   }
 
   // Piggyback the party-readable snapshot on the same cadence as the save push.
@@ -222,6 +356,38 @@ export async function pushCloudSave(): Promise<void> {
     .upsert({ user_id: uid, habits: habitData, updated_at: new Date().toISOString() });
 }
 
+/**
+ * Apply the player's first-sign-in conflict choice (MP-06). keep-cloud adopts the
+ * held-back cloud row exactly like a normal pull; keep-local CAS-pushes the local
+ * save over the row it was stashed against. If another device bumped the row while
+ * the dialog was open, the push's conflict re-pull re-detects and re-raises the
+ * dialog with fresh cloud data instead of guessing.
+ */
+export async function resolveSaveConflict(choice: 'keep-local' | 'keep-cloud'): Promise<void> {
+  const stash = conflictStash;
+  conflictStash = null;
+  useSaveConflictStore.setState({ conflict: null });
+  if (!stash) return;
+  const uid = currentUserId();
+  if (!uid) return;
+
+  lastPulledVersion = stash.cloudVersion;
+  if (choice === 'keep-cloud') {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(stash.cloudEnvelope));
+    await useGameStore.persist.rehydrate();
+    setLastSyncedVersion(stash.cloudVersion);
+    clearDirty();
+    setSaveOwner(uid);
+  } else {
+    // Sync markers are recorded only by a successful push — if it fails (e.g.
+    // offline), nothing is stamped and the next launch re-raises the choice
+    // rather than pulling the old row over the kept local save. Ownership is
+    // stamped by the next launch's normal pull once the markers exist.
+    await pushCloudSave();
+  }
+  startAutoSync();
+}
+
 // ---- Autosync lifecycle -----------------------------------------------------
 
 let unsubscribeStore: (() => void) | null = null;
@@ -240,6 +406,9 @@ function schedulePush(): void {
 /** Begin debounced background sync. Call after a successful pull on login. */
 export function startAutoSync(): void {
   if (!supabase || unsubscribeStore) return;
+  // Never sync while a first-sign-in conflict is unresolved — a debounced push
+  // would silently resolve it as keep-local before the player chose.
+  if (useSaveConflictStore.getState().conflict) return;
 
   // Push (debounced) whenever durable state changes.
   unsubscribeStore = useGameStore.subscribe(() => schedulePush());
@@ -248,10 +417,13 @@ export function startAutoSync(): void {
   intervalId = setInterval(() => void pushCloudSave(), DEBOUNCE_MS * 3);
 
   // Flush when the tab is backgrounded/closed (more reliable than beforeunload).
-  visibilityHandler = () => {
-    if (document.visibilityState === 'hidden') void pushCloudSave();
-  };
-  document.addEventListener('visibilitychange', visibilityHandler);
+  // No DOM under the Vitest 'node' environment — skip the visibility flush there.
+  if (typeof document !== 'undefined') {
+    visibilityHandler = () => {
+      if (document.visibilityState === 'hidden') void pushCloudSave();
+    };
+    document.addEventListener('visibilitychange', visibilityHandler);
+  }
 }
 
 /** Tear down sync (on sign-out). */

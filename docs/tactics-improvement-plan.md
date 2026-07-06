@@ -2,6 +2,8 @@
 
 > Based on analysis in `docs/tactics-minigame-analysis-2.md` (2026-06-18).
 
+> **Status (verified 2026-07-05): 20 of 25 items done.** Still open: **5A** (`hexBattle.ts` is now 1,763 lines, still one file — never split into `src/engine/hexBattle/`), **5B** (no `TacticsOverlay.test.tsx`), **5C** (no `availableIn` field on `SpellDef` — the underlying goal was met a different way, via `isTacticsLoadoutSpell()`), **6C** (`tacticsReward()`/`commitTactics()` still award flat AG/DX/EN regardless of melee-vs-ranged play). Partial: **2B** ("✓ Acted" chip exists but no "↑ Moved" chip) and **4C** (objective-complete reuses the `'victory'` sfx cue instead of a dedicated sting). Everything else below is implemented — treat the plan as reference/historical for those items.
+
 The minigame's core is solid: the engine is well-tested, the data flow is clean, and the mechanics are coherent. The gaps are mostly surface-level — visual clarity, missing feedback, and a handful of incomplete features that are already partially built. Most improvements here are isolated changes with low blast radius.
 
 ---
