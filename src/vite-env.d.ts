@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+/// <reference types="vite-plugin-pwa/client" />
 
 interface ImportMetaEnv {
   /** Supabase project URL (Phase 1+). Empty/undefined in pure single-player builds. */

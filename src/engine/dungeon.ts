@@ -6,7 +6,6 @@
 import { type RNG } from './combat';
 import { MATERIAL_KEYS } from './materials';
 import { type Reward } from './challenges';
-import { type BiomeDef } from './biomes';
 
 export const DUNGEON_ENERGY_COST = 3; // brief §7.2: "Dungeon entry = 3 Energy"
 
@@ -53,11 +52,6 @@ function randomFrom<T>(arr: T[], rng: RNG): T {
 // Loot tables — keys must exist in src/content/items.ts and src/content/weapons.ts.
 const SPELLBOOK_DROPS = ['spellbook_firebolt', 'spellbook_bless', 'spellbook_dazzle', 'spellbook_hex'];
 const WEAPON_DROPS = ['iron_mace', 'short_bow'];
-
-export function encounterRoomFor(biome: BiomeDef, rng: RNG = Math.random): DungeonRoom {
-  const key = biome.encounters.length ? randomFrom(biome.encounters, rng) : 'sealed_door';
-  return { type: 'encounter', key };
-}
 
 /** A wandering-merchant offer (bought with the player's gold mid-run). */
 export interface MerchantOffer {

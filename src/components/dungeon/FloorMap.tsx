@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { Swords, ScrollText, Gem, Skull, Flame, Sparkles, Coins, Tent, Check } from 'lucide-react';
 import type { RoomKind } from '@/engine/dungeon';
+import { merchantOffers } from '@/engine/dungeon';
 import type { FloorMap as FloorMapData } from '@/engine/dungeonMap';
 import { Panel } from '@/components/ui/Panel';
 import { cn } from '@/lib/cn';
@@ -29,11 +30,14 @@ export function FloorMap({
   map,
   choices,
   path,
+  depth,
   onChoose,
 }: {
   map: FloorMapData;
   choices: string[];
   path: string[];
+  /** Current floor depth — used to price merchant previews. */
+  depth: number;
   onChoose: (nodeId: string) => void;
 }) {
   const visited = new Set(path);
@@ -175,6 +179,23 @@ export function FloorMap({
           ))}
         </div>
       </div>
+      {/* Merchant price preview — shown when a merchant is among the current choices */}
+      {choices.some((id) => map.nodes[id]?.room.type === 'merchant') && (() => {
+        const offers = merchantOffers(depth);
+        return (
+          <div className="rounded-md border border-gold-deep/40 bg-parchment-100/60 p-2.5 text-[11px]">
+            <div className="mb-1 font-display font-bold text-gold-deep">Merchant wares this floor</div>
+            <ul className="space-y-0.5">
+              {offers.map((o) => (
+                <li key={o.id} className="flex items-center justify-between gap-2">
+                  <span className="text-ink">{o.label}</span>
+                  <span className="shrink-0 font-display font-bold text-gold-deep">{o.cost}g</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })()}
       <p className="text-center text-[11px] text-ink-light">
         Tap a glowing room to enter it — your choice opens the paths it connects to.
       </p>

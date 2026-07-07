@@ -13,15 +13,24 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const mockSelect = vi.hoisted(() =>
   vi.fn<() => Promise<{ data: unknown; error: unknown }>>(),
 );
+const mockMessages = vi.hoisted(() =>
+  vi.fn<() => Promise<{ data: unknown; error: unknown }>>(),
+);
+const mockOrder = vi.hoisted(() => vi.fn());
 
 // ─── 2. Stub Supabase ─────────────────────────────────────────────────────────
 
 vi.mock('@/net/supabaseClient', () => {
-  // Chainable builder: from().select().eq().eq()
+  // Chainable builder covering both from().select().eq().eq() (getClaimableQuests)
+  // and from().select().eq().order().limit() (getMessages).
   const chain = {
     select: (_cols: string) => ({
       eq: (_col1: string, _val1: unknown) => ({
         eq: (_col2: string, _val2: unknown) => mockSelect(),
+        order: (col: string, opts: unknown) => {
+          mockOrder(col, opts);
+          return { limit: (_n: number) => mockMessages() };
+        },
       }),
     }),
   };
@@ -33,14 +42,20 @@ vi.mock('@/net/supabaseClient', () => {
 
 // ─── 3. Import under test ─────────────────────────────────────────────────────
 
-import { getClaimableQuests } from '../party';
-import type { PartyQuest } from '../party';
+import { getClaimableQuests, getMessages } from '../party';
+import type { PartyQuest, PartyMessage } from '../party';
 
 // ─── 4. Test helpers ──────────────────────────────────────────────────────────
 
 beforeEach(() => {
   mockSelect.mockReset();
+  mockMessages.mockReset();
+  mockOrder.mockReset();
 });
+
+function makeMessage(id: string, created_at: string): PartyMessage {
+  return { id, party_id: 'party-1', user_id: 'u', body: id, created_at };
+}
 
 function makeQuest(
   id: string,
@@ -109,5 +124,28 @@ describe('getClaimableQuests', () => {
     const result = await getClaimableQuests('party-1', 'user-1');
 
     expect(result).toHaveLength(0);
+  });
+});
+
+describe('getMessages (MP-15)', () => {
+  it('queries newest-first and returns them in chronological order', async () => {
+    // The DB query is DESCENDING (newest first); getMessages reverses to chronological
+    // so the chat pane renders oldest→newest and scrolls to the latest.
+    const descending = [
+      makeMessage('m3', '2026-01-03'),
+      makeMessage('m2', '2026-01-02'),
+      makeMessage('m1', '2026-01-01'),
+    ];
+    mockMessages.mockResolvedValueOnce({ data: descending, error: null });
+
+    const result = await getMessages('party-1');
+
+    expect(mockOrder).toHaveBeenCalledWith('created_at', { ascending: false });
+    expect(result.map((m) => m.id)).toEqual(['m1', 'm2', 'm3']);
+  });
+
+  it('returns empty when supabase response data is null', async () => {
+    mockMessages.mockResolvedValueOnce({ data: null, error: null });
+    expect(await getMessages('party-1')).toEqual([]);
   });
 });

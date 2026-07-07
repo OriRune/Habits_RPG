@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { ChevronLeft } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { effectiveStatus } from '@/engine/habits';
@@ -5,17 +6,35 @@ import { toISODate } from '@/engine/date';
 import { HabitHistoryCard } from '@/components/history/HabitHistoryCard';
 import { AccountSummary } from '@/components/history/AccountSummary';
 import { DayOfWeekChart } from '@/components/history/DayOfWeekChart';
+import { EmptyState } from '@/components/ui/EmptyState';
 
 const ORDER = { active: 0, suspended: 1, retired: 2 } as const;
 
 /** Full-screen overlay: every habit's heatmap, stats, and (quantity) graph. */
-export function HistoryView({ onClose }: { onClose: () => void }) {
+export function HistoryView({
+  onClose,
+  focusHabitId,
+}: {
+  onClose: () => void;
+  /** If provided, scrolls to this habit's card after mount. */
+  focusHabitId?: string | null;
+}) {
   const habits = useGameStore((s) => s.habits);
   const today = toISODate();
 
   const sorted = [...habits].sort(
     (a, b) => ORDER[effectiveStatus(a, today)] - ORDER[effectiveStatus(b, today)],
   );
+
+  // Scroll the focused habit into view after the overlay has rendered.
+  useEffect(() => {
+    if (!focusHabitId) return;
+    requestAnimationFrame(() => {
+      document
+        .getElementById(`habit-history-${focusHabitId}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [focusHabitId]);
 
   return (
     <div className="texture-wood fixed inset-0 z-50 overflow-y-auto">
@@ -36,11 +55,13 @@ export function HistoryView({ onClose }: { onClose: () => void }) {
         )}
 
         {sorted.length === 0 ? (
-          <div className="rounded-md border border-dashed border-gold-deep/40 p-8 text-center text-sm text-parchment-300/70">
-            No habits yet — your chronicle fills in as you complete them.
-          </div>
+          <EmptyState message="No habits yet — your chronicle fills in as you complete them." />
         ) : (
-          sorted.map((h) => <HabitHistoryCard key={h.id} habit={h} />)
+          sorted.map((h) => (
+            <div key={h.id} id={`habit-history-${h.id}`}>
+              <HabitHistoryCard habit={h} />
+            </div>
+          ))
         )}
       </div>
     </div>

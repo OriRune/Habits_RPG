@@ -4,6 +4,7 @@ import {
   advance,
   tryMove,
   act,
+  rangedBeastId,
   stepBeasts,
   reveal,
   nodeYield,
@@ -284,6 +285,53 @@ describe('act', () => {
       beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 4, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false }],
     });
     expect(act(s, rngFrom(1))).toBe(s);
+  });
+});
+
+describe('rangedBeastId (MP-02 — co-op guest ranged targeting)', () => {
+  const BOW = getWeapon('short_bow'); // ranged, range 3
+
+  it('finds the first beast down the faced line within range', () => {
+    const s = makeForest({
+      weapon: BOW,
+      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 5, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false }],
+    });
+    expect(rangedBeastId(s)).toBe('a'); // distance 2 — facedBeastId would miss it
+  });
+
+  it('finds an adjacent beast too (parity with facedBeastId)', () => {
+    const s = makeForest({
+      weapon: BOW,
+      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 4, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false }],
+    });
+    expect(rangedBeastId(s)).toBe('a');
+  });
+
+  it('is blocked by a node in the line, exactly like act()\'s shot', () => {
+    const tiles = makeForest().tiles;
+    tiles[3][4] = { kind: 'node', nodeKey: 'flower_bush' };
+    const s = makeForest({
+      weapon: BOW,
+      tiles,
+      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 5, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false }],
+    });
+    expect(rangedBeastId(s)).toBeNull();
+  });
+
+  it('returns null for a beast beyond the weapon range', () => {
+    const s = makeForest({
+      weapon: BOW,
+      player: { r: 3, c: 1, facing: 'right' },
+      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 5, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false }],
+    });
+    expect(rangedBeastId(s)).toBeNull(); // distance 4 > range 3
+  });
+
+  it('returns null when the equipped weapon is not ranged', () => {
+    const s = makeForest({
+      beasts: [{ id: 'a', key: 'wild_boar', r: 3, c: 5, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false }],
+    });
+    expect(rangedBeastId(s)).toBeNull(); // starter weapon is melee
   });
 });
 
@@ -654,6 +702,23 @@ describe('activateShrine', () => {
     const s = makeForest();
     const after = activateShrine(s, 1000, rngFrom(1));
     expect(after).toBe(s);
+  });
+
+  it('allowDenSpawn=false: shrine tile is still consumed but no guardian beast is spawned', () => {
+    const tiles = makeForest().tiles;
+    tiles[3][3] = { kind: 'shrine', shrineKey: 'disturbed_den' };
+    const s = makeForest({ tiles, stage: 5 });
+    const after = activateShrine(s, 1000, rngFrom(1), false);
+    expect(after.tiles[3][3].kind).toBe('clearing'); // tile consumed — co-op peers see it vanish
+    expect(after.beasts).toHaveLength(0);            // no beast spawned for the guest
+  });
+
+  it('allowDenSpawn defaults to true (normal solo/host behaviour unchanged)', () => {
+    const tiles = makeForest().tiles;
+    tiles[3][3] = { kind: 'shrine', shrineKey: 'disturbed_den' };
+    const s = makeForest({ tiles, stage: 5 });
+    const after = activateShrine(s, 1000, rngFrom(1)); // no 4th arg — default = true
+    expect(after.beasts.some((b) => b.key === 'forest_bear')).toBe(true);
   });
 
   it('generateForest: shrines only placed on clearing tiles; maze stays reachable', () => {

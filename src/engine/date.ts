@@ -43,6 +43,18 @@ export function _resetNow(): void {
 // Date helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Format a Date as a YYYY-MM-DD string using **local** calendar fields.
+ *
+ * This is intentional: all daily/weekly gates (habit streaks, trial resets,
+ * weekly rollover, challenge expiry) key on the player's local calendar day so
+ * that "today" matches what they see on their device clock. Switching to UTC
+ * would shift every gate's midnight boundary by the player's UTC offset, which
+ * is not the intended behaviour. See docs/trust-model.md §Server time / clock seam.
+ *
+ * The server-clock anti-spoof offset (set via setClockOffset) is already baked
+ * into the `now()` call used as the default argument.
+ */
 export function toISODate(d: Date = now()): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');

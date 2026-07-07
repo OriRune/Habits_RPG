@@ -15,12 +15,12 @@
  * leak between test cases.
  *
  * Transient co-op ordering state:
- *   `_mineLastWorldT` / `_forestLastWorldT` — high-water marks for the last
- *   accepted world-slice timestamp (host's `performance.now()`). Used by
- *   `acceptMineWorldT` / `acceptForestWorldT` to drop stale/duplicate world
- *   slices. Reset on every `setMineRun`/`setForestRun` (co-op rejoin / run
- *   begin) so a fresh host clock origin is never blocked by an old high-water
- *   mark.
+ *   `_mineLastWorldT` / `_forestLastWorldT` / `_tacticsLastStateT` — high-water
+ *   marks for the last accepted broadcast timestamp (host's `Date.now()`). Used
+ *   by `acceptMineWorldT` / `acceptForestWorldT` / `acceptTacticsStateT` to drop
+ *   stale/duplicate messages. Reset on every `setMineRun`/`setForestRun`
+ *   (co-op rejoin / run begin) and `resetTacticsStateT` (tactics channel
+ *   subscribe) so a new session is never blocked by an old high-water mark.
  */
 import type { RNG } from '@/engine/crawl';
 
@@ -30,6 +30,7 @@ let _mineLastWorldT: number = -Infinity;
 let _forestRng: RNG = Math.random;
 let _forestBaseSeed: number | undefined;
 let _forestLastWorldT: number = -Infinity;
+let _tacticsLastStateT: number = -Infinity;
 
 // ---- Deep Mine ---------------------------------------------------------------
 
@@ -91,6 +92,27 @@ export function acceptForestWorldT(t: number | undefined): boolean {
   return true;
 }
 
+// ---- Hex Tactics -------------------------------------------------------------
+
+/**
+ * Staleness guard for tactics-state broadcasts.
+ * Mirrors `acceptMineWorldT` — see that function's doc for the contract.
+ * Never compares against a local clock: two machines' clocks are unrelated.
+ */
+export function acceptTacticsStateT(t: number | undefined): boolean {
+  if (t !== undefined && isFinite(t)) {
+    if (t <= _tacticsLastStateT) return false;
+    _tacticsLastStateT = t;
+  }
+  return true;
+}
+
+/** Call on tactics channel (re)subscribe so a new session/host is never blocked
+ *  by the previous session's high-water mark. */
+export function resetTacticsStateT(): void {
+  _tacticsLastStateT = -Infinity;
+}
+
 // ── Test utility ──────────────────────────────────────────────────────────────
 
 /**
@@ -105,4 +127,5 @@ export function resetRunRng(): void {
   _forestRng = Math.random;
   _forestBaseSeed = undefined;
   _forestLastWorldT = -Infinity;
+  _tacticsLastStateT = -Infinity;
 }

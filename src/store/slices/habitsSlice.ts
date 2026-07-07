@@ -41,6 +41,12 @@ export interface HabitsSlice {
   normalizeHabits: () => void;
   completeHabit: (id: string, actual?: number, dateISO?: string) => void;
   uncompleteHabit: (id: string, dateISO?: string) => void;
+  /**
+   * Merge an imported habit array into the live habits by id.
+   * Replaces existing habits with the same id and appends new ones.
+   * Recomputes `completionLog` from scratch over the merged set to prevent drift.
+   */
+  importHabits: (imported: Habit[]) => void;
 }
 
 export const createHabitsSlice: StateCreator<
@@ -288,5 +294,24 @@ export const createHabitsSlice: StateCreator<
       // Defensive ceiling: mirrors completeHabit clamp (§4.3); purely defensive on uncomplete.
       next.character.energy = Math.max(0, Math.min(next.character.energy, MAX_ENERGY));
       return next;
+    }),
+
+  importHabits: (imported) =>
+    set((s) => {
+      // Merge by id: replace existing habits that share an id, append new ones.
+      const byId = new Map(s.habits.map((h) => [h.id, h]));
+      for (const h of imported) byId.set(h.id, h);
+      const habits = [...byId.values()];
+      // Recompute completionLog from the merged habit set to prevent drift.
+      // Each habit.log entry represents one completion on that ISO date.
+      const completionLog: Record<string, number> = {};
+      for (const h of habits) {
+        for (const iso of Object.keys(h.log)) {
+          completionLog[iso] = (completionLog[iso] ?? 0) + 1;
+        }
+      }
+      const character = { ...s.character };
+      recomputeHabitBonus(character, habits);
+      return { habits, completionLog, character };
     }),
 });

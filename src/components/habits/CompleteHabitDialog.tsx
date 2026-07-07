@@ -1,9 +1,18 @@
 import { useState } from 'react';
 import { type Habit } from '@/engine/habits';
 import { computeXp, habitGold, UNCAPPED_RATIO_CAP } from '@/engine/xp';
+import { toISODate } from '@/engine/date';
 import { useGameStore } from '@/store/useGameStore';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
+
+/** Find the most recent logged amount before `beforeISO` (exclusive). Returns null if none. */
+function lastLoggedAmount(habit: Habit, beforeISO: string): number | null {
+  const entries = Object.entries(habit.log)
+    .filter(([iso, e]) => iso < beforeISO && e.amount !== undefined)
+    .sort(([a], [b]) => b.localeCompare(a));
+  return entries.length > 0 ? (entries[0][1].amount ?? null) : null;
+}
 
 /** Quantity-habit completion: enter how much was done, see the XP preview. */
 export function CompleteHabitDialog({
@@ -17,6 +26,9 @@ export function CompleteHabitDialog({
 }) {
   const completeHabit = useGameStore((s) => s.completeHabit);
   const [actual, setActual] = useState(String(habit.target ?? 0));
+
+  const today = viewDate ?? toISODate();
+  const lastAmount = lastLoggedAmount(habit, today);
 
   const amount = Math.max(0, Number(actual) || 0);
   const xp = computeXp({
@@ -32,7 +44,12 @@ export function CompleteHabitDialog({
     <Modal title={habit.name} onClose={onClose}>
       <div className="space-y-4">
         <p className="text-sm text-ink-muted">
-          Goal: {habit.target} {habit.unit ?? ''}. How much did you complete?
+          Goal: {habit.target} {habit.unit ?? ''}.{' '}
+          {lastAmount !== null ? (
+            <span>Last time: <span className="font-semibold">{lastAmount} {habit.unit ?? ''}</span>. How much today?</span>
+          ) : (
+            'How much did you complete?'
+          )}
         </p>
         <input
           autoFocus

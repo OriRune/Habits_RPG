@@ -7,9 +7,9 @@ import { cameraWindow, VIEW } from '@/engine/crawl';
 import { bandForFloor, type CrawlPalette } from '@/engine/crawlBiomes';
 import { useSmoothCamera, type SmoothCameraLayout } from '@/hooks/useSmoothCamera';
 import { MINE_ORES, MINE_MONSTERS } from '@/content/mining';
-import { BOONS } from '@/content/boons';
+import { BOONS, boonSightBonus } from '@/content/boons';
 import { getSpell } from '@/engine/spells';
-import { mineRockSprite, mineFloorTile, mineOreSprite } from '@/lib/minigameArt';
+import { mineRockSprite, mineFloorTile, mineOreSprite, mineMaterialIcon } from '@/lib/minigameArt';
 import { getMaterial } from '@/engine/materials';
 import * as sfx from '@/lib/sfx';
 import { Button } from '@/components/ui/Button';
@@ -26,6 +26,8 @@ const CELL = 52;
 const BOARD_PX = VIEW * CELL;
 const MARGIN = 1;
 const RENDER_VIEW = VIEW + 2 * MARGIN;
+/** Base sight radius in tiles — Lantern boon adds to this via boonSightBonus. */
+const MINE_SIGHT_RADIUS = 4;
 
 /** Deterministic 0..1 hash for a cell — stable across renders. */
 function cellHash(r: number, c: number): number {
@@ -119,6 +121,25 @@ function Gauge({
   );
 }
 
+/**
+ * Renders one haul material entry — an ore icon (if available) or a colored name chip,
+ * followed by the quantity. Reused in the HUD tally, banking overlay, and death overlay.
+ */
+function HaulMat({ matKey, qty }: { matKey: string; qty: number }) {
+  const mat = getMaterial(matKey);
+  const icon = mineMaterialIcon(matKey);
+  return (
+    <span className="flex items-center gap-1 text-parchment-200">
+      {icon
+        ? <img src={icon} alt={mat?.name ?? matKey} title={mat?.name ?? matKey} className="h-4 w-4 object-contain image-pixel" />
+        : <span className="inline-block h-3 w-3 rounded-full shrink-0" style={{ backgroundColor: mat?.color ?? '#8b7355' }} />
+      }
+      {!icon && <span className="text-parchment-300/80">{mat?.name ?? matKey}</span>}
+      ×{qty}
+    </span>
+  );
+}
+
 export function MineRunOverlay() {
   const controls = useMiningLoop();
   const mine = useGameStore((s) => s.mining);
@@ -126,7 +147,9 @@ export function MineRunOverlay() {
   const beginBanking = useGameStore((s) => s.beginBanking);
   const mineDescend = useGameStore((s) => s.mineDescend);
   const chooseMineBoon = useGameStore((s) => s.chooseMineBoon);
+  const skipMineBoon = useGameStore((s) => s.skipMineBoon);
   const isFirstRun = useGameStore((s) => s.deepestMineFloor === 0);
+  const mineTombstone = useGameStore((s) => s.mineTombstone);
   const remotePlayers = useCoopStore((s) => s.remotePlayers);
   const coopSession = useCoopStore((s) => s.session);
   const coopJoined = useCoopStore((s) => s.joined);
@@ -417,6 +440,8 @@ export function MineRunOverlay() {
   if (!mine) return null;
 
   const band = bandForFloor(mine.floor);
+  /** Sight radius for fog of war — base + Lantern boon bonus. */
+  const sightR = MINE_SIGHT_RADIUS + boonSightBonus(mine.activeBoons ?? []);
   const dead = mine.status === 'ended';
   const onShaft = canDescend(mine);
   const faced = facedCell(mine);
@@ -547,9 +572,7 @@ export function MineRunOverlay() {
           <Coins className="h-3.5 w-3.5" /> {mine.haul.gold ?? 0}
         </span>
         {haulMats.map(([key, n]) => (
-          <span key={key} className="text-parchment-200">
-            {getMaterial(key)?.name ?? key} ×{n}
-          </span>
+          <HaulMat key={key} matKey={key} qty={n} />
         ))}
         {haulMats.length === 0 && (mine.haul.gold ?? 0) === 0 && (
           <span className="text-parchment-300/50">nothing yet — dig in</span>
@@ -563,6 +586,15 @@ export function MineRunOverlay() {
             {isFirstRun
               ? '🎁 Boon cache — press [Space] to open a permanent run buff!'
               : '🎁 Boon cache — press [Space] to open'}
+          </span>
+        </div>
+      )}
+
+      {/* Tombstone prompt — shown when standing on the lost-haul marker */}
+      {mine.status === 'active' && mine.tiles[mine.player.r]?.[mine.player.c]?.kind === 'tombstone' && mineTombstone && (
+        <div className="flex w-full max-w-lg items-center justify-center">
+          <span className="rounded border border-violet-600/60 bg-violet-900/40 px-3 py-1 font-display text-xs text-violet-300 animate-pulse">
+            🪦 Your remains — press [Space] to recover the lost haul
           </span>
         </div>
       )}
@@ -587,6 +619,20 @@ export function MineRunOverlay() {
             const c = baseC0 + vj;
             const tile = mine.tiles[r]?.[c];
             if (!tile) return null;
+
+            // --- Fog of war: cells outside the sight radius render as solid black ---
+            const dr = r - mine.player.r;
+            const dc = c - mine.player.c;
+            if (dr * dr + dc * dc > (sightR + 0.5) * (sightR + 0.5)) {
+              return (
+                <div
+                  key={`${r}-${c}`}
+                  className="absolute"
+                  style={{ left: vj * CELL, top: vi * CELL, width: CELL, height: CELL, backgroundColor: '#000' }}
+                />
+              );
+            }
+
             const ore = tile.kind === 'ore' && tile.oreKey ? MINE_ORES[tile.oreKey] : null;
             const isFloor = tile.kind === 'floor' || tile.kind === 'entrance';
             const floorImg = isFloor ? mineFloorTile(r, c) : undefined;
@@ -620,6 +666,8 @@ export function MineRunOverlay() {
                 ? { backgroundColor: '#3a2c1c', backgroundImage: ore ? `radial-gradient(circle at 55% 42%, ${ore.color}22 0%, transparent 60%)` : undefined }
                 : tile.kind === 'boon'
                 ? { backgroundColor: '#3a2a00', backgroundImage: 'radial-gradient(circle at 50% 45%, rgba(255,215,0,0.28) 0%, transparent 65%)', animation: 'mine-boon-pulse 2s ease-in-out infinite' }
+                : tile.kind === 'tombstone'
+                ? { backgroundColor: '#1c1c2e', backgroundImage: 'radial-gradient(circle at 50% 45%, rgba(180,160,255,0.22) 0%, transparent 65%)', animation: 'mine-boon-pulse 2.8s ease-in-out infinite' }
                 : { backgroundColor: '#2a1e12' };
 
             return (
@@ -654,6 +702,8 @@ export function MineRunOverlay() {
                   <span className="text-[20px] text-gold-bright">◇</span>
                 ) : tile.kind === 'boon' ? (
                   <span className="text-[22px] leading-none" style={{ filter: 'drop-shadow(0 0 6px rgba(255,200,0,0.9))' }}>🎁</span>
+                ) : tile.kind === 'tombstone' ? (
+                  <span className="text-[22px] leading-none" style={{ filter: 'drop-shadow(0 0 8px rgba(180,140,255,0.85))' }}>🪦</span>
                 ) : null}
                 {tile.maxDurability != null && tile.durability != null && tile.durability < tile.maxDurability && (
                   <div className="absolute bottom-1 left-1 right-1 h-[3px] overflow-hidden rounded-full bg-black/60">
@@ -814,11 +864,15 @@ export function MineRunOverlay() {
           );
         })}
 
-        {/* Monsters — rAF drives position */}
+        {/* Monsters — rAF drives position; fog culls those outside the sight radius */}
         {mine.monsters.map((m) => {
           const vj = m.c - baseC0;
           const vi = m.r - baseR0;
           if (vi < 0 || vi >= RENDER_VIEW || vj < 0 || vj >= RENDER_VIEW) return null;
+          // Fog of war: don't reveal monsters outside the player's sight.
+          const mdr = m.r - mine.player.r;
+          const mdc = m.c - mine.player.c;
+          if (mdr * mdr + mdc * mdc > (sightR + 0.5) * (sightR + 0.5)) return null;
           const def = MINE_MONSTERS[m.key];
           return (
             <div
@@ -851,7 +905,7 @@ export function MineRunOverlay() {
                   ))}
                 </div>
               )}
-              {(m.frozenUntilMs ?? 0) > Date.now() && (
+              {(m.frozenUntilMs ?? 0) > performance.now() && (
                 <div className="absolute inset-0 rounded bg-blue-400/25 ring-1 ring-blue-300" />
               )}
             </div>
@@ -1024,7 +1078,7 @@ export function MineRunOverlay() {
                 <Coins className="h-3.5 w-3.5" /> {mine.haul.gold ?? 0}
               </span>
               {haulMats.map(([key, n]) => (
-                <span key={key}>{getMaterial(key)?.name ?? key} ×{n}</span>
+                <HaulMat key={key} matKey={key} qty={n} />
               ))}
               {haulMats.length === 0 && (mine.haul.gold ?? 0) === 0 && (
                 <span className="text-parchment-300/50">nothing gathered</span>
@@ -1057,6 +1111,12 @@ export function MineRunOverlay() {
                 );
               })}
             </div>
+            <button
+              onClick={() => skipMineBoon()}
+              className="rounded-md border border-parchment-300/40 px-4 py-1.5 text-sm text-parchment-300 hover:bg-parchment-300/20 transition-colors"
+            >
+              Skip
+            </button>
           </div>
         )}
 
@@ -1077,18 +1137,23 @@ export function MineRunOverlay() {
                   <span className="font-display text-[10px] uppercase tracking-wider text-emerald-400/80">Kept (50%)</span>
                   <div className="flex flex-wrap justify-center gap-x-2 gap-y-0.5 text-parchment-200">
                     <span className="flex items-center gap-1 text-gold-bright"><Coins className="h-3 w-3" /> {keptGold}</span>
-                    {keptMats.map(([key, n]) => <span key={key}>{getMaterial(key)?.name ?? key} ×{n}</span>)}
+                    {keptMats.map(([key, n]) => <HaulMat key={key} matKey={key} qty={n} />)}
                     {keptGold === 0 && keptMats.length === 0 && <span className="text-parchment-300/50">nothing</span>}
                   </div>
                 </div>
                 <div className="w-px bg-parchment-300/20" />
                 <div className="flex flex-col items-center gap-1">
-                  <span className="font-display text-[10px] uppercase tracking-wider text-red-400/80">Lost (50%)</span>
+                  <span className="font-display text-[10px] uppercase tracking-wider text-red-400/80">Lost (50%){lostGold > 0 || lostMats.length > 0 ? ' — recoverable' : ''}</span>
                   <div className="flex flex-wrap justify-center gap-x-2 gap-y-0.5 text-parchment-300/60 line-through">
                     <span className="flex items-center gap-1"><Coins className="h-3 w-3" /> {lostGold}</span>
-                    {lostMats.map(([key, n]) => <span key={key}>{getMaterial(key)?.name ?? key} ×{n}</span>)}
+                    {lostMats.map(([key, n]) => <HaulMat key={key} matKey={key} qty={n} />)}
                     {lostGold === 0 && lostMats.length === 0 && <span className="no-underline text-parchment-300/40">nothing</span>}
                   </div>
+                  {(lostGold > 0 || lostMats.length > 0) && (
+                    <span className="mt-0.5 text-[10px] text-violet-400/70 no-underline">
+                      🪦 Find your tombstone to recover it
+                    </span>
+                  )}
                 </div>
               </div>
               <Button variant="primary" onClick={endMining} className="mt-1 px-4 py-2 text-sm">

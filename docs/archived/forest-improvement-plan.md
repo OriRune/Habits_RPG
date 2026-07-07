@@ -2,6 +2,8 @@
 
 Based on: `docs/forest-minigame-analysis.md`
 
+> **Archived 2026-07-05.** Verified against source: all of Phase 1–2 and most of Phase 3–5 are implemented (charge feedback, shrine telegraphing, exit visibility, spell HUD, free-direction dash, guardian HP bar, boon deal animation, adaptive drone, haul stashing, stage-3 ramp). Left undone as optional/housekeeping: **5.1** (split `ForestRunOverlay` into sub-components), **5.2** (extract VFX state to a hook), **5.4** (control-loop tests), **6.3** (forest-specific daily trial). Partial: **2.4** (boon preview still shows static text, no computed stat delta) and **4.2** (band tint applied to tile floors but not to the ambient FX layer). None of these block play; revisit only if code-quality debt in `ForestRunOverlay.tsx` becomes a problem.
+
 ---
 
 ## 1. Highest-Priority Improvements

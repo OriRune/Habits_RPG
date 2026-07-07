@@ -106,7 +106,17 @@ Because the content surface is already large, the next phase should focus on pol
 
 ---
 
+> **Project status as of 2026-06-22:** All phases (1–8) have been completed, though
+> implementation was non-linear — Phases 5–8 were worked on concurrently with earlier
+> phases. Status markers under each heading reflect the current state. Phase 9 items are
+> intentionally deferred. For tracked open items see the [Still open / deferred](#work-status)
+> section near the end of this document.
+
+---
+
 # Phase 1 — Stabilize, Clarify, and Clean Up
+
+> ✅ **Done** (2026-06-22)
 
 ## Goal
 
@@ -234,6 +244,8 @@ Create `docs/ROADMAP.md` with:
 ---
 
 # Phase 2 — Strengthen the Habit Tracker Core
+
+> ✅ **Done** (2026-06-22)
 
 ## Goal
 
@@ -511,6 +523,8 @@ Add a recovery mode triggered by:
 
 # Phase 3 — Weekly Planning and Review
 
+> ✅ **Done** (2026-06-22)
+
 ## Goal
 
 Turn the app into a weekly self-improvement loop, not just a daily checklist.
@@ -617,6 +631,8 @@ Create a habit analytics page or modal with:
 ---
 
 # Phase 4 — Progression and Balance
+
+> ✅ **Done** (2026-06-22)
 
 ## Goal
 
@@ -740,6 +756,8 @@ Then:
 
 # Phase 5 — Multiplayer and Accountability
 
+> ✅ **Done** (2026-06-22)
+
 ## Goal
 
 Make party features reinforce real habit completion, not just multiplayer gameplay.
@@ -841,6 +859,8 @@ Add weekly party quests such as:
 
 # Phase 6 — Online Trust, Server Time, and Fairness
 
+> ✅ **Done** (2026-06-22)
+
 ## Goal
 
 Make online features fair enough for parties and leaderboards without overbuilding competitive anti-cheat.
@@ -849,9 +869,11 @@ Make online features fair enough for parties and leaderboards without overbuildi
 
 ## 1. Wire `server_now()` into online date-sensitive systems
 
-### Problem
+### Problem ✅ resolved
 
-The backend includes a server clock function, but the client appears to rely mostly on local device time for daily and weekly gates.
+~~The backend includes a server clock function, but the client appears to rely mostly on local device time for daily and weekly gates.~~
+
+**Shipped (2026-06-22).** `src/net/clock.ts::syncServerClock()` fetches `server_now()` with RTT compensation and calls `src/engine/date.ts::setClockOffset()`. Every daily/weekly gate routes "today" through `engine/date.ts::toISODate()` → `now()`, which applies the offset — a single injectable chokepoint, so no per-call-site changes were needed. `App.tsx` gates the startup `normalizeHabits()`/`checkWeeklyRollover()` calls on `clockReady` so the very first evaluation also uses server time rather than device time. When the backend is unconfigured, the offset stays 0 and device time is used unchanged.
 
 ### Tasks
 
@@ -907,6 +929,8 @@ Use **Option A** for now.
 
 This keeps development manageable and matches the likely social use case. Do not heavily invest in anti-cheat unless public competitive leaderboards become central.
 
+**Decided 2026-06-22.** Option A is implemented. See `docs/trust-model.md` for the full decision record, what the server defends against (clock manipulation via `server_now()`, ownership via RLS), and what it does not (save editing, leaderboard accuracy, daily caps).
+
 ### Acceptance criteria
 
 - The chosen trust model is documented.
@@ -916,6 +940,8 @@ This keeps development manageable and matches the likely social use case. Do not
 ---
 
 # Phase 7 — Technical Debt and Test Coverage
+
+> ✅ **Done** (2026-06-22) — helper named `commitRun` (not `commitRunOutcome`); RNG file is `src/store/runRng.ts` (not engine/); all 8 trials uniform.
 
 ## Goal
 
@@ -1053,6 +1079,8 @@ Seven trials have dedicated engine files, while Spirit Grove is structured diffe
 
 # Phase 8 — Onboarding and User Experience Polish
 
+> ✅ **Mostly done** (2026-06-22) — gap: the full guided onboarding *sequence* (step-by-step walkthrough from "complete first habit → show first reward → unlock dashboard") is not yet built. `CreationView` (with starter-habit template picker) and a one-time `WelcomeCard` cover the basics.
+
 ## Goal
 
 Make the app easier to start, understand, and keep using.
@@ -1145,6 +1173,8 @@ Do not block gameplay improvements on art. Replace placeholders by priority:
 ---
 
 # Phase 9 — Possible Future Features
+
+> ⏳ **Deferred** — intentionally out of scope until Phases 1–8 are stable and the habit core is stronger.
 
 These are good ideas, but should come after the habit core is stronger.
 
@@ -1276,56 +1306,35 @@ This app already has many systems. New systems should make the experience easier
 
 ---
 
-# Recommended Immediate Task List
+# Work Status
 
-Start here.
+Quick-start tasks listed when this plan was written, and their current status:
 
-## Task 1 — Documentation cleanup
+| Task | Description | Status |
+|---|---|---|
+| 1 | Documentation cleanup — README, INDEX, ROADMAP, stale doc markers | ✅ Done — README rewritten, `docs/INDEX.md` exists, `docs/trust-model.md` created; ROADMAP folded into this doc (status markers above) |
+| 2 | Habit dashboard upgrade — Energy today, weekly progress, focus habits, warning panel | ✅ Done |
+| 3 | XP/stat clarity — Training XP / Hero Stats labels, explanatory text, gain preview | ✅ Done |
+| 4 | Guided habit creation — template-based starter habits, stat mapping, reward preview | ✅ Done — template picker in `CreationView` |
+| 5 | Server date integration — `server_now()` for online gates, local fallback, tests | ✅ Done — `net/clock.ts` + `engine/date.ts` seam; `clockReady` gate in `App.tsx` |
+| 6 | Balance report — developer audit doc | ✅ Done — `docs/balance-audit.md` (2026-06-17) |
+| 7 | Co-op and cloud tests — protocol, CAS conflict, party quest contribution | ✅ Done — cloudSave, party, co-op reducer, and daily/weekly reset test suites |
 
-- Rewrite `README.md`.
-- Add `docs/INDEX.md`.
-- Add `docs/ROADMAP.md`.
-- Mark stale docs as archived.
+---
 
-## Task 2 — Habit dashboard upgrade
+## Still open / deferred
 
-- Add Energy earned today.
-- Add weekly progress.
-- Add focus habits.
-- Add recommended next action.
-- Add habit health warning panel.
+Verified as not yet implemented as of 2026-06-22. Not blocking the current roadmap but tracked here so they are not lost:
 
-## Task 3 — XP/stat clarity
-
-- Rename visible `statXp` concept to Training XP.
-- Rename visible `statLevels` concept to Hero Stats.
-- Add explanatory text.
-- Add next-level stat gain preview.
-
-## Task 4 — Guided habit creation
-
-- Add template-based habit creation.
-- Add suggested stat mapping.
-- Add reward preview.
-- Keep advanced options available.
-
-## Task 5 — Server date integration
-
-- Use server date for online daily/weekly systems.
-- Keep local date fallback for offline mode.
-- Add tests.
-
-## Task 6 — Balance report
-
-- Add developer balance view.
-- Compare habits vs minigames.
-- Tune rewards after reviewing real data.
-
-## Task 7 — Co-op and cloud tests
-
-- Add protocol tests.
-- Add cloud save conflict tests.
-- Add party quest contribution tests.
+| Item | Details | Priority |
+|---|---|---|
+| **Co-op staleness guard** | `src/hooks/useTacticsCoopSession.ts:68-71` — guard compares host timestamp `t` against the guest's local `performance.now()` (per-machine, not aligned). Never compares against the current state's own timestamp. Needs a host-relative clock offset per `docs/archived/MULTIPLAYER_PLAN.md:257`. | Real bug |
+| ~~5 dead Tactics spells~~ | ✅ Fixed (verified 2026-07-05) — `isTacticsLoadoutSpell()` (`hexBattle.ts:76-82`) now filters any spell with a `mechanic` field out of the Tactics loadout picker, so `rune-fire`/`rune-ice`/`rune-poison`/`ring-of-fire`/`teleport` are no longer selectable. | Done |
+| **5 spellbooks missing from `SPELLBOOK_KEYS`** | `src/lib/sprites.ts:145` — `spellbook_fire_rune`, `_ice_rune`, `_poison_rune`, `_ring_of_fire`, `_chaotic_blink` not in the key array; render as generated placeholders. See `docs/placeholder-art-tracking.md`. | Cosmetic |
+| **Guided onboarding sequence** | Full step-by-step walkthrough (complete first habit → show first reward → unlock dashboard) not yet built. `CreationView` + `WelcomeCard` cover the basics; no enforced tutorial gating. | UX gap |
+| **Co-op desync edge cases** | Host disconnect strands guest mid-run, late-join, broadcast loss. Reducer unit tests exist; no integration-level network-layer tests. See `docs/habits-rpg-game-analysis.md:675`. | Medium |
+| **Dungeon death loot loss** | Discrete loot (spellbooks, weapons, gear) lost on dungeon death — penalty may feel disproportionate. See `docs/dungeon-delve-improvement-plan.md:130`. | Design call |
+| **`pendingLevelUp` mid-dungeon edge case** | `checkLevelUp` early-returns when `state.battle` is set; dungeon XP only flags a deferred level-up. Possible edge-case bugs around leveling mid-dungeon. See `docs/habits-rpg-game-analysis.md:685`. | Edge case |
 
 ---
 

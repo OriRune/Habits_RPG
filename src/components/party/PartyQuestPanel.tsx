@@ -4,9 +4,21 @@ import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
 import type { ChallengeDef } from '@/engine/challenges';
+import { STATS, type StatId } from '@/engine/stats';
 import { partyActions, usePartyStore } from '@/hooks/useParty';
 import { useGameStore } from '@/store/useGameStore';
 import { useAuthStore } from '@/net/auth';
+
+// Kinds that aggregate cleanly across party members (i.e. summing each player's
+// contributions is meaningful). streak/recovery/rival are per-player concepts and
+// cannot be meaningfully combined, so they are intentionally excluded.
+type PartyQuestKind = 'count' | 'class' | 'quantity';
+
+const KIND_LABELS: Record<PartyQuestKind, string> = {
+  count: 'Any habit (count)',
+  class: 'Stat-focused (class)',
+  quantity: 'Amount logged (quantity)',
+};
 
 /**
  * Shared party quest: a combined progress bar everyone contributes to via habit
@@ -101,14 +113,28 @@ function QuestForm({
   const [name, setName] = useState('Party Push');
   const [target, setTarget] = useState(50);
   const [days, setDays] = useState(7);
+  const [kind, setKind] = useState<PartyQuestKind>('count');
+  const [stat, setStat] = useState<StatId>('ST');
+
+  const targetLabel =
+    kind === 'quantity' ? 'Target amount' : 'Target completions';
+
+  const autoDescription = () => {
+    if (kind === 'count')
+      return `Complete ${target} habits together within ${days} day${days === 1 ? '' : 's'}.`;
+    if (kind === 'class')
+      return `Log ${target} ${STATS.find((s) => s.id === stat)?.name ?? stat} habit completions together within ${days} day${days === 1 ? '' : 's'}.`;
+    return `Log a combined ${target} units of quantity habits within ${days} day${days === 1 ? '' : 's'}.`;
+  };
 
   const submit = () => {
     const rewardGold = Math.min(200, 50 + 10 * memberCount);
     const def: ChallengeDef = {
       id: `party_${Date.now()}`,
       name: name.trim() || 'Party Quest',
-      description: `Complete ${target} habits together within ${days} day${days === 1 ? '' : 's'}.`,
-      kind: 'count',
+      description: autoDescription(),
+      kind,
+      ...(kind === 'class' ? { stat } : {}),
       goal: target,
       durationDays: days,
       reward: { gold: rewardGold },
@@ -128,10 +154,39 @@ function QuestForm({
           className="w-full rounded border border-gold-deep/50 bg-parchment-100/80 px-2 py-1 text-sm text-ink focus:border-gold-deep focus:outline-none"
         />
       </label>
+
+      <label className="block space-y-1">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-muted">Quest type</span>
+        <select
+          value={kind}
+          onChange={(e) => setKind(e.target.value as PartyQuestKind)}
+          className="w-full rounded border border-gold-deep/50 bg-parchment-100/80 px-2 py-1 text-sm text-ink focus:border-gold-deep focus:outline-none"
+        >
+          {(Object.entries(KIND_LABELS) as [PartyQuestKind, string][]).map(([k, label]) => (
+            <option key={k} value={k}>{label}</option>
+          ))}
+        </select>
+      </label>
+
+      {kind === 'class' && (
+        <label className="block space-y-1">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-muted">Stat</span>
+          <select
+            value={stat}
+            onChange={(e) => setStat(e.target.value as StatId)}
+            className="w-full rounded border border-gold-deep/50 bg-parchment-100/80 px-2 py-1 text-sm text-ink focus:border-gold-deep focus:outline-none"
+          >
+            {STATS.map((s) => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+        </label>
+      )}
+
       <div className="flex gap-2">
         <label className="flex-1 space-y-1">
           <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
-            Target completions
+            {targetLabel}
           </span>
           <input
             type="number"

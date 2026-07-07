@@ -857,3 +857,45 @@ describe('multi-hero: loss condition — only when ALL heroes are down', () => {
     expect(s2.status).toBe('lost');
   });
 });
+
+describe('multi-hero: guest targetability anchors to the acting hero (MP-13)', () => {
+  it('a guest hero can attack after the host hero has already acted', () => {
+    const p0 = makePlayer({ q: 0, r: 2 }, { id: 'p0', hasActed: true, movesLeft: 0 });
+    const p1 = makePlayer({ q: 0, r: 0 }, { id: 'p1', hasActed: false });
+    const enemy = makeEnemy(1, { q: 1, r: 0 }, { hp: 30, maxHp: 30 });
+    const s0 = makeState({ player: p0, players: [p0, p1], activeHeroId: 'p0', enemies: [enemy] });
+
+    const s1 = playerAttack(s0, { q: 1, r: 0 }, HALF, 'p1');
+
+    // Without the re-anchor hoist, computeTargetable reads the host's acted hero
+    // and returns [] → the guest's attack is silently dropped (foe stays at 30).
+    const foe = s1.enemies.find((e) => e.id === 1)!;
+    expect(foe.hp).toBeLessThan(30);
+  });
+
+  it('a guest hero can cast a targeted spell after the host hero has acted', () => {
+    const p0 = makePlayer({ q: 0, r: 2 }, { id: 'p0', hasActed: true, movesLeft: 0 });
+    const p1 = makePlayer({ q: 0, r: 0 }, { id: 'p1', hasActed: false });
+    const enemy = makeEnemy(1, { q: 1, r: 0 }, { hp: 30, maxHp: 30 });
+    const s0 = makeState({ player: p0, players: [p0, p1], activeHeroId: 'p0', enemies: [enemy] });
+
+    const s1 = playerCastSpell(s0, 'sparks', { q: 1, r: 0 }, HALF, 'p1');
+
+    const foe = s1.enemies.find((e) => e.id === 1)!;
+    expect(foe.hp).toBeLessThan(30);
+  });
+
+  it('range validates from the acting hero, not the host — rejects an out-of-range guest attack', () => {
+    // Host p0 is adjacent to the foe and has NOT acted; guest p1 is far away.
+    // Without the fix, targetability validates from p0 (in range) and wrongly
+    // accepts p1's attack. With the fix it validates from p1 (out of range) → no-op.
+    const p0 = makePlayer({ q: 0, r: 0 }, { id: 'p0', hasActed: false });
+    const p1 = makePlayer({ q: -3, r: 0 }, { id: 'p1', hasActed: false });
+    const enemy = makeEnemy(1, { q: 1, r: 0 }, { hp: 30, maxHp: 30 });
+    const s0 = makeState({ player: p0, players: [p0, p1], activeHeroId: 'p0', enemies: [enemy] });
+
+    const s1 = playerAttack(s0, { q: 1, r: 0 }, HALF, 'p1');
+
+    expect(s1).toBe(s0); // p1 can't reach the foe → intent rejected, state unchanged
+  });
+});

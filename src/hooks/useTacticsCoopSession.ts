@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { supabase } from '@/net/supabaseClient';
 import { useAuthStore } from '@/net/auth';
 import { useGameStore, fighterFor } from '@/store/useGameStore';
+import { acceptTacticsStateT, resetTacticsStateT } from '@/store/runRng';
 import { pushCoopNotice, leaveCoop, useCoopStore } from '@/net/coop/session';
 import { coopChannelName } from '@/net/coop/protocol';
 import type { CoopMessage, HeroJoin, TacticsState, TacticsIntent } from '@/net/coop/protocol';
@@ -50,6 +51,15 @@ export function useTacticsCoopSession(): void {
         // Host only: receive the guest's HeroOpts, build the board, broadcast initial state.
         if (!isHost) return;
         const s = useGameStore.getState();
+        if (s.tactics) {
+          // The board already exists (guest rejoin, Supabase reconnect re-firing
+          // SUBSCRIBED, or a second guest): beginTacticsCoop would no-op, so the
+          // store subscription never fires and the (re)joining guest hangs on a
+          // null board. Resend the current authoritative state directly (MP-10).
+          // Wall clock: the stamp crosses machines and must survive a host reload.
+          send({ type: 'tactics-state', t: Date.now(), state: s.tactics } satisfies TacticsState);
+          return;
+        }
         const hostFighter = fighterFor(s);
         const hostHeroOpts: HeroOpts = {
           fighter: hostFighter,
@@ -65,9 +75,9 @@ export function useTacticsCoopSession(): void {
       } else if (msg.type === 'tactics-state') {
         // Guest only: apply the host's authoritative state, re-keyed to the guest's own hero.
         if (isHost) return;
-        // Stale-message guard: drop if we already have a newer state.
-        const cur = useGameStore.getState().tactics;
-        if (cur && (msg as TacticsState).t < performance.now() - 10_000) return;
+        // Stale-message guard: monotonic high-water mark on the host's stamp.
+        // Never compare against our own clock — the two machines' clocks are unrelated.
+        if (!acceptTacticsStateT((msg as TacticsState).t)) return;
         useGameStore.getState().coopApplyTactics({ ...msg.state, activeHeroId: userId });
 
       } else if (msg.type === 'tactics-intent') {
@@ -93,6 +103,9 @@ export function useTacticsCoopSession(): void {
 
     channel.subscribe((status) => {
       if (status !== 'SUBSCRIBED') return;
+      // Fresh channel → fresh staleness mark, so a new session/host is never
+      // blocked by the previous session's high-water mark.
+      resetTacticsStateT();
       useCoopStore.setState({ send });
       if (!isHost) {
         // Guest: announce presence + send combat snapshot so host can build the board.
@@ -122,7 +135,8 @@ export function useTacticsCoopSession(): void {
       if (s.tactics === prev.tactics) return;
       const { send } = useCoopStore.getState();
       if (!send || !s.tactics) return;
-      send({ type: 'tactics-state', t: performance.now(), state: s.tactics } satisfies TacticsState);
+      // Wall clock: the stamp crosses machines and must survive a host reload.
+      send({ type: 'tactics-state', t: Date.now(), state: s.tactics } satisfies TacticsState);
     });
   }, [joined, game, isHost]);
 

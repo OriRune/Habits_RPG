@@ -8,11 +8,14 @@ import { type DungeonRoom, merchantOffers } from '@/engine/dungeon';
 import { type FloorMap } from '@/engine/dungeonMap';
 import { type MineState, type MineTile } from '@/engine/mining';
 import { getWeapon, STARTER_WEAPON } from '@/engine/weapons';
-import { STA_REGEN_MS, MP_REGEN_MS } from '@/engine/crawl';
+import { STA_REGEN_MS, MP_REGEN_MS, BOON_CONSOLATION_HEAL, BOON_CONSOLATION_GOLD } from '@/engine/crawl';
+import { BOONS } from '@/content/boons';
 import { type ForestState, type ForestTile, FOREST_WINDUP_MS } from '@/engine/forest';
 import { getEncounter, startEncounter } from '@/engine/encounters';
 import { toISODate, weekKey, _setNow, _resetNow, addDays } from '@/engine/date';
 import { MAX_ENERGY } from '../shared';
+import { BASE_STAT_LEVEL } from '@/engine/progression';
+import { freshEarningsLedger } from '@/engine/balance';
 import { completionRatio, COMPLETION_CAP, UNCAPPED_RATIO_CAP } from '@/engine/xp';
 import { statCompletedWithin } from '@/engine/habits';
 import { resetRunRng } from '../runRng';
@@ -133,6 +136,33 @@ describe('createCharacter (onboarding)', () => {
     get().resetGame();
     expect(get().created).toBe(false);
     expect(get().character.name).toBe('Adventurer');
+  });
+
+  it('a fresh store has hasSeenWelcome === false', () => {
+    expect(get().hasSeenWelcome).toBe(false);
+  });
+
+  it('dismissWelcome flips hasSeenWelcome to true', () => {
+    expect(get().hasSeenWelcome).toBe(false);
+    get().dismissWelcome();
+    expect(get().hasSeenWelcome).toBe(true);
+  });
+
+  it('resetGame resets hasSeenWelcome to false', () => {
+    get().dismissWelcome();
+    expect(get().hasSeenWelcome).toBe(true);
+    get().resetGame();
+    expect(get().hasSeenWelcome).toBe(false);
+  });
+
+  it('addHabit seeds starter habits before createCharacter completes', () => {
+    get().addHabit({ name: 'Walk 10 minutes', stat: 'AG', type: 'binary', frequency: 'daily', difficulty: 'easy' });
+    get().addHabit({ name: 'Stretch', stat: 'AG', type: 'binary', frequency: 'daily', difficulty: 'easy' });
+    expect(get().habits.length).toBe(2);
+    get().createCharacter({ name: 'Seeded', allocations: {}, weaponKey: 'worn_sword', spellKey: '' });
+    // habits survive createCharacter; created flips
+    expect(get().created).toBe(true);
+    expect(get().habits.length).toBe(2);
   });
 });
 
@@ -842,6 +872,73 @@ describe('developer testing tools', () => {
     get().devClearClass();
     expect(get().character.classId).toBeNull();
   });
+
+  it('devSetLevel synthesizes statLevels — stat levels rise above base after a level jump', () => {
+    get().resetGame();
+    // Fresh character has all stat levels at BASE_STAT_LEVEL.
+    STAT_IDS.forEach((id) => {
+      expect(get().character.statLevels[id]).toBe(BASE_STAT_LEVEL);
+    });
+
+    // After a level jump, stat levels must be above base (the key regression check —
+    // before the fix, devSetLevel left statLevels frozen at BASE_STAT_LEVEL).
+    get().devSetLevel(10);
+    STAT_IDS.forEach((id) => {
+      expect(get().character.statLevels[id]).toBeGreaterThan(BASE_STAT_LEVEL);
+    });
+
+    // Lv 5 jump must give lower or equal stat levels than Lv 10 (no regressions in ordering).
+    get().devSetLevel(5);
+    const lv5Levels = { ...get().character.statLevels };
+    get().devSetLevel(10);
+    STAT_IDS.forEach((id) => {
+      expect(get().character.statLevels[id]).toBeGreaterThanOrEqual(lv5Levels[id]);
+    });
+  });
+
+  it('resetGame clears mineTombstone and claimedPartyQuests', () => {
+    useGameStore.setState({
+      mineTombstone: { floor: 3, haul: { gold: 50 } },
+      claimedPartyQuests: ['quest-abc'],
+    });
+    get().resetGame();
+    expect(get().mineTombstone).toBeNull();
+    expect(get().claimedPartyQuests).toEqual([]);
+  });
+
+  it('devFillEnergy sets energy to MAX_ENERGY', () => {
+    get().resetGame();
+    useGameStore.setState({ character: { ...get().character, energy: 0 } });
+    get().devFillEnergy();
+    expect(get().character.energy).toBe(MAX_ENERGY);
+  });
+
+  it('devAddGold increments gold by the given amount and ignores negatives', () => {
+    get().resetGame();
+    useGameStore.setState({ character: { ...get().character, gold: 200 } });
+    get().devAddGold(500);
+    expect(get().character.gold).toBe(700);
+    get().devAddGold(-999);
+    expect(get().character.gold).toBe(700); // negative amount is a no-op
+  });
+
+  it('devResetEarnings zeros the earnings ledger and energy log', () => {
+    const e = get().earnings;
+    useGameStore.setState({
+      earnings: { ...e, xp: { ...e.xp, habit: 500 }, gold: { ...e.gold, mine: 200 } },
+      energyLog: { [toISODate()]: { earned: 5, spent: 3 } },
+    });
+    get().devResetEarnings();
+    expect(get().earnings).toEqual(freshEarningsLedger());
+    expect(get().energyLog).toEqual({});
+  });
+
+  it('devForceWeeklyRollover then checkWeeklyRollover emits a weekly report', () => {
+    get().resetGame();
+    get().devForceWeeklyRollover();
+    get().checkWeeklyRollover();
+    expect(get().pendingReport).not.toBeNull();
+  });
 });
 
 describe('deep mine', () => {
@@ -902,6 +999,33 @@ describe('deep mine', () => {
     expect(get().mining).not.toBeNull();
   });
 
+  it('beginMining with an explicit co-op seed replaces a leftover orphan run (MP-12)', () => {
+    // A persisted/solo run left on state before the join must not survive: keeping it
+    // would merge a stale map against the shared co-op seed.
+    useGameStore.setState({ mining: makeMine({ floor: 5 }), character: { ...get().character, energy: 10 } });
+    const stale = get().mining;
+    get().beginMining(4242); // co-op join passes the shared seed
+    expect(get().mining).not.toBe(stale);
+    expect(get().mining!.floor).toBe(1); // rebuilt from the shared seed, not the stale floor 5
+  });
+
+  it('beginMining without a seed keeps an in-progress solo run (re-entry)', () => {
+    const existing = makeMine({ floor: 3 });
+    useGameStore.setState({ mining: existing });
+    get().beginMining();
+    expect(get().mining).toBe(existing);
+  });
+
+  it('beginMining with a co-op seed but no energy clears the orphan so auto-leave fires (MP-12)', () => {
+    useGameStore.setState({
+      mining: makeMine({ floor: 5 }),
+      character: { ...get().character, energy: 0 },
+      settings: { ...get().settings, unlimitedEnergy: false },
+    });
+    get().beginMining(4242);
+    expect(get().mining).toBeNull();
+  });
+
   it('mineStrike breaks the faced ore vein and accrues the haul', () => {
     const tiles = makeMine().tiles;
     tiles[2][3] = { kind: 'ore', oreKey: 'rubble', durability: 1 };
@@ -948,8 +1072,8 @@ describe('deep mine', () => {
     expect(get().deepestMineFloor).toBe(2);
   });
 
-  it('persists at version 25', () => {
-    expect(useGameStore.persist.getOptions().version).toBe(25);
+  it('persists at version 27', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(27);
   });
 
   it('coopApplyWorld drops a stale/duplicate world slice (t guard)', () => {
@@ -972,6 +1096,39 @@ describe('deep mine', () => {
     useGameStore.setState({ mining: makeMine() });
     get().coopApplyWorld({ floor: 1, monsters: [] }); // no t field
     expect(get().mining).not.toBeNull();
+  });
+
+  it('boon cache pickup with exhausted pool grants a consolation instead of a zero-option choosing (MINI-01)', () => {
+    const allMineBoons = Object.values(BOONS)
+      .filter((b) => b.game === 'mine' || b.game === 'both')
+      .map((b) => b.key);
+    const tiles = makeMine().tiles;
+    tiles[2][2] = { kind: 'boon' }; // player stands here; Strike triggers the pickup
+    useGameStore.setState({ mining: makeMine({ tiles, hp: 20, activeBoons: allMineBoons }) });
+    get().mineStrike();
+    const mine = get().mining!;
+    expect(mine.tiles[2][2].kind).toBe('floor'); // cache still consumed
+    expect(mine.status).toBe('active');           // no soft-lock
+    expect(mine.pendingBoonChoice).toBeNull();
+    expect(mine.hp).toBe(20 + BOON_CONSOLATION_HEAL);
+    expect(mine.haul.gold ?? 0).toBe(BOON_CONSOLATION_GOLD);
+  });
+
+  it('skipMineBoon dismisses the boon panel without granting a boon', () => {
+    useGameStore.setState({
+      mining: makeMine({ status: 'choosing', pendingBoonChoice: ['iron_arm', 'stone_skin'] }),
+    });
+    get().skipMineBoon();
+    expect(get().mining!.status).toBe('active');
+    expect(get().mining!.pendingBoonChoice).toBeNull();
+    expect(get().mining!.activeBoons).toHaveLength(0);
+  });
+
+  it('skipMineBoon is a no-op outside the choosing state', () => {
+    const mine = makeMine();
+    useGameStore.setState({ mining: mine });
+    get().skipMineBoon();
+    expect(get().mining).toBe(mine);
   });
 });
 
@@ -1031,11 +1188,29 @@ describe('wild forest', () => {
     expect(get().forest).not.toBeNull();
   });
 
+  it('beginForest with an explicit co-op seed replaces a leftover orphan run (MP-12)', () => {
+    useGameStore.setState({ forest: makeForest({ stage: 5 }), character: { ...get().character, energy: 10 } });
+    const stale = get().forest;
+    get().beginForest(4242);
+    expect(get().forest).not.toBe(stale);
+    expect(get().forest!.stage).toBe(1);
+  });
+
+  it('beginForest with a co-op seed but no energy clears the orphan (MP-12)', () => {
+    useGameStore.setState({
+      forest: makeForest({ stage: 5 }),
+      character: { ...get().character, energy: 0 },
+      settings: { ...get().settings, unlimitedEnergy: false },
+    });
+    get().beginForest(4242);
+    expect(get().forest).toBeNull();
+  });
+
   it('forestAct gathers a faced node into the haul', () => {
     const tiles = makeForest().tiles;
     tiles[2][3] = { kind: 'node', nodeKey: 'flower_bush' };
     useGameStore.setState({ forest: makeForest({ tiles }) });
-    get().forestAct();
+    get().forestAct(1000);
     expect(get().forest!.tiles[2][3].kind).toBe('trail');
     expect(get().forest!.haul.materials?.herbs ?? 0).toBeGreaterThan(0);
   });
@@ -1099,6 +1274,108 @@ describe('wild forest', () => {
     useGameStore.setState({ forest: makeForest() });
     get().coopApplyForestWorld({ floor: 1, monsters: [] }); // no t field
     expect(get().forest).not.toBeNull();
+  });
+
+  it('boon cache pickup with exhausted pool grants a consolation instead of a zero-option choosing (MINI-01)', () => {
+    const allForestBoons = Object.values(BOONS)
+      .filter((b) => b.game === 'forest' || b.game === 'both')
+      .map((b) => b.key);
+    const tiles = makeForest().tiles;
+    tiles[2][3] = { kind: 'boon' }; // walking onto the cache triggers the pickup
+    useGameStore.setState({ forest: makeForest({ tiles, hp: 20, activeBoons: allForestBoons }) });
+    get().forestMove('right');
+    const forest = get().forest!;
+    expect(forest.player).toMatchObject({ r: 2, c: 3 });
+    expect(forest.tiles[2][3].kind).toBe('trail'); // cache still consumed
+    expect(forest.status).toBe('active');           // no soft-lock
+    expect(forest.pendingBoonChoice).toBeNull();
+    expect(forest.hp).toBe(20 + BOON_CONSOLATION_HEAL);
+    expect(forest.haul.gold ?? 0).toBe(BOON_CONSOLATION_GOLD);
+  });
+
+  it('skipForestBoon dismisses the boon panel without granting a boon', () => {
+    useGameStore.setState({
+      forest: makeForest({ status: 'choosing', pendingBoonChoice: ['lantern', 'forager'] }),
+    });
+    get().skipForestBoon();
+    expect(get().forest!.status).toBe('active');
+    expect(get().forest!.pendingBoonChoice).toBeNull();
+    expect(get().forest!.activeBoons).toHaveLength(0);
+  });
+
+  it('skipForestBoon is a no-op outside the choosing state', () => {
+    const forest = makeForest();
+    useGameStore.setState({ forest });
+    get().skipForestBoon();
+    expect(get().forest).toBe(forest);
+  });
+
+  describe('forestStash — mid-run haul banking at clearings', () => {
+    // Note: makeForest() places the player at [r:2, c:2].
+
+    it('banks 80% of gold into inventory and resets the run haul, run stays active', () => {
+      const tiles = makeForest().tiles;
+      tiles[2][2] = { kind: 'clearing' }; // player is at [2,2]
+      useGameStore.setState({ forest: makeForest({ tiles, haul: { gold: 100 } }) });
+      const goldBefore = get().character.gold;
+      get().forestStash();
+      expect(get().character.gold).toBe(goldBefore + 80); // 80% of 100
+      expect(get().forest).not.toBeNull();                 // run still alive
+      expect(get().forest!.status).toBe('active');
+      expect(get().forest!.haul.gold ?? 0).toBe(0);       // haul reset
+    });
+
+    it('banks 80% of materials into inventory', () => {
+      const tiles = makeForest().tiles;
+      tiles[2][2] = { kind: 'clearing' };
+      useGameStore.setState({ forest: makeForest({ tiles, haul: { materials: { herbs: 10 } } }) });
+      const herbsBefore = get().materials.herbs ?? 0;
+      get().forestStash();
+      expect(get().materials.herbs ?? 0).toBe(herbsBefore + 8); // floor(10 * 0.8)
+      expect(get().forest!.haul.materials?.herbs ?? 0).toBe(0);
+    });
+
+    it('is a no-op when the player is not on a clearing tile', () => {
+      // Default makeForest() places trail at [2,2], so no tile override needed.
+      useGameStore.setState({ forest: makeForest({ haul: { gold: 50 } }) });
+      const goldBefore = get().character.gold;
+      get().forestStash();
+      expect(get().character.gold).toBe(goldBefore); // nothing banked
+      expect(get().forest!.haul.gold).toBe(50);      // haul unchanged
+    });
+
+    it('is a no-op when the haul is empty', () => {
+      const tiles = makeForest().tiles;
+      tiles[2][2] = { kind: 'clearing' };
+      useGameStore.setState({ forest: makeForest({ tiles, haul: {} }) });
+      const goldBefore = get().character.gold;
+      get().forestStash();
+      expect(get().character.gold).toBe(goldBefore);
+    });
+
+    it('after stashing, a subsequent death only risks the post-stash remainder', () => {
+      const tiles = makeForest().tiles;
+      tiles[2][2] = { kind: 'clearing' };
+      // Start with 100 gold — stash 80, then die; remaining 0 gold → death keeps 0.
+      useGameStore.setState({
+        forest: makeForest({
+          tiles,
+          hp: 3,
+          haul: { gold: 100 },
+          beasts: [{ id: 'a', key: 'wild_boar', r: 1, c: 2, hp: 8, maxHp: 8, readyAtMs: 999999, asleep: false }],
+        }),
+      });
+      const goldBefore = get().character.gold;
+      get().forestStash();
+      expect(get().character.gold).toBe(goldBefore + 80); // 80 safely banked
+      // Kill the player with two ticks.
+      get().forestTick(1000);
+      get().forestTick(1000 + FOREST_WINDUP_MS + 50);
+      expect(get().forest!.status).toBe('ended');
+      get().endForest();
+      // The post-stash haul was 0, so death forfeits nothing extra.
+      expect(get().character.gold).toBe(goldBefore + 80);
+    });
   });
 });
 
@@ -1466,6 +1743,19 @@ describe('claimPartyQuestReward (Stage 5.1)', () => {
     useGameStore.setState({ character: { ...get().character, gold: 0 }, claimedPartyQuests: [] });
     get().claimPartyQuestReward('quest-big', 50); // 50 + 500 = 550 → capped at 200
     expect(get().character.gold).toBe(200);
+  });
+});
+
+describe('beginTacticsCoop no-op invariant (MP-10)', () => {
+  it('returns the existing board unchanged when a tactics fight already exists', () => {
+    // MP-10 leans on this contract: once a board exists, beginTacticsCoop is a
+    // no-op (same reference), so the store subscription never re-broadcasts. The
+    // Tactics host-join handler therefore resends the current state directly for a
+    // rejoin/reconnect/second-guest instead of relying on a second beginTacticsCoop.
+    const sentinel = { board: 'existing' } as never;
+    useGameStore.setState({ tactics: sentinel });
+    get().beginTacticsCoop({ heroes: [], seed: 7 });
+    expect(get().tactics).toBe(sentinel); // unchanged → no mutation → no broadcast
   });
 });
 

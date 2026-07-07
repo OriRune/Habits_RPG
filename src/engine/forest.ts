@@ -58,6 +58,7 @@ import {
   CHARGE_DAMAGE_MULT,
   dashCooldown,
   moveInterval,
+  boonConsolation,
 } from './crawl';
 
 export type { Dir, RNG } from './crawl';
@@ -83,6 +84,8 @@ export const FOREST_COLS = FOREST_BASE_COLS;
 export const FOREST_ENERGY_COST = 2;
 /** Fraction of the haul a fallen forager keeps; the rest is forfeit on death. */
 export const FOREST_DEATH_KEEP = 0.5;
+/** Fraction of the haul kept when stashing mid-run at a clearing (20% is the "hurry tax"). */
+export const FOREST_STASH_KEEP = 0.8;
 
 /** Invulnerability window after taking a contact hit (ms). */
 export const FOREST_IFRAME_MS = 800;
@@ -239,6 +242,41 @@ export interface ForestState {
   agLevel: number;
 }
 
+/**
+ * Re-anchor a persisted run's timestamps for a fresh page session.
+ *
+ * Every `*Ms` field is stamped from the rAF clock (ms since page load), which
+ * restarts near 0 on reload — a rehydrated run would otherwise stall until the
+ * new session's clock caught up to the old session's uptime. Cooldowns reset
+ * to "ready" (mirroring the fresh-run init values) and transient timed effects
+ * (runes, ring of fire, statuses, freezes, DoTs, windups) simply expire:
+ * losing a few seconds of buffs on reload beats a stalled run.
+ */
+export function rebaseForestRun(run: ForestState): ForestState {
+  return {
+    ...run,
+    staNextRegenMs: 0,
+    mpNextRegenMs: 0,
+    lastHitAtMs: -FOREST_IFRAME_MS,
+    lastSpellMs: -SPELL_CD_MS,
+    lastDashMs: -DASH_BASE_CD_MS,
+    runes: [],
+    ringOfFire: null,
+    ringNextHitMs: {},
+    playerStatuses: [],
+    lastShot: null,
+    beasts: (run.beasts ?? []).map((b) => ({
+      ...b,
+      readyAtMs: 0,
+      frozenUntilMs: undefined,
+      poisonDmg: undefined,
+      poisonNextTickMs: undefined,
+      poisonExpiresMs: undefined,
+      windupUntilMs: undefined,
+    })),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Grid helpers
 // ---------------------------------------------------------------------------
@@ -273,6 +311,46 @@ export function facedCell(state: ForestState): { r: number; c: number } {
 export function facedBeastId(state: ForestState): string | null {
   const { r, c } = facedCell(state);
   return beastAt(state, r, c)?.id ?? null;
+}
+
+/**
+ * What a ranged shot would hit right now: the first beast down the faced line
+ * within the weapon's range, plus the last cell the arrow reaches (walls,
+ * trees, and nodes block it). Pure query — `act()`'s ranged branch and the
+ * co-op guest's intent targeting share it, so the two can never drift.
+ * Both fields are null when the equipped weapon isn't ranged.
+ */
+export function rangedScan(state: ForestState): {
+  target: ForestBeast | null;
+  shotTo: { r: number; c: number } | null;
+} {
+  if (!state.weapon.ranged || !state.weapon.range) return { target: null, shotTo: null };
+  const [dr, dc] = DIRS[state.player.facing];
+  const range = state.weapon.range;
+  let shotTo: { r: number; c: number } | null = null;
+  let target: ForestBeast | null = null;
+
+  for (let i = 1; i <= range; i++) {
+    const tr = state.player.r + dr * i;
+    const tc = state.player.c + dc * i;
+    const tile = tileAt(state, tr, tc);
+    // Walls, trees, and nodes block the arrow.
+    if (!tile || !isWalkable(tile)) { shotTo = { r: tr - dr, c: tc - dc }; break; }
+    const b = beastAt(state, tr, tc);
+    if (b) { target = b; shotTo = { r: tr, c: tc }; break; }
+    shotTo = { r: tr, c: tc };
+  }
+
+  return { target, shotTo };
+}
+
+/**
+ * Id of the beast a ranged shot would hit down the faced line, if any.
+ * Co-op guests send an attack intent for it instead of resolving the kill
+ * locally — a local kill would diverge from the host's authoritative world.
+ */
+export function rangedBeastId(state: ForestState): string | null {
+  return rangedScan(state).target?.id ?? null;
 }
 
 /** Standing on the far tree line means the way deeper is open. */
@@ -415,8 +493,11 @@ function killBeast(state: ForestState, beast: ForestBeast, rng: RNG): ForestStat
     score: state.score + 10 * state.stage + (isGuardian ? GUARDIAN_SCORE_BONUS : 0),
   };
   // Guardian kill: offer a boon choice (pauses the run via 'choosing' status).
+  // An exhausted pool rolls [] — grant a consolation instead; entering
+  // 'choosing' with zero options would soft-lock the run.
   if (isGuardian) {
     const choices = rollBoonChoices('forest', afterKill.activeBoons, rng);
+    if (choices.length === 0) return boonConsolation(afterKill);
     return { ...afterKill, pendingBoonChoice: choices, status: 'choosing' };
   }
   return afterKill;
@@ -889,21 +970,7 @@ export function act(state: ForestState, rng: RNG, nowMs = 0, charged = false): F
   // --- Ranged shot: scan the faced direction ---
   if (state.weapon.ranged && state.weapon.range) {
     if (state.sta >= 1) {
-      const [dr, dc] = DIRS[state.player.facing];
-      const range = state.weapon.range;
-      let shotTo: { r: number; c: number } | null = null;
-      let target: ForestBeast | null = null;
-
-      for (let i = 1; i <= range; i++) {
-        const tr = state.player.r + dr * i;
-        const tc = state.player.c + dc * i;
-        const tile = tileAt(state, tr, tc);
-        // Walls, trees, and nodes block the arrow.
-        if (!tile || !isWalkable(tile)) { shotTo = { r: tr - dr, c: tc - dc }; break; }
-        const b = beastAt(state, tr, tc);
-        if (b) { target = b; shotTo = { r: tr, c: tc }; break; }
-        shotTo = { r: tr, c: tc };
-      }
+      const { target, shotTo } = rangedScan(state);
 
       if (target && shotTo) {
         const def = FOREST_BEASTS[target.key];
@@ -918,7 +985,7 @@ export function act(state: ForestState, rng: RNG, nowMs = 0, charged = false): F
           def?.defense ?? 0,
           rng,
         );
-        const shot = { fromR: state.player.r, fromC: state.player.c, toR: shotTo.r, toC: shotTo.c, at: Date.now() };
+        const shot = { fromR: state.player.r, fromC: state.player.c, toR: shotTo.r, toC: shotTo.c, at: nowMs };
         const afterSta = { ...state, sta: Math.max(0, state.sta - ARROW_STA_COST), lastShot: shot };
         const newHp = target.hp - dmg;
         if (newHp <= 0) return killBeast(afterSta, target, rng);
@@ -1528,8 +1595,12 @@ function weightedShrine(stage: number, rng: RNG): { key: string } {
 /**
  * Activate the shrine the player is standing on.  Consumes it (shrine → clearing).
  * Needs `nowMs` for the blessing duration; provided by the store, not `act()`.
+ *
+ * `allowDenSpawn` — when false, a Disturbed Den shrine is still consumed (the tile changes to
+ * clearing so co-op peers see it vanish) but no guardian beast is spawned.  Pass `false` for
+ * co-op guests so the den beast only ever lives in the host's authoritative world state.
  */
-export function activateShrine(state: ForestState, nowMs: number, rng: RNG): ForestState {
+export function activateShrine(state: ForestState, nowMs: number, rng: RNG, allowDenSpawn = true): ForestState {
   if (state.status !== 'active') return state;
   const tile = tileAt(state, state.player.r, state.player.c);
   if (tile?.kind !== 'shrine' || !tile.shrineKey) return state;
@@ -1566,7 +1637,7 @@ export function activateShrine(state: ForestState, nowMs: number, rng: RNG): For
     };
   }
 
-  if (event.kind === 'den' && event.guardianKey) {
+  if (allowDenSpawn && event.kind === 'den' && event.guardianKey) {
     const def = FOREST_BEASTS[event.guardianKey];
     if (def) {
       // Spawn the guardian on a random adjacent walkable, unoccupied cell.

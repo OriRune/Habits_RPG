@@ -2,6 +2,8 @@
 
 *Reflects the codebase state after the improvements implemented in the spirit-grove improvement plan.*
 
+> **Archived 2026-07-05 — superseded again.** This doc itself predates commit `5a8bdee` (WI clue gating, mastery mode, pool expanded from 15 to ~30 rounds). Specifics below (round count, "no unit tests," "WI not referenced") are now stale; see the current `src/engine/trials/spiritGrove.ts` and `src/components/trials/games/SpiritGrove.tsx` for ground truth. Kept for historical context only.
+
 ---
 
 ## 1. Basic Summary

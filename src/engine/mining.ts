@@ -58,6 +58,7 @@ import {
   CHARGE_DAMAGE_MULT,
   dashCooldown,
   moveInterval,
+  boonConsolation,
 } from './crawl';
 
 export type { Dir, RNG } from './crawl';
@@ -99,7 +100,7 @@ const SPELL_CD_MS = 500;
 // Tile types
 // ---------------------------------------------------------------------------
 
-export type MineTileKind = 'floor' | 'rock' | 'ore' | 'bedrock' | 'shaft' | 'entrance' | 'boon';
+export type MineTileKind = 'floor' | 'rock' | 'ore' | 'bedrock' | 'shaft' | 'entrance' | 'boon' | 'tombstone';
 
 export interface MineTile {
   kind: MineTileKind;
@@ -225,6 +226,39 @@ export interface MineState {
   shaftPos?: { r: number; c: number };
 }
 
+/**
+ * Re-anchor a persisted run's timestamps for a fresh page session.
+ *
+ * Every `*Ms` field is stamped from the rAF clock (ms since page load), which
+ * restarts near 0 on reload — a rehydrated run would otherwise stall until the
+ * new session's clock caught up to the old session's uptime. Cooldowns reset
+ * to "ready" (mirroring the fresh-run init values) and transient timed effects
+ * (runes, ring of fire, statuses, freezes, DoTs) simply expire: losing a few
+ * seconds of buffs on reload beats a stalled run.
+ */
+export function rebaseMineRun(run: MineState): MineState {
+  return {
+    ...run,
+    staNextRegenMs: 0,
+    mpNextRegenMs: 0,
+    lastHitAtMs: -MINE_IFRAME_MS,
+    lastSpellMs: -SPELL_CD_MS,
+    lastDashMs: -DASH_BASE_CD_MS,
+    runes: [],
+    ringOfFire: null,
+    ringNextHitMs: {},
+    playerStatuses: [],
+    monsters: (run.monsters ?? []).map((m) => ({
+      ...m,
+      readyAtMs: 0,
+      frozenUntilMs: undefined,
+      poisonDmg: undefined,
+      poisonNextTickMs: undefined,
+      poisonExpiresMs: undefined,
+    })),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -235,7 +269,7 @@ export function tileAt(state: MineState, r: number, c: number): MineTile | undef
 
 export function isWalkable(tile: MineTile | undefined): boolean {
   return !!tile && (
-    tile.kind === 'floor' || tile.kind === 'entrance' || tile.kind === 'shaft' || tile.kind === 'boon'
+    tile.kind === 'floor' || tile.kind === 'entrance' || tile.kind === 'shaft' || tile.kind === 'boon' || tile.kind === 'tombstone'
   );
 }
 
@@ -523,6 +557,21 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
     }
   }
 
+  // --- Step 7b: cave mushroom (~1 per 3 floors — rare stamina pickup) ---
+  // Reuses the shuffled remainingFloor array, picking a cell after the gem slots so it
+  // never overlaps an energy gem. weight:0 in MINE_ORES keeps it out of the random pool.
+  if (rng() < 0.33) {
+    for (let mi = gemCount; mi < remainingFloor.length; mi++) {
+      const cell = remainingFloor[mi];
+      if (!cell) break;
+      const [mr, mc] = cell;
+      if (floor_[mr][mc].kind === 'floor') {
+        floor_[mr][mc] = { kind: 'ore', oreKey: 'cave_mushroom', durability: 1, maxDurability: 1 };
+        break;
+      }
+    }
+  }
+
   // --- Step 8: monsters ---
   const mFloor: Array<[number, number]> = [];
   for (let r = 0; r < rows; r++) {
@@ -693,6 +742,37 @@ export function descend(state: MineState, rng: RNG): MineState {
   };
 }
 
+/**
+ * Place a tombstone tile on a random reachable floor cell away from the entrance.
+ * Called by the store when a run begins/descends on a floor that has a saved tombstone.
+ * The tile is walkable (player can step on it) and is recovered via mineStrike.
+ */
+export function placeTombstone(state: MineState, rng: RNG): MineState {
+  const { rows, cols } = state;
+  // Find the entrance tile to measure distance from the start position.
+  let entR = 2, entC = Math.floor(cols / 2);
+  outer: for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (state.tiles[r]?.[c]?.kind === 'entrance') { entR = r; entC = c; break outer; }
+    }
+  }
+  // Collect floor cells that are far enough from the entrance to feel "hidden".
+  const cands: Array<[number, number]> = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const tile = state.tiles[r]?.[c];
+      if (tile?.kind === 'floor' && manhattan({ r, c }, { r: entR, c: entC }) > 5) {
+        cands.push([r, c]);
+      }
+    }
+  }
+  if (cands.length === 0) return state;
+  const [tr, tc] = cands[Math.floor(rng() * cands.length)];
+  const tiles = state.tiles.map((row) => row.slice());
+  tiles[tr][tc] = { kind: 'tombstone' };
+  return { ...state, tiles };
+}
+
 // ---------------------------------------------------------------------------
 // Player movement + dash (Phase 1)
 // ---------------------------------------------------------------------------
@@ -771,8 +851,11 @@ function killMonster(state: MineState, mon: MineMonster, rng: RNG): MineState {
     score: state.score + 10 * state.floor + (isGuardian ? GUARDIAN_SCORE_BONUS : 0),
   };
   // Guardian kill: offer a boon choice (pauses the run via 'choosing' status).
+  // An exhausted pool rolls [] — grant a consolation instead; entering
+  // 'choosing' with zero options would soft-lock the run.
   if (isGuardian) {
     const choices = rollBoonChoices('mine', afterKill.activeBoons, rng);
+    if (choices.length === 0) return boonConsolation(afterKill);
     return { ...afterKill, pendingBoonChoice: choices, status: 'choosing' };
   }
   return afterKill;

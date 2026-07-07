@@ -10,10 +10,31 @@ dates (git log) when in doubt about which is current.
 
 | File | Description |
 |---|---|
-| [`habits-rpg-game-analysis.md`](./habits-rpg-game-analysis.md) | Comprehensive technical + gameplay overview of the entire project (architecture, all minigames, backend, multiplayer, bugs/debt). **Start here.** |
-| [`habits-rpg-improvement-plan.md`](./habits-rpg-improvement-plan.md) | Staged improvement roadmap (Stage 0–5): architecture, store refactor, net/co-op testing, progression, backend trust, UX. Derived from the game-analysis doc. |
-| [`MULTIPLAYER_PLAN.md`](./MULTIPLAYER_PLAN.md) | Original plan for publishing as a website and adding accounts, parties, and real-time co-op. Historical context; superseded in scope by the improvement plan. |
-| [`balance-audit.md`](./balance-audit.md) | Stats & resources balance audit (2026-06-17): XP formulas, energy earn/spend rates, minigame reward scales, enemy stats. Reference before changing any numeric formula. |
+| [`habits-rpg-improvement-plan3.md`](./habits-rpg-improvement-plan3.md) | **Current roadmap** (2026-07-06, Phases 1–8 all ⏳). Built from the 2026-07 audit; every item cites an audit finding ID. Supersedes plan2. |
+| [`habits-rpg-game-analysis.md`](./habits-rpg-game-analysis.md) | Comprehensive technical + gameplay overview of the entire project (architecture, all minigames, backend, multiplayer, bugs/debt). **Start here** for orientation — but note the 2026-07 audit fact-checked it and found drift; where they disagree, trust `audit-2026-07/`. |
+| [`habits-rpg-improvement-plan2.md`](./habits-rpg-improvement-plan2.md) | **Superseded by plan3** (2026-07-06). Previous roadmap; its Phases 1–8 shipped, Phase 9 and its "Still open / deferred" residuals are carried into plan3. Kept for history. |
+| [`trust-model.md`](./trust-model.md) | Decided trust model (Phase 6, 2026-06-22): Option A — Friendly Trust. **Stale in both directions** per audit finding MP-27 (doesn't know migration 0009's server trigger, nor the party-quest forgery paths) — refresh tracked as plan3 item 2.10. Option A itself still holds for saves. |
+| [`habit-tracking-analysis.md`](./habit-tracking-analysis.md) | Analysis of the habit-tracking core (2026-06-20). Largely obsolete — its Critical/High items were fixed; see `audit-2026-07/02-habit-core.md` for the current state. |
+| [`placeholder-art-tracking.md`](./placeholder-art-tracking.md) | Art coverage table (updated 2026-06-22): which sprites have real PNGs vs generated placeholders, drop-in asset seam docs, quick-win gaps. Reference before adding new entities. |
+| [`balance-audit.md`](./balance-audit.md) | Stats & resources balance audit (2026-06-17). **Superseded by `audit-2026-07/03-balance.md`** — it predates the reward rebalance; every number in it should be considered stale. |
+
+---
+
+## 2026-07 project audit (`audit-2026-07/`)
+
+Five-section audit of the whole project (2026-07-05/06), fact-checked against source
+with file:line evidence, severity-graded P0–P3. **The section docs are the current
+per-area analyses**; the synthesis is the merged register behind plan3.
+
+| File | Description |
+|---|---|
+| [`audit-2026-07/00-audit-charter.md`](./audit-2026-07/00-audit-charter.md) | Severity scale, finding format, doc structure, run order. |
+| [`audit-2026-07/01-architecture.md`](./audit-2026-07/01-architecture.md) | Layer integrity, hotspots, test gaps (ARCH-01..25). |
+| [`audit-2026-07/02-habit-core.md`](./audit-2026-07/02-habit-core.md) | Habit loop as a behavioral tool, incl. the owner interview (HABIT-01..24). |
+| [`audit-2026-07/03-balance.md`](./audit-2026-07/03-balance.md) | Economy and stat parity re-derived from source (BAL-01..27 + parity tables). |
+| [`audit-2026-07/04-minigames.md`](./audit-2026-07/04-minigames.md) | Per-mode depth, doc drift, open-item rulings (MINI-01..41). |
+| [`audit-2026-07/05-multiplayer.md`](./audit-2026-07/05-multiplayer.md) | Co-op correctness, cloud-save CAS, trust model (MP-01..31). |
+| [`audit-2026-07/99-synthesis.md`](./audit-2026-07/99-synthesis.md) | Merged severity-ranked register, cross-section themes, disposition of all previously tracked items. |
 
 ---
 
@@ -31,54 +52,80 @@ improvement plan (recommendations). Read the analysis before the plan.
 | File | Description |
 |---|---|
 | [`dungeon-delve-minigame-analysis.md`](./dungeon-delve-minigame-analysis.md) | Analysis of the turn-based branching dungeon. |
-| [`dungeon-delve-improvement-plan.md`](./dungeon-delve-improvement-plan.md) | Improvement recommendations for the dungeon. |
+
+Improvement plan archived — see [`archived/dungeon-delve-improvement-plan.md`](./archived/dungeon-delve-improvement-plan.md) below.
 
 ### Deep Mine
 | File | Description |
 |---|---|
 | [`mining-minigame-analysis.md`](./mining-minigame-analysis.md) | Analysis of the Deep Mine crawler. See also the combined `forest-mining-minigame-analysis.md`. |
-| [`mining-improvement-plan.md`](./mining-improvement-plan.md) | Improvement recommendations for Deep Mine. |
+
+Improvement plan archived — see [`archived/mining-improvement-plan.md`](./archived/mining-improvement-plan.md) below.
 
 ### Wild Forest
 | File | Description |
 |---|---|
 | [`forest-minigame-analysis.md`](./forest-minigame-analysis.md) | Analysis of the Wild Forest crawler. See also the combined `forest-mining-minigame-analysis.md`. |
-| [`forest-improvement-plan.md`](./forest-improvement-plan.md) | Improvement recommendations for Wild Forest. |
+
+Improvement plan archived — see [`archived/forest-improvement-plan.md`](./archived/forest-improvement-plan.md) below.
 
 ### The Arena
 | File | Description |
 |---|---|
-| [`arena-minigame-analysis.md`](./arena-minigame-analysis.md) | ⚠️ **Superseded** by `arena-minigame-analysis-2.md` (older, pre-Phase-D content). Kept for historical reference. |
-| [`arena-minigame-analysis-2.md`](./arena-minigame-analysis-2.md) | **Current** analysis of the Arena (updated through Phase D: boss glyphs, minion variants, authored layouts). Use this one. |
+| [`arena-minigame-analysis-2.md`](./arena-minigame-analysis-2.md) | **Current** analysis of the Arena (updated through Phase D: boss glyphs, minion variants, authored layouts). |
+
+### The Forge (planned, not yet built)
+| File | Description |
+|---|---|
+| [`forge-minigame-development-plan.md`](./forge-minigame-development-plan.md) | Design/build plan (not started as of 2026-07-05) to turn the existing one-click Forge crafting screen (`src/components/inventory/ForgeSection.tsx`, `src/engine/crafting.ts`) into a two-phase DX/ST-driven hammering minigame that sets item quality tiers (Crude/Normal/Fine/Masterwork). None of the proposed engine/UI machinery exists yet. |
 
 ### Hex Tactics
 | File | Description |
 |---|---|
 | [`tactics-minigame-analysis.md`](./tactics-minigame-analysis.md) | Brief/overview of Hex Tactics (2026-06-18, verified against source). |
 | [`tactics-minigame-analysis-2.md`](./tactics-minigame-analysis-2.md) | Extended developer analysis of Hex Tactics. Overlaps with `tactics-minigame-analysis.md`; the `-2` version is the more detailed source used as the basis for the improvement plan. |
-| [`tactics-improvement-plan.md`](./tactics-improvement-plan.md) | Improvement recommendations for Hex Tactics. |
+| [`tactics-improvement-plan.md`](./tactics-improvement-plan.md) | Improvement recommendations for Hex Tactics. **20/25 done** (verified 2026-07-05). Remaining items adjudicated in `audit-2026-07/04-minigames.md` (open-item dispositions): 5A/5B/6C keep, 5C/2B/1A closed, 4C folded into MINI-36. |
 
 ### Skill Trials (8 stat-specific daily microgames)
 
 | File | Description |
 |---|---|
 | [`lockpicking-minigame-analysis.md`](./lockpicking-minigame-analysis.md) | Analysis of the DX Lockpicking trial. |
-| [`lockpicking-improvement-plan.md`](./lockpicking-improvement-plan.md) | Improvement recommendations. |
-| [`rooftop-chase-minigame-analysis.md`](./rooftop-chase-minigame-analysis.md) | ⚠️ **Superseded** by `rooftop-chase-minigame-analysis2.md`. Kept for history. |
-| [`rooftop-chase-minigame-analysis2.md`](./rooftop-chase-minigame-analysis2.md) | **Current** analysis of the AG Rooftop Chase trial (revised 2026-06-). Use this one. |
-| [`rooftop-chase-improvement-plan.md`](./rooftop-chase-improvement-plan.md) | Improvement recommendations (based on analysis2). |
+| [`rooftop-chase-minigame-analysis2.md`](./rooftop-chase-minigame-analysis2.md) | **Current** analysis of the AG Rooftop Chase trial (revised 2026-06-). Improvement plan archived — see [`archived/rooftop-chase-improvement-plan.md`](./archived/rooftop-chase-improvement-plan.md) below. |
 | [`armory-break-minigame-analysis.md`](./armory-break-minigame-analysis.md) | Analysis of the ST Armory Break trial. |
-| [`armory-break-improvement-plan.md`](./armory-break-improvement-plan.md) | Improvement recommendations. |
 | [`long-march-minigame-analysis.md`](./long-march-minigame-analysis.md) | Analysis of the EN Long March trial. |
-| [`long-march-improvement-plan.md`](./long-march-improvement-plan.md) | Improvement recommendations. |
-| [`spirit-grove-minigame-analysis.md`](./spirit-grove-minigame-analysis.md) | Analysis of the WI Spirit Grove trial. Note: Spirit Grove's engine logic lives in `content/trials.ts` + the component rather than a dedicated `engine/trials/` file (unlike the other 7 trials). |
-| [`spirit-grove-improvement-plan.md`](./spirit-grove-improvement-plan.md) | Improvement recommendations. |
+| [`long-march-improvement-plan.md`](./long-march-improvement-plan.md) | Improvement recommendations. Hard Mode (2.2) and streak indicator (6.3) not yet implemented (verified 2026-07-05). |
+| Spirit Grove (WI trial) | Both analysis and improvement plan archived — see [`archived/spirit-grove-minigame-analysis.md`](./archived/spirit-grove-minigame-analysis.md) and [`archived/spirit-grove-improvement-plan.md`](./archived/spirit-grove-improvement-plan.md) below. |
 | [`royal-court-minigame-analysis.md`](./royal-court-minigame-analysis.md) | Analysis of the CH Royal Court trial. |
-| [`royal-court-improvement-plan.md`](./royal-court-improvement-plan.md) | Improvement recommendations. |
 | [`ancient-library-minigame-analysis.md`](./ancient-library-minigame-analysis.md) | Analysis of the KN Ancient Library trial. |
-| [`ancient-library-improvement-plan.md`](./ancient-library-improvement-plan.md) | Improvement recommendations. |
 | [`last-stand-minigame-analysis.md`](./last-stand-minigame-analysis.md) | Analysis of the HP Last Stand trial. |
-| [`last-stand-improvement-plan.md`](./last-stand-improvement-plan.md) | Improvement recommendations. |
+
+---
+
+## Archived
+
+Superseded docs moved to `docs/archived/`. Kept for historical reference only — do not update.
+
+| File | Why archived |
+|---|---|
+| [`archived/habits-rpg-improvement-plan.md`](./archived/habits-rpg-improvement-plan.md) | Earlier staged roadmap (Stage 0–5). Superseded by plan2, in turn superseded by `habits-rpg-improvement-plan3.md`. |
+| [`archived/dungeon-delve-improvement-plan.md`](./archived/dungeon-delve-improvement-plan.md) | Dungeon improvement plan. Most items shipped (audio, RelicTray, merchant preview — verified 2026-07-05); remaining leftovers (BoonChoice timing, scene art, death loot-loss design call) tracked in plan3's deferred table. |
+| [`archived/mining-improvement-plan.md`](./archived/mining-improvement-plan.md) | Deep Mine improvement plan. Implemented items verified 2026-07-05 (death penalty/tombstone, fog of war shipped); current Mine findings live in `audit-2026-07/04-minigames.md`. |
+| [`archived/MULTIPLAYER_PLAN.md`](./archived/MULTIPLAYER_PLAN.md) | Original multiplayer design plan. Historical context; superseded in scope by the current roadmap and the multiplayer features now shipped. Co-op clock-offset note still referenced at line 257. |
+| [`archived/arena-minigame-analysis.md`](./archived/arena-minigame-analysis.md) | Pre-Phase-D Arena analysis. Superseded by `arena-minigame-analysis-2.md`. |
+| [`archived/rooftop-chase-minigame-analysis.md`](./archived/rooftop-chase-minigame-analysis.md) | Earlier Rooftop Chase analysis. Superseded by `rooftop-chase-minigame-analysis2.md`. |
+| [`archived/lockpicking-improvement-plan.md`](./archived/lockpicking-improvement-plan.md) | All 19 recommendations fully implemented (2026-06-22 audit). |
+| [`archived/armory-break-improvement-plan.md`](./archived/armory-break-improvement-plan.md) | All structural/mechanic recommendations implemented; only "verify reward balance after playtesting" remains (no code target). |
+| [`archived/ancient-library-improvement-plan.md`](./archived/ancient-library-improvement-plan.md) | All gameplay/engine recommendations implemented; only component RTL tests and trivial CSS star animation remain. |
+| [`archived/royal-court-improvement-plan.md`](./archived/royal-court-improvement-plan.md) | All substantive recommendations implemented; remaining gaps (dynamic star thresholds, CH 5th-choice) explicitly optional/speculative. |
+| [`archived/last-stand-improvement-plan.md`](./archived/last-stand-improvement-plan.md) | All Pass 1–6 recommendations implemented; remaining gaps (lane redesign, HP scaling) explicitly lowest-priority/optional. |
+| [`archived/habit-tracking-improvement-plan.md`](./archived/habit-tracking-improvement-plan.md) | All 7 stages fully implemented (2026-06-22): bug fixes, edit UI, balance, integrity, party, UX polish, long-term features. |
+| [`archived/developer-tools-improvement-plan.md`](./archived/developer-tools-improvement-plan.md) | All 14 steps fully implemented (2026-06-23): `devSetLevel` statLevels fix, resetGame fields, expanded boss roster, Fill Energy / Add Gold / Force Rollover / Reset Ledger tools, state inspector, layout polish. |
+| [`developer-tools-analysis.md`](./developer-tools-analysis.md) | Pre-improvement analysis of Settings → Developer (written 2026-06-23 before fixes). All identified bugs and gaps have been resolved. Read as historical context only; current tool behaviour is documented in the README. *(File still sits in `docs/` root — candidate for a move to `archived/`.)* |
+| [`archived/forest-improvement-plan.md`](./archived/forest-improvement-plan.md) | All player-facing recommendations implemented (verified 2026-07-05): charge feedback, shrine telegraphing, exit visibility, spell HUD, dash, guardian HP bar, adaptive drone, haul stashing. Code-quality refactor items (splitting the overlay, VFX hook, control-loop tests) and the "longer-term" daily-trial idea were left undone as optional housekeeping. |
+| [`archived/rooftop-chase-improvement-plan.md`](./archived/rooftop-chase-improvement-plan.md) | All 25 items across phases A–E implemented (per commit `7b98bc4`). |
+| [`archived/spirit-grove-improvement-plan.md`](./archived/spirit-grove-improvement-plan.md) | Star system fix, round/difficulty expansion, keyboard nav, WI clue-gating, and a new mastery mode all shipped (commit `5a8bdee`, re-verified 2026-07-05). One item never landed despite the original archive note: the §4.1 ambient audio loop. |
+| [`archived/spirit-grove-minigame-analysis.md`](./archived/spirit-grove-minigame-analysis.md) | Superseded a second time — predates the mastery-mode/clue-gating work (commit `5a8bdee`). Historical context only. |
 
 ---
 
@@ -98,11 +145,15 @@ There is **no migration runner**. Apply each file manually in the Supabase
 dashboard SQL editor, in order, once per environment:
 
 ```
-0001_phase1_auth_saves.sql       → accounts, saves, server_now()
-0002_phase2_parties.sql          → parties, chat, leaderboard, quests
-0003_phase3_coop_sessions.sql    → co-op session lobby + seed handshake
-0004_coop_tactics.sql            → CHECK constraint for game types
-0005_tactics_leaderboard.sql     → deepestTacticsTier in snapshot/leaderboard view
+0001_phase1_auth_saves.sql         → accounts, saves, server_now()
+0002_phase2_parties.sql            → parties, chat, leaderboard, quests
+0003_phase3_coop_sessions.sql      → co-op session lobby + seed handshake
+0004_coop_tactics.sql              → CHECK constraint for game types
+0005_tactics_leaderboard.sql       → deepestTacticsTier in snapshot/leaderboard view
+0006_party_quest_contributions.sql → per-member contribution tracking for party quests
+0007_member_habits.sql             → party-visible habit data (opt-in member_habits table)
+0008_consistency_leaderboard.sql   → 30-day habit consistency score in leaderboard view
+0009_leaderboard_antimanip.sql     → suspect flag + XP-rate trigger; leaderboard view excludes suspect rows
 ```
 
-`0005` is additive and idempotent. Only apply it once `0001`–`0004` are in place.
+Each file is additive; apply in order, once per environment. `0005`–`0009` are idempotent.

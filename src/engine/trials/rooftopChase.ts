@@ -181,7 +181,7 @@ export function seededRng(seed: number): () => number {
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 /** Kinds of obstacles that sit on a rooftop. 'gap' is no longer a prop kind — gaps are structural. */
-export type PropKind = 'hazard' | 'mook' | 'lowbar';
+export type PropKind = 'hazard' | 'mook' | 'lowbar' | 'crossbowman';
 
 export interface RoofProp {
   id: number;
@@ -289,12 +289,17 @@ export function generateCourse(rng: () => number, count = BUILDING_COUNT): Build
       if (propR < 0.4) {
         kind = 'hazard';
         propWidth = 2 + rng() * 1.5; // 2–3.5 wu
-      } else if (propR < 0.75) {
+      } else if (propR < 0.70) {
         kind = 'mook';
         propWidth = 2.5;
-      } else {
+      } else if (propR < 0.85 || i < 10) {
+        // Crossbowman is gated to the second half (i >= 10) so the opening buildings
+        // stay learner-friendly. If i < 10, the crossbowman roll falls through to lowbar.
         kind = 'lowbar';
         propWidth = 3 + rng() * 2; // 3–5 wu
+      } else {
+        kind = 'crossbowman';
+        propWidth = 2.5;
       }
       // Place prop at least 3 wu from the left edge, leaving 3 wu on the right
       const safeLeft = buildingX + 3;
@@ -553,6 +558,11 @@ export function resolveContact(
     case 'hazard':
       return grounded ? 'stumble' : 'clear';
     case 'lowbar':
+      return sliding ? 'clear' : 'stumble';
+    case 'crossbowman':
+      // Prone behind cover — slide to clear, but cannot be stomped or jumped over.
+      // Unlike the head-height lowbar banner, the crossbowman occupies a low ground-level position
+      // that blocks both running and jumping; the only safe approach is a committed slide.
       return sliding ? 'clear' : 'stumble';
     default: {
       // TypeScript exhaustiveness guard — adding a new PropKind without a case here is a compile error.
@@ -965,7 +975,7 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
           newStumbleMs = STUMBLE_MS;
           justStumbled = true;
           if (!leadEvent) leadEvent = 'stumble';
-        } else if (result === 'clear' && prop.kind === 'lowbar' && activeSlideFinal) {
+        } else if (result === 'clear' && (prop.kind === 'lowbar' || prop.kind === 'crossbowman') && activeSlideFinal) {
           justSlideClear = true;
         }
       }

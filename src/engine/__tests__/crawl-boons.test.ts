@@ -41,7 +41,13 @@ import {
   type ForestTile,
 } from '@/engine/forest';
 import { getWeapon, STARTER_WEAPON } from '@/engine/weapons';
-import { STA_REGEN_MS, MP_REGEN_MS, DASH_BASE_CD_MS } from '@/engine/crawl';
+import {
+  STA_REGEN_MS,
+  MP_REGEN_MS,
+  DASH_BASE_CD_MS,
+  BOON_CONSOLATION_HEAL,
+  BOON_CONSOLATION_GOLD,
+} from '@/engine/crawl';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -604,5 +610,77 @@ describe('applyForestBoonChoice', () => {
     const after = applyForestBoonChoice(s, 'vitality');
     expect(after.maxHp).toBe(70);
     expect(after.hp).toBe(50); // min(70, 30+20)
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. Boon-pool exhaustion — a guardian kill must never enter 'choosing' with
+//     zero options (soft-lock regression, MINI-01). Consolation heal + gold
+//     replaces the panel once every eligible boon is held.
+// ---------------------------------------------------------------------------
+
+const ALL_MINE_BOONS = Object.values(BOONS)
+  .filter((b) => b.game === 'mine' || b.game === 'both')
+  .map((b) => b.key);
+const ALL_FOREST_BOONS = Object.values(BOONS)
+  .filter((b) => b.game === 'forest' || b.game === 'both')
+  .map((b) => b.key);
+
+describe('Guardian kill with exhausted boon pool (mine)', () => {
+  const guardian = { id: 'g', key: 'stone_golem', r: 3, c: 4, hp: 1, maxHp: 50, readyAtMs: 0 };
+
+  it('still enters choosing with options while eligible boons remain', () => {
+    const s = makeMineState({ meleePower: 40, monsters: [guardian] });
+    const after = strike(s, rngFrom(3));
+    expect(after.monsters).toHaveLength(0); // guardian died
+    expect(after.status).toBe('choosing');
+    expect(after.pendingBoonChoice?.length).toBeGreaterThan(0);
+  });
+
+  it('stays active and grants a consolation heal + gold when every boon is held', () => {
+    const s = makeMineState({
+      meleePower: 40, hp: 20, monsters: [guardian], activeBoons: ALL_MINE_BOONS,
+    });
+    const after = strike(s, rngFrom(3));
+    expect(after.monsters).toHaveLength(0); // guardian died
+    expect(after.status).toBe('active');    // no zero-option 'choosing'
+    expect(after.pendingBoonChoice).toBeNull();
+    expect(after.hp).toBe(20 + BOON_CONSOLATION_HEAL);
+    // Guardian treasure may add gold on top, so assert at least the consolation.
+    expect(after.haul.gold ?? 0).toBeGreaterThanOrEqual(BOON_CONSOLATION_GOLD);
+  });
+
+  it('consolation heal is clamped to maxHp', () => {
+    const s = makeMineState({
+      meleePower: 40, hp: 45, maxHp: 50, monsters: [guardian], activeBoons: ALL_MINE_BOONS,
+    });
+    const after = strike(s, rngFrom(3));
+    expect(after.hp).toBe(50);
+  });
+});
+
+describe('Guardian kill with exhausted boon pool (forest)', () => {
+  const guardian = {
+    id: 'g', key: 'grove_sentinel', r: 3, c: 4, hp: 1, maxHp: 40, readyAtMs: 0, asleep: false,
+  };
+
+  it('still enters choosing with options while eligible boons remain', () => {
+    const s = makeForestState({ meleePower: 40, beasts: [guardian] });
+    const after = act(s, rngFrom(3));
+    expect(after.beasts).toHaveLength(0); // guardian died
+    expect(after.status).toBe('choosing');
+    expect(after.pendingBoonChoice?.length).toBeGreaterThan(0);
+  });
+
+  it('stays active and grants a consolation heal + gold when every boon is held', () => {
+    const s = makeForestState({
+      meleePower: 40, hp: 20, beasts: [guardian], activeBoons: ALL_FOREST_BOONS,
+    });
+    const after = act(s, rngFrom(3));
+    expect(after.beasts).toHaveLength(0);
+    expect(after.status).toBe('active');
+    expect(after.pendingBoonChoice).toBeNull();
+    expect(after.hp).toBe(20 + BOON_CONSOLATION_HEAL);
+    expect(after.haul.gold ?? 0).toBeGreaterThanOrEqual(BOON_CONSOLATION_GOLD);
   });
 });

@@ -1,10 +1,12 @@
 import { useState } from 'react';
-import { AlertTriangle, Check, Flame, MoreVertical, Pause, Pencil, Play, Archive, Trash2, CalendarClock, Undo2, Star } from 'lucide-react';
+import { AlertTriangle, BarChart3, Check, Flame, MoreVertical, Pause, Pencil, Play, Archive, Trash2, CalendarClock, Undo2, Star } from 'lucide-react';
 import { getStat } from '@/engine/stats';
 import { type Habit, isCompletedOn, effectiveStatus, weekCompletions } from '@/engine/habits';
 import { habitHealth, type HabitWarning, type HabitActionCode } from '@/engine/habitHealth';
 import { toISODate, parseISODate, addDays } from '@/engine/date';
+import { computeXp } from '@/engine/xp';
 import { useGameStore } from '@/store/useGameStore';
+import { useToastStore } from '@/store/useToastStore';
 import { statCrest } from '@/lib/sprites';
 import { Sprite } from '@/components/ui/Sprite';
 import { cn } from '@/lib/cn';
@@ -24,12 +26,22 @@ const FREQ_LABEL: Record<Habit['frequency'], string> = {
   as_needed: 'As needed',
 };
 
-export function HabitCard({ habit, viewDate = toISODate() }: { habit: Habit; viewDate?: string }) {
+export function HabitCard({
+  habit,
+  viewDate = toISODate(),
+  onViewHistory,
+}: {
+  habit: Habit;
+  viewDate?: string;
+  /** Called when the user picks "View History" from the kebab. */
+  onViewHistory?: (habitId: string) => void;
+}) {
   const completeHabit = useGameStore((s) => s.completeHabit);
   const uncompleteHabit = useGameStore((s) => s.uncompleteHabit);
   const retireHabit = useGameStore((s) => s.retireHabit);
   const reactivateHabit = useGameStore((s) => s.reactivateHabit);
   const setHabitFocus = useGameStore((s) => s.setHabitFocus);
+  const pushToast = useToastStore((s) => s.pushToast);
   const [dialog, setDialog] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [suspendOpen, setSuspendOpen] = useState(false);
@@ -56,8 +68,15 @@ export function HabitCard({ habit, viewDate = toISODate() }: { habit: Habit; vie
       uncompleteHabit(habit.id, viewDate);
       return;
     }
-    if (habit.type === 'quantity') setDialog(true);
-    else completeHabit(habit.id, undefined, viewDate);
+    if (habit.type === 'quantity') {
+      setDialog(true);
+    } else {
+      completeHabit(habit.id, undefined, viewDate);
+      // Show a brief "+XP" toast for binary completions (quantity habits show an
+      // XP preview in CompleteHabitDialog already, so no toast needed there).
+      const xp = computeXp({ difficulty: habit.difficulty, type: 'binary' });
+      pushToast({ text: `+${xp} XP`, color: stat.color });
+    }
   }
 
   return (
@@ -163,6 +182,9 @@ export function HabitCard({ habit, viewDate = toISODate() }: { habit: Habit; vie
               <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
               <div className="absolute right-0 top-6 z-20 w-40 overflow-hidden rounded-md border border-gold-deep/40 bg-parchment-100 shadow-gold-sm">
                 <MenuItem icon={Pencil} label="Edit…" onClick={() => { setEditOpen(true); setMenuOpen(false); }} />
+                {onViewHistory && (
+                  <MenuItem icon={BarChart3} label="View History" onClick={() => { onViewHistory(habit.id); setMenuOpen(false); }} />
+                )}
                 {!retired && !suspended && (
                   <MenuItem
                     icon={Star}

@@ -208,13 +208,17 @@ export async function getClaimableQuests(partyId: string, userId: string): Promi
 
 export async function getMessages(partyId: string, limit = 100): Promise<PartyMessage[]> {
   if (!supabase) return [];
+  // Fetch the NEWEST `limit` rows (descending), then restore chronological order for
+  // the chat pane, which renders array order oldest→newest and scrolls to the bottom.
+  // Ascending+limit would return the oldest 100 rows — ancient history once a party's
+  // backlog exceeds the limit (MP-15).
   const { data } = await supabase
     .from('party_messages')
     .select('*')
     .eq('party_id', partyId)
-    .order('created_at', { ascending: true })
+    .order('created_at', { ascending: false })
     .limit(limit);
-  return (data as PartyMessage[]) ?? [];
+  return ((data as PartyMessage[]) ?? []).reverse();
 }
 
 export async function sendMessage(partyId: string, body: string): Promise<ApiResult<null>> {

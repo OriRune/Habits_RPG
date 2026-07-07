@@ -381,9 +381,8 @@ allowed to touch the network/environment.
 - `arena.ts`, `grid.ts` — Arena (square grid). `hex.ts`, `hexBattle.ts` — Hex
   Tactics (hex grid).
 - `trials/*.ts` — per-trial logic (`lockpicking`, `rooftopChase`, `armoryBreak`,
-  `longMarch`, `royalCourt`, `ancientLibrary`, `lastStand`; `trials.ts`
-  registry). _(Note: Spirit Grove's logic lives in `content/trials.ts` + the
-  component, not a dedicated engine file.)_
+  `longMarch`, `spiritGrove`, `royalCourt`, `ancientLibrary`, `lastStand`; `trials.ts`
+  registry). All 8 trials have a dedicated engine file (Spirit Grove's was added in Phase 7).
 - `gear.ts`, `weapons.ts`, `materials.ts`, `crafting.ts`, `items.ts`,
   `spells.ts` — items/equipment systems.
 - `date.ts`, `rng.ts` (`mulberry32`, `floorSeed`, `randomSeed`), `mood.ts`,
@@ -588,8 +587,8 @@ persisted game store; `LoginView` gates the app when a backend is configured.
   party `CoopRaidPanel`/`PartyChat`/`PartyQuestPanel`/`CreateJoinPanel`; trials
   `TrialModal` + `components/trials/games/*`.
 - **Notable docs:** `habits_rpg_gameplay_design.md` (the original brief the
-  engine is built from), `docs/MULTIPLAYER_PLAN.md`, and ~28 per-minigame
-  `*-analysis.md` / `*-improvement-plan.md` files.
+  engine is built from), `docs/archived/MULTIPLAYER_PLAN.md` (historical; archived),
+  and ~28 per-minigame `*-analysis.md` / `*-improvement-plan.md` files.
 
 ---
 
@@ -635,14 +634,8 @@ persisted game store; `LoginView` gates the app when a backend is configured.
   they're now in use. `coop_sessions.game` comment in 0003 says
   "`'forest'|'arena' reserved" but the final supported set is mine/forest/tactics
   (arena was dropped, forest/tactics added). Onboarding readers will be misled.
-- **Trial engine inconsistency.** Seven trials have a dedicated
-  `engine/trials/*.ts`; **Spirit Grove has none** — its logic is split between
-  `content/trials.ts` and the component. Minor, but breaks the otherwise uniform
-  pattern.
-- **Docs sprawl.** `docs/` has ~30 overlapping analysis/plan files (e.g.
-  `tactics-minigame-analysis.md` *and* `-analysis-2.md`,
-  `rooftop-chase-minigame-analysis.md` *and* `...2.md`). Useful history, but no
-  index; hard to know which is current.
+- ~~**Trial engine inconsistency.** Seven trials have a dedicated `engine/trials/*.ts`; **Spirit Grove has none**.~~ **Fixed (Phase 7, 2026-06-22):** `src/engine/trials/spiritGrove.ts` now exists; all 8 trials are uniform.
+- ~~**Docs sprawl.** `docs/` has ~30 overlapping analysis/plan files (e.g. `rooftop-chase-minigame-analysis.md` *and* `...2.md`). Useful history, but no index; hard to know which is current.~~ **Addressed (2026-06-22):** superseded docs archived to `docs/archived/`; `docs/INDEX.md` added with current/archived markers for every file.
 - **`colorschemes.txt` / `sprites_needed.md`** are loose working notes checked
   into source.
 
@@ -657,15 +650,21 @@ treat as leads to confirm, not confirmed defects.
   `lib/placeholderArt.ts`/`sprites.ts`/`scenes.ts` generate framed-SVG
   placeholders, and `sprites_needed.md` tracks the gap. Many entities still have
   no real sprite. This is the largest "incomplete" surface, by design.
-- **`server_now()` exists but appears unused by the client.** Daily-reset gating
-  (`trialsClearedOn`, mood, weekly rollover) uses local `toISODate()`/device
-  time. So the anti-clock-drift defense the SQL comment promises **isn't wired
-  up** — daily resets are still spoofable by changing the device clock. Worth
-  confirming and closing.
+- **`server_now()` is wired up (Phase 6, commit `faa6d19`).** `src/net/clock.ts`
+  calls `supabase.rpc('server_now')` on app mount, computes a RTT-compensated
+  offset, and stores it via `setClockOffset` in `engine/date.ts`. Every daily/
+  weekly gate reads "today" through `toISODate()` → `now()`, so the offset
+  automatically applies to `trialsClearedOn`, habit resets, streaks, weekly
+  rollover, and challenge expiry — with no per-call-site changes required. Startup
+  ordering is also safe: `App.tsx` waits for `clockReady` (a promise-settled flag
+  from `useCloudSync`) before the first `normalizeHabits`/`checkWeeklyRollover`
+  call. In single-player (no backend) the offset stays 0 and device time is used.
 - **Energy/score/XP all live in the client-trusted save.** With CAS cloud sync
   but no server-side validation, the leaderboard and party quests are trivially
-  manipulable by editing localStorage. Acceptable for a friends-and-family app;
-  a risk if it's meant to be competitive.
+  manipulable by editing localStorage. This is the accepted trade-off for a
+  friends-and-family app (see `docs/trust-model.md` for the explicit decision).
+  Server time hardening (`server_now`) closes the *clock-cheat* vector, not the
+  *save-edit* vector.
 - **Co-op desync edge cases.** Mine/Forest co-op is host-authoritative for
   monsters but peer-to-peer for tiles, with timeout-based player eviction and
   10 Hz broadcast. Host disconnect mid-run, late joiners after several descents,
@@ -707,10 +706,10 @@ treat as leads to confirm, not confirmed defects.
   quest reporter). The code already guards these (debounce, change-detection on
   activity label) — keep new subscribers cheap and gated.
 - **Good first improvements (low-risk, high-value):** rewrite `README.md`;
-  add a `docs/` index and prune duplicate analysis files; wire `server_now()`
-  into daily gating; add tests around the co-op protocol reducers (they're pure
-  enough to test). _(Already done: store split into per-domain slices;
-  `deepestTacticsTier` and `habitScore` added to snapshot/leaderboard.)_
+  add a `docs/` index and prune duplicate analysis files; add tests around the
+  co-op protocol reducers (they're pure enough to test). _(Already done: store
+  split into per-domain slices; `deepestTacticsTier` and `habitScore` added to
+  snapshot/leaderboard; `server_now()` wired into daily/weekly gating — Phase 6.)_
 - **The design brief (`habits_rpg_gameplay_design.md`) is the canonical spec.**
   Many engine comments cite it by section ("brief §7.2", "Section 14"). Read it
   before changing formulas — the numbers are deliberate and tested against it.
@@ -718,14 +717,14 @@ treat as leads to confirm, not confirmed defects.
 ---
 
 ### Open questions / unverified items
-- Is `server_now()` referenced anywhere in the client? (Search suggests no — it
-  appears defined-but-unused; confirm before relying on local-time gating.)
-- Is there any server-side anti-cheat intended for the leaderboard, or is the
-  trust model deliberately "friends only"?
+- ~~Is `server_now()` referenced anywhere in the client?~~ **Resolved** — fully
+  wired in `src/net/clock.ts` + `engine/date.ts`; see §19 notes above.
+- ~~Is there any server-side anti-cheat intended for the leaderboard, or is the
+  trust model deliberately "friends only"?~~ **Resolved** — Option A (friendly
+  trust) is the explicit decision; see `docs/trust-model.md`.
 - Are the duplicate `docs/*-analysis-2.md` files newer than their `-analysis.md`
   counterparts, or abandoned drafts? Their relative authority is unclear.
-- Spirit Grove: is the missing `engine/trials/spiritGrove.ts` intentional
-  (simple enough to live in content) or an inconsistency to fix?
+- ~~Spirit Grove: is the missing `engine/trials/spiritGrove.ts` intentional (simple enough to live in content) or an inconsistency to fix?~~ **Resolved (Phase 7, 2026-06-22):** `src/engine/trials/spiritGrove.ts` now exists; all 8 trials follow the same engine-file pattern.
 - The `member_habits` feature (migration 0007) adds party-visible habit data —
   is the opt-in/opt-out UI implemented in `PartyView`, or is the table populated
   automatically?

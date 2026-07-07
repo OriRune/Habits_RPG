@@ -70,9 +70,18 @@ export default {
           '0%': { opacity: '0', transform: 'translateY(4px)' },
           '100%': { opacity: '1', transform: 'translateY(0)' },
         },
+        // Gentle side-to-side shake — used on wrong-answer buttons in Spirit Grove.
+        'shake': {
+          '0%, 100%': { transform: 'translateX(0)' },
+          '20%':       { transform: 'translateX(-3px)' },
+          '40%':       { transform: 'translateX(3px)' },
+          '60%':       { transform: 'translateX(-2px)' },
+          '80%':       { transform: 'translateX(2px)' },
+        },
       },
       animation: {
         'fade-in': 'fade-in 0.18s ease-out both',
+        'shake':   'shake 0.28s ease-in-out both',
       },
       boxShadow: {
         // Double gold frame + drop shadow for panels/frames (gold trim follows the palette)

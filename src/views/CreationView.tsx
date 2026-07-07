@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Minus, Plus, Sparkles, Sword } from 'lucide-react';
+import { Check, Minus, Plus, Sparkles, Sword } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { STATS, type StatId } from '@/engine/stats';
 import { BASE_STAT_LEVEL, CREATION_STAT_MAX, STARTING_STAT_POINTS } from '@/engine/progression';
@@ -10,16 +10,22 @@ import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { Sprite } from '@/components/ui/Sprite';
 import { Divider, SectionTitle } from '@/components/ui/Divider';
+import { HABIT_TEMPLATE_GROUPS } from '@/content/habitTemplates';
 
 const PER_STAT_MAX = CREATION_STAT_MAX - BASE_STAT_LEVEL;
 
+/** The template group pre-selected by default for quick-start and fresh creation. */
+const DEFAULT_GROUP_ID = 'beginner_fitness';
+
 /**
- * First-run onboarding: name the hero, spend the starting stat points, and pick a starting weapon
- * plus a signature spell. Commits through `createCharacter`, which flips the `created` gate so the
- * main app takes over. Shown by App when `!created`.
+ * First-run onboarding: name the hero, spend the starting stat points, pick a starting weapon
+ * plus a signature spell, and choose starter habit templates. On "Begin Adventure", starter habits
+ * are added via `addHabit` and the character is committed via `createCharacter`, which flips the
+ * `created` gate so the main app takes over. Shown by App when `!created`.
  */
 export function CreationView() {
   const createCharacter = useGameStore((s) => s.createCharacter);
+  const addHabit = useGameStore((s) => s.addHabit);
 
   const [name, setName] = useState('');
   const [alloc, setAlloc] = useState<Record<StatId, number>>(() =>
@@ -27,6 +33,10 @@ export function CreationView() {
   );
   const [weaponKey, setWeaponKey] = useState<string | null>(null);
   const [spellKey, setSpellKey] = useState<string | null>(null);
+  /** Template-group IDs whose habits will be seeded when the player begins. */
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(
+    () => new Set([DEFAULT_GROUP_ID]),
+  );
 
   const spent = STATS.reduce((sum, s) => sum + alloc[s.id], 0);
   const remaining = STARTING_STAT_POINTS - spent;
@@ -39,13 +49,32 @@ export function CreationView() {
       return { ...a, [id]: next };
     });
 
+  const toggleGroup = (id: string) =>
+    setSelectedGroupIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  /** Add all habits from the chosen template groups. */
+  const seedHabits = (groupIds: Iterable<string>) => {
+    for (const id of groupIds) {
+      const group = HABIT_TEMPLATE_GROUPS.find((g) => g.id === id);
+      group?.habits.forEach((h) => addHabit(h));
+    }
+  };
+
   const begin = () => {
     if (!weaponKey || !spellKey) return;
+    seedHabits(selectedGroupIds);
     createCharacter({ name, allocations: alloc, weaponKey, spellKey });
   };
 
-  const quickStart = () =>
+  const quickStart = () => {
+    seedHabits([DEFAULT_GROUP_ID]);
     createCharacter({ name, allocations: {}, weaponKey: STARTER_WEAPON, spellKey: '' });
+  };
 
   return (
     <div className="texture-wood min-h-full overflow-y-auto px-4 py-8">
@@ -180,6 +209,47 @@ export function CreationView() {
               );
             })}
           </div>
+        </Panel>
+
+        {/* Starter habits */}
+        <Panel tone="parchment" className="space-y-3 p-5">
+          <SectionTitle>First Quests</SectionTitle>
+          <p className="text-sm text-ink-muted">
+            Choose a habit set to begin your journal. You can add, edit, or remove habits at any
+            time.
+          </p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {HABIT_TEMPLATE_GROUPS.map((group) => {
+              const selected = selectedGroupIds.has(group.id);
+              return (
+                <button
+                  key={group.id}
+                  onClick={() => toggleGroup(group.id)}
+                  className={`relative flex flex-col gap-1.5 rounded-md border p-3 text-left transition-colors ${
+                    selected
+                      ? 'border-gold-deep bg-gold-bright/15 ring-1 ring-gold-deep'
+                      : 'border-gold-deep/30 bg-parchment-100/70 hover:border-gold-deep/70'
+                  }`}
+                >
+                  {selected && (
+                    <span className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full bg-gold-deep text-parchment-50">
+                      <Check className="h-3 w-3" />
+                    </span>
+                  )}
+                  <span className="pr-6 font-display text-sm font-bold text-ink">{group.label}</span>
+                  <span className="text-[11px] leading-snug text-ink-muted">{group.description}</span>
+                  <span className="mt-0.5 text-[10px] uppercase tracking-wider text-gold-deep">
+                    {group.habits.length} habit{group.habits.length !== 1 ? 's' : ''}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          {selectedGroupIds.size === 0 && (
+            <p className="text-center text-xs text-ink-light/60">
+              None selected — you can add habits after creation.
+            </p>
+          )}
         </Panel>
 
         <Divider />

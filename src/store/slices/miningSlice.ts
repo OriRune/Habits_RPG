@@ -10,9 +10,10 @@ import {
   descend,
   castSpell as minecastSpellFn,
   applyBoonChoice as applyMineBoonChoice,
+  placeTombstone,
   MINE_ENERGY_COST,
 } from '@/engine/mining';
-import { dungeonStamina } from '@/engine/crawl';
+import { dungeonStamina, boonConsolation } from '@/engine/crawl';
 import { mulberry32, floorSeed } from '@/engine/rng';
 import { getGear } from '@/engine/gear';
 import { rollBoonChoices } from '@/content/boons';
@@ -20,8 +21,11 @@ import {
   type WorldSliceInput,
   applyMineWorldSlice,
   applyMineTileSlice,
+  applyMineTileSnapshot,
   applyMineRemoteAttack,
 } from '@/net/coop/reduce';
+import type { Reward } from '@/engine/challenges';
+import { mergeReward } from '@/engine/dungeon';
 import type { GameState } from '../shared';
 import { fighterFor, gearBonuses, commitMining, commitMineDeath, energySpentPatch } from '../shared';
 import { getMineRng, getMineBaseSeed, setMineRun, acceptMineWorldT } from '../runRng';
@@ -30,20 +34,28 @@ export interface MiningSlice {
   mining: MineState | null;
   deepestMineFloor: number;
   bestMineScore: number;
+  /** Lost haul from the most recent death — recovered by reaching the tombstone tile. */
+  mineTombstone: { floor: number; haul: Reward } | null;
 
   beginMining: (seed?: number) => void;
   mineMove: (dir: Dir) => void;
   mineStrike: () => void;
-  mineStrikeCharged: () => void;
+  /** `nowMs` is the caller's rAF-clock timestamp — same timebase as mineTick. */
+  mineStrikeCharged: (nowMs: number) => void;
   mineDash: (dir: Dir, nowMs: number) => void;
   mineTick: (nowMs: number, coPlayers?: ReadonlyArray<{ r: number; c: number }>) => void;
   coopClientTick: (nowMs: number) => void;
   coopApplyWorld: (slice: WorldSliceInput) => void;
   coopApplyTile: (floor: number, r: number, c: number, tile: MineTile) => void;
+  /** MP-25: apply a host's one-shot changed-tiles snapshot when joining mid-run. */
+  coopApplyTileSnapshot: (floor: number, entries: ReadonlyArray<{ r: number; c: number; tile: MineTile }>) => void;
   coopApplyRemoteAttack: (monsterId: string, dmg: number) => void;
   mineDescend: () => void;
-  mineCast: (spellKey: string) => void;
+  /** `nowMs` is the caller's rAF-clock timestamp — same timebase as mineTick. */
+  mineCast: (spellKey: string, nowMs: number) => void;
   chooseMineBoon: (key: string) => void;
+  /** Dismiss the boon panel without picking — escape hatch if no option appeals (or none exist). */
+  skipMineBoon: () => void;
   beginBanking: () => void;
   endMining: () => void;
 }
@@ -57,14 +69,20 @@ export const createMiningSlice: StateCreator<
   mining: null,
   deepestMineFloor: 0,
   bestMineScore: 0,
+  mineTombstone: null,
 
   beginMining: (seed) =>
     set((s) => {
       // Seed the run's RNG: shared mulberry32 for co-op, Math.random for solo.
       setMineRun(seed !== undefined ? mulberry32(seed) : Math.random, seed);
       const free = s.settings.unlimitedEnergy;
-      if (s.mining) return s;
-      if (!free && s.character.energy < MINE_ENERGY_COST) return s;
+      // Solo re-entry keeps an in-progress run; a co-op join (explicit `seed`) must
+      // replace any leftover/orphan run — keeping the stale map would merge it against
+      // the shared co-op seed and desync the party (MP-12). If the joiner can't afford
+      // entry, clear the orphan too so they don't linger on a stale run — the runless
+      // guard in useCoopSession then leaves the session (as for any energy-gated join).
+      if (s.mining && seed === undefined) return s;
+      if (!free && s.character.energy < MINE_ENERGY_COST) return s.mining ? { ...s, mining: null } : s;
 
       // Grant the stone_pickaxe if the player has no mining tool yet
       let ownedGear = s.ownedGear;
@@ -98,7 +116,7 @@ export const createMiningSlice: StateCreator<
       const agBonus = (gearBonuses(stateWithGear).statBonuses.AG ?? 0);
       const agLevel = s.character.statLevels.AG + agBonus;
 
-      const mining = generateMine(
+      let mining = generateMine(
         1,
         {
           meleePower: c.meleePower,
@@ -120,6 +138,10 @@ export const createMiningSlice: StateCreator<
         // falls back to the live mine RNG (Math.random).
         seed !== undefined ? mulberry32(floorSeed(seed, 1)) : getMineRng(),
       );
+      // If a tombstone exists for floor 1, place it on the generated map.
+      if (s.mineTombstone && s.mineTombstone.floor === 1) {
+        mining = placeTombstone(mining, getMineRng());
+      }
       return {
         character: {
           ...s.character,
@@ -143,14 +165,26 @@ export const createMiningSlice: StateCreator<
     set((s) => {
       if (!s.mining || s.mining.status !== 'active') return s;
       const run = s.mining;
+      const { r, c } = run.player;
+      // Tombstone recovery: pressing Strike on a tombstone merges the lost haul back
+      // into the current run and clears the tombstone record.
+      if (run.tiles[r]?.[c]?.kind === 'tombstone' && s.mineTombstone) {
+        const tiles = run.tiles.map((row) => row.slice());
+        tiles[r][c] = { kind: 'floor' };
+        return {
+          mining: { ...run, tiles, haul: mergeReward(run.haul, s.mineTombstone.haul) },
+          mineTombstone: null,
+        };
+      }
       // Boon cache pickup: pressing Strike while standing on a boon tile opens the choice
       // panel instead of swinging. This makes pickup intentional, preventing accidental
       // triggers when sprinting through corridors mid-combat.
-      const { r, c } = run.player;
       if (run.tiles[r]?.[c]?.kind === 'boon') {
         const tiles = run.tiles.map((row) => row.slice());
         tiles[r][c] = { kind: 'floor' };
         const choices = rollBoonChoices('mine', run.activeBoons, getMineRng());
+        // Exhausted pool rolls [] — consolation instead of an unpickable panel.
+        if (choices.length === 0) return { mining: boonConsolation({ ...run, tiles }) };
         return {
           mining: {
             ...run,
@@ -163,10 +197,10 @@ export const createMiningSlice: StateCreator<
       return { mining: strike(run, getMineRng()) };
     }),
 
-  mineStrikeCharged: () =>
+  mineStrikeCharged: (nowMs) =>
     set((s) =>
       s.mining && s.mining.status === 'active'
-        ? { mining: strike(s.mining, getMineRng(), Date.now(), true) }
+        ? { mining: strike(s.mining, getMineRng(), nowMs, true) }
         : s,
     ),
 
@@ -207,6 +241,13 @@ export const createMiningSlice: StateCreator<
       return mining !== s.mining ? { mining } : s;
     }),
 
+  coopApplyTileSnapshot: (floor, entries) =>
+    set((s) => {
+      if (!s.mining) return s;
+      const mining = applyMineTileSnapshot(s.mining, floor, entries);
+      return mining !== s.mining ? { mining } : s;
+    }),
+
   coopApplyRemoteAttack: (monsterId, dmg) =>
     set((s) => {
       if (!s.mining) return s;
@@ -223,15 +264,19 @@ export const createMiningSlice: StateCreator<
       const _mineBaseSeed = getMineBaseSeed();
       const genRng =
         _mineBaseSeed !== undefined ? mulberry32(floorSeed(_mineBaseSeed, nextFloor)) : getMineRng();
-      const mining = descend(s.mining, genRng);
+      let mining = descend(s.mining, genRng);
       if (mining === s.mining) return s;
+      // If a tombstone exists for this floor, place it on the newly generated map.
+      if (s.mineTombstone && s.mineTombstone.floor === nextFloor) {
+        mining = placeTombstone(mining, getMineRng());
+      }
       return { mining, deepestMineFloor: Math.max(s.deepestMineFloor, mining.deepest) };
     }),
 
-  mineCast: (spellKey: string) =>
+  mineCast: (spellKey, nowMs) =>
     set((s) => {
       if (!s.mining || s.mining.status !== 'active') return s;
-      const mining = minecastSpellFn(s.mining, spellKey, Date.now(), getMineRng());
+      const mining = minecastSpellFn(s.mining, spellKey, nowMs, getMineRng());
       if (mining === s.mining) return s;
       return { mining };
     }),
@@ -242,6 +287,13 @@ export const createMiningSlice: StateCreator<
       const mining = applyMineBoonChoice(s.mining, key);
       return mining !== s.mining ? { mining } : s;
     }),
+
+  skipMineBoon: () =>
+    set((s) =>
+      s.mining && s.mining.status === 'choosing'
+        ? { mining: { ...s.mining, pendingBoonChoice: null, status: 'active' as const } }
+        : s,
+    ),
 
   beginBanking: () =>
     set((s) =>

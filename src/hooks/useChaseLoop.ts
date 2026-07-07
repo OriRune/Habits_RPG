@@ -69,6 +69,45 @@ export function useChaseLoop(): {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [jump, slide, dash]);
 
+  // ── Touch gesture bindings ────────────────────────────────────────────────────
+  // Swipe-down  → slide  (natural "duck" gesture on touch devices).
+  // Tap (no swipe) → jump is handled by the play area's onClick; we only intercept
+  // a clear downward swipe here to avoid double-firing jump on every touch event.
+  useEffect(() => {
+    const SWIPE_MIN_PX = 30;  // minimum vertical travel to count as a swipe
+    const SWIPE_MAX_MS = 250; // maximum duration to count as a swipe (not a hold)
+
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let touchStartT = 0;
+
+    const onTouchStart = (e: TouchEvent) => {
+      const t = e.changedTouches[0];
+      touchStartX = t.clientX;
+      touchStartY = t.clientY;
+      touchStartT = performance.now();
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      const t = e.changedTouches[0];
+      const dx = t.clientX - touchStartX;
+      const dy = t.clientY - touchStartY; // positive = downward on screen
+      const dt = performance.now() - touchStartT;
+
+      if (dt < SWIPE_MAX_MS && dy > SWIPE_MIN_PX && dy > Math.abs(dx)) {
+        // Clear downward swipe — trigger slide. The play-area onClick handles taps (jump).
+        slide();
+      }
+    };
+
+    window.addEventListener('touchstart', onTouchStart, { passive: true });
+    window.addEventListener('touchend',   onTouchEnd,   { passive: true });
+    return () => {
+      window.removeEventListener('touchstart', onTouchStart);
+      window.removeEventListener('touchend',   onTouchEnd);
+    };
+  }, [slide]);
+
   // ── RAF loop ─────────────────────────────────────────────────────────────────
   useEffect(() => {
     let raf: number;

@@ -20,7 +20,7 @@ Other scripts:
 ```bash
 npm run build      # type-check + production build to dist/
 npm run preview    # serve the production build
-npm test           # run the Vitest suite (Node env, ~45 test files)
+npm test           # run the Vitest suite (Node env, ~52 test files)
 npm run typecheck  # tsc --noEmit only
 ```
 
@@ -57,6 +57,43 @@ Eight stat-specific daily microgames (free, once per calendar day):
 Lockpicking (DX), Rooftop Chase (AG), Armory Break (ST), Long March (EN),
 Spirit Grove (WI), Royal Court (CH), Ancient Library (KN), Last Stand (HP).
 Score 1–3 stars; rewards scale with score and character level.
+
+### Developer (creative) mode
+
+Settings → Developer exposes a persistent creative-mode panel (always visible; a "Dev" badge lights up
+in the header when any cheat flag is active).
+
+**Persistent toggles**
+| Toggle | Effect |
+|---|---|
+| Unlimited Gold | Purchases, crafting, and merchant rooms ignore gold cost |
+| Unlimited Energy | All minigame entry points skip energy deduction |
+| Invincibility | HP/MP/stamina top up to max after every combat action |
+| Repeat Skill Trials | Bypasses the once-per-day gate *and* the 7-day stat-activity gate |
+
+**Balance Report** — opens a modal with cumulative XP/gold/count per earning source (`habit`, `mine`,
+`forest`, `arena`, `tactics`, `dungeon`, `trial`, `challenge`, `boss`) plus per-day energy flow.
+Includes a "Reset ledger" button to zero the earnings history in isolation.
+
+**Progression jumps**
+- *Set level* (Lv 3 / 5 / 10 / 20 / 50) — writes `character.level`, `statXp`, *and* `character.statLevels`
+  so combat stats actually reflect the jumped level.
+- *Deepest floor* (Reset / Floor 5 / 8 / 10) — unlocks Merchant, Elite, and Tier-3 relic rooms on the
+  next dungeon run.
+- *Spawn boss trial* — 9 named/generic boss fights (Lv 5 / 8 / 12 / 15 / 20 / 25 / 30 / 40 / 50);
+  winning one advances the character to that level. Buttons disable if a battle is already active.
+- *Class* — assign any stat combination directly (bypasses the Lv 10 gate); "Clear" strips the class
+  for reassignment.
+
+**Resources**
+- *Fill energy* — sets `character.energy` to the cap (50).
+- *Add gold* — preset buttons (+100 / +500 / +2000).
+- *Force weekly rollover* — rewinds `lastWeekKey` by 7 days then fires `checkWeeklyRollover`,
+  immediately producing the weekly report without waiting for Monday.
+
+**State inspector** — collapsible read-only panel (collapsed by default) showing character stats,
+all 8 combat stat levels, depth records for every minigame, pending level-up/class-choice flags,
+active-run presence chips, and a snapshot of all cheat flags.
 
 ### Optional multiplayer backend (Supabase)
 When `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` are set, the app adds:

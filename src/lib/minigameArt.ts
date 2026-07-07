@@ -96,8 +96,26 @@ const MINE_ORE_ART: Record<string, string> = {
   crystal_node: 'cave_crystal_1',
   gemstone_node: 'cave_crystal_2',
   bronze_vein: 'copper_ore_1', // closest match — no dedicated bronze art
+  cave_mushroom: 'toadstool',   // reuses the forest berry node sprite
 };
 export function mineOreSprite(oreKey: string): string | undefined {
   const name = MINE_ORE_ART[oreKey];
+  return name ? ART[name] : undefined;
+}
+
+/**
+ * Icon sprite for a haul material key (iron_bar, crystals, etc.), or undefined.
+ * Falls back to a colored chip + name in the overlay when undefined.
+ */
+const MINE_MATERIAL_ART: Record<string, string> = {
+  iron_bar: 'iron_ore_1',
+  crystals: 'cave_crystal_1',
+  gemstone: 'cave_crystal_2',
+  bronze_bar: 'copper_ore_1',
+  frost_quartz: 'cave_crystal_1', // closest match — no dedicated frost art
+  obsidian: 'boulder_1',         // closest match — dark boulder reads as obsidian
+};
+export function mineMaterialIcon(materialKey: string): string | undefined {
+  const name = MINE_MATERIAL_ART[materialKey];
   return name ? ART[name] : undefined;
 }

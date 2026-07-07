@@ -501,30 +501,30 @@ These make the multiplayer layer genuinely motivating rather than cosmetic.
 | 5.3 | Add "Consistency" leaderboard track (habit completion rate) | §7.3 | Medium |
 | 5.4 | Add `usePartyQuestReporter` automated tests | §10.4 | Small |
 
-### Stage 6 — UX and Feedback
+### Stage 6 — UX and Feedback ✅ DONE (2026-06-22)
 
 These improve the daily experience for existing users. Each is standalone with no cross-dependencies.
 
-| # | Change | Source | Effort |
-|---|---|---|---|
-| 6.1 | XP toast on binary habit completion | §2.4 | Small |
-| 6.2 | Daily habit summary count in `HeroBanner` | §8.1 | Small |
-| 6.3 | Active challenge callout on Dashboard | §8.4 | Small |
-| 6.4 | Add "View History" to `HabitCard.tsx` kebab | §2.5, §8.2 | Small |
-| 6.5 | Show yesterday's amount as context in `CompleteHabitDialog.tsx` | §3.4 | Small |
-| 6.6 | Dashboard subtitle: "Your daily habits" | §8.5 | Trivial |
+| # | Change | Source | Effort | Status |
+|---|---|---|---|---|
+| 6.1 | XP toast on binary habit completion | §2.4 | Small | ✅ `useToastStore.ts` + `Toaster.tsx`, wired in `HabitCard.tsx` + `App.tsx` |
+| 6.2 | Daily habit summary count in `HeroBanner` | §8.1 | Small | ✅ `HeroBanner.tsx` reads `selectDailySummary` |
+| 6.3 | Active challenge callout on Dashboard | §8.4 | Small | ✅ `ActiveChallengeCallout` component in `DashboardView.tsx` |
+| 6.4 | Add "View History" to `HabitCard.tsx` kebab | §2.5, §8.2 | Small | ✅ `onViewHistory` prop threaded; `HistoryView` accepts `focusHabitId` + scrolls |
+| 6.5 | Show yesterday's amount as context in `CompleteHabitDialog.tsx` | §3.4 | Small | ✅ `lastLoggedAmount()` helper + hint text |
+| 6.6 | Dashboard subtitle: "Your daily habits" | §8.5 | Trivial | ✅ Under `<SectionTitle>` in `DashboardView.tsx` |
 
-### Stage 7 — Long-term Features
+### Stage 7 — Long-term Features ✅ DONE (2026-06-22)
 
 These are higher-effort additions that matter for retention and long-term engagement.
 
-| # | Change | Source | Effort |
-|---|---|---|---|
-| 7.1 | Browser notification / daily reminder support | §2.7 | Large |
-| 7.2 | Habit JSON import/export | §2.6 | Medium |
-| 7.3 | Party challenge quest type | §7.4 | Large |
-| 7.4 | Challenge expiry warning badges | §3.6 | Small |
-| 7.5 | Leaderboard anti-manipulation rate limiting | §7.5 | Medium |
+| # | Change | Source | Effort | Status |
+|---|---|---|---|---|
+| 7.1 | Browser notification / daily reminder support | §2.7 | Large | ✅ `useReminders.ts` hook (foreground-only); toggle + time input in `SettingsView.tsx`; in-app toast fallback |
+| 7.2 | Habit JSON import/export | §2.6 | Medium | ✅ Export/import in `SettingsView.tsx`; `importHabits()` action in `habitsSlice.ts`; merge-by-id + completionLog recompute |
+| 7.3 | Party challenge quest type | §7.4 | Large | ✅ `QuestForm` kind selector (count/class/quantity); `computeQuestTotal()` pure helper; kind-aware reporter in `useParty.ts` |
+| 7.4 | Challenge expiry warning badges | §3.6 | Small | ✅ `badges` prop on `TabBar.tsx`; `hasExpiringChallenge` computed in `App.tsx` (≤2 days left) |
+| 7.5 | Leaderboard anti-manipulation rate limiting | §7.5 | Medium | ✅ `0009_leaderboard_antimanip.sql` — `suspect` flag, XP-delta trigger, leaderboard view exclusion (live-Supabase verification deferred) |
 
 ---
 

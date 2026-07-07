@@ -230,7 +230,7 @@ export function ArenaOverlay() {
   const bossPct = arena.bossMaxHp > 0 ? Math.max(0, (arena.bossHp / arena.bossMaxHp) * 100) : 0;
   const showHit = Date.now() - hitAt < 450;
   const playerC = center(arena.player.pos);
-  const ringActive = arena.ringOfFire != null && Date.now() < arena.ringOfFire.expiresAtMs;
+  const ringActive = arena.ringOfFire != null && performance.now() < arena.ringOfFire.expiresAtMs;
 
   const spells = arena.knownSpells.map((k) => getSpell(k)).filter((s): s is NonNullable<typeof s> => !!s);
   const items = Object.entries(arena.inventory)
@@ -476,7 +476,7 @@ export function ArenaOverlay() {
         {/* Minions */}
         {arena.minions.map((m) => {
           const c = center(m.pos);
-          const frozen = m.frozenUntilMs > Date.now();
+          const frozen = m.frozenUntilMs > performance.now();
           return (
             <div key={`mn-${m.id}`}>
               <div className="pointer-events-none z-[8] flex items-center justify-center" style={spriteBox(m.pos, CELL * 0.62)}>
@@ -492,7 +492,7 @@ export function ArenaOverlay() {
                   <div className="h-full rounded-full bg-red-400" style={{ width: `${(m.hp / m.maxHp) * 100}%` }} />
                 </div>
               )}
-              {m.poisonDmg > 0 && m.poisonExpiresMs > Date.now() && (
+              {m.poisonDmg > 0 && m.poisonExpiresMs > performance.now() && (
                 <div className="pointer-events-none absolute z-20 text-[10px]" style={{ left: c.x + CELL * 0.3, top: c.y - CELL * 0.6 }}>
                   ☠️
                 </div>

@@ -1,6 +1,6 @@
 # Arena Minigame Analysis
 
-*Updated June 2026 to reflect all improvements through Phase D. The first analysis lives at `docs/arena-minigame-analysis.md`; the improvement plan is at `docs/arena-minigame-improvement-plan.md`.*
+*Updated June 2026 to reflect all improvements through Phase D. The earlier analysis has been archived at `docs/archived/arena-minigame-analysis.md`.*
 
 ---
 

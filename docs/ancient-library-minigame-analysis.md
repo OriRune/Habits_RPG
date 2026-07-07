@@ -1,6 +1,6 @@
 # Ancient Library — Minigame Analysis (Updated)
 
-> Reflects the current implementation after the improvements described in `docs/ancient-library-improvement-plan.md`.
+> Reflects the current implementation after the improvements described in `docs/archived/ancient-library-improvement-plan.md`.
 > Previous analysis snapshot is in git history.
 
 ---

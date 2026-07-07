@@ -1,12 +1,14 @@
-import { useState } from 'react';
-import { ChevronLeft, FlaskConical, BarChart3 } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Bell, ChevronLeft, Download, FlaskConical, BarChart3, Upload } from 'lucide-react';
 import { BalanceReportModal } from '@/components/balance/BalanceReportModal';
+import { DevStateInspector } from '@/components/dev/DevStateInspector';
 import { useGameStore } from '@/store/useGameStore';
 import { STATS, type StatId } from '@/engine/stats';
 import type { ArenaSpeed } from '@/engine/arena';
 import { classFor } from '@/engine/classes';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
+import { Modal } from '@/components/ui/Modal';
 import { Toggle } from '@/components/ui/Toggle';
 import { SectionTitle } from '@/components/ui/Divider';
 import { AppearanceSection } from '@/components/settings/AppearanceSection';
@@ -17,9 +19,15 @@ import { pushCloudSave } from '@/net/cloudSave';
 const LEVEL_JUMPS = [3, 5, 10, 20, 50];
 const FLOOR_JUMPS = [0, 5, 8, 10];
 const TRIALS = [
-  { level: 5, label: 'Slime (Lv 5)' },
-  { level: 10, label: 'Guardian (Lv 10)' },
-  { level: 20, label: 'Golem (Lv 20)' },
+  { level: 5,  label: 'Procrastination Slime (Lv 5)'  },
+  { level: 8,  label: 'Drill Sergeant Rex (Lv 8)'      },
+  { level: 12, label: 'Comfort Blob (Lv 12)'           },
+  { level: 15, label: 'Anxiety Wraith (Lv 15)'         },
+  { level: 20, label: 'Burnout Golem (Lv 20)'          },
+  { level: 25, label: 'Mirror Demon (Lv 25)'           },
+  { level: 30, label: 'Clockwork Tyrant (Lv 30)'       },
+  { level: 40, label: 'Trial Guardian (Lv 40)'         },
+  { level: 50, label: 'Trial Guardian (Lv 50)'         },
 ];
 
 /** Full-screen Settings overlay: general options + a Developer "creative mode" section. */
@@ -27,6 +35,10 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
   const settings = useGameStore((s) => s.settings);
   const updateSettings = useGameStore((s) => s.updateSettings);
   const resetGame = useGameStore((s) => s.resetGame);
+  const habits = useGameStore((s) => s.habits);
+  const completionLog = useGameStore((s) => s.completionLog);
+  const importHabits = useGameStore((s) => s.importHabits);
+  const importFileRef = useRef<HTMLInputElement>(null);
 
   const level = useGameStore((s) => s.character.level);
   const classId = useGameStore((s) => s.character.classId);
@@ -35,6 +47,11 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
   const devSetDeepestFloor = useGameStore((s) => s.devSetDeepestFloor);
   const devSpawnTrial = useGameStore((s) => s.devSpawnTrial);
   const devClearClass = useGameStore((s) => s.devClearClass);
+  const devFillEnergy = useGameStore((s) => s.devFillEnergy);
+  const devAddGold = useGameStore((s) => s.devAddGold);
+  const devForceWeeklyRollover = useGameStore((s) => s.devForceWeeklyRollover);
+  const battle = useGameStore((s) => s.battle);
+  const checkWeeklyRollover = useGameStore((s) => s.checkWeeklyRollover);
   const chooseClass = useGameStore((s) => s.chooseClass);
 
   const [primary, setPrimary] = useState<StatId>('ST');
@@ -43,9 +60,16 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
   const [showBalanceReport, setShowBalanceReport] = useState(false);
 
   const username = useAuthStore((s) => s.username);
+  const [signOutWarnOpen, setSignOutWarnOpen] = useState(false);
   const handleSignOut = async () => {
-    // Flush a final save so nothing since the last debounce is lost, then sign out.
-    await pushCloudSave();
+    // Flush a final save so nothing since the last debounce is lost. If the flush
+    // fails (offline, cloud conflict), warn before signing out — the sign-out
+    // wipe would delete whatever never reached the cloud.
+    const flushed = await pushCloudSave();
+    if (!flushed) {
+      setSignOutWarnOpen(true);
+      return;
+    }
     await signOut();
   };
 
@@ -53,6 +77,70 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
     devSpawnTrial(lvl);
     onClose(); // surface the BattleOverlay over the dashboard
   };
+
+  // -------------------------------------------------------------------------
+  // Habit export / import
+  // -------------------------------------------------------------------------
+
+  function handleExport() {
+    const payload = { version: 1, exportedAt: new Date().toISOString(), habits, completionLog };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `habits-rpg-export-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // Reset so the same file can be selected again after dismissal.
+    e.target.value = '';
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const raw = JSON.parse(reader.result as string) as { habits?: unknown; completionLog?: unknown };
+        if (!Array.isArray(raw.habits)) {
+          alert('Invalid export file — no "habits" array found.');
+          return;
+        }
+        // Basic shape coercion: ensure required fields are present.
+        const incoming = (raw.habits as unknown[])
+          .filter((h): h is import('@/engine/habits').Habit =>
+            typeof (h as Record<string, unknown>).id === 'string' &&
+            typeof (h as Record<string, unknown>).name === 'string',
+          );
+
+        if (incoming.length === 0) {
+          alert('No valid habits found in the file.');
+          return;
+        }
+
+        if (!confirm(`Merge ${incoming.length} habit${incoming.length !== 1 ? 's' : ''} from the file? Existing habits with the same ID will be replaced.`)) return;
+        importHabits(incoming);
+      } catch {
+        alert('Could not read the file — make sure it is a valid HabitsRPG export.');
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  // -------------------------------------------------------------------------
+  // Daily reminders
+  // -------------------------------------------------------------------------
+
+  async function handleReminderToggle(enabled: boolean) {
+    if (enabled && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        // Permission denied — enable anyway so the in-app toast fallback fires.
+      }
+    }
+    updateSettings({ dailyReminderEnabled: enabled });
+  }
 
   return (
     <div className="texture-wood fixed inset-0 z-50 overflow-y-auto">
@@ -79,6 +167,36 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             <p className="text-[11px] text-ink-muted">
               Your progress syncs to this account across devices.
             </p>
+            {signOutWarnOpen && (
+              <Modal title="Couldn't save to the cloud" onClose={() => setSignOutWarnOpen(false)}>
+                <p className="mb-4 text-sm text-ink-muted">
+                  Your latest progress could not be saved to your account — you may be
+                  offline. Signing out now will{' '}
+                  <span className="font-medium text-ink">
+                    delete the unsaved progress on this device
+                  </span>
+                  . Staying signed in keeps it and retries in the background.
+                </p>
+                <div className="flex flex-col gap-2">
+                  <Button
+                    variant="secondary"
+                    onClick={() => setSignOutWarnOpen(false)}
+                    className="w-full"
+                  >
+                    Stay signed in
+                  </Button>
+                  <Button
+                    onClick={() => {
+                      setSignOutWarnOpen(false);
+                      void signOut();
+                    }}
+                    className="w-full bg-ember hover:bg-ember/90 text-white border-ember"
+                  >
+                    Sign out anyway
+                  </Button>
+                </div>
+              </Modal>
+            )}
           </Panel>
         )}
 
@@ -93,6 +211,28 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             checked={settings.soundEnabled}
             onChange={(v) => updateSettings({ soundEnabled: v })}
           />
+
+          {/* Daily reminder */}
+          <div className="space-y-2">
+            <Toggle
+              label="Daily reminder"
+              description="Show a notification (or in-app alert) at your chosen time to log today's habits. Requires browser notification permission."
+              checked={settings.dailyReminderEnabled}
+              onChange={handleReminderToggle}
+            />
+            {settings.dailyReminderEnabled && (
+              <div className="flex items-center gap-3 pl-1">
+                <Bell className="h-3.5 w-3.5 shrink-0 text-ink-muted" />
+                <input
+                  type="time"
+                  value={settings.dailyReminderTime}
+                  onChange={(e) => updateSettings({ dailyReminderTime: e.target.value })}
+                  className="rounded-md border border-gold-deep/50 bg-parchment-100/80 px-2 py-1 text-xs text-ink focus:border-gold-deep focus:outline-none"
+                  aria-label="Reminder time"
+                />
+              </div>
+            )}
+          </div>
 
           {/* Party habit visibility (only meaningful when signed in) */}
           {isBackendConfigured() && (
@@ -128,6 +268,48 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             </p>
           </div>
 
+          {/* Adventure Ritual — pre-entry checklist before each minigame. */}
+          <Toggle
+            label="Adventure Ritual"
+            description="Show a pre-entry checklist before each minigame that lists today's habits and the energy cost."
+            checked={settings.showAdventureRitual}
+            onChange={(v) => updateSettings({ showAdventureRitual: v })}
+          />
+
+          {/* Habit data export / import */}
+          <div className="space-y-1.5">
+            <div className="font-display text-xs font-bold uppercase tracking-wider text-ink">
+              Habit data
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="secondary"
+                onClick={handleExport}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs"
+              >
+                <Download className="h-3.5 w-3.5" /> Export
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => importFileRef.current?.click()}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs"
+              >
+                <Upload className="h-3.5 w-3.5" /> Import
+              </Button>
+              <input
+                ref={importFileRef}
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={handleImportFile}
+              />
+            </div>
+            <p className="text-[10px] text-ink-light">
+              Export saves your habits + history as a JSON file. Import merges habits by ID
+              (existing habits with the same ID are replaced).
+            </p>
+          </div>
+
           <button
             onClick={() => {
               if (confirm('Reset all progress? This cannot be undone.')) {
@@ -157,12 +339,6 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
           </p>
           <div className="space-y-2">
             <Toggle
-              label="Adventure Ritual"
-              description="Show a pre-entry checklist before each minigame that lists today's habits and the energy cost."
-              checked={settings.showAdventureRitual}
-              onChange={(v) => updateSettings({ showAdventureRitual: v })}
-            />
-            <Toggle
               label="Unlimited Gold"
               description="Purchases and crafting ignore their gold cost."
               checked={settings.unlimitedGold}
@@ -182,7 +358,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             />
             <Toggle
               label="Repeat Skill Trials"
-              description="Skip the once-per-day gate — trials can be replayed immediately."
+              description="Skip the once-per-day gate and the stat-activity requirement — trials can be replayed immediately without matching habits."
               checked={settings.repeatMinigames}
               onChange={(v) => updateSettings({ repeatMinigames: v })}
             />
@@ -202,8 +378,8 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
 
           {/* Testing tools — jump straight to level-locked content. */}
           <div className="space-y-4 border-t border-gold-deep/20 pt-3">
-            <p className="text-xs text-ink-muted">
-              Testing jumps — set progression directly to reach gated content.
+            <p className="text-xs font-bold uppercase tracking-wider text-ink-muted">
+              Progression
             </p>
 
             {/* Level jump */}
@@ -229,7 +405,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
                 ))}
               </div>
               <p className="text-[10px] text-ink-light">
-                Opens dungeons (3), trials (5), and class assignment (10).
+                Opens dungeons (3), trials (5), and class assignment (10). Also updates combat stat levels.
               </p>
             </div>
 
@@ -266,6 +442,11 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
               <span className="font-display text-xs font-bold uppercase tracking-wider text-ink">
                 Spawn boss trial
               </span>
+              {battle && (
+                <p className="text-[10px] text-ember">
+                  A battle is already active — dismiss it first.
+                </p>
+              )}
               <div className="flex flex-wrap gap-1.5">
                 {TRIALS.map((t) => (
                   <Button
@@ -273,6 +454,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
                     variant="secondary"
                     onClick={() => spawn(t.level)}
                     className="px-3 py-1 text-xs"
+                    disabled={!!battle}
                   >
                     {t.label}
                   </Button>
@@ -340,7 +522,70 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
                 </Button>
               </div>
             </div>
+
+            {/* Resources */}
+            <div className="space-y-4 border-t border-gold-deep/20 pt-3">
+              <p className="text-xs font-bold uppercase tracking-wider text-ink-muted">
+                Resources
+              </p>
+
+              {/* Energy */}
+              <div className="space-y-1.5">
+                <span className="font-display text-xs font-bold uppercase tracking-wider text-ink">
+                  Energy
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  <Button
+                    variant="secondary"
+                    onClick={() => devFillEnergy()}
+                    className="px-3 py-1 text-xs"
+                  >
+                    Fill to max
+                  </Button>
+                </div>
+              </div>
+
+              {/* Gold */}
+              <div className="space-y-1.5">
+                <span className="font-display text-xs font-bold uppercase tracking-wider text-ink">
+                  Gold
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {[100, 500, 2000].map((amt) => (
+                    <Button
+                      key={amt}
+                      variant="secondary"
+                      onClick={() => devAddGold(amt)}
+                      className="px-3 py-1 text-xs"
+                    >
+                      +{amt}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Weekly rollover */}
+              <div className="space-y-1.5">
+                <span className="font-display text-xs font-bold uppercase tracking-wider text-ink">
+                  Weekly rollover
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  <Button
+                    variant="secondary"
+                    onClick={() => { devForceWeeklyRollover(); checkWeeklyRollover(); onClose(); }}
+                    className="px-3 py-1 text-xs"
+                  >
+                    Force rollover
+                  </Button>
+                </div>
+                <p className="text-[10px] text-ink-light">
+                  Rewinds the week sentinel so the weekly report fires immediately.
+                </p>
+              </div>
+            </div>
           </div>
+
+          <DevStateInspector />
         </Panel>
       </div>
 

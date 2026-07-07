@@ -35,6 +35,26 @@ afterEach(() => {
 
 // ─── 5. Tests: syncServerClock ────────────────────────────────────────────────
 
+describe('syncServerClock — always resolves (clockReady safety)', () => {
+  // `useCloudSync` calls `.finally(() => setClockReady(true))` on the promise
+  // returned by syncServerClock. These tests confirm the function always resolves
+  // (never rejects) so clockReady is always set regardless of backend outcome.
+
+  it('resolves without throwing when the RPC returns an error', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mockRpc.mockResolvedValueOnce({ data: null, error: { message: 'network timeout' } });
+    await expect(syncServerClock()).resolves.toBeUndefined();
+    warnSpy.mockRestore();
+  });
+
+  it('resolves without throwing when the RPC returns null data', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mockRpc.mockResolvedValueOnce({ data: null, error: null });
+    await expect(syncServerClock()).resolves.toBeUndefined();
+    warnSpy.mockRestore();
+  });
+});
+
 describe('syncServerClock', () => {
   it('applies RTT-compensated offset after a successful server_now call', async () => {
     // The mock resolves instantly (rtt ≈ 0), so the offset should be
@@ -79,6 +99,61 @@ describe('syncServerClock', () => {
 
     expect(after - before).toBeLessThan(100);
     warnSpy.mockRestore();
+  });
+
+  it('rejects a non-numeric payload instead of poisoning the offset with NaN (MP-16)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // e.g. the RPC contract changing to return an ISO string
+    mockRpc.mockResolvedValueOnce({ data: '2026-07-06T00:00:00Z', error: null });
+
+    const before = now().getTime();
+    await syncServerClock();
+    const after = now().getTime();
+
+    // Offset must be untouched — pre-fix this was NaN and now() went Invalid,
+    // sending "NaN-NaN-NaN" date keys into every daily/weekly gate.
+    expect(Number.isFinite(after)).toBe(true);
+    expect(after - before).toBeLessThan(100);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('rejects a non-coercible object payload (MP-16)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mockRpc.mockResolvedValueOnce({ data: { now: 123 }, error: null });
+
+    const before = now().getTime();
+    await syncServerClock();
+    const after = now().getTime();
+
+    expect(Number.isFinite(after)).toBe(true);
+    expect(after - before).toBeLessThan(100);
+    warnSpy.mockRestore();
+  });
+
+  it('rejects finite-but-implausible payloads that coerce to ~epoch 0 (MP-16)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // Number('') === 0 — would set the clock to 1970 and persist "1970-01-01" keys.
+    mockRpc.mockResolvedValueOnce({ data: '', error: null });
+
+    const before = now().getTime();
+    await syncServerClock();
+    const after = now().getTime();
+
+    expect(after - before).toBeLessThan(100);
+    warnSpy.mockRestore();
+  });
+
+  it('accepts a numeric-string payload (PostgREST int8-as-string serialization)', async () => {
+    const serverTime = Date.now() + 10_000;
+    mockRpc.mockResolvedValueOnce({ data: String(serverTime), error: null });
+
+    const deviceTime = Date.now();
+    await syncServerClock();
+
+    const adjusted = now().getTime();
+    expect(adjusted - deviceTime).toBeGreaterThan(9_000);
+    expect(adjusted - deviceTime).toBeLessThan(11_000);
   });
 });
 

@@ -1,8 +1,8 @@
 import type { StateCreator } from 'zustand';
 import { STAT_IDS, emptyStatXP } from '@/engine/stats';
-import { toISODate, weekKey } from '@/engine/date';
+import { toISODate, weekKey, addDays } from '@/engine/date';
 import { cumulativeXpToReach } from '@/engine/leveling';
-import { creationStatLevels, MAX_LEVEL } from '@/engine/progression';
+import { creationStatLevels, MAX_LEVEL, statLevelsFromXp } from '@/engine/progression';
 import { classFor } from '@/engine/classes';
 import { bossForLevel } from '@/engine/bosses';
 import { createBattle } from '@/engine/combat';
@@ -19,6 +19,7 @@ import {
   freshCharacter,
   freshSettings,
   fighterFor,
+  MAX_ENERGY,
 } from '../shared';
 import { freshEarningsLedger } from '@/engine/balance';
 
@@ -30,9 +31,11 @@ export interface CoreSlice {
   bossLosses: Record<number, number>;
   lastActiveISO: string;
   created: boolean;
+  hasSeenWelcome: boolean;
   earnings: import('@/engine/balance').EarningsLedger;
   energyLog: Record<string, import('@/engine/balance').EnergyLogEntry>;
 
+  dismissWelcome: () => void;
   createCharacter: (input: {
     name: string;
     allocations: Partial<Record<StatId, number>>;
@@ -44,6 +47,10 @@ export interface CoreSlice {
   devSetDeepestFloor: (n: number) => void;
   devSpawnTrial: (level: number) => void;
   devClearClass: () => void;
+  devFillEnergy: () => void;
+  devAddGold: (amount: number) => void;
+  devForceWeeklyRollover: () => void;
+  devResetEarnings: () => void;
   resetGame: () => void;
 }
 
@@ -60,8 +67,11 @@ export const createCoreSlice: StateCreator<
   bossLosses: {},
   lastActiveISO: toISODate(),
   created: false,
+  hasSeenWelcome: false,
   earnings: freshEarningsLedger(),
   energyLog: {},
+
+  dismissWelcome: () => set(() => ({ hasSeenWelcome: true })),
 
   createCharacter: ({ name, allocations, weaponKey, spellKey }) =>
     set((s) => {
@@ -102,12 +112,14 @@ export const createCoreSlice: StateCreator<
       STAT_IDS.forEach((id, i) => {
         statXp[id] = per + (i === 0 ? remainder : 0);
       });
+      const statLevels = statLevelsFromXp(statXp as Record<StatId, number>);
       return {
         character: {
           ...s.character,
           level,
           statXp,
           statXpAtLastLevel: { ...statXp },
+          statLevels,
         },
         pendingLevelUp: null,
       };
@@ -128,6 +140,20 @@ export const createCoreSlice: StateCreator<
   devClearClass: () =>
     set((s) => ({ character: { ...s.character, classId: null } })),
 
+  devFillEnergy: () =>
+    set((s) => ({ character: { ...s.character, energy: MAX_ENERGY } })),
+
+  devAddGold: (amount) =>
+    set((s) => ({
+      character: { ...s.character, gold: s.character.gold + Math.max(0, Math.floor(amount)) },
+    })),
+
+  devForceWeeklyRollover: () =>
+    set(() => ({ lastWeekKey: weekKey(addDays(toISODate(), -7)) })),
+
+  devResetEarnings: () =>
+    set(() => ({ earnings: freshEarningsLedger(), energyLog: {} })),
+
   resetGame: () =>
     set(() => ({
       habits: [],
@@ -137,6 +163,8 @@ export const createCoreSlice: StateCreator<
       knownSpells: [...STARTER_SPELLS],
       equippedWeapon: STARTER_WEAPON,
       ownedWeapons: [STARTER_WEAPON],
+      ownedGear: [],
+      equipment: { armor: null, trinket: null, tool: null },
       combatStats: emptyCombatStats(),
       codex: [],
       challenges: [],
@@ -166,7 +194,10 @@ export const createCoreSlice: StateCreator<
       lastActiveISO: toISODate(),
       settings: freshSettings(),
       created: false,
+      hasSeenWelcome: false,
       earnings: freshEarningsLedger(),
       energyLog: {},
+      mineTombstone: null,
+      claimedPartyQuests: [],
     })),
 });

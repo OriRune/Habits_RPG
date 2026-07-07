@@ -10,7 +10,7 @@ These have the largest impact on whether the minigame feels worth playing. Fix t
 
 ---
 
-### 1.1 Add fog of war
+### 1.1 Add fog of war ✅ DONE
 
 **What:** Limit the player's visible viewport to a radius around the player (e.g., 4–5 tiles) with tiles outside that radius darkened or fully hidden. The full 11×11 window stays for rendering, but unlit cells render as dark/opaque.
 
@@ -90,7 +90,7 @@ These have the largest impact on whether the minigame feels worth playing. Fix t
 
 ---
 
-### 2.2 Add a small haul-recovery mechanic on death
+### 2.2 Add a small haul-recovery mechanic on death ✅ DONE
 
 **What:** Add a "tombstone" tile on the floor where the player died during the current session. Returning to that floor (if re-entering the mine) and reaching the tombstone recovers the lost 50% haul.
 
@@ -127,7 +127,7 @@ These have the largest impact on whether the minigame feels worth playing. Fix t
 
 ---
 
-### 2.5 Add a partial stamina restore item
+### 2.5 Add a partial stamina restore item ✅ DONE
 
 **What:** Introduce a rare consumable (e.g., "Cave Mushroom") as a map pickup — distinct from energy gems — that restores 30–50% of max stamina. Place 0–1 per floor via the existing generation step 7 logic.
 
@@ -190,7 +190,7 @@ These have the largest impact on whether the minigame feels worth playing. Fix t
 
 ---
 
-### 3.5 Improve the HUD haul tally readability
+### 3.5 Improve the HUD haul tally readability ✅ DONE
 
 **What:** The current haul tally shows all materials in a compact strip. Add a subtle "total gold equivalent" or simply expand the display on wider screens, and add an icon per material type instead of raw text.
 

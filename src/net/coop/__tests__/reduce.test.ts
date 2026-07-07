@@ -11,11 +11,19 @@ import {
   applyMineWorldSlice,
   applyMineTileSlice,
   applyMineRemoteAttack,
+  clampRemoteDamage,
   applyForestWorldSlice,
   applyForestTileSlice,
   applyForestRemoteAttack,
   applyTacticsState,
   resolveTacticsIntent,
+  nextSessionState,
+  shouldReapOrphan,
+  canJoinSession,
+  diffMineTiles,
+  applyMineTileSnapshot,
+  diffForestTiles,
+  applyForestTileSnapshot,
   applyPlayerSlice,
   applyBye,
   pruneStalePlayers,
@@ -24,8 +32,10 @@ import {
   type RemotePlayers,
   type WorldSliceInput,
 } from '../reduce';
-import type { MineState, MineTile } from '@/engine/mining';
-import type { ForestState, ForestTile } from '@/engine/forest';
+import type { CoopSession } from '../session';
+import { type MineState, type MineTile, generateMine, mineSnapshot } from '@/engine/mining';
+import { type ForestState, type ForestTile, generateForest, forestSnapshot } from '@/engine/forest';
+import { mulberry32, floorSeed } from '@/engine/rng';
 import {
   hexBoard,
   hexKey,
@@ -39,8 +49,15 @@ import {
   type Tile,
 } from '@/engine/hexBattle';
 import type { PlayerSlice } from '../protocol';
-import { STA_REGEN_MS, MP_REGEN_MS, DASH_BASE_CD_MS } from '@/engine/crawl';
+import {
+  STA_REGEN_MS,
+  MP_REGEN_MS,
+  DASH_BASE_CD_MS,
+  BOON_CONSOLATION_HEAL,
+  BOON_CONSOLATION_GOLD,
+} from '@/engine/crawl';
 import { getWeapon, STARTER_WEAPON } from '@/engine/weapons';
+import { BOONS } from '@/content/boons';
 import type { RNG } from '@/engine/crawl';
 
 // ---------------------------------------------------------------------------
@@ -197,6 +214,62 @@ describe('applyMineWorldSlice', () => {
     expect(result.monsters[0].id).toBe('mon-alive');
   });
 
+  it('re-instantiates a host-alive monster missing locally — heals one-sided divergence (MP-02)', () => {
+    // The guest killed the monster on its local copy; the host says it is alive.
+    const mine = makeMineState({ monsters: [] });
+    const slice: WorldSliceInput = {
+      floor: 1,
+      monsters: [{ id: 'mon-1', key: 'slime', r: 4, c: 2, hp: 6, maxHp: 10, readyAtMs: 250 }],
+    };
+
+    const result = applyMineWorldSlice(mine, slice, { baseSeed: 42, rng: rngFrom(1) });
+
+    expect(result.monsters).toHaveLength(1);
+    expect(result.monsters[0]).toMatchObject({
+      id: 'mon-1', key: 'slime', r: 4, c: 2, hp: 6, maxHp: 10, readyAtMs: 250,
+    });
+  });
+
+  it('rebuild from a pre-maxHp host slice falls back to maxHp = hp (rolling deploy)', () => {
+    const mine = makeMineState({ monsters: [] });
+    const slice: WorldSliceInput = {
+      floor: 1,
+      monsters: [{ id: 'mon-1', key: 'slime', r: 4, c: 2, hp: 6, readyAtMs: 0 }],
+    };
+
+    const result = applyMineWorldSlice(mine, slice, { baseSeed: 42, rng: rngFrom(1) });
+
+    expect(result.monsters).toHaveLength(1);
+    expect(result.monsters[0].maxHp).toBe(6);
+  });
+
+  it('skips rebuilding a malformed slice entity with no key (no crash)', () => {
+    const mine = makeMineState({ monsters: [] });
+    const slice: WorldSliceInput = {
+      floor: 1,
+      monsters: [{ id: 'mon-1', r: 4, c: 2, hp: 6, readyAtMs: 0 }],
+    };
+
+    const result = applyMineWorldSlice(mine, slice, { baseSeed: 42, rng: rngFrom(1) });
+    expect(result.monsters).toHaveLength(0);
+  });
+
+  it('a matched monster keeps guest-visible status fields through the rebuild', () => {
+    const monster = {
+      id: 'mon-1', key: 'slime', r: 2, c: 2, hp: 8, maxHp: 10, readyAtMs: 0,
+      frozenUntilMs: 5000,
+    };
+    const mine = makeMineState({ monsters: [monster] });
+    const slice: WorldSliceInput = {
+      floor: 1,
+      monsters: [{ id: 'mon-1', r: 3, c: 3, hp: 5, readyAtMs: 500 }],
+    };
+
+    const result = applyMineWorldSlice(mine, slice, { baseSeed: 42, rng: rngFrom(1) });
+    expect(result.monsters[0].frozenUntilMs).toBe(5000);
+    expect(result.monsters[0].maxHp).toBe(10);
+  });
+
   it('same floor, no monsters in slice — clears all local monsters', () => {
     const monster = { id: 'mon-1', key: 'slime', r: 2, c: 2, hp: 8, maxHp: 10, readyAtMs: 0 };
     const mine = makeMineState({ monsters: [monster] });
@@ -228,6 +301,28 @@ describe('applyMineWorldSlice', () => {
     const result = applyMineWorldSlice(mine, slice, { baseSeed: undefined, rng: rngFrom(1) });
     // Without a seed we cannot regen, so floor stays as-is
     expect(result.floor).toBe(1);
+  });
+
+  it('host guardian kill — guest enters choosing while eligible boons remain', () => {
+    const guardian = { id: 'g-1', key: 'stone_golem', r: 2, c: 2, hp: 20, maxHp: 50, readyAtMs: 0 };
+    const mine = makeMineState({ monsters: [guardian] });
+    // Guardian absent from the host slice → killed on the host side.
+    const result = applyMineWorldSlice(mine, { floor: 1, monsters: [] }, { baseSeed: 42, rng: rngFrom(1) });
+    expect(result.status).toBe('choosing');
+    expect(result.pendingBoonChoice?.length).toBeGreaterThan(0);
+  });
+
+  it('host guardian kill with exhausted boon pool — consolation, never a zero-option choosing (MINI-01)', () => {
+    const allMineBoons = Object.values(BOONS)
+      .filter((b) => b.game === 'mine' || b.game === 'both')
+      .map((b) => b.key);
+    const guardian = { id: 'g-1', key: 'stone_golem', r: 2, c: 2, hp: 20, maxHp: 50, readyAtMs: 0 };
+    const mine = makeMineState({ hp: 20, monsters: [guardian], activeBoons: allMineBoons });
+    const result = applyMineWorldSlice(mine, { floor: 1, monsters: [] }, { baseSeed: 42, rng: rngFrom(1) });
+    expect(result.status).toBe('active');
+    expect(result.pendingBoonChoice).toBeNull();
+    expect(result.hp).toBe(20 + BOON_CONSOLATION_HEAL);
+    expect(result.haul.gold ?? 0).toBe(BOON_CONSOLATION_GOLD);
   });
 });
 
@@ -267,6 +362,22 @@ describe('applyMineTileSlice', () => {
 });
 
 // ---------------------------------------------------------------------------
+// clampRemoteDamage (MP-11)
+// ---------------------------------------------------------------------------
+
+describe('clampRemoteDamage', () => {
+  it('caps a guest-supplied hit at the target max HP', () => {
+    expect(clampRemoteDamage(1e9, 10)).toBe(10);
+  });
+  it('leaves a legitimate hit unchanged', () => {
+    expect(clampRemoteDamage(5, 10)).toBe(5);
+  });
+  it('passes through exactly at the ceiling', () => {
+    expect(clampRemoteDamage(10, 10)).toBe(10);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // applyMineRemoteAttack
 // ---------------------------------------------------------------------------
 
@@ -280,6 +391,20 @@ describe('applyMineRemoteAttack', () => {
     const m = result.monsters.find((x) => x.id === 'mon-1');
     expect(m).toBeDefined();
     expect(m!.hp).toBeLessThan(10); // took some damage
+  });
+
+  it('MP-11: clamps an absurd guest damage value to the monster max HP', () => {
+    // hp deliberately above maxHp so the clamp is observable on the surviving
+    // path: with the clamp the hit removes at most maxHp (10) and the monster
+    // lives at 90; without it, 1e9 damage kills and removes the monster.
+    const monster = { id: 'mon-1', key: 'slime', r: 2, c: 2, hp: 100, maxHp: 10, readyAtMs: 0 };
+    const mine = makeMineState({ monsters: [monster] });
+
+    const result = applyMineRemoteAttack(mine, 'mon-1', 1e9, rngFrom(1));
+
+    const m = result.monsters.find((x) => x.id === 'mon-1');
+    expect(m).toBeDefined();
+    expect(m!.hp).toBe(90);
   });
 
   it('returns the same reference when status is not active', () => {
@@ -326,6 +451,50 @@ describe('applyForestWorldSlice', () => {
     expect(result.beasts[0].id).toBe('b-alive');
   });
 
+  it('re-instantiates a host-alive beast missing locally — the guest ranged-kill divergence heals (MP-02)', () => {
+    // The guest's local ranged shot killed the beast; the host says it is alive.
+    const forest = makeForestState({ beasts: [] });
+    const slice: WorldSliceInput = {
+      floor: 1,
+      monsters: [{ id: 'b-1', key: 'wolf', r: 4, c: 2, hp: 9, maxHp: 15, readyAtMs: 250, asleep: false }],
+    };
+
+    const result = applyForestWorldSlice(forest, slice, { baseSeed: 42, rng: rngFrom(1) });
+
+    expect(result.beasts).toHaveLength(1);
+    expect(result.beasts[0]).toMatchObject({
+      id: 'b-1', key: 'wolf', r: 4, c: 2, hp: 9, maxHp: 15, readyAtMs: 250, asleep: false,
+    });
+  });
+
+  it('a re-instantiated beast defaults asleep to false when the slice omits it', () => {
+    const forest = makeForestState({ beasts: [] });
+    const slice: WorldSliceInput = {
+      floor: 1,
+      monsters: [{ id: 'b-1', key: 'wolf', r: 4, c: 2, hp: 9, maxHp: 15, readyAtMs: 0 }],
+    };
+
+    const result = applyForestWorldSlice(forest, slice, { baseSeed: 42, rng: rngFrom(1) });
+    expect(result.beasts[0].asleep).toBe(false);
+  });
+
+  it('a matched beast keeps guest-visible status fields through the rebuild', () => {
+    const beast = {
+      id: 'b-1', key: 'wolf', r: 2, c: 2, hp: 15, maxHp: 15, readyAtMs: 0, asleep: false,
+      frozenUntilMs: 5000, windupUntilMs: 4000,
+    };
+    const forest = makeForestState({ beasts: [beast] });
+    const slice: WorldSliceInput = {
+      floor: 1,
+      monsters: [{ id: 'b-1', r: 3, c: 3, hp: 12, readyAtMs: 500 }],
+    };
+
+    const result = applyForestWorldSlice(forest, slice, { baseSeed: 42, rng: rngFrom(1) });
+    expect(result.beasts[0].frozenUntilMs).toBe(5000);
+    expect(result.beasts[0].windupUntilMs).toBe(4000);
+    expect(result.beasts[0].maxHp).toBe(15);
+  });
+
   it('different stage (host advanced) — carries HP and haul forward', () => {
     // Haul uses the Reward shape: materials is the keyed map for harvested resources.
     const forest = makeForestState({ stage: 1, hp: 35, haul: { materials: { wood: 10 } } });
@@ -335,6 +504,21 @@ describe('applyForestWorldSlice', () => {
     expect(result.stage).toBe(2);
     expect(result.hp).toBe(35);
     expect(result.haul.materials?.['wood']).toBe(10);
+  });
+
+  it('host guardian kill with exhausted boon pool — consolation, never a zero-option choosing (MINI-01)', () => {
+    const allForestBoons = Object.values(BOONS)
+      .filter((b) => b.game === 'forest' || b.game === 'both')
+      .map((b) => b.key);
+    const guardian = {
+      id: 'g-1', key: 'grove_sentinel', r: 2, c: 2, hp: 20, maxHp: 40, readyAtMs: 0, asleep: false,
+    };
+    const forest = makeForestState({ hp: 20, beasts: [guardian], activeBoons: allForestBoons });
+    const result = applyForestWorldSlice(forest, { floor: 1, monsters: [] }, { baseSeed: 42, rng: rngFrom(1) });
+    expect(result.status).toBe('active');
+    expect(result.pendingBoonChoice).toBeNull();
+    expect(result.hp).toBe(20 + BOON_CONSOLATION_HEAL);
+    expect(result.haul.gold ?? 0).toBe(BOON_CONSOLATION_GOLD);
   });
 });
 
@@ -382,6 +566,19 @@ describe('applyForestRemoteAttack', () => {
     const b = result.beasts.find((x) => x.id === 'b-1');
     expect(b).toBeDefined();
     expect(b!.hp).toBeLessThan(12);
+  });
+
+  it('MP-11: clamps an absurd guest damage value to the beast max HP', () => {
+    // hp above maxHp so the clamp is observable on the surviving path (see the
+    // applyMineRemoteAttack twin): capped to 12, beast lives at 88.
+    const beast = { id: 'b-1', key: 'wolf', r: 2, c: 2, hp: 100, maxHp: 12, readyAtMs: 0, asleep: false };
+    const forest = makeForestState({ beasts: [beast] });
+
+    const result = applyForestRemoteAttack(forest, 'b-1', 1e9, rngFrom(1));
+
+    const b = result.beasts.find((x) => x.id === 'b-1');
+    expect(b).toBeDefined();
+    expect(b!.hp).toBe(88);
   });
 
   it('returns same reference when not active', () => {
@@ -489,6 +686,192 @@ describe('resolveTacticsIntent', () => {
 
     // No `to` hex provided → reducer should return state unchanged
     expect(result).toBe(state);
+  });
+
+  it('MP-23: rejects an intent whose heroId is not in the roster (no host-hero fallback)', () => {
+    const p0 = makePlayerUnit({ q: 0, r: 0 }, { id: 'p0', movesLeft: 4 });
+    const state = makeTacticsState({ player: p0, players: [p0], activeHeroId: 'p0' });
+
+    const result = resolveTacticsIntent(
+      state,
+      { type: 'tactics-intent', userId: 'u1', heroId: 'ghost', action: 'move', to: { q: 1, r: 0 } },
+      rngFrom(1),
+    );
+
+    // Unknown heroId must NOT fall through to acting as the host's hero.
+    expect(result).toBe(state);
+  });
+
+  it('MP-23: still processes an intent whose heroId is in the roster', () => {
+    const p0 = makePlayerUnit({ q: 0, r: 0 }, { id: 'p0', movesLeft: 4 });
+    const state = makeTacticsState({ player: p0, players: [p0], activeHeroId: 'p0' });
+
+    const result = resolveTacticsIntent(
+      state,
+      { type: 'tactics-intent', userId: 'u1', heroId: 'p0', action: 'move', to: { q: 1, r: 0 } },
+      rngFrom(1),
+    );
+
+    expect(result).not.toBe(state); // valid roster member → move is applied
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session lifecycle (MP-08, MP-09)
+// ---------------------------------------------------------------------------
+
+function makeCoopSession(over: Partial<CoopSession> = {}): CoopSession {
+  return { id: 's1', party_id: 'p1', game: 'mine', seed: 42, host_id: 'host', status: 'active', ...over };
+}
+
+describe('nextSessionState (MP-08)', () => {
+  it('preserves joined while the same session id stays active', () => {
+    const next = nextSessionState(
+      { session: makeCoopSession({ id: 's1' }), joined: true },
+      makeCoopSession({ id: 's1', seed: 99 }),
+    );
+    expect(next.joined).toBe(true);
+  });
+
+  it('resets joined when the session id changes (no silent auto-attach to the next raid)', () => {
+    const next = nextSessionState(
+      { session: makeCoopSession({ id: 's1' }), joined: true },
+      makeCoopSession({ id: 's2' }),
+    );
+    expect(next.joined).toBe(false);
+    expect(next.session!.id).toBe('s2');
+  });
+
+  it('resets joined when the session disappears', () => {
+    const next = nextSessionState({ session: makeCoopSession({ id: 's1' }), joined: true }, null);
+    expect(next.joined).toBe(false);
+    expect(next.session).toBeNull();
+  });
+});
+
+describe('shouldReapOrphan (MP-09)', () => {
+  it('reaps my own session when I have not joined it (tab-close orphan)', () => {
+    expect(shouldReapOrphan(makeCoopSession({ host_id: 'me' }), 'me', false)).toBe(true);
+  });
+
+  it('does not reap a session I have joined (I am actively hosting it)', () => {
+    expect(shouldReapOrphan(makeCoopSession({ host_id: 'me' }), 'me', true)).toBe(false);
+  });
+
+  it("does not reap another host's session", () => {
+    expect(shouldReapOrphan(makeCoopSession({ host_id: 'other' }), 'me', false)).toBe(false);
+  });
+
+  it('does not reap a null session', () => {
+    expect(shouldReapOrphan(null, 'me', false)).toBe(false);
+  });
+});
+
+describe('canJoinSession (MP-24)', () => {
+  it('rejects a null session', () => {
+    expect(canJoinSession(null, 1)).toBe(false);
+  });
+
+  it('accepts a session on the same protocol version', () => {
+    expect(canJoinSession(makeCoopSession({ protocol_version: 1 }), 1)).toBe(true);
+  });
+
+  it('rejects a session on a different protocol version', () => {
+    expect(canJoinSession(makeCoopSession({ protocol_version: 2 }), 1)).toBe(false);
+  });
+
+  it('accepts a legacy row with no version (rollout tolerance)', () => {
+    // Rows created before the protocol_version column report undefined — treat as
+    // compatible so a partial rollout does not lock everyone out.
+    expect(canJoinSession(makeCoopSession(), 1)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// diffMineTiles / applyMineTileSnapshot + forest twins (MP-25)
+// ---------------------------------------------------------------------------
+
+describe('diffMineTiles + applyMineTileSnapshot (MP-25)', () => {
+  const baseSeed = 20260706;
+  const snap = mineSnapshot(makeMineState());
+  const pristine = generateMine(1, snap, mulberry32(floorSeed(baseSeed, 1)));
+
+  it('reports no changes for a freshly-regenerated floor', () => {
+    expect(diffMineTiles(pristine, baseSeed)).toEqual([]);
+  });
+
+  it('reports a dug cell and backfills it onto a fresh joiner regen', () => {
+    // Dig the first non-floor interior cell.
+    let rr = -1, cc = -1;
+    outer: for (let r = 1; r < pristine.rows - 1; r++) {
+      for (let c = 1; c < pristine.cols - 1; c++) {
+        if (pristine.tiles[r][c].kind !== 'floor') { rr = r; cc = c; break outer; }
+      }
+    }
+    expect(rr).toBeGreaterThan(0);
+    const mutated: MineState = { ...pristine, tiles: pristine.tiles.map((row) => row.slice()) };
+    mutated.tiles[rr][cc] = { kind: 'floor' };
+
+    const diff = diffMineTiles(mutated, baseSeed);
+    expect(diff).toContainEqual({ r: rr, c: cc, tile: { kind: 'floor' } });
+    expect(diff).toHaveLength(1);
+
+    // A late joiner regenerates pristine, then applies the snapshot → gets the dig.
+    const joiner = generateMine(1, snap, mulberry32(floorSeed(baseSeed, 1)));
+    const patched = applyMineTileSnapshot(joiner, 1, diff);
+    expect(patched).not.toBe(joiner);
+    expect(patched.tiles[rr][cc]).toEqual({ kind: 'floor' });
+  });
+
+  it('excludes the host tombstone marker from the diff', () => {
+    // A tombstone is the host's per-player death-recovery tile — it must not be
+    // pushed onto a joiner who has no matching lost haul to recover.
+    const mutated: MineState = { ...pristine, tiles: pristine.tiles.map((row) => row.slice()) };
+    mutated.tiles[1][1] = { kind: 'tombstone' } as MineTile;
+    const diff = diffMineTiles(mutated, baseSeed);
+    expect(diff.some((e) => e.r === 1 && e.c === 1)).toBe(false);
+  });
+
+  it('ignores a snapshot for a different floor (no-op reference)', () => {
+    expect(applyMineTileSnapshot(pristine, 2, [{ r: 1, c: 1, tile: { kind: 'floor' } }])).toBe(pristine);
+  });
+
+  it('returns the same reference for an empty snapshot', () => {
+    expect(applyMineTileSnapshot(pristine, 1, [])).toBe(pristine);
+  });
+});
+
+describe('diffForestTiles + applyForestTileSnapshot (MP-25)', () => {
+  const baseSeed = 424242;
+  const snap = forestSnapshot(makeForestState());
+  const pristine = generateForest(1, snap, mulberry32(floorSeed(baseSeed, 1)));
+
+  it('reports no changes for a freshly-regenerated stage', () => {
+    expect(diffForestTiles(pristine, baseSeed)).toEqual([]);
+  });
+
+  it('reports a cleared cell and backfills it onto a fresh joiner regen', () => {
+    let rr = -1, cc = -1;
+    outer: for (let r = 1; r < pristine.rows - 1; r++) {
+      for (let c = 1; c < pristine.cols - 1; c++) {
+        if (pristine.tiles[r][c].kind !== 'trail') { rr = r; cc = c; break outer; }
+      }
+    }
+    expect(rr).toBeGreaterThan(0);
+    const mutated: ForestState = { ...pristine, tiles: pristine.tiles.map((row) => row.slice()) };
+    mutated.tiles[rr][cc] = { kind: 'trail' };
+
+    const diff = diffForestTiles(mutated, baseSeed);
+    expect(diff).toContainEqual({ r: rr, c: cc, tile: { kind: 'trail' } });
+
+    const joiner = generateForest(1, snap, mulberry32(floorSeed(baseSeed, 1)));
+    const patched = applyForestTileSnapshot(joiner, 1, diff);
+    expect(patched).not.toBe(joiner);
+    expect(patched.tiles[rr][cc]).toEqual({ kind: 'trail' });
+  });
+
+  it('ignores a snapshot for a different stage (no-op reference)', () => {
+    expect(applyForestTileSnapshot(pristine, 2, [{ r: 1, c: 1, tile: { kind: 'trail' } }])).toBe(pristine);
   });
 });
 
@@ -636,6 +1019,8 @@ describe('buildWorldSlice', () => {
     expect(slice.monsters).toHaveLength(1);
     expect(slice.monsters[0].id).toBe('m1');
     expect(slice.monsters[0].hp).toBe(5);
+    // maxHp rides along so a guest can rebuild an entity it lost locally (MP-02).
+    expect(slice.monsters[0].maxHp).toBe(10);
   });
 
   it('maps status "choosing" to "active" (boon-choice is a UI sub-state)', () => {
@@ -653,5 +1038,15 @@ describe('buildWorldSlice', () => {
     expect(slice.floor).toBe(3);
     expect(slice.monsters).toHaveLength(1);
     expect(slice.monsters[0].asleep).toBe(true);
+  });
+
+  it('stamps t from the wall clock so a host reload cannot reset the epoch (MP-04)', () => {
+    // performance.now() restarts near 0 on every page load; Date.now() does not.
+    // A perf-clock stamp after a host reload would sit below the guest's
+    // high-water mark forever, silently dropping every world slice.
+    const before = Date.now();
+    const slice = buildWorldSlice(makeMineState({}));
+    expect(slice.t).toBeGreaterThanOrEqual(before);
+    expect(slice.t).toBeGreaterThan(1e12); // wall-clock domain, not page uptime
   });
 });

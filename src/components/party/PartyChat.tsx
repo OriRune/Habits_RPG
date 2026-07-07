@@ -5,6 +5,7 @@ import { SectionTitle } from '@/components/ui/Divider';
 import { useAuthStore } from '@/net/auth';
 import { isSystemMessage, systemMessageText } from '@/net/party';
 import { partyActions, usePartyStore } from '@/hooks/useParty';
+import { useToastStore } from '@/store/useToastStore';
 
 /** Live party chat: history + a send box. New messages arrive via realtime. */
 export function PartyChat() {
@@ -29,7 +30,12 @@ export function PartyChat() {
     if (!body || sending) return;
     setSending(true);
     setDraft('');
-    await partyActions.send(body);
+    const r = await partyActions.send(body);
+    if (!r.ok) {
+      // Restore the typed message instead of losing it silently, and surface the failure.
+      setDraft(body);
+      useToastStore.getState().pushToast({ text: 'Message failed to send', color: '#b91c1c' });
+    }
     setSending(false);
   };
 
@@ -57,7 +63,7 @@ export function PartyChat() {
               </span>
               <p
                 className={
-                  'inline-block max-w-[85%] rounded-md px-2 py-1 text-sm ' +
+                  'inline-block max-w-[85%] break-words rounded-md px-2 py-1 text-sm ' +
                   (mine ? 'bg-gold-bright/20 text-ink' : 'bg-wood-900/10 text-ink')
                 }
               >
@@ -74,6 +80,7 @@ export function PartyChat() {
           type="text"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
+          disabled={sending}
           maxLength={500}
           placeholder="Message your party…"
           className="flex-1 rounded-md border border-gold-deep/50 bg-parchment-100/80 px-3 py-2 text-sm text-ink placeholder:text-ink-light/60 focus:border-gold-deep focus:outline-none"

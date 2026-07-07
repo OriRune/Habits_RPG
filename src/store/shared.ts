@@ -58,6 +58,7 @@ import {
   type ForestTile,
   splitHaul,
   FOREST_DEATH_KEEP,
+  FOREST_STASH_KEEP,
 } from '@/engine/forest';
 import {
   type ArenaState,
@@ -175,6 +176,14 @@ export interface GameSettings {
   shareHabitNames: boolean;
   /** Show the "before adventure" ritual modal when entering a minigame (reviewable Energy sources). */
   showAdventureRitual: boolean;
+  /**
+   * Show a browser notification at `dailyReminderTime` once per day when a tab is open.
+   * Requires Notification permission (prompted on first enable). Foreground-only — no
+   * service worker; falls back to an in-app toast if permission is denied.
+   */
+  dailyReminderEnabled: boolean;
+  /** 24-hour HH:MM time string for the daily reminder (e.g. '20:00'). */
+  dailyReminderTime: string;
 }
 
 /** Lightweight record of a completed run — kept in `dungeonHistory` (last 10). */
@@ -183,6 +192,12 @@ export interface DungeonRunSummary {
   cleared: boolean;
   defeated: boolean;
   date: string;
+  /** Rooms entered during this run (for the history list). */
+  roomsCleared: number;
+  /** Number of relics (boons + curses) held at run end. */
+  relicCount: number;
+  /** Gold banked (post habit-streak multiplier). */
+  goldBanked: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +238,12 @@ export interface GameState {
   deepestMineFloor: number;
   /** Personal best run score in the Deep Mine. */
   bestMineScore: number;
+  /**
+   * Tombstone from the miner's most recent death — the lost half of the haul, keyed
+   * by the floor number they fell on. Set by commitMineDeath; cleared when recovered.
+   * A new death before recovery replaces the previous tombstone.
+   */
+  mineTombstone: { floor: number; haul: Reward } | null;
   forest: ForestState | null;
   /** Deepest forest stage ever reached — a persistent record (mirrors deepestMineFloor). */
   deepestForestStage: number;
@@ -256,6 +277,8 @@ export interface GameState {
   settings: GameSettings;
   /** False until the player finishes the character-creation screen (gates onboarding). */
   created: boolean;
+  /** False until the player dismisses the first-run welcome card on the dashboard. */
+  hasSeenWelcome: boolean;
   /** Party quest IDs whose gold reward has already been credited locally (prevents double-credit). */
   claimedPartyQuests: string[];
   /**
@@ -268,6 +291,7 @@ export interface GameState {
 
   // --- actions ---
   /** Commit the character-creation screen: seed name, starting stat levels, weapon, and spell. */
+  dismissWelcome: () => void;
   createCharacter: (input: {
     name: string;
     allocations: Partial<Record<StatId, number>>;
@@ -289,6 +313,8 @@ export interface GameState {
   batchSuspendHabits: (keepIds: Set<string>, untilISO: string) => void;
   /** Flip any suspensions whose date has passed back to active (call on mount). */
   normalizeHabits: () => void;
+  /** Merge imported habits by id; recomputes completionLog from the merged set. */
+  importHabits: (imported: Habit[]) => void;
 
   startBattle: () => void;
   battleAction: (action: CombatAction) => void;
@@ -345,8 +371,9 @@ export interface GameState {
   mineMove: (dir: Dir) => void;
   /** Swing the pick at the faced cell (dig rock/ore or hit a monster). */
   mineStrike: () => void;
-  /** Charged heavy swing — higher damage, staggers monsters, clears rock faster. */
-  mineStrikeCharged: () => void;
+  /** Charged heavy swing — higher damage, staggers monsters, clears rock faster.
+   *  `nowMs` is the caller's rAF-clock timestamp — same timebase as mineTick. */
+  mineStrikeCharged: (nowMs: number) => void;
   /** Dash in `dir` (AG-gated cooldown; grants brief i-frame). */
   mineDash: (dir: Dir, nowMs: number) => void;
   /** Advance monsters on the loop's clock; commits the haul if the miner falls. */
@@ -366,14 +393,18 @@ export interface GameState {
   }) => void;
   /** Co-op: apply a peer's tile change (shared resource nodes). */
   coopApplyTile: (floor: number, r: number, c: number, tile: MineTile) => void;
+  /** Co-op: apply a host's one-shot changed-tiles snapshot when joining mid-run (MP-25). */
+  coopApplyTileSnapshot: (floor: number, entries: ReadonlyArray<{ r: number; c: number; tile: MineTile }>) => void;
   /** Co-op host: resolve a remote player's melee attack on a monster (once). */
   coopApplyRemoteAttack: (monsterId: string, dmg: number) => void;
   /** Descend the shaft to a deeper, richer floor. */
   mineDescend: () => void;
-  /** Cast a known spell by key (costs MP). */
-  mineCast: (spellKey: string) => void;
+  /** Cast a known spell by key (costs MP). `nowMs` is the caller's rAF-clock timestamp. */
+  mineCast: (spellKey: string, nowMs: number) => void;
   /** Pick a boon from the pending 3-card choice (mine). */
   chooseMineBoon: (key: string) => void;
+  /** Dismiss the boon panel without picking (mine) — escape hatch if no option appeals (or none exist). */
+  skipMineBoon: () => void;
   /** Pause the run and show the banking summary screen. */
   beginBanking: () => void;
   /** Commit the haul into the economy and close the run (death or confirmed banking). */
@@ -384,10 +415,12 @@ export interface GameState {
   beginForest: (seed?: number) => void;
   /** Step/turn the forager one cell (re-lights the fog). */
   forestMove: (dir: Dir) => void;
-  /** Act on the faced cell (slash a beast or gather a node). */
-  forestAct: () => void;
-  /** Charged heavy act — higher damage, staggers beasts, chops trees faster. */
-  forestActCharged: () => void;
+  /** Act on the faced cell (slash a beast or gather a node).
+   *  `nowMs` is the caller's rAF-clock timestamp — same timebase as forestTick. */
+  forestAct: (nowMs: number) => void;
+  /** Charged heavy act — higher damage, staggers beasts, chops trees faster.
+   *  `nowMs` is the caller's rAF-clock timestamp — same timebase as forestTick. */
+  forestActCharged: (nowMs: number) => void;
   /** Dash in `dir` in the forest (AG-gated cooldown; grants brief i-frame + re-lights fog). */
   forestDash: (dir: Dir, nowMs: number) => void;
   /** Advance beasts on the loop's clock; flips the run to 'ended' if the forager falls. */
@@ -395,12 +428,17 @@ export interface GameState {
   forestTick: (nowMs: number, coPlayers?: ReadonlyArray<{ r: number; c: number }>) => void;
   /** Pause the run and show the banking summary screen (voluntary leave). */
   beginForestBanking: () => void;
+  /** Stash 80% of the current haul into the economy mid-run. Only works on clearing tiles. */
+  forestStash: () => void;
   /** Push on through the far tree line into a deeper, richer stage. */
   forestAdvance: () => void;
-  /** Cast a known spell in the forest run. */
-  forestCast: (spellKey: string) => void;
-  /** Activate the shrine the forager is standing on. */
-  forestShrine: (nowMs: number) => void;
+  /** Cast a known spell in the forest run. `nowMs` is the caller's rAF-clock timestamp. */
+  forestCast: (spellKey: string, nowMs: number) => void;
+  /**
+   * Activate the shrine the forager is standing on.
+   * `allowDenSpawn` — false for co-op guests so the den beast only lives in the host's world.
+   */
+  forestShrine: (nowMs: number, allowDenSpawn?: boolean) => void;
   /** Co-op guest: apply the host's authoritative forest world — follow stage + beasts. */
   coopApplyForestWorld: (slice: {
     /** Host clock (ms) when produced — used by the staleness guard; ignored by the reducer. */
@@ -417,12 +455,16 @@ export interface GameState {
   }) => void;
   /** Co-op: apply a peer's forest tile change (shared resource nodes). */
   coopApplyForestTile: (stage: number, r: number, c: number, tile: ForestTile) => void;
+  /** Co-op: apply a host's one-shot changed-tiles snapshot when joining mid-run (MP-25). */
+  coopApplyForestTileSnapshot: (stage: number, entries: ReadonlyArray<{ r: number; c: number; tile: ForestTile }>) => void;
   /** Co-op host: resolve a remote player's melee attack on a beast (once). */
   coopApplyForestAttack: (beastId: string, dmg: number) => void;
   /** Co-op guest per-tick: advance only own body (regen + contact damage). */
   coopForestClientTick: (nowMs: number) => void;
   /** Pick a boon from the pending 3-card choice (forest). */
   chooseForestBoon: (key: string) => void;
+  /** Dismiss the boon panel without picking (forest) — escape hatch if no option appeals (or none exist). */
+  skipForestBoon: () => void;
   /** Commit the haul and close the run — full on confirmed banking, halved on death. */
   endForest: () => void;
 
@@ -490,6 +532,14 @@ export interface GameState {
   devSpawnTrial: (level: number) => void;
   /** Strip the current class so it can be reassigned. */
   devClearClass: () => void;
+  /** Fill energy to the cap (for testing economy without Unlimited Energy). */
+  devFillEnergy: () => void;
+  /** Add a specific gold amount (for testing shop/craft flows). */
+  devAddGold: (amount: number) => void;
+  /** Rewind the week sentinel so the next checkWeeklyRollover fires immediately. */
+  devForceWeeklyRollover: () => void;
+  /** Reset the earnings ledger and energy log in isolation (no full game reset needed). */
+  devResetEarnings: () => void;
 
   resetGame: () => void;
 }
@@ -544,6 +594,8 @@ export function freshSettings(): GameSettings {
     soundEnabled: true,
     shareHabitNames: false,
     showAdventureRitual: true,
+    dailyReminderEnabled: false,
+    dailyReminderTime: '20:00',
   };
 }
 
@@ -577,8 +629,30 @@ export function fighterFor(state: GameState, buffs: Partial<Record<StatId, numbe
   for (const [stat, n] of Object.entries(relicAgg.statBonuses)) {
     merged[stat as StatId] = (merged[stat as StatId] ?? 0) + (n ?? 0);
   }
+  // Persistent run-buff from triggered relics (e.g. onShrine stacking).
+  if (state.dungeon?.runBuff) {
+    for (const [stat, n] of Object.entries(state.dungeon.runBuff)) {
+      merged[stat as StatId] = (merged[stat as StatId] ?? 0) + (n ?? 0);
+    }
+  }
+  // Conditional lowHp triggers — bonus is active while hp/maxHp < threshold.
+  const hp = state.dungeon?.hp ?? 0;
+  const maxHp = state.dungeon?.maxHp ?? 1;
+  const hpRatio = hp / Math.max(1, maxHp);
+  let lowHpDefense = 0;
+  for (const def of relicDefs) {
+    if (!def?.trigger || def.trigger.type !== 'lowHp') continue;
+    if (hpRatio < def.trigger.threshold) {
+      if (def.trigger.statBonuses) {
+        for (const [stat, n] of Object.entries(def.trigger.statBonuses)) {
+          merged[stat as StatId] = (merged[stat as StatId] ?? 0) + (n ?? 0);
+        }
+      }
+      if (def.trigger.defense) lowHpDefense += def.trigger.defense;
+    }
+  }
   const c = deriveCombatant(state.character.statLevels, state.character.level, state.combatStats, merged);
-  c.defense += gear.defense + relicAgg.defense;
+  c.defense += gear.defense + relicAgg.defense + lowHpDefense;
   c.ward += gear.ward + relicAgg.ward;
   c.maxHp += relicAgg.maxHp;
   return { c, weapon: getWeapon(state.equippedWeapon) };
@@ -1085,18 +1159,23 @@ export function commitMining(state: GameState, run: MineState): GameState {
 /**
  * Bank only the kept half of a fallen miner's haul (the rest is forfeit to the rock) and clear
  * the run. Mirrors commitForestDeath; the overlay shows the split beforehand.
+ * The forfeited portion is saved as a tombstone the player can recover on a future run.
  */
 export function commitMineDeath(state: GameState, run: MineState): GameState {
-  const { kept } = splitHaul(run.haul, MINE_DEATH_KEEP);
+  const { kept, lost } = splitHaul(run.haul, MINE_DEATH_KEEP);
   // Include kept gold in the final score even on death (mirrors commitMining).
   const finalScore = run.score + (kept.gold ?? 0);
   const trickle = CRAWLER_XP_BASE + CRAWLER_XP_PER_DEPTH * run.deepest;
-  return commitRun(state, {
+  const banked = commitRun(state, {
     runField: 'mining', reward: kept,
     statXp: { ST: Math.ceil(trickle / 2), EN: Math.floor(trickle / 2) },
     deepestField: 'deepestMineFloor', deepestValue: run.deepest,
     scoreField: 'bestMineScore', scoreValue: finalScore, cloneMaterials: true, source: 'mine',
   });
+  // Record the tombstone if there is actually anything to recover (a zero-haul death leaves
+  // no tombstone). A new death before recovery replaces the previous tombstone.
+  const hasLoss = (lost.gold ?? 0) > 0 || Object.keys(lost.materials ?? {}).length > 0;
+  return { ...banked, mineTombstone: hasLoss ? { floor: run.deepest, haul: lost } : banked.mineTombstone };
 }
 
 /** Bank a finished forest run's haul into the economy, clear the run, and reconcile level. */
@@ -1109,6 +1188,35 @@ export function commitForest(state: GameState, run: ForestState): GameState {
     deepestField: 'deepestForestStage', deepestValue: run.deepest,
     scoreField: 'bestForestScore', scoreValue: run.score, cloneMaterials: true, source: 'forest',
   });
+}
+
+/**
+ * Mid-run haul stash — banks 80% of the current haul into the economy immediately and resets the
+ * run's haul to empty so the player can press deeper with a clean slate.  The run itself keeps
+ * going (`status` stays `'active'`).  The 20% forfeit is the "hurry tax" that makes full banking
+ * at run end (100%) more valuable than repeated stashing.
+ *
+ * Only callable when standing on a clearing tile (gated by the store action, not here).
+ * No-op if the haul is already empty.
+ */
+export function stashForest(state: GameState, run: ForestState): GameState {
+  const { kept } = splitHaul(run.haul, FOREST_STASH_KEEP);
+  const hasLoot = (kept.gold ?? 0) > 0 || Object.keys(kept.materials ?? {}).length > 0;
+  if (!hasLoot) return state;
+
+  const next: GameState = {
+    ...state,
+    character: { ...state.character, statXp: { ...state.character.statXp } },
+    inventory: { ...state.inventory },
+    materials: { ...state.materials },
+    ownedWeapons: [...state.ownedWeapons],
+    ownedGear: [...state.ownedGear],
+    // Reset the run's haul to empty; the 20% "lost" fraction is simply forfeited.
+    forest: { ...run, haul: {} },
+  };
+  // Mirror commitRun's habit-streak gold multiplier so stashed gold scales with streak bonus.
+  applyReward(next, { ...kept, gold: Math.round((kept.gold ?? 0) * state.character.habitBonus) }, 'forest');
+  return next;
 }
 
 /**

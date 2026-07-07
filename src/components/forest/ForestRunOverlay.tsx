@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Heart, Zap, Coins, ChevronsDown, LogOut, Trees, Skull, Sparkles } from 'lucide-react';
+import { Heart, Zap, Coins, ChevronsDown, LogOut, Trees, Skull, Sparkles, Archive } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { useForestLoop } from '@/hooks/useForestLoop';
 import {
@@ -10,6 +10,7 @@ import {
   pendingActKind,
   splitHaul,
   FOREST_DEATH_KEEP,
+  FOREST_STASH_KEEP,
   FOREST_WINDUP_MS,
   type ForestTile,
   type ForestBeast,
@@ -216,7 +217,9 @@ export function ForestRunOverlay() {
   const endForest = useGameStore((s) => s.endForest);
   const forestAdvance = useGameStore((s) => s.forestAdvance);
   const chooseForestBoon = useGameStore((s) => s.chooseForestBoon);
+  const skipForestBoon = useGameStore((s) => s.skipForestBoon);
   const beginForestBanking = useGameStore((s) => s.beginForestBanking);
+  const forestStash = useGameStore((s) => s.forestStash);
   const remotePlayers = useCoopStore((s) => s.remotePlayers);
   const coopSession = useCoopStore((s) => s.session);
   const coopJoined = useCoopStore((s) => s.joined);
@@ -426,7 +429,8 @@ export function ForestRunOverlay() {
   // Drive drone intensity from visible, awake predators.
   useEffect(() => {
     if (!forest || forest.status !== 'active') { sfx.setDroneIntensity(0); return; }
-    const now = Date.now();
+    const now = performance.now(); // engine timebase — windupUntilMs is rAF-clock
+
     const sight = sightRadiusFor(forest);
     const nearby = forest.beasts.filter((b) => {
       if (b.asleep || FOREST_BEASTS[b.key]?.flees) return false;
@@ -471,6 +475,10 @@ export function ForestRunOverlay() {
   const band = bandForStage(forest.stage);
   const dead = forest.status === 'ended';
   const onTreeline = canAdvance(forest);
+  const onClearing = forest.tiles[forest.player.r]?.[forest.player.c]?.kind === 'clearing';
+  const hasLoot = (forest.haul.gold ?? 0) > 0 || Object.keys(forest.haul.materials ?? {}).length > 0;
+  /** Stash is available on clearing tiles with a non-empty haul. */
+  const canStash = onClearing && hasLoot;
   const faced = facedCell(forest);
   const haulMats = Object.entries(forest.haul.materials ?? {}).filter(([, n]) => n > 0);
 
@@ -803,8 +811,8 @@ export function ForestRunOverlay() {
         {/* Ranged shot tracer — a brief arrow streak along the shot path */}
         {(() => {
           const shot = forest.lastShot;
-          if (!shot || Date.now() - shot.at > 180) return null;
-          const progress = Math.max(0, 1 - (Date.now() - shot.at) / 180);
+          if (!shot || performance.now() - shot.at > 180) return null;
+          const progress = Math.max(0, 1 - (performance.now() - shot.at) / 180);
           // Trace each cell along the path (horizontal or vertical corridor).
           const cells: React.ReactNode[] = [];
           const dr = shot.toR === shot.fromR ? 0 : shot.toR > shot.fromR ? 1 : -1;
@@ -924,10 +932,10 @@ export function ForestRunOverlay() {
           if (!isVisible(forest, b.r, b.c)) return null;
           if (!inView(b.r, b.c)) return null;
           const def = FOREST_BEASTS[b.key];
-          const frozen = (b.frozenUntilMs ?? 0) > Date.now();
-          const windingUp = b.windupUntilMs !== undefined && b.windupUntilMs > Date.now();
+          const frozen = (b.frozenUntilMs ?? 0) > performance.now();
+          const windingUp = b.windupUntilMs !== undefined && b.windupUntilMs > performance.now();
           const windupProgress = windingUp && b.windupUntilMs
-            ? Math.max(0, Math.min(1, 1 - (b.windupUntilMs - Date.now()) / FOREST_WINDUP_MS))
+            ? Math.max(0, Math.min(1, 1 - (b.windupUntilMs - performance.now()) / FOREST_WINDUP_MS))
             : 0;
           return (
             <div
@@ -1136,6 +1144,12 @@ export function ForestRunOverlay() {
                 );
               })}
             </div>
+            <button
+              onClick={() => skipForestBoon()}
+              className="rounded-md border border-parchment-300/40 px-4 py-1.5 text-sm text-parchment-300 hover:bg-parchment-300/20 transition-colors"
+            >
+              Skip
+            </button>
           </div>
         )}
 
@@ -1235,7 +1249,7 @@ export function ForestRunOverlay() {
         </div>
       )}
 
-      {/* Push deeper / leave */}
+      {/* Push deeper / stash / leave */}
       <div className="flex w-full max-w-[600px] flex-col items-center gap-1">
         <div className="flex items-center justify-center gap-2">
           <Button
@@ -1250,12 +1264,39 @@ export function ForestRunOverlay() {
           >
             <ChevronsDown className="h-4 w-4" /> Push deeper
           </Button>
+          <Button
+            variant="secondary"
+            onClick={forestStash}
+            disabled={!canStash}
+            title={
+              !onClearing
+                ? 'Move to a clearing to stash your haul'
+                : !hasLoot
+                  ? 'Nothing to stash yet'
+                  : `Stash ${Math.round(FOREST_STASH_KEEP * 100)}% of your haul and keep going`
+            }
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-1.5 text-xs',
+              !canStash && 'opacity-60',
+              canStash && 'border-amber-500/60 text-amber-200 hover:bg-amber-900/30',
+            )}
+          >
+            <Archive className="h-4 w-4" /> Stash {Math.round(FOREST_STASH_KEEP * 100)}%
+          </Button>
           <Button variant="danger" onClick={beginForestBanking} className="flex items-center gap-1.5 px-3 py-1.5 text-xs">
             <LogOut className="h-4 w-4" /> Bank &amp; leave
           </Button>
         </div>
         {isCoopGuest && (
           <p className="text-[10px] text-parchment-300/50">The host leads the way deeper.</p>
+        )}
+        {canStash && (
+          <p className="text-[10px] text-amber-300/70">
+            ✦ Clearing — stash {Math.round(FOREST_STASH_KEEP * 100)}% of your haul to keep it safe.
+          </p>
+        )}
+        {onClearing && !hasLoot && (
+          <p className="text-[10px] text-parchment-300/40">✦ Clearing</p>
         )}
       </div>
 

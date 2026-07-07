@@ -1,7 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { emptyStatXP, statPoints, statPower } from '../stats';
-import { resolveTreasure, mergeReward, scaleReward, DUNGEON_ENERGY_COST } from '../dungeon';
+import { resolveTreasure, mergeReward, scaleReward, DUNGEON_ENERGY_COST, merchantOffers } from '../dungeon';
 import { type RNG } from '../combat';
+import { useGameStore } from '@/store/useGameStore';
+import { resetRunRng } from '@/store/runRng';
 
 const fixed = (v: number): RNG => () => v;
 
@@ -45,6 +47,81 @@ describe('mergeReward', () => {
     expect(merged.items).toEqual(['healing_potion']);
     expect(merged.weapons).toEqual(['iron_mace']);
     expect(merged.gear).toEqual(['leather_vest']);
+  });
+});
+
+describe('merchantOffers economy band', () => {
+  // merchantOffers prices: heal = 18+4d, potion = 24+5d, boon = 45+9d
+  // Average treasure gold = 60+10d+~20 (mid-range rng). One combat room also yields gold.
+  // At each depth, the cheapest item (heal) must cost less than 2× a single treasure room's
+  // minimum gold — otherwise the merchant is effectively unreachable.
+
+  it('prices three offers that scale with depth', () => {
+    const d1 = merchantOffers(1);
+    expect(d1).toHaveLength(3);
+    expect(d1[0].kind).toBe('heal');
+    expect(d1[1].kind).toBe('potion');
+    expect(d1[2].kind).toBe('boon');
+    expect(d1[0].cost).toBe(22); // 18 + 4*1
+    expect(d1[1].cost).toBe(29); // 24 + 5*1
+    expect(d1[2].cost).toBe(54); // 45 + 9*1
+  });
+
+  it('heal stays affordable vs. minimum floor gold at depth 1', () => {
+    // min treasure gold at d1 = 60 + 10 + 0 (rng=0) = 70; heal costs 22 — well within one room
+    const minTreasureGold = resolveTreasure(1, () => 0).gold!;
+    expect(merchantOffers(1)[0].cost).toBeLessThan(minTreasureGold);
+  });
+
+  it('heal stays affordable vs. minimum floor gold at depth 5', () => {
+    // min treasure gold at d5 = 60 + 50 + 0 = 110; heal costs 38
+    const minTreasureGold = resolveTreasure(5, () => 0).gold!;
+    expect(merchantOffers(5)[0].cost).toBeLessThan(minTreasureGold);
+  });
+
+  it('heal stays affordable vs. minimum floor gold at depth 10', () => {
+    // min treasure gold at d10 = 60 + 100 + 0 = 160; heal costs 58
+    const minTreasureGold = resolveTreasure(10, () => 0).gold!;
+    expect(merchantOffers(10)[0].cost).toBeLessThan(minTreasureGold);
+  });
+
+  it('boon (most expensive) requires roughly two floors of treasure to afford by depth 10', () => {
+    // boon at d10 = 135; two min-treasure rooms = 320 — player can afford it
+    const twoFloorMin = resolveTreasure(10, () => 0).gold! * 2;
+    expect(merchantOffers(10)[2].cost).toBeLessThan(twoFloorMin);
+  });
+
+  it('prices strictly increase with depth', () => {
+    const [d5, d10] = [merchantOffers(5), merchantOffers(10)];
+    for (let i = 0; i < 3; i++) {
+      expect(d10[i].cost).toBeGreaterThan(d5[i].cost);
+    }
+  });
+});
+
+describe('dungeon lifecycle — store invariants', () => {
+  beforeEach(() => {
+    useGameStore.getState().resetGame();
+    resetRunRng();
+  });
+
+  it('deepestFloor starts at 0 on a fresh store', () => {
+    expect(useGameStore.getState().deepestFloor).toBe(0);
+  });
+
+  it('deepestFloor remains 0 after resetGame()', () => {
+    useGameStore.getState().devSetDeepestFloor(7);
+    expect(useGameStore.getState().deepestFloor).toBe(7);
+    useGameStore.getState().resetGame();
+    expect(useGameStore.getState().deepestFloor).toBe(0);
+  });
+
+  it('dungeon is null on a fresh store', () => {
+    expect(useGameStore.getState().dungeon).toBeNull();
+  });
+
+  it('dungeonHistory is empty on a fresh store', () => {
+    expect(useGameStore.getState().dungeonHistory ?? []).toHaveLength(0);
   });
 });
 

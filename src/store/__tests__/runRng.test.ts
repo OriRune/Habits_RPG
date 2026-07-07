@@ -10,6 +10,8 @@ import {
   getForestBaseSeed,
   setForestRun,
   acceptForestWorldT,
+  acceptTacticsStateT,
+  resetTacticsStateT,
   resetRunRng,
 } from '../runRng';
 
@@ -162,5 +164,45 @@ describe('acceptForestWorldT', () => {
     acceptForestWorldT(9000);
     resetRunRng();
     expect(acceptForestWorldT(1)).toBe(true);
+  });
+});
+
+describe('acceptTacticsStateT (MP-03)', () => {
+  it('accepts the first t (high-water mark starts at -Infinity)', () => {
+    expect(acceptTacticsStateT(100)).toBe(true);
+  });
+
+  it('never compares against the local clock — a t far below this machine\'s uptime is accepted', () => {
+    // MP-03 regression: the old guard compared the host's stamp against the
+    // guest's own performance.now() - 10s, so a host whose page was younger
+    // than the guest's had every broadcast dropped. A small first t must pass.
+    expect(acceptTacticsStateT(5)).toBe(true);
+    expect(acceptTacticsStateT(6)).toBe(true);
+  });
+
+  it('accepts a strictly increasing t and drops equal/lower t (stale or duplicate)', () => {
+    acceptTacticsStateT(200);
+    expect(acceptTacticsStateT(300)).toBe(true);
+    expect(acceptTacticsStateT(300)).toBe(false);
+    expect(acceptTacticsStateT(150)).toBe(false);
+  });
+
+  it('treats undefined t as accept (back-compat: message carries no timestamp)', () => {
+    acceptTacticsStateT(500);
+    expect(acceptTacticsStateT(undefined)).toBe(true);
+    expect(acceptTacticsStateT(400)).toBe(false);
+  });
+
+  it('resetTacticsStateT resets the high-water mark (channel re-subscribe)', () => {
+    acceptTacticsStateT(9000);
+    expect(acceptTacticsStateT(1)).toBe(false);
+    resetTacticsStateT();
+    expect(acceptTacticsStateT(1)).toBe(true);
+  });
+
+  it('resetRunRng resets the high-water mark', () => {
+    acceptTacticsStateT(9000);
+    resetRunRng();
+    expect(acceptTacticsStateT(1)).toBe(true);
   });
 });

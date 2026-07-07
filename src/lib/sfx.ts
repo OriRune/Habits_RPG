@@ -140,7 +140,18 @@ export type SfxCue =
   /** Whoosh + low rumble — player descends to the next floor. */
   | 'mineDescent'
   /** Deep impact thud + ominous resonant ping — guardian is on this floor. */
-  | 'mineGuardianAlert';
+  | 'mineGuardianAlert'
+  // ── Dungeon Delve ──────────────────────────────────────────────────────────
+  /** Soft stone footstep + door-air swoosh — entering a new room. */
+  | 'dungeonRoomEnter'
+  /** Ascending three-note gold shimmer — treasure room payout. */
+  | 'dungeonTreasure'
+  /** Rising four-note triangle arpeggio — relic boon gained. */
+  | 'dungeonRelic'
+  /** Stately two-note sine chord + coin jingle — spoils banked safely. */
+  | 'dungeonBank'
+  /** Deep whoosh + sub-bass boom — descending to the next floor. */
+  | 'dungeonDescend';
 
 // ── Module-level singletons ────────────────────────────────────────────────────
 
@@ -942,6 +953,67 @@ const _CUES: Record<SfxCue, (ctx: AudioContext) => void> = {
     _osc(ctx, 'sawtooth', 48, 38, 0.55, 0.65, 0.030);
     // Resonant metallic warning ping
     _osc(ctx, 'triangle', 340, 170, 0.42, 0.70, 0.006);
+  },
+
+  // ── Dungeon Delve ────────────────────────────────────────────────────────────
+
+  /** Soft stone footstep thud + faint air whoosh — stepping into a new room. */
+  dungeonRoomEnter(ctx) {
+    _osc(ctx, 'triangle', 95, 40, 0.25, 0.22, 0.006);
+    _noise(ctx, 800, 300, 0.18, 0.05, 'bandpass', 1.4);
+  },
+
+  /** Ascending three-note gold shimmer — treasure chest spills open. */
+  dungeonTreasure(ctx) {
+    const t = ctx.currentTime;
+    [880, 1320, 1760].forEach((freq, i) => {
+      const t0 = t + i * 0.055;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t0);
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.linearRampToValueAtTime(0.12 - i * 0.025, t0 + 0.010);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.45);
+      osc.connect(gain);
+      gain.connect(_masterGain!);
+      osc.start(t0);
+      osc.stop(t0 + 0.52);
+    });
+    _noise(ctx, 3500, 5500, 0.15, 0.05, 'highpass', 2.0);
+  },
+
+  /** Rising four-note triangle arpeggio — a relic settles around your neck. */
+  dungeonRelic(ctx) {
+    const t = ctx.currentTime;
+    [440, 660, 880, 1100].forEach((freq, i) => {
+      const t0 = t + i * 0.07;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t0);
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.linearRampToValueAtTime(0.13 - i * 0.025, t0 + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.52);
+      osc.connect(gain);
+      gain.connect(_masterGain!);
+      osc.start(t0);
+      osc.stop(t0 + 0.60);
+    });
+  },
+
+  /** Stately chord + coin jingle — spoils banked safely at a checkpoint. */
+  dungeonBank(ctx) {
+    _osc(ctx, 'sine', 523, 490, 0.38, 0.22, 0.015);       // C5
+    _osc(ctx, 'sine', 784, 730, 0.32, 0.14, 0.010);       // G5 harmony
+    _noise(ctx, 2200, 4000, 0.20, 0.06, 'bandpass', 2.5); // coin shimmer
+  },
+
+  /** Deep whoosh + sub-bass thud — the floor drops away below you. */
+  dungeonDescend(ctx) {
+    _noise(ctx, 1800, 60, 0.65, 0.28, 'lowpass', 0.5);   // rushing fall
+    _osc(ctx, 'sawtooth', 65, 28, 0.65, 0.18, 0.030);    // cavernous groan
+    _osc(ctx, 'sine', 100, 38, 0.52, 0.12, 0.020);       // sub-bass resonance
   },
 };
 
