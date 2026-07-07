@@ -46,6 +46,9 @@ export function MineControls({ controls }: { controls: MiningControls }) {
             e.preventDefault();
             controls.swing();
           }}
+          onPointerUp={() => controls.releaseCharge()}
+          onPointerLeave={() => controls.releaseCharge()}
+          onPointerCancel={() => controls.releaseCharge()}
           aria-label="Swing pick"
           className={cn(
             pad,

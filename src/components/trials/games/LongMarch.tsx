@@ -8,8 +8,8 @@ import {
   marchStep,
   marchScore,
   marchStartStamina,
+  marchStaminaCap,
   MARCH_TILES,
-  MARCH_MAX_STA,
   PACE_COSTS,
   type MarchPace,
   type TerrainTile,
@@ -20,39 +20,20 @@ interface LongMarchProps {
   onFinish: (score01: number) => void;
 }
 
-function newRun(enLevel: number) {
-  return {
-    terrain: generateTerrain(Math.random),
-    stamina: marchStartStamina(enLevel),
-  };
-}
-
 export function LongMarch({ enLevel, onFinish }: LongMarchProps) {
   const startStamina = marchStartStamina(enLevel);
-  const [terrain, setTerrain] = useState<TerrainTile[]>(() => generateTerrain(Math.random));
+  const [terrain] = useState<TerrainTile[]>(() => generateTerrain(Math.random));
   const [tileIndex, setTileIndex] = useState(0);
   const [stamina, setStamina] = useState(startStamina);
   const [distance, setDistance] = useState(0);
   const [lastMessage, setLastMessage] = useState('');
   const [done, setDone] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
-
-  const reset = () => {
-    const run = newRun(enLevel);
-    setTerrain(run.terrain);
-    setTileIndex(0);
-    setStamina(run.stamina);
-    setDistance(0);
-    setLastMessage('');
-    setDone(false);
-    setCollapsed(false);
-  };
 
   const choosePace = (pace: MarchPace) => {
     if (done) return;
     const tile = terrain[tileIndex];
     const result = marchStep(tile, pace);
-    const newSta = Math.min(MARCH_MAX_STA, Math.max(0, stamina + result.staminaDelta));
+    const newSta = Math.min(marchStaminaCap(startStamina), Math.max(0, stamina + result.staminaDelta));
     const newDist = Math.max(0, distance + result.distanceDelta);
     const newTile = tileIndex + 1;
     const exhausted = newSta <= 0;
@@ -64,7 +45,6 @@ export function LongMarch({ enLevel, onFinish }: LongMarchProps) {
     setTileIndex(newTile);
 
     if (finished) {
-      setCollapsed(exhausted);
       setDone(true);
       onFinish(marchScore(newTile, newDist));
     }
@@ -164,7 +144,7 @@ export function LongMarch({ enLevel, onFinish }: LongMarchProps) {
       )}
 
       {/* Pace buttons */}
-      {!done ? (
+      {!done && (
         <div className="flex w-full max-w-xs flex-col gap-2">
           {(['rest', 'walk', 'push'] as MarchPace[]).map((pace) => {
             const { sta, dist } = PACE_COSTS[pace][tile.kind];
@@ -190,29 +170,6 @@ export function LongMarch({ enLevel, onFinish }: LongMarchProps) {
               </button>
             );
           })}
-        </div>
-      ) : (
-        <div className="text-center space-y-3">
-          {collapsed ? (
-            <>
-              <div className="text-3xl">💀</div>
-              <p className="font-display text-sm font-bold text-rose-400">You collapsed from exhaustion!</p>
-            </>
-          ) : (
-            <>
-              <div className="text-3xl">🏆</div>
-              <p className="font-display text-sm font-bold text-emerald-400">March complete!</p>
-            </>
-          )}
-          <p className="text-xs text-ink-muted">
-            Covered {distance} leagues across {tileIndex} tiles.
-          </p>
-          <button
-            onClick={reset}
-            className="mt-1 rounded-md border border-gold-deep/50 bg-parchment-100/60 px-4 py-1.5 font-display text-xs font-semibold text-ink-muted hover:text-ink transition-colors"
-          >
-            March Again
-          </button>
         </div>
       )}
     </div>

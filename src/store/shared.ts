@@ -23,6 +23,7 @@ import {
   allocateStatGains,
   emptyStatLevels,
   POINTS_PER_LEVEL,
+  MINIGAME_XP_ALLOCATION_WEIGHT,
   MAX_LEVEL,
   BOSS_GATE_LEVEL,
 } from '@/engine/progression';
@@ -52,6 +53,8 @@ import {
   type MineTile,
   type Dir,
   MINE_DEATH_KEEP,
+  MINE_STASH_KEEP,
+  isMineSafeBankTile,
 } from '@/engine/mining';
 import {
   type ForestState,
@@ -59,6 +62,7 @@ import {
   splitHaul,
   FOREST_DEATH_KEEP,
   FOREST_STASH_KEEP,
+  isForestSafeBankTile,
 } from '@/engine/forest';
 import {
   type ArenaState,
@@ -78,7 +82,7 @@ import type { Dir as GridDir, Cell as GridCell } from '@/engine/grid';
 import { getBiome, bossFor } from '@/engine/biomes';
 import { getEncounter, startEncounter } from '@/engine/encounters';
 import { enemyFor } from '@/engine/enemies';
-import { type TrialId } from '@/engine/trials/trials';
+import { type TrialId, type TrialBeginResult } from '@/engine/trials/trials';
 import {
   type EarningSource,
   type EarningsLedger,
@@ -108,6 +112,15 @@ export interface Character {
   statLevels: Record<StatId, number>;
   /** Snapshot of statXp at the last level-up, so a level-up can see recent per-stat effort. */
   statXpAtLastLevel: Record<StatId, number>;
+  /**
+   * Cumulative *minigame-trickle* portion of statXp (the passive per-run XP from Mine/Forest/Arena/
+   * Tactics commits). A sub-ledger of statXp — never larger than it. Level-up allocation discounts
+   * this slice to MINIGAME_XP_ALLOCATION_WEIGHT so grinding can't dominate stat-point distribution
+   * (BAL-09). Does not affect leveling pace. Backfilled to zero on old saves (v30).
+   */
+  statXpTrickle: Record<StatId, number>;
+  /** Snapshot of statXpTrickle at the last level-up (paired with statXpAtLastLevel). */
+  statXpTrickleAtLastLevel: Record<StatId, number>;
   gold: number;
   energy: number;
   classId: string | null;
@@ -261,11 +274,18 @@ export interface GameState {
   trialsClearedOn: Record<TrialId, string>;
   /** Personal best score (0..1) per Skill Trial, for hub star display. */
   bestTrialScore: Record<TrialId, number>;
+  /** MINI-11: monotonic attempt counter XOR'd into the deterministic trials' daily seed
+   *  so abandon+reopen draws a fresh challenge. Persisted (survives refresh). */
+  trialAttemptNonce: number;
+  /** MINI-16: Spirit Grove round ids the player has been shown; drafts bias toward unseen. */
+  spiritGroveSeen: string[];
   /** Target level the player is currently trying to reach (boss is live or pending). */
   pendingLevelUp: number | null;
   pendingClassChoice: PendingClassChoice | null;
   /** Boss losses per target level, drives anti-frustration scaling. */
   bossLosses: Record<number, number>;
+  /** Dungeon floor-boss losses keyed by boss id (`${baseId}_d${depth}`), drives per-fight relief. */
+  dungeonBossLosses: Record<string, number>;
   /** Deepest dungeon floor ever reached — a persistent record that gates content. */
   deepestFloor: number;
   /** Last 10 completed Dungeon Delve runs — shown on the entrance screen. */
@@ -279,6 +299,8 @@ export interface GameState {
   created: boolean;
   /** False until the player dismisses the first-run welcome card on the dashboard. */
   hasSeenWelcome: boolean;
+  /** False until the player dismisses or accepts the one-time "enable daily reminder" card. */
+  reminderCardDismissed: boolean;
   /** Party quest IDs whose gold reward has already been credited locally (prevents double-credit). */
   claimedPartyQuests: string[];
   /**
@@ -292,6 +314,8 @@ export interface GameState {
   // --- actions ---
   /** Commit the character-creation screen: seed name, starting stat levels, weapon, and spell. */
   dismissWelcome: () => void;
+  /** Dismiss the one-time daily-reminder offer card (also called when the offer is accepted). */
+  dismissReminderCard: () => void;
   createCharacter: (input: {
     name: string;
     allocations: Partial<Record<StatId, number>>;
@@ -332,11 +356,14 @@ export interface GameState {
 
   buyItem: (itemKey: string) => void;
   useStreakFreeze: (habitId: string) => void;
+  /** Retroactively repair the most recent missed scheduled day, bridging a broken streak. */
+  useRecoveryElixir: (habitId: string) => void;
   /** Credit the flat party-quest gold reward to this player once; idempotent on the same questId. */
   claimPartyQuestReward: (questId: string, memberCount: number) => void;
 
   equipWeapon: (weaponKey: string) => void;
   buyWeapon: (weaponKey: string) => void;
+  buyGear: (gearKey: string) => void;
   learnFromSpellbook: (itemKey: string) => void;
   craft: (recipeKey: string) => void;
   equipGear: (gearKey: string) => void;
@@ -366,7 +393,8 @@ export interface GameState {
   // Deep Mine (real-time mining minigame; see src/engine/mining.ts).
   /** Start a run: gate on level/energy, charge energy, generate floor 1. */
   /** `seed` (co-op) makes the map deterministic and shared; omitted = solo (Math.random). */
-  beginMining: (seed?: number) => void;
+  /** `startFloor` (co-op) pins the shared floor; omitted = solo deeper-start (BAL-25). */
+  beginMining: (seed?: number, startFloor?: number) => void;
   /** Step/turn the miner one cell. */
   mineMove: (dir: Dir) => void;
   /** Swing the pick at the faced cell (dig rock/ore or hit a monster). */
@@ -412,7 +440,8 @@ export interface GameState {
 
   // Wild Forest (real-time foraging minigame; see src/engine/forest.ts).
   /** Start a run: gate on energy, charge energy, generate stage 1. `seed` shares the map in co-op. */
-  beginForest: (seed?: number) => void;
+  /** `startStage` (co-op) pins the shared stage; omitted = solo deeper-start (BAL-25). */
+  beginForest: (seed?: number, startStage?: number) => void;
   /** Step/turn the forager one cell (re-lights the fog). */
   forestMove: (dir: Dir) => void;
   /** Act on the faced cell (slash a beast or gather a node).
@@ -493,7 +522,7 @@ export interface GameState {
   // Hex Tactics (turn-based hex skirmish; see src/engine/hexBattle.ts).
   /** Start a skirmish: gate on level/energy, charge energy, snapshot the fighter vs scaled foes.
    *  `loadout` is the optional pre-match spell selection (max 3). Omitting it uses all known spells. */
-  beginTactics: (loadout?: string[]) => void;
+  beginTactics: (loadout?: string[], chosenTier?: number) => void;
   /** Select the active action (move / attack / spell) and refresh movement & target highlights. */
   tacticsSelect: (action: TacticsAction) => void;
   /** Move the player to a highlighted reachable tile. */
@@ -521,7 +550,14 @@ export interface GameState {
    * Complete a Skill Trial for today. If already cleared today: no-op.
    * Otherwise stamps the date, updates the best score, and grants the trial's reward.
    */
-  completeTrial: (trialId: TrialId, score01: number) => void;
+  completeTrial: (trialId: TrialId, score01: number) => boolean;
+  /**
+   * 6.7: evaluate the daily-clear / energy / stat gates and, on success, charge 1 energy and
+   * bump the attempt nonce (MINI-11). Called when a trial run begins (not on completion).
+   */
+  beginTrial: (trialId: TrialId) => TrialBeginResult;
+  /** MINI-16: record Spirit Grove round ids as seen (unions + dedups). Called on completion only. */
+  markSpiritGroveSeen: (ids: string[]) => void;
 
   // Developer testing tools (Settings → Developer). Jump straight to level-locked content.
   /** Direct level jump: seed statXp to match `target` so all level gates open at once. */
@@ -561,6 +597,8 @@ export function freshCharacter(): Character {
     statXp: emptyStatXP(),
     statLevels: emptyStatLevels(),
     statXpAtLastLevel: emptyStatXP(),
+    statXpTrickle: emptyStatXP(),
+    statXpTrickleAtLastLevel: emptyStatXP(),
     gold: 0,
     energy: 0,
     classId: null,
@@ -614,41 +652,48 @@ export function gearBonuses(state: GameState) {
   return aggregateGear(gearFor(state));
 }
 
+/** The stat-bonus map that applies to the character during a dungeon run: gear + run-only
+ *  relics + triggered run-buff + active lowHp relic triggers, all merged additively.
+ *  This is the single source of truth for "what the run has done to my stats" — it feeds
+ *  combat (via fighterFor) AND, per MINI-27, the encounter/shrine stat checks, so a relic
+ *  that promises "+2 WI for this run" actually helps the shrine/skill checks its text names. */
+export function runStatBonuses(state: GameState): Partial<Record<StatId, number>> {
+  const merged: Partial<Record<StatId, number>> = {};
+  const add = (m: Partial<Record<StatId, number>> | undefined) => {
+    if (!m) return;
+    for (const [stat, n] of Object.entries(m)) merged[stat as StatId] = (merged[stat as StatId] ?? 0) + (n ?? 0);
+  };
+  add(gearBonuses(state).statBonuses);
+  // Run-only relics + persistent run-buff (e.g. onShrine stacking) apply during a dungeon only.
+  const relicDefs = (state.dungeon?.relics ?? []).map(getRelic);
+  add(aggregateRelics(relicDefs).statBonuses);
+  add(state.dungeon?.runBuff);
+  // Conditional lowHp triggers — active while hp/maxHp < threshold.
+  const hpRatio = (state.dungeon?.hp ?? 0) / Math.max(1, state.dungeon?.maxHp ?? 1);
+  for (const def of relicDefs) {
+    if (def?.trigger?.type === 'lowHp' && hpRatio < def.trigger.threshold) add(def.trigger.statBonuses);
+  }
+  return merged;
+}
+
 /** Build the acting Fighter from current character state (+ optional in-battle buffs).
  *  Exported so the co-op hook can compute a HeroOpts snapshot for the local player. */
 export function fighterFor(state: GameState, buffs: Partial<Record<StatId, number>> = {}): Fighter {
   const gear = gearBonuses(state);
-  // Fold gear stat bonuses into the buffs map deriveCombatant already understands.
+  // Fold the run stat bonuses (gear + relics + runBuff + lowHp stat triggers) into the buffs
+  // map deriveCombatant understands. Shared with the encounter/shrine path via runStatBonuses.
   const merged: Partial<Record<StatId, number>> = { ...buffs };
-  for (const [stat, n] of Object.entries(gear.statBonuses)) {
+  for (const [stat, n] of Object.entries(runStatBonuses(state))) {
     merged[stat as StatId] = (merged[stat as StatId] ?? 0) + (n ?? 0);
   }
-  // Run-only relics apply on top of gear during a dungeon (and nowhere else).
+  // Defense/ward/maxHp aren't stat bonuses — accumulate them separately from the relic aggregate.
   const relicDefs = (state.dungeon?.relics ?? []).map(getRelic);
   const relicAgg = aggregateRelics(relicDefs);
-  for (const [stat, n] of Object.entries(relicAgg.statBonuses)) {
-    merged[stat as StatId] = (merged[stat as StatId] ?? 0) + (n ?? 0);
-  }
-  // Persistent run-buff from triggered relics (e.g. onShrine stacking).
-  if (state.dungeon?.runBuff) {
-    for (const [stat, n] of Object.entries(state.dungeon.runBuff)) {
-      merged[stat as StatId] = (merged[stat as StatId] ?? 0) + (n ?? 0);
-    }
-  }
-  // Conditional lowHp triggers — bonus is active while hp/maxHp < threshold.
-  const hp = state.dungeon?.hp ?? 0;
-  const maxHp = state.dungeon?.maxHp ?? 1;
-  const hpRatio = hp / Math.max(1, maxHp);
+  const hpRatio = (state.dungeon?.hp ?? 0) / Math.max(1, state.dungeon?.maxHp ?? 1);
   let lowHpDefense = 0;
   for (const def of relicDefs) {
-    if (!def?.trigger || def.trigger.type !== 'lowHp') continue;
-    if (hpRatio < def.trigger.threshold) {
-      if (def.trigger.statBonuses) {
-        for (const [stat, n] of Object.entries(def.trigger.statBonuses)) {
-          merged[stat as StatId] = (merged[stat as StatId] ?? 0) + (n ?? 0);
-        }
-      }
-      if (def.trigger.defense) lowHpDefense += def.trigger.defense;
+    if (def?.trigger?.type === 'lowHp' && hpRatio < def.trigger.threshold && def.trigger.defense) {
+      lowHpDefense += def.trigger.defense;
     }
   }
   const c = deriveCombatant(state.character.statLevels, state.character.level, state.combatStats, merged);
@@ -705,11 +750,22 @@ export function recomputeMood(state: GameState, todayIso: string, recentlyRecove
  * Bonus tiers: ≥100% → 1.25, ≥75% → 1.15, ≥50% → 1.10, else → 1.0.
  */
 export function recomputeHabitBonus(character: Character, habits: Habit[]): void {
-  const tracked = habits.filter((h) => h.status === 'active' && h.frequency !== 'as_needed');
-  if (tracked.length === 0) { character.habitBonus = 1; return; }
-  const healthy = tracked.filter((h) => h.streak >= 3).length / tracked.length;
+  const { tracked, healthy } = habitBonusCounts(habits);
+  if (tracked === 0) { character.habitBonus = 1; return; }
+  const frac = healthy / tracked;
   character.habitBonus =
-    healthy >= 1 ? 1.25 : healthy >= 0.75 ? 1.15 : healthy >= 0.5 ? 1.1 : 1;
+    frac >= 1 ? 1.25 : frac >= 0.75 ? 1.15 : frac >= 0.5 ? 1.1 : 1;
+}
+
+/**
+ * The raw counts behind {@link recomputeHabitBonus}: how many habits are streak-tracked
+ * (active, scheduled) and how many of those are on a healthy (streak ≥ 3) run. Surfaced to the
+ * UI so the streak-bonus chip can show "N of M habits on streak" alongside the multiplier.
+ */
+export function habitBonusCounts(habits: Habit[]): { tracked: number; healthy: number } {
+  const tracked = habits.filter((h) => h.status === 'active' && h.frequency !== 'as_needed');
+  const healthy = tracked.filter((h) => h.streak >= 3).length;
+  return { tracked: tracked.length, healthy };
 }
 
 // ---------------------------------------------------------------------------
@@ -781,14 +837,24 @@ export function applyWeeklyRollover(state: GameState, todayIso: string): void {
 // Reward / level helpers
 // ---------------------------------------------------------------------------
 
+/** Sources whose statXp is passive-grind "trickle" — tracked separately for BAL-09 allocation weighting. */
+const TRICKLE_SOURCES: ReadonlySet<EarningSource> = new Set<EarningSource>(['mine', 'forest', 'arena', 'tactics']);
+
 export function applyReward(state: GameState, reward: Reward, source?: EarningSource): void {
   const goldGained = reward.gold ?? 0;
   if (goldGained) state.character.gold += goldGained;
   let xpGained = 0;
   if (reward.statXp) {
+    // Passive minigame XP also lands in the trickle sub-ledger so level-up allocation can
+    // discount it (BAL-09). Habit/dungeon/trial/challenge/boss XP is full-weight and skips this.
+    const isTrickle = source !== undefined && TRICKLE_SOURCES.has(source);
     for (const [stat, amt] of Object.entries(reward.statXp)) {
       const n = amt ?? 0;
       state.character.statXp[stat as StatId] += n;
+      if (isTrickle) {
+        state.character.statXpTrickle[stat as StatId] =
+          (state.character.statXpTrickle[stat as StatId] ?? 0) + n;
+      }
       xpGained += n;
     }
   }
@@ -827,14 +893,21 @@ export function applyReward(state: GameState, reward: Reward, source?: EarningSo
  */
 export function applyLevelUp(state: GameState, toLevel: number): void {
   const ch = state.character;
+  // Recent per-stat effort since the last level-up, with the passive minigame-trickle slice
+  // re-weighted to MINIGAME_XP_ALLOCATION_WEIGHT (BAL-09). Kept in lockstep with previewNextGains.
   const delta = {} as Record<StatId, number>;
-  for (const s of STAT_IDS) delta[s] = ch.statXp[s] - (ch.statXpAtLastLevel[s] ?? 0);
+  for (const s of STAT_IDS) {
+    const full = ch.statXp[s] - (ch.statXpAtLastLevel[s] ?? 0);
+    const trickle = (ch.statXpTrickle?.[s] ?? 0) - (ch.statXpTrickleAtLastLevel?.[s] ?? 0);
+    delta[s] = full - (1 - MINIGAME_XP_ALLOCATION_WEIGHT) * trickle;
+  }
   const favored = ch.classId ? rankStats(ch.statXp).slice(0, 2) : [];
   const gains = allocateStatGains(POINTS_PER_LEVEL, delta, ch.statLevels, favored);
 
   ch.statLevels = { ...ch.statLevels };
   for (const s of STAT_IDS) ch.statLevels[s] += gains[s];
   ch.statXpAtLastLevel = { ...ch.statXp };
+  ch.statXpTrickleAtLastLevel = { ...(ch.statXpTrickle ?? emptyStatXP()) };
   ch.level = Math.min(MAX_LEVEL, toLevel);
 
   // Class unlock at the milestone level (brief Section 6).
@@ -965,12 +1038,29 @@ export function enterRoom(run: DungeonRun, state: GameState): void {
   } else if (room.type === 'elite') {
     run.battle = createBattle(fighterFor(state), enemyFor(run.depth, state.character.level, biome.enemies, Math.random, true), carry);
   } else if (room.type === 'boss') {
-    run.battle = createBattle(fighterFor(state), bossFor(biome, run.depth, state.character.level), carry);
+    const boss = bossFor(biome, run.depth, state.character.level);
+    run.battle = createBattle(fighterFor(state), boss, {
+      ...carry,
+      lossesBefore: state.dungeonBossLosses[boss.id] ?? 0,
+    });
   } else if (room.type === 'encounter') {
     const def = getEncounter(room.key);
     run.encounter = def ? startEncounter(def) : null;
   } else if (room.type === 'treasure') {
     const loot = resolveTreasure(run.depth);
+    // MINI-39: a weapon the player already owns would silently vanish in applyReward's dedupe —
+    // reroll each owned duplicate into gold so deep treasure rooms never advertise dead loot.
+    if (loot.weapons?.length) {
+      const kept = loot.weapons.filter((key) => {
+        if (state.ownedWeapons.includes(key)) {
+          loot.gold = (loot.gold ?? 0) + 30 + 5 * run.depth;
+          return false;
+        }
+        return true;
+      });
+      if (kept.length) loot.weapons = kept;
+      else delete loot.weapons;
+    }
     run.roomLoot = loot;
     run.floorReward = mergeReward(run.floorReward, loot);
   } else if (room.type === 'merchant') {
@@ -1080,7 +1170,12 @@ export function commitRun(state: GameState, opts: CommitRunOpts): GameState {
 
   const next: GameState = {
     ...state,
-    character: { ...state.character, statXp: { ...state.character.statXp } },
+    character: {
+      ...state.character,
+      statXp: { ...state.character.statXp },
+      // Cloned because applyReward writes the trickle sub-ledger in place for minigame sources (BAL-09).
+      statXpTrickle: { ...state.character.statXpTrickle },
+    },
     inventory: { ...state.inventory },
     ...(state.earnings ? {
       earnings: {
@@ -1117,10 +1212,14 @@ export function commitRun(state: GameState, opts: CommitRunOpts): GameState {
 // ---------------------------------------------------------------------------
 
 /**
- * Maximum energy a character can hold (§4.3 — defensive ceiling against accumulation bugs).
- * High enough to never affect normal play; clamped at the end of every energy-mutating action.
+ * Maximum energy a character can hold — a deliberate spend-pacing lever, not just an anti-bug
+ * ceiling (BAL-18, decision recorded in item 4.10). At ~2-3 days of typical spend it stops a
+ * lapsed player from returning to a huge banked reserve of minigame runs funded by zero fresh
+ * habits; energy must be re-earned by keeping habits, which is the whole point of the resource.
+ * Clamped at the end of every energy-mutating action. Existing saves above the cap are not force-
+ * clamped on load (Option A friendly-trust) — they settle to the cap on their next energy action.
  */
-export const MAX_ENERGY = 50;
+export const MAX_ENERGY = 15;
 
 /** Mine/forest: base stat-XP trickle per completed run. */
 export const CRAWLER_XP_BASE = 4;
@@ -1144,12 +1243,17 @@ export const ARENA_XP_DAMAGE_SCALE = 0.6;
 
 /** Bank a finished mine run's haul into the economy, clear the run, and reconcile level. */
 export function commitMining(state: GameState, run: MineState): GameState {
+  // Full 1.0 payout only on a safe tile (the entrance); banking off-tile keeps MINE_STASH_KEEP
+  // so a full-value end-bank is worth trekking back for (BAL-12). Mirrors commitMineDeath's split.
+  const reward = isMineSafeBankTile(run.tiles[run.player.r]?.[run.player.c]?.kind)
+    ? run.haul
+    : splitHaul(run.haul, MINE_STASH_KEEP).kept;
   // Include gold haul in the final score so resource-gathering builds score alongside kills.
-  const finalScore = run.score + (run.haul.gold ?? 0);
+  const finalScore = run.score + (reward.gold ?? 0);
   // Trickle is split across both trained stats so total stat-XP stays modest (§5.4).
   const trickle = CRAWLER_XP_BASE + CRAWLER_XP_PER_DEPTH * run.deepest;
   return commitRun(state, {
-    runField: 'mining', reward: run.haul,
+    runField: 'mining', reward,
     statXp: { ST: Math.ceil(trickle / 2), EN: Math.floor(trickle / 2) },
     deepestField: 'deepestMineFloor', deepestValue: run.deepest,
     scoreField: 'bestMineScore', scoreValue: finalScore, cloneMaterials: true, source: 'mine',
@@ -1180,10 +1284,15 @@ export function commitMineDeath(state: GameState, run: MineState): GameState {
 
 /** Bank a finished forest run's haul into the economy, clear the run, and reconcile level. */
 export function commitForest(state: GameState, run: ForestState): GameState {
+  // Full 1.0 payout only on a safe tile (entrance/clearing); banking off-tile keeps
+  // FOREST_STASH_KEEP so a full-value end-bank beats repeated mid-run stashing (BAL-12).
+  const reward = isForestSafeBankTile(run.tiles[run.player.r]?.[run.player.c]?.kind)
+    ? run.haul
+    : splitHaul(run.haul, FOREST_STASH_KEEP).kept;
   // The run's gold/materials, plus a Dexterity/Endurance trickle split across both stats (§5.4).
   const trickle = CRAWLER_XP_BASE + CRAWLER_XP_PER_DEPTH * run.deepest;
   return commitRun(state, {
-    runField: 'forest', reward: run.haul,
+    runField: 'forest', reward,
     statXp: { DX: Math.ceil(trickle / 2), EN: Math.floor(trickle / 2) },
     deepestField: 'deepestForestStage', deepestValue: run.deepest,
     scoreField: 'bestForestScore', scoreValue: run.score, cloneMaterials: true, source: 'forest',
@@ -1206,7 +1315,12 @@ export function stashForest(state: GameState, run: ForestState): GameState {
 
   const next: GameState = {
     ...state,
-    character: { ...state.character, statXp: { ...state.character.statXp } },
+    character: {
+      ...state.character,
+      statXp: { ...state.character.statXp },
+      // Trickle sub-ledger cloned defensively — stashForest applies rewards under a trickle source (BAL-09).
+      statXpTrickle: { ...state.character.statXpTrickle },
+    },
     inventory: { ...state.inventory },
     materials: { ...state.materials },
     ownedWeapons: [...state.ownedWeapons],
@@ -1285,6 +1399,8 @@ export function commitTactics(state: GameState, run: HexBattleState): GameState 
     runField: 'tactics', reward: tacticsReward(run),
     statXp: { AG: each + (rem > 0 ? 1 : 0), DX: each + (rem > 1 ? 1 : 0), EN: each },
     deepestField: 'deepestTacticsTier', deepestValue: run.tier, gateOnWin: won,
-    cloneMaterials: false, source: 'tactics',
+    // Tactics wins now award a material bundle (BAL-10) — clone so applyReward's in-place
+    // `state.materials[key] += …` never aliases a shared snapshot object.
+    cloneMaterials: true, source: 'tactics',
   });
 }

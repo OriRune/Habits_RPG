@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { buildDailySummary, weeklyCompletionRate } from '../dashboard';
 import { type Habit } from '../habits';
+import { addDays } from '../date';
+
+/** Completed-day log of `n` consecutive daily days ending on (and including) `end`. */
+function streakLog(end: string, n: number): Record<string, { xp: number }> {
+  const log: Record<string, { xp: number }> = {};
+  for (let i = 0; i < n; i++) log[addDays(end, -i)] = { xp: 20 };
+  return log;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -25,7 +33,6 @@ function makeHabit(overrides: Partial<Habit>): Habit {
 const BASE_OPTS = {
   currentEnergy: 0,
   minMinigameCost: 1,
-  loadWarning: false,
   struggling: false,
 };
 
@@ -130,9 +137,32 @@ describe('buildDailySummary', () => {
     expect(summary.recommendedAction?.kind).toBe('start_today');
   });
 
-  it('recommends energy_ready after completions with enough energy', () => {
+  it('recommends all_done (with energy hint) when the day is fully complete and energy remains', () => {
+    // Single scheduled habit, done today, with energy in the tank. all_done now preempts
+    // energy_ready — the fully-finished day shows closure, with a hint about spending energy.
     const h = makeHabit({ log: { [today]: { xp: 20 } } });
     const summary = buildDailySummary([h], today, {
+      ...BASE_OPTS,
+      currentEnergy: 3,
+      minMinigameCost: 1,
+    });
+    expect(summary.recommendedAction?.kind).toBe('all_done');
+    expect(summary.recommendedAction?.message).toContain('3 energy to spend');
+  });
+
+  it('all_done with zero energy shows the base message (no energy hint)', () => {
+    const h = makeHabit({ log: { [today]: { xp: 20 } } });
+    const summary = buildDailySummary([h], today, { ...BASE_OPTS, currentEnergy: 0 });
+    expect(summary.recommendedAction?.kind).toBe('all_done');
+    expect(summary.recommendedAction?.message).toBe('All habits complete — well done, hero!');
+  });
+
+  it('still recommends energy_ready on a partial day (something done, more pending)', () => {
+    // Ordering lock: all_done was moved above energy_ready, but the partial-day energy nudge
+    // must survive — one habit done, one still pending, with enough energy.
+    const done = makeHabit({ log: { [today]: { xp: 20 } } });
+    const pending = makeHabit({});
+    const summary = buildDailySummary([done, pending], today, {
       ...BASE_OPTS,
       currentEnergy: 3,
       minMinigameCost: 1,
@@ -150,14 +180,72 @@ describe('buildDailySummary', () => {
   });
 
   it('topStreaks returns up to 3, sorted descending', () => {
-    const h1 = makeHabit({ streak: 10 });
-    const h2 = makeHabit({ streak: 5 });
-    const h3 = makeHabit({ streak: 7 });
-    const h4 = makeHabit({ streak: 2 });
+    // Uses the live streak (computed from the log), not the cached h.streak field.
+    const h1 = makeHabit({ log: streakLog(today, 10) });
+    const h2 = makeHabit({ log: streakLog(today, 5) });
+    const h3 = makeHabit({ log: streakLog(today, 7) });
+    const h4 = makeHabit({ log: streakLog(today, 2) });
     const summary = buildDailySummary([h1, h2, h3, h4], today, BASE_OPTS);
     expect(summary.topStreaks).toHaveLength(3);
     expect(summary.topStreaks[0].streak).toBe(10);
     expect(summary.topStreaks[1].streak).toBe(7);
     expect(summary.topStreaks[2].streak).toBe(5);
+  });
+
+  // -------------------------------------------------------------------------
+  // Streak-at-risk (HABIT-11)
+  // -------------------------------------------------------------------------
+
+  /** A streak of `n` days ending yesterday (today unlogged → at-risk with live streak n). */
+  const atRiskLog = (n: number) => streakLog(addDays(today, -1), n);
+
+  it('atRiskHabits are sorted by live streak descending (not array order)', () => {
+    const short = makeHabit({ name: 'Short', log: atRiskLog(3) });
+    const long = makeHabit({ name: 'Long', log: atRiskLog(30) });
+    // Passed short-first — sort must reorder so the longest streak leads.
+    const summary = buildDailySummary([short, long], today, BASE_OPTS);
+    expect(summary.atRiskHabits[0].name).toBe('Long');
+    expect(summary.atRiskHabits[1].name).toBe('Short');
+  });
+
+  it('promotes a long at-risk streak above start_today when late in the day', () => {
+    // completedToday === 0 would normally yield start_today and mask the at-risk warning.
+    const h = makeHabit({ name: 'Meditate', log: atRiskLog(30) });
+    const summary = buildDailySummary([h], today, { ...BASE_OPTS, nowHour: 19 });
+    expect(summary.recommendedAction?.kind).toBe('streak_at_risk');
+    expect(summary.recommendedAction?.targetHabitId).toBe(h.id);
+    expect(summary.recommendedAction?.message).toContain('30-day streak');
+  });
+
+  it('does NOT promote before URGENT_HOUR — start_today still masks it (the bug case)', () => {
+    const h = makeHabit({ name: 'Meditate', log: atRiskLog(30) });
+    const summary = buildDailySummary([h], today, { ...BASE_OPTS, nowHour: 10 });
+    expect(summary.recommendedAction?.kind).toBe('start_today');
+  });
+
+  it('does NOT promote a short (<7) streak even late in the day', () => {
+    const h = makeHabit({ name: 'Meditate', log: atRiskLog(3) });
+    const summary = buildDailySummary([h], today, { ...BASE_OPTS, nowHour: 21 });
+    expect(summary.recommendedAction?.kind).toBe('start_today');
+  });
+
+  it('appends owned Streak Freeze count to the at-risk message', () => {
+    const h = makeHabit({ name: 'Meditate', log: atRiskLog(30) });
+    const summary = buildDailySummary([h], today, {
+      ...BASE_OPTS,
+      nowHour: 19,
+      streakFreezes: 2,
+    });
+    expect(summary.recommendedAction?.message).toContain('2 Streak Freezes');
+  });
+
+  it('fallback at-risk (any hour) names the top streak and targets it', () => {
+    // completedToday > 0 skips start_today; no focus pending → falls through to step 4.
+    const done = makeHabit({ name: 'Done', log: { [today]: { xp: 20 } } });
+    const risk = makeHabit({ name: 'Journal', log: atRiskLog(4) });
+    const summary = buildDailySummary([done, risk], today, BASE_OPTS);
+    expect(summary.recommendedAction?.kind).toBe('streak_at_risk');
+    expect(summary.recommendedAction?.targetHabitId).toBe(risk.id);
+    expect(summary.recommendedAction?.message).toContain('4-day streak');
   });
 });

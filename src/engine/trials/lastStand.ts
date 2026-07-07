@@ -11,6 +11,13 @@ export const DAMAGE_PER_HIT = 14;
 export const STARTING_HP = 100;
 /** One-frame grace after landing — covers input lag without being exploitable. */
 export const BLOCK_GRACE_MS = 16;
+/**
+ * MINI-10 anti-mash: an empty block (no attack in the window) locks all lanes for
+ * this long. Blind mashing whiffs constantly, so it keeps re-triggering the lockout
+ * and misses the real attacks; a player who only blocks when an attack is in flight
+ * never whiffs and never trips it. Restores read-then-react.
+ */
+export const MASH_LOCKOUT_MS = 200;
 
 /**
  * Block window (ms before landing) per wave index.
@@ -37,12 +44,14 @@ export interface Attack {
 
 /**
  * Reaction speed factor (0..1) for a blocked attack.
- * 1.0 = blocked the instant it appeared (landMs − SPAWN_AHEAD_MS).
+ * 1.0 = blocked the instant the block window opened (landMs − windowMs).
  * 0.0 = blocked exactly at landing (landMs).
+ * `windowMs` is the accept window in effect for the attack (see blockWindowForWave);
+ * it defaults to SPAWN_AHEAD_MS so any other caller keeps the original behaviour.
  */
-export function reactionSpeed(landMs: number, blockMs: number): number {
+export function reactionSpeed(landMs: number, blockMs: number, windowMs: number = SPAWN_AHEAD_MS): number {
   const margin = landMs - blockMs;
-  return Math.max(0, Math.min(1, margin / SPAWN_AHEAD_MS));
+  return Math.max(0, Math.min(1, margin / windowMs));
 }
 
 /** Speed threshold for "Perfect!" label — reacted within first third of the window. */
@@ -56,6 +65,31 @@ export function reactionRating(speed: number): ReactionRating {
   if (speed >= REACTION_PERFECT) return 'perfect';
   if (speed >= REACTION_GOOD) return 'good';
   return 'late';
+}
+
+// ── Anti-mash input gate (MINI-10) ─────────────────────────────────────────────
+
+/**
+ * Decide whether a block attempt is accepted, given the running lockout deadline.
+ * A whiff (no attack matched) starts a MASH_LOCKOUT_MS window; any attempt while
+ * the window is open is rejected — including one that WOULD have matched a real
+ * attack, which is the whole point: blind mashing can no longer catch every lane
+ * at spawn. Attempts during the window do not extend it (a single early press
+ * from an honest player costs one window, not a permanent lock).
+ *
+ * @param lockoutUntil  elapsed-ms deadline before which input is locked (0 = open)
+ * @param el            current elapsed ms
+ * @param matched       whether an attack was in this lane's window
+ * @returns the accept decision and the updated lockout deadline
+ */
+export function resolveBlockGate(
+  lockoutUntil: number,
+  el: number,
+  matched: boolean,
+): { accept: boolean; lockoutUntil: number } {
+  if (el < lockoutUntil) return { accept: false, lockoutUntil };
+  if (matched) return { accept: true, lockoutUntil };
+  return { accept: false, lockoutUntil: el + MASH_LOCKOUT_MS };
 }
 
 /**
@@ -98,9 +132,15 @@ export function generateAttacks(rng: () => number): Attack[] {
   return attacks;
 }
 
-/** Block window (ms) for a given wave index; clamps to the last entry. */
-export function blockWindowForWave(wave: number): number {
-  return BLOCK_WINDOW_BY_WAVE[Math.min(wave, BLOCK_WINDOW_BY_WAVE.length - 1)];
+/**
+ * Block window (ms) for a given wave index; clamps to the last entry.
+ * The HP stat widens the window by 20 ms per level (more reaction time), but the
+ * result stays capped under SPAWN_AHEAD_MS so the accept window never reverts to
+ * the old full-1400ms "block anywhere" behaviour.
+ */
+export function blockWindowForWave(wave: number, hpLevel = 0): number {
+  const base = BLOCK_WINDOW_BY_WAVE[Math.min(wave, BLOCK_WINDOW_BY_WAVE.length - 1)];
+  return Math.min(SPAWN_AHEAD_MS, base + hpLevel * 20);
 }
 
 /**

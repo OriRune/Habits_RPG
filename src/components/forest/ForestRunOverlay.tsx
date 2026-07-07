@@ -30,6 +30,7 @@ import { FitToWidth } from '@/components/ui/FitToWidth';
 import { cn } from '@/lib/cn';
 import { ForestControls } from './ForestControls';
 import { CrawlerAvatar } from '@/components/minigame/CrawlerAvatar';
+import { StreakBonusChip } from '@/components/character/StreakBonusChip';
 import { useCoopStore } from '@/net/coop/session';
 import { useAuthStore } from '@/net/auth';
 import { usePartyStore } from '@/hooks/useParty';
@@ -220,6 +221,7 @@ export function ForestRunOverlay() {
   const skipForestBoon = useGameStore((s) => s.skipForestBoon);
   const beginForestBanking = useGameStore((s) => s.beginForestBanking);
   const forestStash = useGameStore((s) => s.forestStash);
+  const habitBonus = useGameStore((s) => s.character.habitBonus);
   const remotePlayers = useCoopStore((s) => s.remotePlayers);
   const coopSession = useCoopStore((s) => s.session);
   const coopJoined = useCoopStore((s) => s.joined);
@@ -1182,8 +1184,12 @@ export function ForestRunOverlay() {
               <p className="font-display text-xs text-gold-bright">Score {forest.score.toLocaleString()}</p>
             )}
             <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs">
-              <HaulChips reward={forest.haul} empty="nothing gathered" />
+              <HaulChips
+                reward={{ ...forest.haul, gold: Math.round((forest.haul.gold ?? 0) * habitBonus) }}
+                empty="nothing gathered"
+              />
             </div>
+            <StreakBonusChip className="text-[11px]" />
             <Button variant="primary" onClick={endForest} className="mt-1 px-4 py-2 text-sm">
               Bank &amp; Leave
             </Button>
@@ -1203,7 +1209,10 @@ export function ForestRunOverlay() {
               <div>
                 <div className="font-display text-[10px] uppercase tracking-wider text-parchment-300/70">Carried home</div>
                 <div className="flex flex-wrap items-center justify-center gap-x-2.5 gap-y-0.5 text-xs">
-                  <HaulChips reward={death?.kept ?? {}} empty="nothing made it out" />
+                  <HaulChips
+                    reward={death?.kept ? { ...death.kept, gold: Math.round((death.kept.gold ?? 0) * habitBonus) } : {}}
+                    empty="nothing made it out"
+                  />
                 </div>
               </div>
               <div>
@@ -1213,6 +1222,7 @@ export function ForestRunOverlay() {
                 </div>
               </div>
             </div>
+            <StreakBonusChip className="text-[11px]" />
             <Button variant="primary" onClick={endForest} className="mt-1 px-4 py-2 text-sm">
               Retrieve Haul &amp; Leave
             </Button>

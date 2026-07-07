@@ -27,6 +27,9 @@ import {
   DASH_LEAD_GAIN,
   DASH_DURATION_MS,
   DASH_COOLDOWN_MS,
+  CHASER_GAIN_PER_SEC,
+  SURGE_REAL_DRAIN,
+  updateLead,
   STOMP_BOUNCE_VELOCITY,
   OBSTACLE_HEIGHT,
   STOMP_WINDOW,
@@ -480,8 +483,8 @@ describe('stepChase — stomp constants', () => {
   });
 
   it('dash lead gain still exceeds base stomp lead gain', () => {
-    // Dash (16) > stomp (9): dash is still the easier recovery tool, but the gap
-    // is now narrow enough that stomp is a meaningful strategic choice.
+    // Dash (12) > stomp (9): dash is still the easier recovery tool, but after the
+    // MINI-35 nerf the gap is narrow enough that stomp is a meaningful choice.
     expect(DASH_LEAD_GAIN).toBeGreaterThan(STOMP_LEAD_GAIN);
   });
 
@@ -948,6 +951,63 @@ describe('resolveContact — crossbowman', () => {
     );
     // Should be stumble, NOT stomp — crossbowman is immune to stomping.
     expect(result).toBe('stumble');
+  });
+});
+
+// ── resolveContact — bolt (MINI-35) ───────────────────────────────────────────
+//
+// The crossbowman's telegraphed bolt flies at running height: airborne clears
+// (jump it), grounded stumbles.  Sliding does NOT help — it is the mechanical
+// inverse of the slide-only crossbowman body, so the pair demands both inputs.
+
+describe('resolveContact — bolt', () => {
+  const roofY = 0;
+
+  function makeBolt(x = 10): RoofProp {
+    return { id: 77, kind: 'bolt', x, width: 2 };
+  }
+
+  it('returns clear when hero is airborne (jumped over the bolt)', () => {
+    const result = resolveContact(roofY + 3, 5, false, makeBolt(), roofY);
+    expect(result).toBe('clear');
+  });
+
+  it('returns stumble when hero is grounded and not sliding', () => {
+    const result = resolveContact(roofY + 0.01, 0, false, makeBolt(), roofY);
+    expect(result).toBe('stumble');
+  });
+
+  it('returns stumble when grounded even while sliding (sliding does not help vs a bolt)', () => {
+    const result = resolveContact(roofY + 0.01, 0, true, makeBolt(), roofY);
+    expect(result).toBe('stumble');
+  });
+});
+
+// ── dash economy — marginal cost (MINI-35) ────────────────────────────────────
+//
+// After the DASH_LEAD_GAIN 16→12 nerf a dash-only player roughly breaks even at
+// the base cooldown, and goes net-negative once the surge-real-drain zone kicks
+// in.  High-AG (floored 1800 ms) cooldowns remain net-positive.
+
+describe('dash economy — marginal cost', () => {
+  it('one dash barely clears one base-cooldown of chaser drain (net ≈ 0, was +4.3 at gain 16)', () => {
+    const dtCooldown = DASH_COOLDOWN_MS / 1000; // 2.6 s
+    const start = 25; // mid-lead so updateLead does not clamp at 0 or LEAD_MAX
+    const net = updateLead(start, dtCooldown, true, 'dash') - start;
+    // 12 − 4.5×2.6 = +0.3 (near break-even). Old 16 gave 16 − 11.7 = +4.3.
+    expect(net).toBeLessThan(1);
+    // Past SURGE_REAL_DRAIN_START each surge tips the dash-only rate net-negative.
+    expect(net - SURGE_REAL_DRAIN).toBeLessThan(0);
+  });
+
+  it('base-cooldown break-even: DASH_LEAD_GAIN does not out-run the chaser', () => {
+    const drainPerCooldown = CHASER_GAIN_PER_SEC * (DASH_COOLDOWN_MS / 1000);
+    expect(DASH_LEAD_GAIN - drainPerCooldown).toBeLessThan(1);
+  });
+
+  it('AG-floored 1800 ms cooldown stays net-positive (high AG remains an advantage)', () => {
+    const drainPerFlooredCooldown = CHASER_GAIN_PER_SEC * 1.8;
+    expect(DASH_LEAD_GAIN - drainPerFlooredCooldown).toBeGreaterThan(0);
   });
 });
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Heart, Zap, Sparkles, Footprints, LogOut, Skull, Trophy, ChevronRight, Shield, Eye, EyeOff } from 'lucide-react';
+import { Heart, Zap, Sparkles, Footprints, LogOut, Skull, Trophy, ChevronRight, Shield, Eye, EyeOff, Coins } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { useTacticsAudio } from '@/hooks/useTacticsAudio';
 import {
@@ -13,6 +13,7 @@ import {
   ARCHETYPE_INFO,
   previewPlayerAttack,
   previewSpell,
+  tacticsReward,
   type AttackPreview,
 } from '@/engine/hexBattle';
 import { hexKey, hexDistance, type Hex } from '@/engine/hex';
@@ -21,6 +22,7 @@ import { MAX_ELEVATION, SPELL_RANGE, STA_REGEN_PER_TURN, MOVE_ANIM_MS, climbFor,
 import type { StatId } from '@/engine/stats';
 import { base, topCenter, hexCorners, isoBounds, colHeight, type Pt } from './iso';
 import { Button } from '@/components/ui/Button';
+import { StreakBonusChip } from '@/components/character/StreakBonusChip';
 import { cn } from '@/lib/cn';
 import { useCoopStore } from '@/net/coop/session';
 import { useAuthStore } from '@/net/auth';
@@ -132,6 +134,7 @@ export function TacticsOverlay() {
   const tacticsEndTurn = useGameStore((s) => s.tacticsEndTurn);
   const tacticsHold = useGameStore((s) => s.tacticsHold);
   const endTactics = useGameStore((s) => s.endTactics);
+  const habitBonus = useGameStore((s) => s.character.habitBonus);
   const soundEnabled = useGameStore((s) => s.settings.soundEnabled);
 
   // Co-op: identify local player and session role
@@ -713,6 +716,15 @@ export function TacticsOverlay() {
                 <div className="font-display text-xl font-bold text-ember-bright">Defeated</div>
               </>
             )}
+            {(() => {
+              const goldOut = Math.round((tacticsReward(tactics).gold ?? 0) * habitBonus);
+              return goldOut > 0 ? (
+                <span className="flex items-center gap-1 text-xs text-gold-bright">
+                  <Coins className="h-3.5 w-3.5" /> {goldOut}
+                </span>
+              ) : null;
+            })()}
+            <StreakBonusChip className="text-[11px]" />
             <Button onClick={endTactics} className="px-6 py-2">
               {tactics.status === 'won' ? 'Claim reward' : 'Leave'}
             </Button>
@@ -774,7 +786,7 @@ export function TacticsOverlay() {
               type="button"
               onClick={() => setConfirmRetreat(true)}
               className="ml-1 flex items-center gap-1 rounded-md px-2 py-1.5 font-display text-[11px] text-parchment-300/70 hover:text-ember-bright"
-              title="Retreat — forfeit the skirmish and collect partial rewards"
+              title="Retreat — forfeit the skirmish and keep gold for the damage you dealt"
             >
               <LogOut className="h-3.5 w-3.5" /> Retreat
             </button>

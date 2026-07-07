@@ -125,4 +125,19 @@ export const GEAR: Record<string, GearDef> = {
     statBonuses: { ST: 5 },
     description: 'Legendary lightness and edge. Shatters even the hardest rock or ancient tree in one blow. +5 Strength.',
   },
+  obsidian_plate: {
+    key: 'obsidian_plate',
+    name: 'Obsidian Plate',
+    slot: 'armor',
+    defense: 12,
+    ward: 3,
+    description: 'Volcanic glass forged into armor plate, turning aside even magma-band blows. +12 Defense, +3 Ward.',
+  },
+  resin_trinket: {
+    key: 'resin_trinket',
+    name: 'Amber Charm',
+    slot: 'trinket',
+    statBonuses: { EN: 4 },
+    description: 'Hardened amber resin worn close, lending its wearer lasting stamina. +4 Endurance.',
+  },
 };

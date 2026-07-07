@@ -98,83 +98,83 @@ desync or contamination. Fix shapes are specified per finding in `05-multiplayer
 ending a raid detaches everyone; a party of two on different app versions can't corrupt
 a shared world; chat shows recent messages.
 
-# Phase 3 — Habit loop: cue, streaks, reward legibility ⏳
+# Phase 3 — Habit loop: cue, streaks, reward legibility ✅ 2026-07-06
 
 **Goal:** close the owner's three stated gaps — remembering to open the app, streak
 protection that works after a miss, and rewards he can feel.
 
 | # | Item | Findings | Status |
 |---|---|---|---|
-| 3.1 | **PWA path**: `vite-plugin-pwa` manifest (installable = passive daily cue) + minimal service worker so notifications work on mobile; one-time dashboard card offering to enable the existing reminder after a missed day. Interim, zero-code: tell Orion the Settings → daily reminder toggle exists | HABIT-03 (P1) | ⏳ |
-| 3.2 | **Streak freeze redesign**: allow repairing the most recent missed scheduled day; refuse to consume when live streak is 0; show live `currentStreak` (not the cache) in the Protect panel and everywhere else; wire `recovery_elixir` as the retroactive-repair item (or pull it from the shop) | HABIT-02 (P1), HABIT-17, HABIT-15 | ⏳ |
-| 3.3 | Streak-at-risk that actually fires: sort at-risk by live streak desc, promote above generic prompts when top streak ≥ 7 and hour ≥ ~18, mention owned freezes | HABIT-11 | ⏳ |
-| 3.4 | Streak milestones at 7/30/100 — distinct toast + small reward at the already-computed spot in `completeHabit` | HABIT-13 | ⏳ |
-| 3.5 | One "reward receipt" toast from actual granted values (`+12 XP · +5g · +1⚡`) for both binary and quantity paths; fix/drop the dialog preview; note on backdated completions ("logged late — no energy") | HABIT-06, BAL-21 | ⏳ |
-| 3.6 | Surface `habitBonus` on every run-banking summary and beside the dashboard energy counter ("Streak bonus ×1.15 — 3 of 4 habits on streak") | HABIT-09 | ⏳ |
-| 3.7 | Weekly loop closure: report evaluates the plan's focus habits (`focusResults` block first); render the review's structured actions as one-tap buttons; list the weekly challenge rotation inside PlanWeekModal; two motivational Balance-Report tiles in the review | HABIT-10, HABIT-14, HABIT-23, HABIT-24 | ⏳ |
-| 3.8 | Economy-integrity trio: clamp the custom-challenge reward override to `suggestReward` bounds; per-completion "energy granted" marker (fixes both the mint and the cap-deduct edge); recovery bonus only fires when a scheduled day in the gap was actually missed | HABIT-01 (P1), HABIT-04, HABIT-16, HABIT-05 | ⏳ |
-| 3.9 | Onboarding block (plan2's carried gap, now concrete): quick-start auto-allocates the 5 points + grants a spell (or discloses); retag the default template to 4 distinct stats; "Choose a weapon and spell to begin" helper on the dead CTA; WelcomeCard points at reachable content; soft warning past 2 template groups; fix the "no XP cap" label; guest/offline link on LoginView | HABIT-07, HABIT-08, HABIT-19, HABIT-18, HABIT-20, HABIT-21, HABIT-12 | ⏳ |
-| 3.10 | Dashboard closure ritual: show `all_done` when today is finished (energy hint appended); delete the dead `load_warning` branch | HABIT-22 | ⏳ |
+| 3.1 | **PWA path**: `vite-plugin-pwa` manifest (installable = passive daily cue) + minimal service worker so notifications work on mobile; one-time dashboard card offering to enable the existing reminder after a missed day. Interim, zero-code: tell Orion the Settings → daily reminder toggle exists | HABIT-03 (P1) | ✅ |
+| 3.2 | **Streak freeze redesign**: allow repairing the most recent missed scheduled day; refuse to consume when live streak is 0; show live `currentStreak` (not the cache) in the Protect panel and everywhere else; wire `recovery_elixir` as the retroactive-repair item (or pull it from the shop) | HABIT-02 (P1), HABIT-17, HABIT-15 | ✅ |
+| 3.3 | Streak-at-risk that actually fires: sort at-risk by live streak desc, promote above generic prompts when top streak ≥ 7 and hour ≥ ~18, mention owned freezes | HABIT-11 | ✅ |
+| 3.4 | Streak milestones at 7/30/100 — distinct toast + small reward at the already-computed spot in `completeHabit` | HABIT-13 | ✅ |
+| 3.5 | One "reward receipt" toast from actual granted values (`+12 XP · +5g · +1⚡`) for both binary and quantity paths; fix/drop the dialog preview; note on backdated completions ("logged late — no energy") | HABIT-06, BAL-21 | ✅ |
+| 3.6 | Surface `habitBonus` on every run-banking summary and beside the dashboard energy counter ("Streak bonus ×1.15 — 3 of 4 habits on streak") | HABIT-09 | ✅ |
+| 3.7 | Weekly loop closure: report evaluates the plan's focus habits (`focusResults` block first); render the review's structured actions as one-tap buttons; list the weekly challenge rotation inside PlanWeekModal; two motivational Balance-Report tiles in the review | HABIT-10, HABIT-14, HABIT-23, HABIT-24 | ✅ |
+| 3.8 | Economy-integrity trio: clamp the custom-challenge reward override to `suggestReward` bounds; per-completion "energy granted" marker (fixes both the mint and the cap-deduct edge); recovery bonus only fires when a scheduled day in the gap was actually missed | HABIT-01 (P1), HABIT-04, HABIT-16, HABIT-05 | ✅ |
+| 3.9 | Onboarding block (plan2's carried gap, now concrete): quick-start auto-allocates the 5 points + grants a spell (or discloses); retag the default template to 4 distinct stats; "Choose a weapon and spell to begin" helper on the dead CTA; WelcomeCard points at reachable content; soft warning past 2 template groups; fix the "no XP cap" label; guest/offline link on LoginView | HABIT-07, HABIT-08, HABIT-19, HABIT-18, HABIT-20, HABIT-21, HABIT-12 | ✅ |
+| 3.10 | Dashboard closure ritual: show `all_done` when today is finished (energy hint appended); delete the dead `load_warning` branch | HABIT-22 | ✅ |
 
 **Acceptance:** app-open has an external cue path; a missed day is repairable and the
 UI never baits wasting an item; day 7/30/100 feel different from day 2; every reward
 moment shows what was actually granted.
 
-# Phase 4 — Economy: sinks, faucets, habits-primary ⏳
+# Phase 4 — Economy: sinks, faucets, habits-primary ✅ 2026-07-06
 
 **Goal:** habit effort is the best long-term progression path again, and gold means
 something after week one. Numbers in `03-balance.md`; re-model after each step.
 
 | # | Item | Findings | Status |
 |---|---|---|---|
-| 4.1 | **Scale habit XP with level** (e.g. `base × (1 + 0.15×(L−1))`) — the one knob that fixes both the share inversion and mid-game pacing. Fallback: the plan2 §4.2 daily minigame-XP cap | BAL-01 (P1) | ⏳ |
-| 4.2 | Arena pays the generic gold curve at every tier; named-boss reward tables reserved for the one-shot level-up battle; no item re-farm on named tiers | BAL-04 (P1), MINI-06 item half | ⏳ |
-| 4.3 | Gear shop section + `buyGear` action (makes iron_pickaxe's dead price live); mithril toolkit via magma-band recipe | BAL-03 (P1) | ⏳ |
-| 4.4 | Three late-tier recipes consuming the dead-end band materials (mithril toolkit, obsidian plate ~def 12, resin trinket with +EN) — one stroke closes the sink gap, the material dead ends, the gear-curve stall, and the EN-gear gap. Design them now; the Forge (Phase 8) becomes their crafting *experience* | BAL-05 (P1), BAL-16, BAL-17, BAL-24 | ⏳ |
-| 4.5 | Mine kills pay guaranteed `bounty` like forest (keep the pool pick as bonus); kill-loot uses the wielded attack stat | BAL-11, MINI-19 | ⏳ |
-| 4.6 | Dungeon: combat rooms pay depth-scaled gold (~half a treasure room); descent past floor 3 costs 1 energy (or per-run XP cap); flee keeps 0.6 of floor loot (or one attempt per fight) | MINI-05 (P1), BAL-13, MINI-30 | ⏳ |
-| 4.7 | Crawler risk pricing: full-value banking only on entrance/clearing tiles, stash rate elsewhere; beaten band guardians unlock deeper starts | BAL-12, BAL-25 | ⏳ |
-| 4.8 | Tactics reward rescue: tier selector clamped [4, level]; loss/retreat pays proportional gold (fix the lying tooltip); board-size gold multiplier; guaranteed material bundle on win | MINI-08 (P1), MINI-23, MINI-22, BAL-10 | ⏳ |
-| 4.9 | Trickle-allocation fairness: weight minigame trickle XP at 50% in `allocateStatGains` (or ledger separately); Arena tallies EN at 0.25 | BAL-09, MINI-25 | ⏳ |
-| 4.10 | Decisions to record (change one constant or write one paragraph): energy cap as design lever (12–15?) vs hoarding; free boss retries stay free; shop premium on craftables cut to ~50–60g; Short Bow niche or accepted stepping stone | BAL-18, BAL-19, BAL-15, BAL-26 | ⏳ |
+| 4.1 | **Scale habit XP with level** (e.g. `base × (1 + 0.15×(L−1))`) — the one knob that fixes both the share inversion and mid-game pacing. Fallback: the plan2 §4.2 daily minigame-XP cap | BAL-01 (P1) | ✅ |
+| 4.2 | Arena pays the generic gold curve at every tier; named-boss reward tables reserved for the one-shot level-up battle; no item re-farm on named tiers | BAL-04 (P1), MINI-06 item half | ✅ |
+| 4.3 | Gear shop section + `buyGear` action (makes iron_pickaxe's dead price live); mithril toolkit via magma-band recipe | BAL-03 (P1) | ✅ |
+| 4.4 | Three late-tier recipes consuming the dead-end band materials (mithril toolkit, obsidian plate ~def 12, resin trinket with +EN) — one stroke closes the sink gap, the material dead ends, the gear-curve stall, and the EN-gear gap. Design them now; the Forge (Phase 8) becomes their crafting *experience* | BAL-05 (P1), BAL-16, BAL-17, BAL-24 | ✅ |
+| 4.5 | Mine kills pay guaranteed `bounty` like forest (keep the pool pick as bonus); kill-loot uses the wielded attack stat | BAL-11, MINI-19 | ✅ |
+| 4.6 | Dungeon: combat rooms pay depth-scaled gold (~half a treasure room); descent past floor 3 costs 1 energy (or per-run XP cap); flee keeps 0.6 of floor loot (or one attempt per fight) | MINI-05 (P1), BAL-13, MINI-30 | ✅ |
+| 4.7 | Crawler risk pricing: full-value banking only on entrance/clearing tiles, stash rate elsewhere; beaten band guardians unlock deeper starts | BAL-12, BAL-25 | ✅ |
+| 4.8 | Tactics reward rescue: tier selector clamped [4, level]; loss/retreat pays proportional gold (fix the lying tooltip); board-size gold multiplier; guaranteed material bundle on win | MINI-08 (P1), MINI-23, MINI-22, BAL-10 | ✅ |
+| 4.9 | Trickle-allocation fairness: weight minigame trickle XP at 50% in `allocateStatGains` (or ledger separately); Arena tallies EN at 0.25 | BAL-09, MINI-25 | ✅ |
+| 4.10 | Decisions to record (change one constant or write one paragraph): energy cap as design lever (12–15?) vs hoarding; free boss retries stay free; shop premium on craftables cut to ~50–60g; Short Bow niche or accepted stepping stone | BAL-18, BAL-19, BAL-15, BAL-26 | ✅ |
 
 **Acceptance:** at L10–L20 a realistic day's XP is majority-habit; there is always
 something worth ≥500g to want; no mode strictly dominates section 03's parity table.
 
-# Phase 5 — Combat fairness and challenge ⏳
+# Phase 5 — Combat fairness and challenge ✅ 2026-07-07
 
 **Goal:** difficulty binds — every mode has a threat the player can't ignore, and every
 build can pass the boss gate.
 
 | # | Item | Findings | Status |
 |---|---|---|---|
-| 5.1 | Boss gate de-rigging: constrain all `weakTo`/`resistTo` content to the damage-capable stats {ST, DX, WI}; give Drill Rex or Comfort Blob an ST weakness and one Burnout Golem phase ST/DX; flatten generic boss attack growth past the stat-cap horizon | BAL-02 (P1), BAL-06, BAL-14 | ⏳ |
-| 5.2 | Author movesets: 3 moves per named boss + a shared Trial Guardian set (data-only; engine already runs it for trash mobs) | MINI-03 (P1) | ⏳ |
-| 5.3 | Biome bosses: cut phase HP ~35%, add depth-scaled gold, pass the run's loss count so pity relief applies; add the "realistic build wins by round N" balance test; accumulate multi-phase HP for XP/damage stats | MINI-04 (P1), MINI-29 | ⏳ |
-| 5.4 | Break the speed invariant, one threat per mode: Arena boss gap-closer + speed ramp past 1.2×; Tactics charger lunge or soft turn cap; one sub-300 ms (or lunging) late-band enemy per crawler; uncap crawler count/damage scaling past the current caps | MINI-06 (P1), MINI-09 (P1), MINI-20, MINI-21 | ⏳ |
-| 5.5 | Arena spell integrity: boss freeze immunity window after ice_rune; runes/ring respect boss ward; minion affinities rolled at impact | MINI-07 (P1), MINI-26, MINI-37a | ⏳ |
-| 5.6 | Charge verb: mine contact damage respects frozen (parity with forest); `CHARGE_DAMAGE_MULT` ≥ 2.25; pointer-up release so touch players can charge | MINI-17, MINI-18 | ⏳ |
-| 5.7 | CH/KN honesty: illusion scaling `floor(CH/4)` + magnitude; ~5 CH encounter checks; push/blink actually scale (or delete the parentheticals); shrine no longer `max(WI,CH)` | BAL-07, BAL-08 | ⏳ |
-| 5.8 | Dungeon depth: relic bonuses reach encounter/shrine checks; encounter difficulty/payout scale with depth; owned-weapon drops reroll to gold; affinity chip in battle UI; beacon auto-completes on decisive wins | MINI-27, MINI-28, MINI-39, MINI-24 | ⏳ |
-| 5.9 | Small stat-parity items: Tactics move cap → AG 20; Arena move interval reads AG; 3–4 HP encounter checks; mine lantern boon `game:'both'` + tombstone compass | BAL-23, BAL-24, MINI-31 | ⏳ |
+| 5.1 | Boss gate de-rigging: constrain all `weakTo`/`resistTo` content to the damage-capable stats {ST, DX, WI}; give Drill Rex or Comfort Blob an ST weakness and one Burnout Golem phase ST/DX; flatten generic boss attack growth past the stat-cap horizon | BAL-02 (P1), BAL-06, BAL-14 | ✅ |
+| 5.2 | Author movesets: 3 moves per named boss + a shared Trial Guardian set (data-only; engine already runs it for trash mobs) | MINI-03 (P1) | ✅ |
+| 5.3 | Biome bosses: cut phase HP ~35%, add depth-scaled gold, pass the run's loss count so pity relief applies; add the "realistic build wins by round N" balance test; accumulate multi-phase HP for XP/damage stats | MINI-04 (P1), MINI-29 | ✅ |
+| 5.4 | Break the speed invariant, one threat per mode: Arena boss gap-closer + speed ramp past 1.2×; Tactics charger lunge or soft turn cap; one sub-300 ms (or lunging) late-band enemy per crawler; uncap crawler count/damage scaling past the current caps | MINI-06 (P1), MINI-09 (P1), MINI-20, MINI-21 | ✅ |
+| 5.5 | Arena spell integrity: boss freeze immunity window after ice_rune; runes/ring respect boss ward; minion affinities rolled at impact | MINI-07 (P1), MINI-26, MINI-37a | ✅ |
+| 5.6 | Charge verb: mine contact damage respects frozen (parity with forest); `CHARGE_DAMAGE_MULT` ≥ 2.25; pointer-up release so touch players can charge | MINI-17, MINI-18 | ✅ |
+| 5.7 | CH/KN honesty: illusion scaling `floor(CH/4)` + magnitude; ~5 CH encounter checks; push/blink actually scale (or delete the parentheticals); shrine no longer `max(WI,CH)` | BAL-07, BAL-08 | ✅ |
+| 5.8 | Dungeon depth: relic bonuses reach encounter/shrine checks; encounter difficulty/payout scale with depth; owned-weapon drops reroll to gold; affinity chip in battle UI; beacon auto-completes on decisive wins | MINI-27, MINI-28, MINI-39, MINI-24 | ✅ |
+| 5.9 | Small stat-parity items: Tactics move cap → AG 20; Arena move interval reads AG; 3–4 HP encounter checks; mine lantern boon `game:'both'` + tombstone compass | BAL-23, BAL-24, MINI-31 | ✅ |
 
 **Acceptance:** an ST build beats every gate at-level without pity; attack-spam loses
 to at least one named-boss move; a kiter dies sometimes in every mode.
 
-# Phase 6 — Trials integrity ⏳
+# Phase 6 — Trials integrity ✅ 2026-07-07
 
 **Goal:** each trial tests its stat, honest play is optimal, and the daily gate holds.
 
 | # | Item | Findings | Status |
 |---|---|---|---|
-| 6.1 | Anti-mash: ~200 ms lockout on empty blocks in Last Stand | MINI-10 (P1) | ⏳ |
-| 6.2 | Retry policy: per-attempt seeds (`dailySeed ^ attemptNonce`) for Library and Grove; adopt Rooftop's explicit Run-Again framing everywhere | MINI-11 (P1) | ⏳ |
-| 6.3 | Stat wiring: AG → Rooftop dash cooldown; HP → the dormant `blockWindowForWave`; ST → Armory zone width; add the missing TrialModal stat boxes | MINI-12 | ⏳ |
-| 6.4 | Long March: `max(MARCH_MAX_STA, startStamina)` clamp so the EN buffer depletes; renormalize distance score (or Rest doesn't advance); then reconsider the deferred hard mode | MINI-13 | ⏳ |
-| 6.5 | Royal Court: gambit payoffs +5/+6 (break-even ≈ CH 3–5); no dominated gambits; timer cleanup on unmount | MINI-14, MINI-34 | ⏳ |
-| 6.6 | Ceilings: cap Lockpicking tolerance at 2× base; bias Grove drafts to unseen rounds + mastery gold ×1.15 | MINI-15, MINI-16 | ⏳ |
-| 6.7 | Gate honesty: `completeTrial` returns success and the modal shows a not-banked state; fix the "free attempt" copy (or make the first attempt actually free — decide); Long March done-screen; Armory power interpolation | BAL-20, MINI-40 | ⏳ |
-| 6.8 | Rooftop: crossbowman gets a jumpable telegraphed bolt; dash costs something at the margin | MINI-35 | ⏳ |
+| 6.1 | Anti-mash: ~200 ms lockout on empty blocks in Last Stand | MINI-10 (P1) | ✅ |
+| 6.2 | Retry policy: per-attempt seeds (`dailySeed ^ attemptNonce`) for Library and Grove; adopt Rooftop's explicit Run-Again framing everywhere | MINI-11 (P1) | ✅ |
+| 6.3 | Stat wiring: AG → Rooftop dash cooldown; HP → the dormant `blockWindowForWave`; ST → Armory zone width; add the missing TrialModal stat boxes | MINI-12 | ✅ |
+| 6.4 | Long March: `max(MARCH_MAX_STA, startStamina)` clamp so the EN buffer depletes; renormalize distance score (or Rest doesn't advance); then reconsider the deferred hard mode | MINI-13 | ✅ |
+| 6.5 | Royal Court: gambit payoffs +5/+6 (break-even ≈ CH 3–5); no dominated gambits; timer cleanup on unmount | MINI-14, MINI-34 | ✅ |
+| 6.6 | Ceilings: cap Lockpicking tolerance at 2× base; bias Grove drafts to unseen rounds + mastery gold ×1.15 | MINI-15, MINI-16 | ✅ |
+| 6.7 | Gate honesty: charge energy on Begin (`beginTrial`), `completeTrial` returns banked + modal shows not-banked state; "1 energy" copy; delete dead Long March done-screen; Armory release-power interpolation | BAL-20, MINI-40 | ✅ |
+| 6.8 | Rooftop: crossbowman gets a jumpable telegraphed bolt; dash costs something at the margin | MINI-35 | ✅ |
 
 **Acceptance:** no trial is 3★-able without engaging its mechanic; abandoning and
 retrying yields a fresh challenge at the same price.
@@ -185,7 +185,7 @@ retrying yields a fresh challenge at the same price.
 
 | # | Item | Findings | Status |
 |---|---|---|---|
-| 7.1 | **Hoist the crawler twins into `crawl.ts`** (start: `applyBoonChoice`, `coopClientStep`, `damageXById`; then `castSpell`/`triggerRunes`) — structurally closes the rune-expiry, spell-guard, and mitigation forks (decide the mitigation rule once, mine's formula, and document it); check `newOccupied` or delete it | ARCH-06, ARCH-02, ARCH-03, ARCH-04, ARCH-05 | ⏳ |
+| 7.1 | **Hoist the crawler twins into `crawl.ts`** (start: `applyBoonChoice`, `coopClientStep`, `damageXById`; then `castSpell`/`triggerRunes`) — structurally closes the rune-expiry, spell-guard, and mitigation forks (decide the mitigation rule once, mine's formula, and document it); check `newOccupied` or delete it | ARCH-06, ARCH-02, ARCH-03, ARCH-04, ARCH-05 | ✅ |
 | 7.2 | Crawler UI extraction (`useCrawlRunFx`, shared Gauge/BoonPanel/RemoteCrawlers/SpellBar); mine gets engine `sightRadiusFor` + `splitHaul`; torch glow follows sight radius; dash/blur/score asymmetries unified | ARCH-15, ARCH-14, MINI-38 | ⏳ |
 | 7.3 | Persist performance: trailing-debounce storage adapter (profile first per 01's manual check) | ARCH-07 | ⏳ |
 | 7.4 | Layer hygiene: boon reducers + `rollBoonChoices` → engine; extend the layering test (content is data-only; engine touches no DOM/globals); `applyPalette` → lib; extract `stepLockpick` into the engine; split `shared.ts` along its seams (types / engine rules / commit orchestration) | ARCH-11, ARCH-12, ARCH-13, ARCH-10 | ⏳ |
@@ -228,7 +228,10 @@ Consciously deferred — tracked so they aren't lost, with the deciding context:
 | Trials hub streak (lm plan 6.3) | Moved to the behavioral backlog (section 02 territory — pairs with HABIT-13's milestone system). | Backlog |
 | Spirit Grove ambient audio (§4.1) | Still absent; pure polish. | P3 |
 | Dungeon BoonChoice timing + scene art | Section 04 dungeon-plan leftovers. | P3 |
-| Energy decay / weekly carryover | 4.10 decides the cap; active decay stays out unless hoarding is observed on real saves. | Deferred |
+| Energy decay / weekly carryover | **Decided (item 4.10, BAL-18):** cap lowered `MAX_ENERGY` 50→15 (~2–3 days of typical spend) so the reserve is a real spend-pacing lever, not an anti-bug ceiling — a lapsed player can't return to ~16–25 banked runs funded by zero fresh habits. Active decay and weekly carryover stay out; the cap alone prevents hoarding. Existing over-cap saves settle on their next energy action (no force-clamp on load, Option A). | Decided |
+| Boss-gate energy cost / retries (BAL-19) | **Decided (item 4.10):** level-up boss battles stay free with unlimited retries — energy-gating a mandatory progression gate would be punitive, and it isn't farmable (one `pendingLevelUp` per level, nulled before the reward pays). The spec's unbuilt "Boss dungeon = 10 Energy" premium mode stays out of scope. | Decided |
+| ≥500g gold sink (Phase 4 acceptance gap) | **Accepted gap at `check 4` (2026-07-06):** the ≥500g "always something to want" bar is unmet by a *pure-gold* target — max purchasable is a 220g spellbook; the 4.4 recipes gate on materials with ≤150g gold components. Judged substantially met via total acquisition effort (mithril toolkit's material+gold cost is ≥500g-worth), so Phase 4 was date-stamped. Deferred: add ONE ≥500g pure-gold target — options weighed at check 4 were a repeatable scaling sink (reforge/re-roll, best fit for "always"), a single ~600–800g aspirational item, or exposing late crafted gear for gold. Any new gold-priced item must respect 4.10/BAL-15 (no decoy premiums) and not undercut 4.4's crafted obsidian_plate/mithril power tier. | Design call |
+| Trivial-breadth energy exploit (BAL-22) | **Surfaced at `check 4`:** habit-share criterion 1 is MET for realistic mixed play (56–70% habit at L10–L20) but a min-effort player logging 8 *easy* habits still earns +1 energy each (flat, `habitsSlice.ts`) to fund the XP-dense trials, dipping habit share to ~36%. Not a Phase-4 item (BAL-22 unaddressed). Recommended fix: cap energy-earning completions/day (~8) rather than touching the +1 rule — closes the exploit without penalizing engaged players. | Deferred |
 | plan2 Phase 9 (habit chains, real-life bosses, seasonal events, class habit bonuses, smarter recommendations) | Carried forward unchanged — still deferred until the habit core and economy work above is stable. | Deferred |
 
 # Success criteria

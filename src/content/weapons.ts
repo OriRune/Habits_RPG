@@ -38,18 +38,24 @@ export const WEAPONS: Record<string, WeaponDef> = {
     bonus: 6,
     staminaCost: 3,
     description: 'Heavy and brutal. Bigger hits, more stamina. Scales with Strength.',
-    price: 120,
+    // BAL-15 (item 4.10): a modest convenience premium over crafting (3 iron_bar + 20g), not the
+    // old ~100g decoy that punished players who hadn't found the Forge. Craft stays the value play.
+    price: 55,
   },
   short_bow: {
     key: 'short_bow',
     name: 'Short Bow',
     attackStat: 'DX',
     bonus: 4,
-    staminaCost: 2,
+    // BAL-26 (item 4.10): staminaCost 2→1 gives the Short Bow a real niche — the cheap, stamina-
+    // efficient early bow — so hunting_bow (bonus 5 / range 5) is a clear upgrade, not a strict
+    // dominator on every axis. Short Bow is the accessible stepping stone into ranged play.
+    staminaCost: 1,
     ranged: true,
     range: 3,
-    description: 'Loose an arrow along the line you face (range 3). Scales with Dexterity.',
-    price: 120,
+    description: 'Loose an arrow along the line you face (range 3). Light, efficient draw. Scales with Dexterity.',
+    // BAL-15 (item 4.10): convenience premium over crafting (2 leather + 1 cloth_roll + 20g).
+    price: 55,
   },
   hunting_bow: {
     key: 'hunting_bow',

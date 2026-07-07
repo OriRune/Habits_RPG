@@ -12,7 +12,7 @@
 import type { StatId } from './stats';
 import type { Fighter, RNG } from './combat';
 import type { EnemyMove } from './bosses';
-import { attackRoll, spellDamageRoll, spellHealAmount, variance } from './combat';
+import { attackRoll, spellDamageRoll, spellHealAmount, variance, illusionBoost } from './combat';
 import { getSpell, SCHOOL_STAT, type StatusKey } from './spells';
 import type { WeaponDef } from './weapons';
 import { ENEMIES } from './enemies';
@@ -86,9 +86,10 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
-/** Tiles a unit may move in one turn: 2 base + 1 per 4 AG, capped at 6. */
+/** Tiles a unit may move in one turn: 2 base + 1 per 4 AG, capped at 7 (reached at AG 20).
+ *  BAL-23: the cap was 6 (hit at AG 16), leaving the top ~⅕ of AG investment dead in Tactics. */
 export function moveTilesFor(ag: number): number {
-  return Math.min(6, 2 + Math.floor(ag / 4));
+  return Math.min(7, 2 + Math.floor(ag / 4));
 }
 
 /** Max elevation a unit may *ascend* in a single step: 1 base + 1 per 8 AG, capped at 3. Descents are free. */
@@ -189,6 +190,12 @@ export interface EnemyUnit {
   moveset?: EnemyMove[];
   /** Transient defense bonus from a guard move; resets at the start of the enemy's next turn. */
   guardBonus: number;
+  /**
+   * Consecutive enemy turns a chasing enemy (charger/flanker) has ended still outside attack reach. Reaching 2 earns a
+   * one-turn double-move lunge (see enemyAct) so a bow player can't kite it damage-free forever.
+   * Optional/read-defaulted (`?? 0`) so an old persisted mid-fight tolerates the new field.
+   */
+  turnsOutOfReach?: number;
 }
 
 export type Turn = 'player' | 'enemy';
@@ -270,6 +277,12 @@ export interface TacticsObjective {
   progress: number;
   /** Beacon only: the designated tile that must stay clear. */
   beaconHex?: Hex;
+  /**
+   * Beacon only (MINI-24): set true the first time an enemy breaches the beacon, so a decisive
+   * win that clears the board without ever ceding the tile still earns the objective (whereas a
+   * win after the beacon was contested does not get it for free). Optional — absent reads falsy.
+   */
+  beaconBroken?: boolean;
   complete: boolean;
   failed: boolean;
 }
@@ -304,6 +317,11 @@ export interface HexBattleState {
   objective: TacticsObjective | null;
   /** Number of player turns completed (starts at 1 for the player's first turn). */
   turnCount: number;
+  /** Total max HP of the enemy force AS SPAWNED, captured by generateSkirmish. checkOutcome
+   *  removes slain enemies from `enemies`, so this frozen denominator lets the retreat/loss
+   *  reward credit kills, not just chip damage on survivors (MINI-23). Optional: legacy in-flight
+   *  runs from before this field lack it and fall back to a survivors-only metric. */
+  enemyForceMaxHp?: number;
   /** Full hero roster (1 in single-player, N in co-op). Populated by generateSkirmish.
    *  Engine functions fall back to [player] when this is absent for backward compat. */
   players?: PlayerUnit[];
@@ -361,7 +379,10 @@ function hasStatus(unit: { statuses: UnitStatus[] }, key: StatusKey): UnitStatus
 
 function weakenFactor(unit: { statuses: UnitStatus[] }): number {
   const w = hasStatus(unit, 'weaken');
-  return w ? 1 - w.magnitude : 1;
+  // Clamp: CH-scaled weaken magnitude (illusionBoost) is the first fraction-status bonus that can
+  // stack toward/past 1.0, and this factor multiplies straight into rawPower at several call sites
+  // before any downstream Math.max — a negative multiplier would flip damage. (BAL-07)
+  return w ? Math.max(0, 1 - w.magnitude) : 1;
 }
 
 function blessFlat(unit: { statuses: UnitStatus[] }): number {
@@ -514,7 +535,8 @@ export function computeTargetable(s: HexBattleState, action: SelectedAction): He
           if (t.terrain === 'blocked') return false;
           if (occ.has(hexKey(t.hex))) return false;
           const d = hexDistance(p, t.hex);
-          return d >= 1 && d <= 2;
+          // BAL-08: blink is the KN payoff its tooltip advertises — Knowledge extends the jump.
+          return d >= 1 && d <= 2 + Math.floor(s.player.supportSpell / 8);
         })
         .map((t) => t.hex);
     }
@@ -825,7 +847,9 @@ export function playerCastSpell(
     if (!enemy) return state;
     const dir = computePushDir(hero.hex, enemy.hex);
     push(`spell:${spell.key}`, hero.hex, enemy.hex);
-    const landing = applyPush(s, enemy, dir, 2);
+    // BAL-08: push is the CH payoff its tooltip advertises — Charisma hurls the foe farther
+    // (and thus more likely into a wall/hazard for the bonus damage).
+    const landing = applyPush(s, enemy, dir, 2 + Math.floor(hero.illusionPower / 8));
     const landTerrain = tileAt(s, landing)?.terrain;
     if (landTerrain === 'hazard') {
       const bonus = HAZARD_DMG * 2;
@@ -876,7 +900,7 @@ export function playerCastSpell(
     // illusion — debuff a foe, duration boosted by Charisma (mirrors combat.ts)
     const enemy = enemyAt(s, target!)!;
     if (spell.status) {
-      const boosted = { ...spell.status, turns: spell.status.turns + Math.floor(hero.illusionPower / 8) };
+      const boosted = illusionBoost(spell.status, hero.illusionPower);
       applyUnitStatus(enemy.statuses, boosted);
     }
     push(`spell:${spell.key}`, hero.hex, enemy.hex);
@@ -959,6 +983,7 @@ export function endPlayerTurn(state: HexBattleState, rng: RNG = Math.random, her
       const enemyOnBeacon = s.enemies.some((e) => hexEquals(e.hex, obj.beaconHex!));
       if (enemyOnBeacon) {
         obj.progress = 0; // streak broken
+        obj.beaconBroken = true; // MINI-24: a contested beacon no longer completes for free on a win
       } else {
         obj.progress++;
         if (obj.progress >= obj.target) obj.complete = true;
@@ -1151,12 +1176,12 @@ function scoreMoveTile(s: HexBattleState, enemy: EnemyUnit, candidate: Hex, arch
   }
 }
 
-export function bestMoveFor(s: HexBattleState, enemy: EnemyUnit): Hex {
+export function bestMoveFor(s: HexBattleState, enemy: EnemyUnit, moveTiles = enemy.moveTiles): Hex {
   // Use the pre-baked archetype stored on the unit (avoids a redundant lookup).
   const arch = enemy.aiArchetype;
   // Kiters always evaluate movement (they want optimal range, not just "any range").
   if (arch !== 'kiter' && enemyInRange(s, enemy)) return enemy.hex;
-  const costs = reachableCosts(s, enemy.hex, enemy.moveTiles, enemy.climb);
+  const costs = reachableCosts(s, enemy.hex, moveTiles, enemy.climb);
   let best = enemy.hex;
   let bestScore = scoreMoveTile(s, enemy, enemy.hex, arch);
   for (const { hex } of costs.values()) {
@@ -1218,12 +1243,23 @@ function enemyInRange(s: HexBattleState, enemy: EnemyUnit): boolean {
 function enemyAct(s: HexBattleState, enemy: EnemyUnit, rng: RNG, push: ReturnType<typeof effectPusher>): void {
   enemy.guardBonus = 0;
   const arch = enemy.aiArchetype;
+  // Chargers and flankers are the melee "close-to-engage" archetypes; give them a catch-up lunge
+  // so a bow kiter can't hold them at range forever. Kiters want distance and holders hold ground,
+  // so neither participates — the lunge only ever fires on a unit actively trying to close.
+  const chasing = arch === 'charger' || arch === 'flanker';
   // Non-kiters attack immediately when already in range; kiters always reassess position.
   if (arch !== 'kiter' && enemyInRange(s, enemy)) {
+    if (chasing) enemy.turnsOutOfReach = 0;
     enemyAttack(s, enemy, rng, push);
     return;
   }
-  const bestHex = bestMoveFor(s, enemy);
+  // A chaser kept out of reach for two turns lunges with an extra-long budget (2×+1, so it strictly
+  // out-paces even a max-AG player — 2×moveTiles alone merely *ties* the top move on a medium board)
+  // and keeps lunging every turn until it connects. This turn only; moveTiles is never mutated. Breaks
+  // the "player speed ≥ enemy speed forever" kiting invariant. Kiters/holders are unaffected.
+  const lunge = chasing && (enemy.turnsOutOfReach ?? 0) >= 2;
+  if (lunge) s.log.push(`${enemy.name} lunges forward!`);
+  const bestHex = bestMoveFor(s, enemy, lunge ? enemy.moveTiles * 2 + 1 : enemy.moveTiles);
   if (!hexEquals(bestHex, enemy.hex)) {
     // Emit a 'move' effect before mutating hex — the overlay will hold the sprite at
     // prevHex until this effect fires, then slide it to bestHex (staggered per-enemy).
@@ -1232,7 +1268,11 @@ function enemyAct(s: HexBattleState, enemy: EnemyUnit, rng: RNG, push: ReturnTyp
   } else {
     s.log.push(`${enemy.name} holds its ground.`);
   }
-  if (enemyInRange(s, enemy)) enemyAttack(s, enemy, rng, push);
+  const inRange = enemyInRange(s, enemy);
+  if (inRange) enemyAttack(s, enemy, rng, push);
+  // Track reach: reset only when the chaser lands a strike; a whiffed lunge keeps the counter
+  // elevated so it presses every turn until it connects, rather than resetting to a 3-turn cadence.
+  if (chasing) enemy.turnsOutOfReach = inRange ? 0 : (enemy.turnsOutOfReach ?? 0) + 1;
 }
 
 function enemyAttack(s: HexBattleState, enemy: EnemyUnit, rng: RNG, push: ReturnType<typeof effectPusher>): void {
@@ -1310,8 +1350,11 @@ function checkOutcome(s: HexBattleState): void {
       } else if (obj.kind === 'flawless') {
         obj.complete = !obj.failed;
         if (obj.complete) s.log.push('Unscathed! HP never dropped below 50%.');
-      } else if (obj.kind === 'beacon' && obj.complete) {
-        s.log.push('Beacon held! Bonus gold awarded.');
+      } else if (obj.kind === 'beacon') {
+        // MINI-24: a decisive win that never ceded the beacon completes it — clearing the board
+        // is the ultimate "hold", so fast, aggressive play is rewarded instead of punished.
+        if (!obj.complete && !obj.beaconBroken) obj.complete = true;
+        if (obj.complete) s.log.push('Beacon held! Bonus gold awarded.');
       }
     }
   } else {
@@ -1424,6 +1467,12 @@ function heroSpawnCandidates(radius: number): Hex[] {
   );
 }
 
+/** Enemy-count bonus contributed by board size. Lives in one place so generateSkirmish (enemy
+ *  spawns) and tacticsReward (gold scaling) never drift. r3→0, r4→1, r6→4. */
+export function tacticsSizeBonus(radius: number): number {
+  return radius - 3 + Math.floor((radius - 3) / 2);
+}
+
 /** Build a single self-contained skirmish: a layered board + the hero(es) vs scaled foes. */
 export function generateSkirmish(
   fighter: Fighter,
@@ -1448,7 +1497,7 @@ export function generateSkirmish(
   const heroSpawns: Hex[] = heroes.map((_, i) => spawnCandidates[Math.min(i, spawnCandidates.length - 1)]);
 
   // Enemy count scales with tier, board size, AND number of heroes.
-  const sizeBonus = radius - 3 + Math.floor((radius - 3) / 2); // r3→0, r4→1, r6→4
+  const sizeBonus = tacticsSizeBonus(radius); // r3→0, r4→1, r6→4
   const heroScale = heroCount > 1 ? heroCount : 1;
   const enemyCount = clamp(
     opts.enemyCount ?? Math.round((2 + Math.floor(tier / 5) + sizeBonus) * heroScale),
@@ -1505,6 +1554,7 @@ export function generateSkirmish(
       statuses: [],
       moveset: tmpl.moveset ? [...tmpl.moveset] : undefined,
       guardBonus: 0,
+      turnsOutOfReach: 0,
     } satisfies EnemyUnit;
   });
 
@@ -1569,6 +1619,7 @@ export function generateSkirmish(
     players: heroCount > 1 ? players : undefined,
     activeHeroId: heroCount > 1 ? activeHeroId : undefined,
     enemies,
+    enemyForceMaxHp: enemies.reduce((sum, e) => sum + e.maxHp, 0),
     turn: 'player',
     selected: null,
     reachable: [],
@@ -1755,16 +1806,49 @@ function spawnsConnected(tiles: Record<string, Tile>, start: Hex, spawns: Hex[])
 }
 
 // --- Reward -------------------------------------------------------------------------------------
-/** Gold reward for a won skirmish; nothing on loss. Stat XP is added by the store on commit. */
+/**
+ * Fraction (0..1) of the enemy force's HP ground down since the skirmish began (MINI-23).
+ * `enemyForceMaxHp` is the total as-spawned HP; checkOutcome removes slain enemies from
+ * `state.enemies`, so damage dealt = frozen total − HP still standing on survivors. This credits
+ * outright kills, not just chip damage. Legacy runs without the frozen total fall back to a
+ * survivors-only denominator (conservative; only affects a save mid-run from before this field).
+ */
+export function tacticsDamageFraction(state: HexBattleState): number {
+  const standing = state.enemies.reduce((sum, e) => sum + Math.max(0, e.hp), 0);
+  const total = state.enemyForceMaxHp ?? state.enemies.reduce((sum, e) => sum + e.maxHp, 0);
+  if (total <= 0) return 0;
+  const dealt = total - standing;
+  return Math.max(0, Math.min(1, dealt / total));
+}
+
+/**
+ * Reward for a finished skirmish. Stat XP is added by the store on commit.
+ * A win pays tier-and-size-scaled gold plus a guaranteed material bundle; a loss/retreat pays
+ * gold proportional to the damage dealt to the enemy force (kills included, per MINI-23).
+ */
 export function tacticsReward(state: HexBattleState): Reward {
-  if (state.status !== 'won') return {};
-  const gold = Math.round(40 * (1 + state.tier * 0.15));
-  const reward: Reward = { gold };
-  if (state.tier >= 8) reward.items = ['healing_potion'];
+  // Base gold scales with tier AND board size — bigger boards spawn more foes (sizeBonus), so
+  // they must pay more (MINI-22). The objective ×1.6 below composes on top of this base.
+  const sizeBonus = tacticsSizeBonus(state.radius);
+  const baseGold = Math.round(40 * (1 + state.tier * 0.15) * (1 + 0.15 * sizeBonus));
+
+  if (state.status !== 'won') {
+    // Loss/retreat pays gold proportional to damage dealt (MINI-23) — no objective ×1.6 flourish,
+    // which is win-only. Zero chip damage → zero gold.
+    const gold = Math.round(baseGold * tacticsDamageFraction(state));
+    return gold > 0 ? { gold } : {};
+  }
+
+  const reward: Reward = { gold: baseGold };
+  if (state.tier >= 8) reward.items = ['healing_potion']; // potion threshold stays tier-based
   // Completed secondary objective adds +60% gold and guarantees a healing potion.
   if (state.objective?.complete) {
-    reward.gold = Math.round(gold * 1.6);
+    reward.gold = Math.round(baseGold * 1.6);
     reward.items = ['healing_potion'];
   }
+  // Guaranteed tier-scaled material bundle so Tactics is a reliable material source (BAL-10):
+  // cloth_roll (light/agile kit) + bronze_bar (martial mid-metal) — both scarce in other modes.
+  const bundleQty = 1 + Math.floor(state.tier / 4);
+  reward.materials = { cloth_roll: bundleQty, bronze_bar: bundleQty };
   return reward;
 }

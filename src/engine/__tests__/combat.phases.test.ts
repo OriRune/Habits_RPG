@@ -46,6 +46,18 @@ describe('multi-phase bosses', () => {
     battle = playerAction(battle, strongFighter(), { kind: 'attack' }, fixed(0)); // phase 2 → won
     expect(battle.status).toBe('won');
   });
+
+  // MINI-29: reward math (dungeon gold/XP) reads hpDefeated, not bossMaxHp (which only holds
+  // the current phase). It must sum EVERY cleared phase or a multi-phase boss underpays.
+  it('accumulates hpDefeated across every phase, not just the last', () => {
+    let battle = createBattle(strongFighter(), twoPhase);
+    expect(battle.hpDefeated).toBe(0);
+    battle = playerAction(battle, strongFighter(), { kind: 'attack' }, fixed(0)); // phase 1 falls
+    expect(battle.hpDefeated).toBe(10); // phase-one's max HP banked
+    battle = playerAction(battle, strongFighter(), { kind: 'attack' }, fixed(0)); // phase 2 falls → won
+    expect(battle.status).toBe('won');
+    expect(battle.hpDefeated).toBe(20); // both phases counted; bossMaxHp alone would say 10
+  });
 });
 
 describe('resistTo', () => {

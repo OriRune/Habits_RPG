@@ -17,8 +17,7 @@
 import type { Reward } from './challenges';
 import type { StatId } from './stats';
 import { mergeReward } from './dungeon';
-import { attackRoll, spellDamageRoll, spellHealAmount } from './combat';
-import { getSpell, SCHOOL_STAT } from './spells';
+import { attackRoll } from './combat';
 import type { WeaponDef } from './weapons';
 import { FOREST_NODES, FOREST_BEASTS, FOREST_GUARDIAN_STAGES, SHRINE_EVENTS, type ForestNodeDef } from '@/content/forest';
 import {
@@ -31,7 +30,10 @@ import {
   boonSightBonus,
   rollBoonChoices,
 } from '@/content/boons';
-import { bandForStage } from './crawlBiomes';
+import { bandForStage, FOREST_BANDS } from './crawlBiomes';
+
+/** First stage of the deepest (open-ended) band — anchor for late-depth damage scaling. */
+const ANCIENT_BAND_START = FOREST_BANDS[FOREST_BANDS.length - 1].depthMin;
 import {
   type Dir,
   type RNG,
@@ -48,9 +50,7 @@ import {
   pruneStatuses,
   activeStatus,
   DOT_TICK_MS,
-  FREEZE_DURATION_MS,
   RING_HIT_CD_MS,
-  RING_DURATION_MS,
   STA_REGEN_MS,
   MP_REGEN_MS,
   DASH_BASE_CD_MS,
@@ -59,6 +59,16 @@ import {
   dashCooldown,
   moveInterval,
   boonConsolation,
+  lateDepthDamageScale,
+  crawlCastSpell,
+  crawlTriggerRunes,
+  crawlCoopClientStep,
+  crawlDamageUnitById,
+  crawlApplyBoonChoice,
+  type CrawlSpellCaps,
+  type CrawlRuneCaps,
+  type CrawlContactCaps,
+  type CrawlUnitCaps,
 } from './crawl';
 
 export type { Dir, RNG } from './crawl';
@@ -109,6 +119,25 @@ const SPELL_CD_MS = 500;
 // ---------------------------------------------------------------------------
 
 export type ForestTileKind = 'trail' | 'thicket' | 'tree' | 'clearing' | 'entrance' | 'treeline' | 'node' | 'shrine' | 'boon';
+
+/** The entrance and clearings are the safe harbours where a full-value (1.0) end-bank is paid
+ *  (BAL-12) — the same clearings that gate forestStash. Banking elsewhere keeps FOREST_STASH_KEEP. */
+export function isForestSafeBankTile(kind: ForestTileKind | undefined): boolean {
+  return kind === 'entrance' || kind === 'clearing';
+}
+
+/**
+ * The deepest stage a SOLO run may start on: the deepest guardian boundary the player has
+ * already descended PAST (strictly below `deepest`), else stage 1. Reuses the persisted
+ * deepestForestStage as the "guardian beaten" proxy — no new field, no persist bump (BAL-25).
+ */
+export function unlockedStartStage(deepest: number): number {
+  let start = 1;
+  for (const g of Object.keys(FOREST_GUARDIAN_STAGES).map(Number)) {
+    if (g < deepest) start = Math.max(start, g);
+  }
+  return start;
+}
 
 export interface ForestTile {
   kind: ForestTileKind;
@@ -771,7 +800,9 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
     }
   }
   shuffle(trailCells);
-  const wanderCount = eligibleBeasts.length === 0 ? 0 : Math.min(16, 5 + stage);
+  // Space-bounded uncap: count keeps climbing with stage (deep stages no longer
+  // plateau at a flat 16) but never exceeds the placeable trail cells.
+  const wanderCount = eligibleBeasts.length === 0 ? 0 : Math.min(trailCells.length, 5 + stage);
   for (let i = 0; i < wanderCount && i < trailCells.length; i++) {
     const [r, c] = trailCells[i];
     const def = eligibleBeasts[Math.floor(rng() * eligibleBeasts.length)];
@@ -1098,141 +1129,41 @@ export function act(state: ForestState, rng: RNG, nowMs = 0, charged = false): F
 // Spell casting (mirrors mining.ts castSpell)
 // ---------------------------------------------------------------------------
 
+// Callback bag wiring the forest's concrete state/beast/content into the shared
+// crawl.ts generics (ARCH-06 twin hoist).
+const forestUnitCaps: CrawlUnitCaps<ForestState, ForestBeast> = {
+  unitsOf: (s) => s.beasts,
+  withUnits: (s, units) => ({ ...s, beasts: units }),
+  killUnit: killBeast,
+};
+const forestSpellCaps: CrawlSpellCaps<ForestState, ForestBeast> = {
+  ...forestUnitCaps,
+  isWalkableAt: (s, r, c) => isWalkable(tileAt(s, r, c)),
+  unitAt: beastAt,
+  nearestUnit: nearestBeast,
+  unitDef: (b) => FOREST_BEASTS[b.key],
+  preferFaced: false,
+  afterTeleport: reveal,
+};
+const forestRuneCaps: CrawlRuneCaps<ForestState, ForestBeast> = {
+  ...forestUnitCaps,
+  iframeMs: FOREST_IFRAME_MS,
+};
+const forestContactCaps: CrawlContactCaps<ForestState, ForestBeast> = {
+  unitsOf: (s) => s.beasts,
+  canStrike: (b, nowMs) => {
+    const def = FOREST_BEASTS[b.key];
+    if (b.asleep || !def || def.flees || def.touchDamage <= 0) return false;
+    if (b.frozenUntilMs && nowMs < b.frozenUntilMs) return false;
+    return true;
+  },
+  contactRaw: (b, s) => Math.round((FOREST_BEASTS[b.key]?.touchDamage ?? 0) * lateDepthDamageScale(s.stage - ANCIENT_BAND_START)),
+  defenseBonus: boonDefenseBonus,
+  iframeMs: FOREST_IFRAME_MS,
+};
+
 export function castSpell(state: ForestState, spellKey: string, nowMs: number, rng: RNG): ForestState {
-  if (state.status !== 'active') return state;
-  if (nowMs - state.lastSpellMs < SPELL_CD_MS) return state;
-
-  const spell = getSpell(spellKey);
-  if (!spell) return state;
-  if (state.mp < spell.mpCost) return state;
-
-  let s = { ...state, mp: state.mp - spell.mpCost, lastSpellMs: nowMs };
-
-  const schoolStat = SCHOOL_STAT[spell.school];
-
-  // ---------- Rune placement ----------
-  if (spell.mechanic === 'rune-fire' || spell.mechanic === 'rune-ice' || spell.mechanic === 'rune-poison') {
-    const kind = spell.mechanic.slice(5) as 'fire' | 'ice' | 'poison';
-    const { r, c } = facedCell(s);
-    const tile = tileAt(s, r, c);
-    if (tile && isWalkable(tile)) {
-      const { dealt } = spellDamageRoll(spell.power, s.damageSpell, schoolStat, [], [], 0, rng);
-      const rune: CrawlRune = { id: s.nextRuneId, r, c, kind, power: dealt, expiresAtMs: nowMs + 30000 };
-      s = { ...s, runes: [...s.runes, rune], nextRuneId: s.nextRuneId + 1 };
-    }
-    return s;
-  }
-
-  // ---------- Ring of fire ----------
-  if (spell.mechanic === 'ring-of-fire') {
-    const dmg = Math.max(2, Math.round(spell.power + s.damageSpell * 0.5));
-    return { ...s, ringOfFire: { expiresAtMs: nowMs + RING_DURATION_MS, dmg }, ringNextHitMs: {} };
-  }
-
-  // ---------- Teleport ----------
-  if (spell.mechanic === 'teleport') {
-    const { r: pr, c: pc } = s.player;
-    const candidates: Array<{ r: number; c: number }> = [];
-    for (let row = 0; row < s.rows; row++) {
-      for (let col = 0; col < s.cols; col++) {
-        const d = manhattan({ r: row, c: col }, { r: pr, c: pc });
-        if (d >= 3 && d <= 6 && isWalkable(tileAt(s, row, col)) && !beastAt(s, row, col)) {
-          candidates.push({ r: row, c: col });
-        }
-      }
-    }
-    if (candidates.length > 0) {
-      const dest = candidates[Math.floor(rng() * candidates.length)];
-      s = { ...s, player: { ...s.player, r: dest.r, c: dest.c } };
-    }
-    return reveal(s);
-  }
-
-  // ---------- Damage spell: hit nearest beast ----------
-  if (spell.school === 'damage') {
-    const target = nearestBeast(s);
-    if (target) {
-      const def = FOREST_BEASTS[target.key];
-      const { dealt } = spellDamageRoll(
-        spell.power, s.damageSpell, schoolStat,
-        (def?.weakTo ?? []) as StatId[],
-        (def?.resistTo ?? []) as StatId[],
-        def?.defense ?? 0, rng,
-      );
-      const newHp = target.hp - dealt;
-      if (newHp <= 0) {
-        s = killBeast(s, target, rng);
-      } else {
-        let updatedBeasts = s.beasts.map((b) => (b.id === target.id ? { ...b, hp: newHp } : b));
-        if (spell.status) {
-          const { key, magnitude, turns } = spell.status;
-          const durationMs = turns * DOT_TICK_MS;
-          if (key === 'burn' || key === 'poison') {
-            updatedBeasts = updatedBeasts.map((b) =>
-              b.id === target.id
-                ? { ...b, poisonDmg: Math.max(b.poisonDmg ?? 0, magnitude), poisonNextTickMs: nowMs + DOT_TICK_MS, poisonExpiresMs: nowMs + durationMs }
-                : b
-            );
-          } else if (key === 'freeze') {
-            updatedBeasts = updatedBeasts.map((b) =>
-              b.id === target.id ? { ...b, frozenUntilMs: nowMs + FREEZE_DURATION_MS } : b
-            );
-          }
-        }
-        s = { ...s, beasts: updatedBeasts };
-      }
-    }
-    return s;
-  }
-
-  // ---------- Support spell: heal / bless ----------
-  if (spell.school === 'support') {
-    if (spell.power > 0) {
-      const heal = spellHealAmount(spell.power, s.supportSpell);
-      s = { ...s, hp: Math.min(s.maxHp, s.hp + heal) };
-    }
-    if (spell.status) {
-      const { key, magnitude, turns } = spell.status;
-      s = {
-        ...s,
-        playerStatuses: applyStatus(
-          s.playerStatuses,
-          { key: key as CrawlStatusEffect['key'], magnitude, durationMs: turns * DOT_TICK_MS },
-          nowMs,
-        ),
-      };
-    }
-    return s;
-  }
-
-  // ---------- Illusion spell: debuff nearest beast ----------
-  if (spell.school === 'illusion' && spell.status) {
-    const target = nearestBeast(s);
-    if (target) {
-      const { key, magnitude, turns } = spell.status;
-      const durationMs = (turns + Math.floor(s.illusionPower / 8)) * DOT_TICK_MS;
-      if (key === 'freeze') {
-        s = {
-          ...s,
-          beasts: s.beasts.map((b) =>
-            b.id === target.id ? { ...b, frozenUntilMs: nowMs + Math.max(FREEZE_DURATION_MS, durationMs) } : b
-          ),
-        };
-      } else if (key === 'poison') {
-        s = {
-          ...s,
-          beasts: s.beasts.map((b) =>
-            b.id === target.id
-              ? { ...b, poisonDmg: Math.max(b.poisonDmg ?? 0, magnitude), poisonNextTickMs: nowMs + DOT_TICK_MS, poisonExpiresMs: nowMs + durationMs }
-              : b
-          ),
-        };
-      }
-    }
-    return s;
-  }
-
-  return s;
+  return crawlCastSpell(state, spellKey, nowMs, rng, forestSpellCaps);
 }
 
 // ---------------------------------------------------------------------------
@@ -1240,66 +1171,7 @@ export function castSpell(state: ForestState, spellKey: string, nowMs: number, r
 // ---------------------------------------------------------------------------
 
 function triggerRunes(state: ForestState, nowMs: number, rng: RNG): ForestState {
-  if (state.runes.length === 0) return state;
-  const triggered = new Set<number>();
-  let s = state;
-
-  const fireRune = (rune: CrawlRune, beastId: string | null) => {
-    triggered.add(rune.id);
-    if (beastId === null) {
-      if (nowMs - s.lastHitAtMs >= FOREST_IFRAME_MS) {
-        const dealt = Math.max(1, Math.round(rune.power * 0.5) - s.ward);
-        s = { ...s, hp: Math.max(0, s.hp - dealt), lastHitAtMs: nowMs };
-        if (s.hp <= 0) s = { ...s, status: 'ended' };
-      }
-    } else {
-      const beast = s.beasts.find((b) => b.id === beastId);
-      if (!beast) return;
-      const newHp = beast.hp - rune.power;
-      if (newHp <= 0) {
-        s = killBeast(s, beast, rng);
-      } else {
-        let updated = s.beasts.map((b) => (b.id === beastId ? { ...b, hp: newHp } : b));
-        if (rune.kind === 'fire') {
-          updated = updated.map((b) =>
-            b.id === beastId
-              ? { ...b, poisonDmg: Math.max(b.poisonDmg ?? 0, Math.round(rune.power * 0.3)), poisonNextTickMs: nowMs + DOT_TICK_MS, poisonExpiresMs: nowMs + DOT_TICK_MS * 3 }
-              : b
-          );
-        } else if (rune.kind === 'ice') {
-          updated = updated.map((b) =>
-            b.id === beastId ? { ...b, frozenUntilMs: nowMs + FREEZE_DURATION_MS } : b
-          );
-        } else if (rune.kind === 'poison') {
-          updated = updated.map((b) =>
-            b.id === beastId
-              ? { ...b, poisonDmg: Math.max(b.poisonDmg ?? 0, Math.round(rune.power * 0.25)), poisonNextTickMs: nowMs + DOT_TICK_MS, poisonExpiresMs: nowMs + DOT_TICK_MS * 4 }
-              : b
-          );
-        }
-        s = { ...s, beasts: updated };
-      }
-    }
-  };
-
-  // Check if player stepped on a rune
-  for (const rune of s.runes) {
-    if (!triggered.has(rune.id) && rune.r === s.player.r && rune.c === s.player.c) {
-      fireRune(rune, null);
-    }
-  }
-  // Check if any beast stepped on a rune
-  for (const rune of s.runes) {
-    for (const beast of s.beasts) {
-      if (!triggered.has(rune.id) && beast.r === rune.r && beast.c === rune.c) {
-        fireRune(rune, beast.id);
-      }
-    }
-  }
-  if (triggered.size > 0) {
-    s = { ...s, runes: s.runes.filter((r) => !triggered.has(r.id)) };
-  }
-  return s;
+  return crawlTriggerRunes(state, nowMs, rng, forestRuneCaps);
 }
 
 // ---------------------------------------------------------------------------
@@ -1415,6 +1287,9 @@ export function stepBeasts(
     for (const other of beasts) {
       if (other.id !== b.id) blocked.add(`${other.r},${other.c}`);
     }
+    // ARCH-05: also block cells already claimed by beasts that moved earlier this
+    // tick, so two beasts can't path onto the same free cell in one step.
+    for (const k of newOccupied) blocked.add(k);
     let next: { r: number; c: number } | null;
     if (def.flees) {
       // Prey flee: step toward the cell farthest from the nearest player.
@@ -1467,11 +1342,12 @@ export function stepBeasts(
     });
     if (striker) {
       const def = FOREST_BEASTS[striker.key];
-      const rawDmg = def?.touchDamage ?? 0;
-      // Defense (from support-spell bless) mitigates contact damage.
-      // Stone Skin boon applies unconditionally (it's an owned effect, not spell-gated).
-      const blessedDefense = activeStatus(s.playerStatuses, 'bless', nowMs) ? s.defense : 0;
-      const dealt = Math.max(1, rawDmg - blessedDefense - s.ward - boonDefenseBonus(s.activeBoons));
+      const rawDmg = Math.round((def?.touchDamage ?? 0) * lateDepthDamageScale(s.stage - ANCIENT_BAND_START));
+      // Contact mitigation unified with the mine (ARCH-04): defense always applies, bless
+      // adds its magnitude on top; ward no longer reduces contact damage (it still mitigates
+      // rune/spell hits).
+      const bless = activeStatus(s.playerStatuses, 'bless', nowMs);
+      const dealt = Math.max(1, rawDmg - s.defense - (bless ? bless.magnitude : 0) - boonDefenseBonus(s.activeBoons));
       const hp = Math.max(0, s.hp - dealt);
       // Reset windupUntilMs so the next hit also telegraphs.
       s = {
@@ -1499,15 +1375,7 @@ export function damageBeastById(
   dmg: number,
   rng: RNG,
 ): ForestState {
-  if (state.status !== 'active' || dmg <= 0) return state;
-  const beast = state.beasts.find((b) => b.id === beastId);
-  if (!beast) return state;
-  const newHp = beast.hp - dmg;
-  if (newHp <= 0) return killBeast(state, beast, rng);
-  return {
-    ...state,
-    beasts: state.beasts.map((b) => (b.id === beastId ? { ...b, hp: newHp } : b)),
-  };
+  return crawlDamageUnitById(state, beastId, dmg, rng, forestUnitCaps);
 }
 
 /**
@@ -1516,37 +1384,7 @@ export function damageBeastById(
  * The host owns beast movement/AI and broadcasts it. Mirrors the mine's coopClientStep.
  */
 export function coopClientStep(state: ForestState, nowMs: number): ForestState {
-  if (state.status !== 'active') return state;
-  let s = state;
-
-  if (nowMs >= s.staNextRegenMs && s.sta < s.maxSta) {
-    s = { ...s, sta: Math.min(s.maxSta, s.sta + 1), staNextRegenMs: nowMs + STA_REGEN_MS };
-  }
-  if (nowMs >= s.mpNextRegenMs && s.mp < s.maxMp) {
-    s = { ...s, mp: Math.min(s.maxMp, s.mp + 1), mpNextRegenMs: nowMs + MP_REGEN_MS };
-  }
-
-  let hp = s.hp;
-  let lastHitAtMs = s.lastHitAtMs;
-  if (nowMs - s.lastHitAtMs >= FOREST_IFRAME_MS) {
-    const toucher = s.beasts.find((b) => {
-      const def = FOREST_BEASTS[b.key];
-      if (b.asleep || !def || def.flees || def.touchDamage <= 0) return false;
-      if (b.frozenUntilMs && nowMs < b.frozenUntilMs) return false;
-      return adjacent(b, s.player);
-    });
-    if (toucher) {
-      const def = FOREST_BEASTS[toucher.key];
-      const blessedDefense = activeStatus(s.playerStatuses, 'bless', nowMs) ? s.defense : 0;
-      const dealt = Math.max(1, (def?.touchDamage ?? 0) - blessedDefense - s.ward - boonDefenseBonus(s.activeBoons));
-      hp = Math.max(0, hp - dealt);
-      lastHitAtMs = nowMs;
-    }
-  }
-
-  const playerStatuses = pruneStatuses(s.playerStatuses, nowMs);
-  if (hp === s.hp && lastHitAtMs === s.lastHitAtMs && s === state) return state;
-  return { ...s, hp, lastHitAtMs, playerStatuses, status: hp <= 0 ? 'ended' : s.status };
+  return crawlCoopClientStep(state, nowMs, forestContactCaps);
 }
 
 // ---------------------------------------------------------------------------
@@ -1679,20 +1517,5 @@ export function activateShrine(state: ForestState, nowMs: number, rng: RNG, allo
  * No-ops if no choice is pending or the key is not in the offered set.
  */
 export function applyBoonChoice(state: ForestState, key: string): ForestState {
-  if (state.status !== 'choosing') return state;
-  if (!state.pendingBoonChoice?.includes(key)) return state;
-  const boon = BOONS[key];
-  if (!boon) return state;
-  const activeBoons = [...state.activeBoons, key];
-  const hpBonus = boon.maxHpBonus ?? 0;
-  return {
-    ...state,
-    activeBoons,
-    pendingBoonChoice: null,
-    status: 'active',
-    moveIntervalMs: Math.round(moveInterval(state.agLevel) / boonMoveMult(activeBoons)),
-    dashCooldownMs: Math.round(dashCooldown(state.agLevel) * boonDashCdMult(activeBoons)),
-    maxHp: state.maxHp + hpBonus,
-    hp: Math.min(state.maxHp + hpBonus, state.hp + hpBonus),
-  };
+  return crawlApplyBoonChoice(state, key, { getBoon: (k) => BOONS[k], boonMoveMult, boonDashCdMult });
 }

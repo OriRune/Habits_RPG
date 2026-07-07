@@ -254,15 +254,50 @@ function clamp(n: number, lo: number, hi: number): number {
 }
 
 /**
+ * Bounds every challenge reward is held to. suggestReward stays inside them by construction;
+ * hand-edited custom overrides are forced into them by clampReward, so a trivial (count-1,
+ * 1-day) challenge can't mint arbitrary XP/gold off a single completion (HABIT-01).
+ */
+export const REWARD_GOLD_BOUNDS: readonly [number, number] = [20, 300];
+export const REWARD_STATXP_BOUNDS: readonly [number, number] = [30, 400];
+
+/**
  * Suggested, auto-balanced reward for a challenge (used by the builder). Scales gold +
  * a stat-XP grant by goal × duration × kind weight, clamped so tiny goals can't mint huge rewards.
  */
 export function suggestReward(def: Pick<ChallengeDef, 'kind' | 'goal' | 'durationDays' | 'stat'>): Reward {
   const difficulty = Math.max(1, def.goal) * (def.durationDays / 7) * KIND_WEIGHT[def.kind];
-  const gold = Math.round(clamp(difficulty * 4, 20, 300));
+  const gold = Math.round(clamp(difficulty * 4, REWARD_GOLD_BOUNDS[0], REWARD_GOLD_BOUNDS[1]));
   const reward: Reward = { gold };
-  if (def.stat) reward.statXp = { [def.stat]: Math.round(clamp(difficulty * 6, 30, 400)) };
+  if (def.stat)
+    reward.statXp = {
+      [def.stat]: Math.round(clamp(difficulty * 6, REWARD_STATXP_BOUNDS[0], REWARD_STATXP_BOUNDS[1])),
+    };
   return reward;
+}
+
+/**
+ * Clamp a (possibly hand-edited) reward's gold and stat-XP to the same auto-balanced bounds
+ * suggestReward enforces — the fix for HABIT-01, where the builder's "Edit reward" path only
+ * floored values at 0, letting a custom challenge grant e.g. 999999. Other reward fields are
+ * preserved untouched (the custom-challenge builder only edits gold and stat-XP).
+ */
+export function clampReward(reward: Reward): Reward {
+  const clamped: Reward = { ...reward };
+  if (reward.gold !== undefined) {
+    clamped.gold = Math.round(clamp(reward.gold, REWARD_GOLD_BOUNDS[0], REWARD_GOLD_BOUNDS[1]));
+  }
+  if (reward.statXp) {
+    const statXp: Partial<Record<StatId, number>> = {};
+    for (const key of Object.keys(reward.statXp) as StatId[]) {
+      const v = reward.statXp[key];
+      if (v !== undefined) {
+        statXp[key] = Math.round(clamp(v, REWARD_STATXP_BOUNDS[0], REWARD_STATXP_BOUNDS[1]));
+      }
+    }
+    clamped.statXp = statXp;
+  }
+  return clamped;
 }
 
 /**

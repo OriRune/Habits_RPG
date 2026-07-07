@@ -1,9 +1,15 @@
 // Skill Trials — eight short, stat-specific daily challenges (design brief §7.4).
-// One trial per stat; playable once per calendar day for free; reward scales with score.
+// One trial per stat; playable once per calendar day (costs 1 energy); reward scales with score.
 // Pure data + helpers — no React, no store imports.
 
 import type { StatId } from '@/engine/stats';
 import type { Reward } from '@/engine/challenges';
+
+/**
+ * Result of attempting to begin a trial. `beginTrial` evaluates the daily-clear,
+ * energy, and stat gates before charging energy; the reason lets the UI explain a refusal.
+ */
+export type TrialBeginResult = { ok: true } | { ok: false; reason: 'cleared' | 'energy' | 'stat' };
 
 // ── Trial registry ─────────────────────────────────────────────────────────────
 

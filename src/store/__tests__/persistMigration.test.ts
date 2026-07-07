@@ -139,6 +139,7 @@ describe('persist migrate (ARCH-08)', () => {
     expect(out.earnings).toEqual(freshEarningsLedger());
     expect(out.energyLog).toEqual({});
     expect(out.mineTombstone).toBeNull();
+    expect(out.reminderCardDismissed).toBe(false); // v28 default
   });
 
   it('populated modern save rides through unchanged — backfills must never overwrite real data', () => {
@@ -182,6 +183,9 @@ describe('persist migrate (ARCH-08)', () => {
 
     expect(out.character!.statLevels).toEqual(allocatedLevels);
     expect(out.character!.statXpAtLastLevel).toEqual(xpAtLastLevel);
+    // v30: the trickle sub-ledger backfills to zero on a save that predates it (BAL-09).
+    expect(out.character!.statXpTrickle).toEqual(emptyStatXP());
+    expect(out.character!.statXpTrickleAtLastLevel).toEqual(emptyStatXP());
     expect(out.challenges[0].def.kind).toBe('count');
     expect(out.trialsClearedOn).toEqual(trialsClearedOn);
     expect(out.bestTrialScore).toEqual(bestTrialScore);

@@ -4,7 +4,7 @@
 import { useEffect, useRef } from 'react';
 import { useGameStore } from '@/store/useGameStore';
 import { canAdvance, isOnShrine, facedCell, facedBeastId, rangedBeastId, type Dir, type ForestState } from '@/engine/forest';
-import { CHARGE_SWING_COUNT, DASH_BASE_CD_MS } from '@/engine/crawl';
+import { CHARGE_SWING_COUNT, DASH_BASE_CD_MS, CHARGE_DAMAGE_MULT } from '@/engine/crawl';
 import { boonChargeReduce } from '@/content/boons';
 import { useCoopStore } from '@/net/coop/session';
 import { useAuthStore } from '@/net/auth';
@@ -38,6 +38,9 @@ export interface ForestControlsApi {
   release: (dir: Dir) => void;
   /** Queue a single act (slash / gather). */
   act: () => void;
+  /** Release a held charge (touch pointer-up/leave/cancel) — mirrors the keyboard keyup reset so
+   *  touch players can deliberately charge instead of firing one phantom heavy swing (MINI-18). */
+  releaseCharge: () => void;
   /** Queue a dash. Fires in the currently-held direction, or facing if nothing is held. */
   dash: () => void;
   /** Cast a spell by key (from ability bar buttons). */
@@ -163,7 +166,7 @@ export function useForestLoop(): ForestControlsApi {
         if (canAdvance(run) && (!inCoop || isHost)) {
           store.forestAdvance();
         } else if (chargedTarget) {
-          const dmg = (run.weapon.attackStat === 'DX' ? run.rangedPower : run.meleePower) * 1.75;
+          const dmg = (run.weapon.attackStat === 'DX' ? run.rangedPower : run.meleePower) * CHARGE_DAMAGE_MULT;
           coop.send?.({ type: 'attack', userId: myId ?? 'anon', monsterId: chargedTarget, dmg });
         } else if (isOnShrine(run)) {
           // Shrine activation: consume the tile, gate the den beast to host/solo.
@@ -285,6 +288,10 @@ export function useForestLoop(): ForestControlsApi {
         spaceDownAt.current = performance.now();
         chargeConsumed.current = false;
       }
+    },
+    releaseCharge: () => {
+      spaceDownAt.current = null;
+      chargeConsumed.current = false;
     },
     dash: () => { dashQueued.current = true; },
     castSpell: (key) => {

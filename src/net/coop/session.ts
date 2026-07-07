@@ -75,8 +75,10 @@ export function setJoined(joined: boolean): void {
 /** Begin the local run for a co-op game from the shared seed.
  *  Tactics is a no-op here — the host awaits HeroJoin before building the board. */
 function beginRun(game: CoopGame, seed: number): void {
-  if (game === 'forest') useGameStore.getState().beginForest(seed);
-  else if (game === 'mine') useGameStore.getState().beginMining(seed);
+  // Co-op MUST start at floor/stage 1: host+guest share one seed, so a deeper solo start
+  // (BAL-25) would generate different maps per player and desync the raid. Pin it explicitly.
+  if (game === 'forest') useGameStore.getState().beginForest(seed, 1);
+  else if (game === 'mine') useGameStore.getState().beginMining(seed, 1);
   // 'tactics': board is built after HeroJoin (see useTacticsCoopSession).
 }
 

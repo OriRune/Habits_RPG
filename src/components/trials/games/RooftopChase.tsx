@@ -17,7 +17,6 @@ import {
   CHASE_TARGET_DISTANCE,
   CHASER_SPAWN_DISTANCE,
   SURGE_DURATION_MS,
-  DASH_COOLDOWN_MS,
   LEAD_MAX,
   MOOK_JUMP_LEAD_GAIN,
   SLIDE_LEAD_GAIN,
@@ -40,6 +39,8 @@ interface RunResult {
 
 interface RooftopChaseProps {
   onFinish: (score01: number) => void;
+  /** AG stat level — shortens the dash cooldown (threaded into the sim via initChase). */
+  agLevel: number;
 }
 
 // ── Display constants ──────────────────────────────────────────────────────────
@@ -313,6 +314,26 @@ function CrossbowmanSprite({ widthPx }: { widthPx: number }) {
   );
 }
 
+function BoltSprite({ widthPx }: { widthPx: number }) {
+  // The crossbowman's telegraphed bolt — a low-flying horizontal projectile at
+  // running height that you JUMP over (the mechanical inverse of the standing,
+  // slide-only crossbowman body). A warning nub above it cues the jump, mirroring
+  // the elevation-change telegraph on the roof edge.
+  const w = Math.max(widthPx, 24);
+  return (
+    <div style={{ width: w, height: 16, position: 'relative' }}>
+      {/* Telegraph nub — "jump here" warning marker */}
+      <div style={{ position: 'absolute', top: -8, left: Math.floor(w * 0.5) - 2, width: 4, height: 8, backgroundColor: '#f97316', opacity: 0.85, borderRadius: '2px 2px 0 0' }} />
+      {/* Shaft — horizontal */}
+      <div style={{ position: 'absolute', top: 6, left: 6, right: 8, height: 3, background: 'linear-gradient(90deg, #6a4020, #c0a060)', borderRadius: '1px' }} />
+      {/* Fletching — trailing edge (right) */}
+      <div style={{ position: 'absolute', top: 3, right: 2, width: 5, height: 9, backgroundColor: '#c0392b', clipPath: 'polygon(100% 0, 0 50%, 100% 100%)' }} />
+      {/* Arrowhead — leading edge (left), flying toward the hero */}
+      <div style={{ position: 'absolute', top: 3, left: 0, width: 7, height: 9, backgroundColor: '#d0c080', clipPath: 'polygon(0 50%, 100% 0, 100% 100%)' }} />
+    </div>
+  );
+}
+
 // ── Building renderer ──────────────────────────────────────────────────────────
 
 function BuildingView({
@@ -406,7 +427,7 @@ function BuildingView({
             className="absolute"
             style={{
               left: propLeftPx,
-              top: roofScreenY - (prop.kind === 'lowbar' ? 48 : prop.kind === 'mook' ? 42 : prop.kind === 'crossbowman' ? 30 : 40) - 4,
+              top: roofScreenY - (prop.kind === 'lowbar' ? 48 : prop.kind === 'mook' ? 42 : prop.kind === 'crossbowman' ? 30 : prop.kind === 'bolt' ? 24 : 40) - 4,
               zIndex: 3,
             }}
           >
@@ -422,6 +443,7 @@ function BuildingView({
             )}
             {prop.kind === 'lowbar' && <LowbarSprite widthPx={propWidthPx} />}
             {prop.kind === 'crossbowman' && <CrossbowmanSprite widthPx={propWidthPx} />}
+            {prop.kind === 'bolt' && <BoltSprite widthPx={propWidthPx} />}
           </div>
         );
       })}
@@ -431,8 +453,8 @@ function BuildingView({
 
 // ── Inner component — owns hooks and rendering ─────────────────────────────────
 
-function RooftopChaseRun({ onRunDone }: { onRunDone: (r: RunResult) => void }) {
-  const { state, controls } = useChaseLoop();
+function RooftopChaseRun({ onRunDone, agLevel }: { onRunDone: (r: RunResult) => void; agLevel: number }) {
+  const { state, controls } = useChaseLoop(agLevel);
 
   const soundEnabled   = useGameStore((s) => s.settings.soundEnabled);
   const updateSettings = useGameStore((s) => s.updateSettings);
@@ -457,7 +479,7 @@ function RooftopChaseRun({ onRunDone }: { onRunDone: (r: RunResult) => void }) {
   const falling      = state.justFell && state.done;
 
   const dashCooldownFrac = state.dashCooldownMs > 0
-    ? 1 - state.dashCooldownMs / DASH_COOLDOWN_MS
+    ? 1 - state.dashCooldownMs / state.dashCooldownBaseMs
     : 1;
   const dashReady = dashCooldownFrac >= 1;
 
@@ -633,8 +655,8 @@ function RooftopChaseRun({ onRunDone }: { onRunDone: (r: RunResult) => void }) {
   return (
     <div className="flex flex-col items-center gap-3 px-2">
       <p className="text-center text-xs text-ink-muted">
-        <strong className="text-ink">Jump</strong> (Space/↑) leap &amp; double-jump ·{' '}
-        <strong className="text-ink">Slide</strong> (↓/S) duck banners ·{' '}
+        <strong className="text-ink">Jump</strong> (Space/↑) leap, double-jump &amp; hop bolts ·{' '}
+        <strong className="text-ink">Slide</strong> (↓/S) duck banners &amp; crossbowmen ·{' '}
         <strong className="text-ink">Dash</strong> (Shift/D) outrun the beast
       </p>
 
@@ -943,7 +965,7 @@ function RooftopChaseRun({ onRunDone }: { onRunDone: (r: RunResult) => void }) {
             style={{ opacity: tipVisible ? 1 : 0, transition: 'opacity 0.5s ease-out' }}
           >
             <div className="font-display text-[10px] text-parchment-200/75 bg-black/35 rounded px-3 py-1.5">
-              Space/↑ Jump · ↓/S Slide · Shift/D Dash
+              Space/↑ Jump (bolts) · ↓/S Slide (banners, crossbowmen) · Shift/D Dash
             </div>
           </div>
         )}
@@ -1030,7 +1052,7 @@ function RooftopChaseRun({ onRunDone }: { onRunDone: (r: RunResult) => void }) {
 
 // ── Outer component — manages run lifecycle ────────────────────────────────────
 
-export function RooftopChase({ onFinish }: RooftopChaseProps) {
+export function RooftopChase({ onFinish, agLevel }: RooftopChaseProps) {
   const [runKey,    setRunKey]    = useState(0);
   const [runResult, setRunResult] = useState<RunResult | null>(null);
 
@@ -1058,7 +1080,7 @@ export function RooftopChase({ onFinish }: RooftopChaseProps) {
 
   return (
     <div className="relative">
-      <RooftopChaseRun key={runKey} onRunDone={setRunResult} />
+      <RooftopChaseRun key={runKey} onRunDone={setRunResult} agLevel={agLevel} />
 
       {/* Result overlay — appears after the run ends (outer stays mounted for restart) */}
       {runResult && (

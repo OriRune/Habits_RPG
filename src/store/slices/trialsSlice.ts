@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand';
-import type { TrialId } from '@/engine/trials/trials';
+import type { TrialId, TrialBeginResult } from '@/engine/trials/trials';
 import {
   getTrial,
   trialReward,
@@ -15,7 +15,27 @@ import { applyReward, checkLevelUp, energySpentPatch } from '../shared';
 export interface TrialsSlice {
   trialsClearedOn: Record<TrialId, string>;
   bestTrialScore: Record<TrialId, number>;
-  completeTrial: (trialId: TrialId, score01: number) => void;
+  /**
+   * MINI-11: monotonic per-account attempt counter, XOR'd into the daily seed of the
+   * deterministic trials (Library, Grove) so abandoning and reopening draws a genuinely
+   * fresh challenge instead of replaying the same one. Persisted so a page refresh can't
+   * reset it back to a predictable value and reopen the replay exploit.
+   */
+  trialAttemptNonce: number;
+  /**
+   * MINI-16: round ids the player has been shown in Spirit Grove. Drafts bias toward
+   * unseen rounds so each session stays as fresh as a 15-round pool allows.
+   */
+  spiritGroveSeen: string[];
+  completeTrial: (trialId: TrialId, score01: number) => boolean;
+  /**
+   * Evaluate the daily-clear / energy / stat gates and, on success, charge 1 energy and
+   * bump the attempt nonce. Called when a trial run begins (not on completion). Returns
+   * a typed result so the UI can explain a refusal (6.7 — charge energy at Begin).
+   */
+  beginTrial: (trialId: TrialId) => TrialBeginResult;
+  /** Record Spirit Grove round ids as seen (unions + dedups). Called on completion only. */
+  markSpiritGroveSeen: (ids: string[]) => void;
 }
 
 export const createTrialsSlice: StateCreator<
@@ -23,22 +43,54 @@ export const createTrialsSlice: StateCreator<
   [['zustand/persist', unknown]],
   [],
   TrialsSlice
-> = (set) => ({
+> = (set, get) => ({
   trialsClearedOn: emptyTrialsClearedOn(),
   bestTrialScore: emptyBestTrialScore(),
+  trialAttemptNonce: 0,
+  spiritGroveSeen: [],
 
-  completeTrial: (trialId, score01) =>
+  beginTrial: (trialId) => {
+    const s = get();
+    const today = toISODate();
+    // Daily-clear gate (skipped by repeatMinigames dev flag).
+    if (!s.settings.repeatMinigames && s.trialsClearedOn[trialId] === today) return { ok: false, reason: 'cleared' };
+    // Energy gate: 1 energy per trial (§6.1 — ties Trials to the habit→energy loop). Skipped by unlimitedEnergy.
+    if (!s.settings.unlimitedEnergy && s.character.energy < TRIAL_ENERGY_COST) return { ok: false, reason: 'energy' };
+    // Stat gate: must have completed a habit of the same stat within the last 7 days (§4.4 / §6.2).
+    // Bypassed by repeatMinigames (same dev flag that disables the daily clear gate).
+    const def = getTrial(trialId);
+    if (!s.settings.repeatMinigames && !statCompletedWithin(s.habits, def.stat, today, 7)) return { ok: false, reason: 'stat' };
+    set((st) => {
+      // MINI-11: advance the per-attempt nonce so a reopened deterministic trial redraws.
+      // 6.7: charge 1 energy HERE (was in completeTrial) — mirrors beginMining's entry debit,
+      // so abandoning is no longer free (closes the reroll exploit).
+      if (st.settings.unlimitedEnergy) return { trialAttemptNonce: st.trialAttemptNonce + 1 };
+      return {
+        trialAttemptNonce: st.trialAttemptNonce + 1,
+        character: { ...st.character, energy: st.character.energy - TRIAL_ENERGY_COST },
+        ...energySpentPatch(st, TRIAL_ENERGY_COST),
+      };
+    });
+    return { ok: true };
+  },
+
+  markSpiritGroveSeen: (ids) => set((s) => ({
+    spiritGroveSeen: Array.from(new Set([...s.spiritGroveSeen, ...ids])),
+  })),
+
+  completeTrial: (trialId, score01) => {
+    let banked = false;
     set((s) => {
       const today = toISODate();
-      if (!s.settings.repeatMinigames && s.trialsClearedOn[trialId] === today) return s;
-      // Energy gate: 1 energy per trial (§6.1 — ties Trials to the habit→energy loop).
-      const free = s.settings.unlimitedEnergy;
-      if (!free && s.character.energy < TRIAL_ENERGY_COST) return s;
+      if (!s.settings.repeatMinigames && s.trialsClearedOn[trialId] === today) return s; // already banked today → banked stays false
+      banked = true;
       const def = getTrial(trialId);
-      // Stat gate: must have completed a habit of the same stat within the last 7 days (§4.4 / §6.2).
-      // Bypassed by repeatMinigames (same dev flag that disables the daily clear gate).
-      if (!s.settings.repeatMinigames && !statCompletedWithin(s.habits, def.stat, today, 7)) return s;
       const reward = trialReward(def.stat, score01, s.character.level);
+      // MINI-16: mastery-mode Spirit Grove (player already has a perfect best) pays a prestige
+      // gold bonus, so pushing a perfect run again isn't a strict downgrade vs the harder draft.
+      if (trialId === 'spirit_grove' && (s.bestTrialScore['spirit_grove'] ?? 0) >= 1 && reward.gold) {
+        reward.gold = Math.round(reward.gold * 1.15);
+      }
       const next: GameState = {
         ...s,
         character: { ...s.character, statXp: { ...s.character.statXp } },
@@ -51,11 +103,11 @@ export const createTrialsSlice: StateCreator<
           ...s.bestTrialScore,
           [trialId]: Math.max(s.bestTrialScore[trialId] ?? 0, Math.max(0, Math.min(1, score01))),
         },
-        ...(free ? {} : energySpentPatch(s, TRIAL_ENERGY_COST)),
       };
       applyReward(next, reward, 'trial');
-      if (!free) next.character.energy -= TRIAL_ENERGY_COST;
       checkLevelUp(next);
       return next;
-    }),
+    });
+    return banked;
+  },
 });

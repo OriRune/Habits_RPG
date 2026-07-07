@@ -43,7 +43,7 @@ export const HABIT_TEMPLATE_GROUPS: HabitTemplateGroup[] = [
     habits: [
       {
         name: 'Walk 10 minutes',
-        stat: 'AG',
+        stat: 'EN',
         type: 'binary',
         frequency: 'daily',
         difficulty: 'easy',
@@ -67,7 +67,7 @@ export const HABIT_TEMPLATE_GROUPS: HabitTemplateGroup[] = [
       },
       {
         name: 'Sleep by 11 pm',
-        stat: 'HP',
+        stat: 'ST',
         type: 'binary',
         frequency: 'daily',
         difficulty: 'normal',

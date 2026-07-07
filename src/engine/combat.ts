@@ -90,11 +90,23 @@ export interface BattleState {
   bossSta: number;
   weakTo: StatId[];
   resistTo: StatId[];
+  /**
+   * MINI-39: set true the first time a hit lands tagged weak/resist, so the battle UI can pin
+   * the foe's affinity chips only after the player has *discovered* them (no free intel).
+   * Optional — absent on legacy mid-battle saves, reads falsy.
+   */
+  affinityRevealed?: boolean;
   /** Multi-phase script + current stage. Single-phase foes have one entry. */
   phases: BossPhase[];
   phaseIndex: number;
   /** Anti-frustration HP relief, reapplied to each phase's HP. */
   relief: number;
+  /**
+   * Total boss HP defeated so far — the sum of every cleared phase's max HP. Reward/XP
+   * math reads this (not `bossMaxHp`, which only holds the *current* phase) so a multi-phase
+   * boss pays out for the whole fight, not just its final form.
+   */
+  hpDefeated: number;
   playerMaxHp: number;
   playerHp: number;
   playerMaxMp: number;
@@ -218,6 +230,7 @@ export function createBattle(
     phases,
     phaseIndex: 0,
     relief,
+    hpDefeated: 0,
     playerMaxHp: c.maxHp,
     playerHp: opts.startingHp != null ? Math.min(opts.startingHp, c.maxHp) : c.maxHp,
     playerMaxMp: c.maxMp,
@@ -245,6 +258,8 @@ export function createBattle(
 
 /** Called when bossHp hits 0: advance to the next phase, or declare victory if final. */
 function resolveBossDown(s: BattleState): void {
+  // Bank the phase we just cleared before applyPhase overwrites bossMaxHp for the next form.
+  s.hpDefeated += s.bossMaxHp;
   if (s.phaseIndex < s.phases.length - 1) {
     s.phaseIndex += 1;
     const phase = s.phases[s.phaseIndex];
@@ -306,6 +321,24 @@ function pickEnemyMove(phase: BossPhase, bossMp: number, bossSta: number, rng: R
 /** ±15% spread on a base magnitude. Exported so the real-time Arena rolls damage identically. */
 export function variance(base: number, rng: RNG): number {
   return base * (0.85 + rng() * 0.3);
+}
+
+/**
+ * Charisma's payoff on an illusion status (Dazzle→blind, Hex→weaken). CH both LENGTHENS the debuff
+ * (`turns + floor(CH/4)` — doubled from the old `/8`, so most CH points now move the needle) and
+ * DEEPENS it (`magnitude + floor(CH/6)·0.05`). The magnitude term is a *fraction* because
+ * `weaken.magnitude` is a 0–1 attack-reduction fraction (base 0.4 → up to 0.6 at CH 24); a flat
+ * `+floor(CH/6)` as the audit literally suggested would be dimensionally broken (0.4 → 4.4). Blind's
+ * magnitude is never read by its miss roll, so for Dazzle only the duration term bites — that is
+ * blind's CH lever. Generic + shared by all three casters (combat/arena/hexBattle) so the formula
+ * can't drift between them. (BAL-07)
+ */
+export function illusionBoost<T extends { turns: number; magnitude: number }>(status: T, illusionPower: number): T {
+  return {
+    ...status,
+    turns: status.turns + Math.floor(illusionPower / 4),
+    magnitude: status.magnitude + Math.floor(illusionPower / 6) * 0.05,
+  };
 }
 
 /**
@@ -402,6 +435,7 @@ export function playerAction(
         s.bossDefense + s.enemyGuardBonus, rng,
       );
       s.bossHp -= dealt;
+      if (weak || resist) s.affinityRevealed = true; // MINI-39: player has now seen the affinity
       const tag = weak ? ' — weak to it!' : resist ? ' — resisted' : '';
       const guardTag = s.enemyGuardBonus > 0 ? ' (guarded)' : '';
       s.log.push(`You attack with ${weapon.name} for ${dealt}${tag}${guardTag}${full ? '' : ' (exhausted)'}.`);
@@ -445,6 +479,7 @@ export function playerAction(
           spell.power, weakenedDamageSpell, schoolStat, state.weakTo, state.resistTo, s.enemyWard, rng,
         );
         s.bossHp -= dealt;
+        if (weak || resist) s.affinityRevealed = true; // MINI-39: player has now seen the affinity
         const tag = weak ? ' — super effective!' : resist ? ' — resisted' : '';
         s.log.push(`${spell.name} sears the foe for ${dealt}${tag}.`);
         if (spell.status) applyStatus(s.enemyStatuses, spell.status);
@@ -466,7 +501,7 @@ export function playerAction(
       } else {
         // illusion — apply a debuff to the foe, potency boosted by Charisma
         if (spell.status) {
-          const boosted = { ...spell.status, turns: spell.status.turns + Math.floor(c.illusionPower / 8) };
+          const boosted = illusionBoost(spell.status, c.illusionPower);
           applyStatus(s.enemyStatuses, boosted);
           s.log.push(`${spell.name} bewilders the foe.`);
         }

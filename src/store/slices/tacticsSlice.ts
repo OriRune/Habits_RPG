@@ -28,7 +28,7 @@ export interface TacticsSlice {
   tactics: HexBattleState | null;
   deepestTacticsTier: number;
 
-  beginTactics: (loadout?: string[]) => void;
+  beginTactics: (loadout?: string[], chosenTier?: number) => void;
   tacticsSelect: (action: TacticsAction) => void;
   tacticsMove: (to: Hex) => void;
   tacticsAttack: (target: Hex) => void;
@@ -49,12 +49,13 @@ export const createTacticsSlice: StateCreator<
   tactics: null,
   deepestTacticsTier: 0,
 
-  beginTactics: (loadout) =>
+  beginTactics: (loadout, chosenTier) =>
     set((s) => {
       const free = s.settings.unlimitedEnergy;
       if (s.tactics || s.character.level < TACTICS_UNLOCK_LEVEL) return s;
       if (!free && s.character.energy < TACTICS_ENERGY_COST) return s;
-      const tier = Math.max(TACTICS_UNLOCK_LEVEL, Math.min(MAX_LEVEL, s.character.level));
+      // Player-chosen difficulty tier, clamped to [unlock, character.level]; default = level.
+      const tier = Math.max(TACTICS_UNLOCK_LEVEL, Math.min(s.character.level, chosenTier ?? s.character.level));
       const tactics = generateSkirmish(fighterFor(s), s.character.statLevels.AG, tier, loadout ?? s.knownSpells, {
         radius: TACTICS_SIZE_RADIUS[s.settings.tacticsSize],
         rng: Math.random,

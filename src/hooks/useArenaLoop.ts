@@ -37,8 +37,14 @@ function dirFromAxes(axes: Set<Axis>): Dir | null {
   return null;
 }
 
-/** How often a held direction advances one hex (ms). */
-const MOVE_INTERVAL_MS = 150;
+/** How often a held direction advances one hex (ms). BAL-23: Agility quickens the step — the flat
+ *  150ms cadence gave Arena no AG read at all; now it tapers to a 90ms floor at AG 20, Arena's
+ *  first real Agility payoff (a max-AG dodger genuinely out-steps a sluggish build). */
+const MOVE_INTERVAL_BASE_MS = 150;
+const MOVE_INTERVAL_FLOOR_MS = 90;
+export function arenaMoveIntervalFor(ag: number): number {
+  return Math.max(MOVE_INTERVAL_FLOOR_MS, MOVE_INTERVAL_BASE_MS - ag * 3);
+}
 /** Minimum gap between Act presses (the engine also enforces a per-action cooldown). */
 const ACT_INTERVAL_MS = 200;
 /** How often we advance the boss/telegraph/projectile clock (ms). */
@@ -117,7 +123,7 @@ export function useArenaLoop(): ArenaControlsApi {
         lastAct = now;
         store.arenaAct(now);
       }
-      if (now - lastMove >= MOVE_INTERVAL_MS) {
+      if (now - lastMove >= arenaMoveIntervalFor(store.character.statLevels.AG)) {
         // A held touch direction wins; otherwise derive from the keyboard axis keys.
         const touch =
           lastTouchDir.current && heldDirs.current.has(lastTouchDir.current)

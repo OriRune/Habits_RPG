@@ -25,6 +25,7 @@ export function CompleteHabitDialog({
   onClose: () => void;
 }) {
   const completeHabit = useGameStore((s) => s.completeHabit);
+  const level = useGameStore((s) => s.character.level);
   const [actual, setActual] = useState(String(habit.target ?? 0));
 
   const today = viewDate ?? toISODate();
@@ -37,6 +38,7 @@ export function CompleteHabitDialog({
     actual: amount,
     target: habit.target,
     uncapped: habit.uncapped,
+    level,
   });
   const gold = habitGold(habit.difficulty);
 
@@ -60,12 +62,15 @@ export function CompleteHabitDialog({
           onChange={(e) => setActual(e.target.value)}
         />
         <div className="rounded-md border border-gold-deep/40 bg-parchment-300/60 px-3 py-2 text-sm text-ink">
-          Reward: <span className="font-display font-semibold text-ember">{xp} XP</span>
+          Estimated reward: <span className="font-display font-semibold text-ember">≈ {xp} XP</span>
           {gold > 0 && <span className="font-display font-semibold text-gold-deep"> · {gold}g</span>}
           {habit.target ? <span className="text-ink-light"> ({Math.round((amount / habit.target) * 100)}%)</span> : null}
           {habit.uncapped && (
             <span className="mt-1 block text-[11px] text-ink-muted">XP is capped at {UNCAPPED_RATIO_CAP}× your goal.</span>
           )}
+          <span className="mt-1 block text-[11px] text-ink-muted">
+            Gear and comeback bonuses are added on top — the exact total appears when you log it.
+          </span>
         </div>
         <Button
           onClick={() => {

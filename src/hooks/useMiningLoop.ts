@@ -5,7 +5,7 @@
 import { useEffect, useRef, type MutableRefObject } from 'react';
 import { useGameStore } from '@/store/useGameStore';
 import { canDescend, facedCell, facedMonsterId, type Dir } from '@/engine/mining';
-import { CHARGE_SWING_COUNT, DASH_BASE_CD_MS } from '@/engine/crawl';
+import { CHARGE_SWING_COUNT, DASH_BASE_CD_MS, CHARGE_DAMAGE_MULT } from '@/engine/crawl';
 import { boonChargeReduce } from '@/content/boons';
 import { useCoopStore } from '@/net/coop/session';
 import { useAuthStore } from '@/net/auth';
@@ -29,6 +29,9 @@ export interface MiningControls {
   release: (dir: Dir) => void;
   /** Queue a single pick swing. */
   swing: () => void;
+  /** Release a held charge (touch pointer-up/leave/cancel) — mirrors the keyboard keyup reset so
+   *  touch players can deliberately charge instead of firing one phantom heavy swing (MINI-18). */
+  releaseCharge: () => void;
   /** Queue a dash in the currently-faced direction. */
   dash: () => void;
   /** Cast a spell by key (from ability bar buttons). */
@@ -162,7 +165,7 @@ export function useMiningLoop(): MiningControls {
         if (canDescend(run) && (!inCoop || isHost)) {
           store.mineDescend();
         } else if (isGuest && facedMonsterId(run)) {
-          const dmg = (run.weapon.attackStat === 'DX' ? run.rangedPower : run.meleePower) * 1.75;
+          const dmg = (run.weapon.attackStat === 'DX' ? run.rangedPower : run.meleePower) * CHARGE_DAMAGE_MULT;
           coop.send?.({ type: 'attack', userId: myId ?? 'anon', monsterId: facedMonsterId(run)!, dmg });
         } else {
           const { r, c } = facedCell(run);
@@ -254,6 +257,10 @@ export function useMiningLoop(): MiningControls {
         spaceDownAt.current = performance.now();
         chargeConsumed.current = false;
       }
+    },
+    releaseCharge: () => {
+      spaceDownAt.current = null;
+      chargeConsumed.current = false;
     },
     dash: () => { dashQueued.current = true; },
     castSpell: (key) => {

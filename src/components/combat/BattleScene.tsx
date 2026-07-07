@@ -6,6 +6,7 @@ import { selectTopStats } from '@/store/selectors';
 import { getItem } from '@/engine/items';
 import { getSpell } from '@/engine/spells';
 import { getWeapon } from '@/engine/weapons';
+import { getStat } from '@/engine/stats';
 import { type BattleState, type CombatAction, type StatusEffect } from '@/engine/combat';
 import { enemyCrest, avatarCrest } from '@/lib/sprites';
 import { biomeBattlefieldSvg } from '@/lib/placeholderArt';
@@ -555,6 +556,30 @@ export function BattleScene({
             </div>
           )}
           <Statuses list={battle.enemyStatuses} />
+          {/* MINI-39: affinity chips — revealed only once the player has landed a tagged hit. */}
+          {battle.affinityRevealed && (battle.weakTo.length > 0 || battle.resistTo.length > 0) && (
+            <div className="mt-1 flex flex-wrap justify-end gap-1">
+              {battle.weakTo.map((st) => (
+                <span
+                  key={`weak-${st}`}
+                  title={`Weak to ${getStat(st).name}`}
+                  className="rounded-sm border px-1 py-px font-display text-[8px] font-bold uppercase tabular-nums"
+                  style={{ color: getStat(st).color, borderColor: `${getStat(st).color}80`, background: `${getStat(st).color}20` }}
+                >
+                  ▲ {st}
+                </span>
+              ))}
+              {battle.resistTo.map((st) => (
+                <span
+                  key={`resist-${st}`}
+                  title={`Resists ${getStat(st).name}`}
+                  className="rounded-sm border border-parchment-300/30 bg-wood-900/60 px-1 py-px font-display text-[8px] font-bold uppercase tabular-nums text-parchment-300/70"
+                >
+                  ▼ {st}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* ── Enemy intent — top-center, in the empty space between the two combatants ── */}

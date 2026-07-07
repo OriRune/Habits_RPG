@@ -170,6 +170,13 @@ export const MINE_MONSTERS: Record<string, MineMonsterDef> = {
     floorMin: 15, hp: 38, touchDamage: 16, moveCadenceMs: 580, bounty: [20, 38],
     defense: 3, band: 'magma', resistTo: ['ST'], weakTo: ['WI'],
   },
+  // Deep-magma sprinter (floors 20+): sub-300ms cadence outruns the player, so
+  // deep floors can no longer be strolled through untouched.
+  cinder_wisp: {
+    key: 'cinder_wisp', name: 'Cinder Wisp', glyph: '🔥', color: '#ff9a2a',
+    floorMin: 20, hp: 30, touchDamage: 14, moveCadenceMs: 250, bounty: [55, 90],
+    band: 'magma', resistTo: ['ST'], weakTo: ['WI'],
+  },
   // --- Band-gate guardians (placed once per run; excluded from random pool) ---
   magma_colossus: {
     key: 'magma_colossus', name: 'Magma Colossus', glyph: '🌋', color: '#ff4400',

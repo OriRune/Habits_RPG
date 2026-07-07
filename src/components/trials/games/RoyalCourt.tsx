@@ -2,7 +2,7 @@
 // Navigate social exchanges at court; choose responses that build favour with the queen.
 // Some responses are Charisma gambits: resolved by a d20 + CH modifier roll vs. a DC.
 
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import * as sfx from '@/lib/sfx';
 import {
   ROYAL_COURT_EXCHANGES,
@@ -81,6 +81,21 @@ export function RoyalCourt({ onFinish, chLevel }: RoyalCourtProps) {
   const [checkResult, setCheckResult] = useState<(CourtCheckResult & { dc: number }) | null>(null);
   const rollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Collect pending timers so they can be cleared on unmount.
+  const pendingTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  useEffect(() => {
+    return () => {
+      pendingTimers.current.forEach(clearTimeout);
+      if (rollIntervalRef.current) clearInterval(rollIntervalRef.current);
+    };
+  }, []);
+
+  const scheduleTimeout = useCallback((fn: () => void, ms: number) => {
+    const t = setTimeout(fn, ms);
+    pendingTimers.current.push(t);
+    return t;
+  }, []);
+
   const exchange = exchanges[exchangeIndex];
 
   const choose = (choiceIdx: number) => {
@@ -97,7 +112,7 @@ export function RoyalCourt({ onFinish, chLevel }: RoyalCourtProps) {
         setRollDisplay(Math.floor(Math.random() * 20) + 1);
       }, 60);
 
-      setTimeout(() => {
+      scheduleTimeout(() => {
         if (rollIntervalRef.current) clearInterval(rollIntervalRef.current);
         const roll = rollD20();
         const result = resolveCourtCheck(roll, chLevel, choice.check!.dc);
@@ -131,14 +146,14 @@ export function RoyalCourt({ onFinish, chLevel }: RoyalCourtProps) {
         setChoiceHistory(newHistory);
 
         const isLast = exchangeIndex + 1 >= exchanges.length;
-        setTimeout(() => {
+        scheduleTimeout(() => {
           if (isLast) {
             setDone(true);
             sfx.play('courtComplete');
             onFinish(Math.min(1, Math.max(0, newFavor / maxFavor)), newHistory);
           } else {
             setTransitioning(true);
-            setTimeout(() => {
+            scheduleTimeout(() => {
               setExchangeIndex((i) => i + 1);
               setSelected(null);
               setCheckResult(null);
@@ -163,14 +178,14 @@ export function RoyalCourt({ onFinish, chLevel }: RoyalCourtProps) {
       else if (choice.favorDelta < 0) sfx.play('courtDisfavor');
 
       const isLast = exchangeIndex + 1 >= exchanges.length;
-      setTimeout(() => {
+      scheduleTimeout(() => {
         if (isLast) {
           setDone(true);
           sfx.play('courtComplete');
           onFinish(Math.min(1, Math.max(0, newFavor / maxFavor)), newHistory);
         } else {
           setTransitioning(true);
-          setTimeout(() => {
+          scheduleTimeout(() => {
             setExchangeIndex((i) => i + 1);
             setSelected(null);
             setTransitioning(false);

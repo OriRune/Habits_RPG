@@ -4,9 +4,14 @@ import {
   resolveCompletion,
   effectiveStatus,
   currentStreak,
+  streakMilestone,
+  isDayScheduled,
+  type StreakMilestone,
 } from '@/engine/habits';
 import { habitGold } from '@/engine/xp';
 import { toISODate } from '@/engine/date';
+import { getStat } from '@/engine/stats';
+import { useToastStore } from '@/store/useToastStore';
 import { challengeProgress, isExpired } from '@/engine/challenges';
 import { gearXpMultiplier } from '@/engine/gear';
 import type { GameState, NewHabitInput } from '../shared';
@@ -154,7 +159,12 @@ export const createHabitsSlice: StateCreator<
       return { habits, character };
     }),
 
-  completeHabit: (id, actual, dateISO) =>
+  completeHabit: (id, actual, dateISO) => {
+    let milestone: StreakMilestone | null = null;
+    // Reward-receipt: the actual granted values, surfaced as one toast after the commit.
+    let receipt:
+      | { xp: number; gold: number; energyGranted: boolean; backdated: boolean; color?: string }
+      | null = null;
     set((s) => {
       const today = toISODate();
       const day = dateISO ?? today;
@@ -164,9 +174,56 @@ export const createHabitsSlice: StateCreator<
       if (habit.log[day] !== undefined) return s;
       if (effectiveStatus(habit, day) !== 'active') return s;
 
-      const result = resolveCompletion(habit, day, { actual });
+      const result = resolveCompletion(habit, day, { actual, level: s.character.level });
       const xp = Math.round(result.xp * gearXpMultiplier(gearFor(s), habit));
       const gold = habitGold(habit.difficulty);
+
+      // Energy is granted at most once per habit per day, and only when it actually raises the
+      // counter (below MAX — HABIT-16) and hasn't already been granted for this day. The marker
+      // lives on the habit (not the deletable log entry), so a same-day
+      // complete→spend→uncomplete→re-complete cannot re-mint it (HABIT-04). Backdated logs
+      // never grant energy.
+      const grantEnergy =
+        isToday && habit.lastEnergyGrantISO !== day && s.character.energy < MAX_ENERGY;
+
+      // Build the completed habit up front so milestone eligibility can read the fresh streak.
+      const updated: Habit = {
+        ...habit,
+        log: { ...habit.log, [day]: { amount: actual, xp, gold } },
+        lastCompletedISO:
+          !habit.lastCompletedISO || day > habit.lastCompletedISO ? day : habit.lastCompletedISO,
+      };
+      updated.streak = currentStreak(updated, today);
+      if (grantEnergy) updated.lastEnergyGrantISO = day;
+
+      // Streak milestone (7/30/100 days) — day-scheduled only, live completion only, and once
+      // per habit per day: the marker blocks a same-day re-mint after an uncomplete (deferred
+      // from 3.4). Day-scheduled: a completion advances a day-streak by exactly 1, so hitting a
+      // milestone value is a true one-time crossing; across days streakMilestone only returns
+      // non-null at the exact value, so it can't re-fire without a fresh climb. times_per_week
+      // counts weeks (would re-grant on extra same-week logs) and its "N-day" copy wouldn't fit,
+      // so it's excluded.
+      const milestoneReward =
+        isToday && isDayScheduled(updated) && habit.lastMilestoneGrant?.dateISO !== day
+          ? streakMilestone(updated.streak)
+          : null;
+      if (milestoneReward) {
+        updated.lastMilestoneGrant = {
+          dateISO: day,
+          gold: milestoneReward.gold,
+          freezes: milestoneReward.freezes,
+        };
+      }
+      milestone = milestoneReward;
+
+      // Capture the real granted values (post gear/recovery) for the receipt toast.
+      receipt = {
+        xp,
+        gold,
+        energyGranted: grantEnergy,
+        backdated: !isToday,
+        color: getStat(habit.stat).color,
+      };
 
       const baseEarnings = s.earnings ?? freshEarningsLedger();
       const next: GameState = {
@@ -181,16 +238,7 @@ export const createHabitsSlice: StateCreator<
           count: { ...baseEarnings.count },
         },
         energyLog: { ...s.energyLog },
-        habits: s.habits.map((h) => {
-          if (h.id !== id) return h;
-          const updated: Habit = {
-            ...h,
-            log: { ...h.log, [day]: { amount: actual, xp, gold } },
-            lastCompletedISO: !h.lastCompletedISO || day > h.lastCompletedISO ? day : h.lastCompletedISO,
-          };
-          updated.streak = currentStreak(updated, today);
-          return updated;
-        }),
+        habits: s.habits.map((h) => (h.id === id ? updated : h)),
       };
 
       next.character.statXp[habit.stat] += xp;
@@ -211,21 +259,63 @@ export const createHabitsSlice: StateCreator<
       });
 
       if (isToday) {
-        next.character.energy += 1;
         next.lastActiveISO = today;
         recomputeMood(next, today, result.recovery);
         applyWeeklyRollover(next, today);
+      }
+      if (grantEnergy) {
+        next.character.energy += 1;
         // Record energy earned today.
         next.earnings.energyEarned += 1;
         const todayEntry = next.energyLog[today] ?? { earned: 0, spent: 0 };
         next.energyLog[today] = { earned: todayEntry.earned + 1, spent: todayEntry.spent };
+      }
+      // Grant the milestone reward here; the celebration toast fires post-commit.
+      if (milestoneReward) {
+        next.character.gold += milestoneReward.gold;
+        next.earnings.gold['habit'] += milestoneReward.gold;
+        if (milestoneReward.freezes > 0) {
+          next.inventory['streak_freeze'] =
+            (next.inventory['streak_freeze'] ?? 0) + milestoneReward.freezes;
+        }
       }
       recomputeHabitBonus(next.character, next.habits);
       checkLevelUp(next);
       // Defensive ceiling: clamp energy regardless of code path (§4.3).
       next.character.energy = Math.max(0, Math.min(next.character.energy, MAX_ENERGY));
       return next;
-    }),
+    });
+
+    // Reward receipt — one toast of what was actually granted, for binary and quantity alike.
+    if (receipt) {
+      const r: {
+        xp: number;
+        gold: number;
+        energyGranted: boolean;
+        backdated: boolean;
+        color?: string;
+      } = receipt;
+      const parts = [`+${r.xp} XP`];
+      if (r.gold > 0) parts.push(`+${r.gold}g`);
+      // +1⚡ only when energy was actually granted; a backdated log says why not; a same-day
+      // re-log or an at-cap completion simply omits the energy line (no misleading "late" copy).
+      if (r.energyGranted) parts.push('+1⚡');
+      else if (r.backdated) parts.push('logged late — no energy');
+      useToastStore.getState().pushToast({ text: parts.join(' · '), color: r.color });
+    }
+
+    // Distinct milestone celebration, fired after the state commit (not inside the updater).
+    if (milestone) {
+      const m: StreakMilestone = milestone;
+      const bits = [`+${m.gold}g`];
+      if (m.freezes > 0) bits.push(`+${m.freezes} Streak Freeze`);
+      useToastStore.getState().pushToast({
+        text: `🔥 ${m.days}-day streak! ${bits.join(' · ')}`,
+        color: '#f59e0b',
+        ttlMs: 5000,
+      });
+    }
+  },
 
   uncompleteHabit: (id, dateISO) =>
     set((s) => {
@@ -240,6 +330,7 @@ export const createHabitsSlice: StateCreator<
       const next: GameState = {
         ...s,
         character: { ...s.character, statXp: { ...s.character.statXp } },
+        inventory: { ...s.inventory },
         completionLog: { ...s.completionLog },
         earnings: {
           ...baseEarnings,
@@ -252,6 +343,8 @@ export const createHabitsSlice: StateCreator<
           if (h.id !== id) return h;
           const log = { ...h.log };
           delete log[day];
+          // The energy/milestone grant markers stay on the habit (spread via ...h) — they are
+          // intentionally NOT cleared here, so a same-day re-completion can't re-mint (HABIT-04).
           const updated: Habit = { ...h, log };
           const keys = Object.keys(log).filter((k) => k <= today).sort();
           updated.lastCompletedISO = keys.length ? keys[keys.length - 1] : undefined;
@@ -274,13 +367,30 @@ export const createHabitsSlice: StateCreator<
       next.earnings.gold['habit'] = Math.max(0, next.earnings.gold['habit'] - refundGold);
       next.earnings.count['habit'] = Math.max(0, next.earnings.count['habit'] - 1);
 
-      // Refund the +1 energy that completeHabit awarded on today's completion.
-      // Frozen days never awarded energy, so skip the refund for them.
-      if (day === today && !entry.frozen && next.character.energy > 0) {
+      // Refund the +1 energy completeHabit granted for this habit today — but only if it was
+      // actually granted (per-habit marker, set only when energy was below MAX). This makes the
+      // refund exact at the cap (HABIT-16) and skips frozen days (which never grant). The marker
+      // is intentionally NOT cleared, so a same-day re-completion won't re-mint the +1 (HABIT-04).
+      if (day === today && habit.lastEnergyGrantISO === day && next.character.energy > 0) {
         next.character.energy -= 1;
         next.earnings.energyEarned = Math.max(0, next.earnings.energyEarned - 1);
         const todayEntry = next.energyLog[today] ?? { earned: 0, spent: 0 };
         next.energyLog[today] = { earned: Math.max(0, todayEntry.earned - 1), spent: todayEntry.spent };
+      }
+
+      // Claw back a streak-milestone bonus paid out for this day (gold + freezes), clamped at 0
+      // so a freeze spent since the grant can't drive inventory negative. The marker stays
+      // stamped so re-completing the same day doesn't re-mint the milestone (deferred from 3.4).
+      const ms = habit.lastMilestoneGrant;
+      if (ms && ms.dateISO === day) {
+        next.character.gold = Math.max(0, next.character.gold - ms.gold);
+        next.earnings.gold['habit'] = Math.max(0, next.earnings.gold['habit'] - ms.gold);
+        if (ms.freezes > 0) {
+          next.inventory['streak_freeze'] = Math.max(
+            0,
+            (next.inventory['streak_freeze'] ?? 0) - ms.freezes,
+          );
+        }
       }
 
       next.challenges = s.challenges.map((c) => {

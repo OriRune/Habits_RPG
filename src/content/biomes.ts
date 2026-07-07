@@ -23,7 +23,7 @@ export const BIOMES: Record<string, BiomeDef> = {
     blurb: 'Bone-lined halls where the restless dead keep their vigil.',
     enemies: ['skeleton', 'wisp', 'ghoul', 'draugr_mage', 'goblin'],
     encounters: [
-      'sealed_door', 'gatekeeper', 'bone_pit', 'ossuary_hoard', 'whispering_crypt',
+      'sealed_door', 'gatekeeper', 'bone_pit', 'ossuary_hoard', 'whispering_crypt', 'tense_standoff',
       // Easy early-game events (difficulty 1–3) for new characters
       'ancient_cache', 'dust_and_echoes', 'crumbling_fresco', 'bone_chimes', 'fallen_pilgrim',
       // Deep-room events (floors 6+)
@@ -33,14 +33,14 @@ export const BIOMES: Record<string, BiomeDef> = {
       id: 'bone_tyrant',
       name: 'The Bone Tyrant',
       flavor: 'A crowned colossus of fused skeletons that refuses to stay dead.',
-      baseHp: 110,
+      baseHp: 72,
       attack: 9,
       defense: 3,
       weakTo: ['ST', 'WI'],
       resistTo: ['DX'],
       phases: [
         {
-          hp: 110, attack: 9, defense: 3,
+          hp: 72, attack: 9, defense: 3,
           weakTo: ['ST'], resistTo: ['DX'], attackSchool: 'physical',
           moveset: [
             { kind: 'attack', weight: 3, label: 'swings with massive bone fists', icon: '⚔️' },
@@ -49,7 +49,7 @@ export const BIOMES: Record<string, BiomeDef> = {
           ],
         },
         {
-          hp: 90,
+          hp: 59,
           attack: 12,
           defense: 2,
           ward: 3,
@@ -74,7 +74,7 @@ export const BIOMES: Record<string, BiomeDef> = {
     blurb: 'Toppled stone swallowed by root and bramble, prowled by wild things.',
     enemies: ['goblin', 'giant_spider', 'dire_wolf', 'thornling', 'goblin_shaman', 'corrupt_huorn'],
     encounters: [
-      'collapsing_bridge', 'wild_grove', 'gatekeeper', 'toppled_idol', 'spiders_larder',
+      'collapsing_bridge', 'wild_grove', 'gatekeeper', 'toppled_idol', 'spiders_larder', 'tense_standoff',
       'ruined_scriptorium', 'vine_temple', 'overgrown_arsenal', 'riverside_shrine', 'fungal_network',
       // Deep-room events (floors 6+)
       'overgrown_sanctum', 'sentinel_statue', 'ancient_sundial',
@@ -83,14 +83,14 @@ export const BIOMES: Record<string, BiomeDef> = {
       id: 'vinewood_ancient',
       name: 'The Vinewood Ancient',
       flavor: 'A grove-god of thorn and timber, ancient and furious.',
-      baseHp: 130,
+      baseHp: 85,
       attack: 11,
       defense: 4,
       weakTo: ['WI'],
       resistTo: ['ST'],
       phases: [
         {
-          hp: 130, attack: 11, defense: 4,
+          hp: 85, attack: 11, defense: 4,
           weakTo: ['WI'], resistTo: ['ST'], attackSchool: 'physical',
           moveset: [
             { kind: 'attack',  weight: 2, label: 'sweeps with a massive root', icon: '⚔️' },
@@ -99,7 +99,7 @@ export const BIOMES: Record<string, BiomeDef> = {
           ],
         },
         {
-          hp: 110,
+          hp: 72,
           attack: 14,
           defense: 2,
           weakTo: ['DX', 'WI'],
@@ -123,7 +123,7 @@ export const BIOMES: Record<string, BiomeDef> = {
     blurb: 'A blue-lit labyrinth of ice where elementals churn the cold.',
     enemies: ['stone_sentry', 'frost_revenant', 'ice_elemental', 'frost_troll', 'ice_wolf', 'ice_wisp'],
     encounters: [
-      'frozen_chasm', 'starving_dark', 'sealed_door', 'buried_caravan', 'aurora_pool',
+      'frozen_chasm', 'starving_dark', 'sealed_door', 'buried_caravan', 'aurora_pool', 'tense_standoff',
       'ice_sculptor', 'whiteout', 'frozen_titan', 'cold_archive', 'glacial_hermit',
       // Deep-room events (floors 11+)
       'cryo_sentinel', 'frozen_library', 'frozen_memorial',
@@ -132,7 +132,7 @@ export const BIOMES: Record<string, BiomeDef> = {
       id: 'frost_warden',
       name: 'The Frost Warden',
       flavor: 'A towering rime-knight that guards the deep cold in three forms.',
-      baseHp: 115,
+      baseHp: 75,
       attack: 12,
       defense: 4,
       ward: 3,
@@ -140,7 +140,7 @@ export const BIOMES: Record<string, BiomeDef> = {
       resistTo: ['WI'],
       phases: [
         {
-          hp: 115, attack: 12, defense: 4, ward: 3,
+          hp: 75, attack: 12, defense: 4, ward: 3,
           weakTo: ['ST'], resistTo: ['WI'], attackSchool: 'physical',
           moveset: [
             { kind: 'attack',  weight: 3, label: 'strikes with an armored frost-fist', icon: '⚔️' },
@@ -149,7 +149,7 @@ export const BIOMES: Record<string, BiomeDef> = {
           ],
         },
         {
-          hp: 95,
+          hp: 62,
           attack: 15,
           defense: 2,
           ward: 5,
@@ -163,7 +163,7 @@ export const BIOMES: Record<string, BiomeDef> = {
           ],
         },
         {
-          hp: 85,
+          hp: 55,
           attack: 17,
           defense: 1,
           weakTo: ['ST', 'WI'],

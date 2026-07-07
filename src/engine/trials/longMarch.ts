@@ -5,8 +5,11 @@
 export const MARCH_TILES = 16;
 export const MARCH_START_STA = 12;
 export const MARCH_MAX_STA = 12;
-// Theoretical maximum distance: all Push on Clear tiles.
+// Theoretical maximum distance: all Push on Clear tiles (reference only).
 export const MARCH_MAX_DISTANCE = MARCH_TILES * 2;
+// Distance a strong, well-paced run realistically achieves — used to normalize the
+// distance component of the score so a great run tops out at 1.0.
+export const MARCH_SCORE_DISTANCE = 20;
 
 export type TerrainKind = 'clear' | 'rough' | 'mud' | 'spring';
 export type MarchPace = 'rest' | 'walk' | 'push';
@@ -100,14 +103,20 @@ export function marchStartStamina(enLevel: number): number {
   return Math.min(MARCH_START_STA + 6, MARCH_START_STA + Math.floor(enLevel / 3));
 }
 
+/** Per-step stamina ceiling for a run. The EN starting buffer (up to 18) raises the
+ * cap for the whole march instead of being clamped away on the first action. */
+export function marchStaminaCap(startStamina: number): number {
+  return Math.max(MARCH_MAX_STA, startStamina);
+}
+
 /**
  * Compute a 0–1 run score.
- * 70% weight on tile completion, 30% on distance efficiency.
- * Both components are individually capped so a full completion + zero distance
- * still scores 0.70, rewarding persistence even with a cautious pace.
+ * 50% weight on tile completion, 50% on distance covered (normalized to a strong run).
+ * A cautious rest-through completion still floors at 0.50; a real 3★ (≥0.75) requires
+ * genuine pace management (distance ≥ 10 over the full march).
  */
 export function marchScore(tilesCompleted: number, distance: number): number {
   const tileScore = Math.min(1, tilesCompleted / MARCH_TILES);
-  const distScore = Math.min(1, distance / MARCH_MAX_DISTANCE);
-  return 0.7 * tileScore + 0.3 * distScore;
+  const distScore = Math.min(1, distance / MARCH_SCORE_DISTANCE);
+  return 0.5 * tileScore + 0.5 * distScore;
 }

@@ -50,4 +50,13 @@ describe('canCraft', () => {
     expect(getRecipe('leather_vest')!.result).toEqual({ kind: 'gear', key: 'leather_vest' });
     expect(getGear('leather_vest')).toBeDefined();
   });
+
+  it('new late-tier recipes resolve and point at real gear entries', () => {
+    for (const key of ['mithril_pickaxe', 'obsidian_plate', 'resin_trinket']) {
+      const recipe = getRecipe(key);
+      expect(recipe).toBeDefined();
+      expect(recipe!.result.key).toBe(key);
+      expect(getGear(recipe!.result.key)).toBeDefined();
+    }
+  });
 });

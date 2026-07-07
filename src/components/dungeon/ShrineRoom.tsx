@@ -1,4 +1,5 @@
 import { useGameStore } from '@/store/useGameStore';
+import { runStatBonuses } from '@/store/shared';
 import { checkChance } from '@/engine/encounters';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
@@ -9,10 +10,12 @@ export function ShrineRoom() {
   const hp = useGameStore((s) => s.dungeon?.hp ?? 0);
   const maxHp = useGameStore((s) => s.dungeon?.maxHp ?? 1);
   const wi = useGameStore((s) => s.character.statLevels.WI);
-  const ch = useGameStore((s) => s.character.statLevels.CH);
   const shrine = useGameStore((s) => s.dungeonShrine);
 
-  const power = Math.max(wi, ch);
+  // BAL-07: shrine is a pure Wisdom check (was max(WI,CH)).
+  // MINI-27: relic/gear/runBuff WI counts, matching the resolver — read imperatively (a fresh
+  // object from a plain selector would loop under useSyncExternalStore; run changes re-render us).
+  const power = wi + (runStatBonuses(useGameStore.getState()).WI ?? 0);
   const odds = Math.round(checkChance(power, 6) * 100);
   const tithe = Math.round(maxHp * 0.25);
 

@@ -65,6 +65,12 @@ export interface PrepareRoundsOptions {
    * Enabled automatically when the player's best Spirit Grove score is 100%.
    */
   harder?: boolean;
+  /**
+   * Set of round ids the player has already been shown. Within each difficulty
+   * bucket, unseen rounds are drafted before seen ones (recall bias) while
+   * preserving the rng shuffle within each partition. Absent/empty = no bias.
+   */
+  seen?: ReadonlySet<string>;
 }
 
 /**
@@ -78,6 +84,11 @@ export interface PrepareRoundsOptions {
  * the remaining pool (other tiers, no duplicates). Each round gets a shuffled
  * displayOrder so choices appear in a different position each session.
  *
+ * When `opts.seen` is supplied, rounds the player has already been shown are
+ * drafted after unseen ones within each difficulty bucket (and in the extras
+ * padding draw). This keeps each session as fresh as the pool allows while
+ * staying fully deterministic for a given (rng, seen) pair.
+ *
  * @param pool - The full round pool (typically SPIRIT_GROVE_ROUNDS from content).
  * @param rng  - Random source. Defaults to Math.random (pass a seeded generator for tests).
  * @param opts - Optional draft configuration.
@@ -88,8 +99,15 @@ export function prepareRounds(
   opts: PrepareRoundsOptions = {},
 ): PreparedRound[] {
   const { harder = false } = opts;
-  const byDiff = (d: SpiritGroveRound['difficulty']) =>
-    fisherYatesShuffle(pool.filter((r) => r.difficulty === d), rng);
+  const seen = opts.seen;
+  const byDiff = (d: SpiritGroveRound['difficulty']) => {
+    const shuffled = fisherYatesShuffle(pool.filter((r) => r.difficulty === d), rng);
+    if (!seen || seen.size === 0) return shuffled;
+    return [
+      ...shuffled.filter((r) => !seen.has(r.id)),
+      ...shuffled.filter((r) => seen.has(r.id)),
+    ];
+  };
 
   // Normal: 1 easy + 2 medium + 2 hard.
   // Mastery: 0 easy + 2 medium + 3 hard.
@@ -107,7 +125,13 @@ export function prepareRounds(
   // Pad with extras from the remaining pool if any tier was short.
   if (selected.length < SPIRIT_GROVE_ROUND_COUNT) {
     const used = new Set(selected);
-    const extras = fisherYatesShuffle(pool.filter((r) => !used.has(r)), rng);
+    let extras = fisherYatesShuffle(pool.filter((r) => !used.has(r)), rng);
+    if (seen && seen.size > 0) {
+      extras = [
+        ...extras.filter((r) => !seen.has(r.id)),
+        ...extras.filter((r) => seen.has(r.id)),
+      ];
+    }
     selected.push(...extras.slice(0, SPIRIT_GROVE_ROUND_COUNT - selected.length));
   }
 
@@ -136,11 +160,16 @@ export function spiritGroveScore(correctCount: number, totalRounds: number): num
  * Throws an Error for the first invalid round (intended for DEV-mode assertions only).
  */
 export function validateSpiritGroveRounds(pool: SpiritGroveRound[]): void {
+  const ids = new Set<string>();
   for (const r of pool) {
     if (r.correctIndex >= r.choices.length) {
       throw new Error(
         `Spirit Grove: correctIndex ${r.correctIndex} out of range — "${r.omen.slice(0, 40)}…"`,
       );
     }
+    if (ids.has(r.id)) {
+      throw new Error(`Spirit Grove: duplicate round id "${r.id}"`);
+    }
+    ids.add(r.id);
   }
 }

@@ -9,6 +9,16 @@ import { type Reward } from './challenges';
 
 export const DUNGEON_ENERGY_COST = 3; // brief §7.2: "Dungeon entry = 3 Energy"
 
+/** Gold paid for a plain combat win — ≈ half a treasure room's base (resolveTreasure: 60+depth*10). */
+export function combatRoomGold(depth: number): number {
+  return 30 + depth * 5;
+}
+
+/** Gold for a floor-boss win — the marquee payout of a floor, well above a plain room. */
+export function bossRoomGold(depth: number): number {
+  return 100 + depth * 50;
+}
+
 export type RoomKind =
   | 'combat'
   | 'encounter'

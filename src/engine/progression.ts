@@ -10,6 +10,14 @@ import { rankStats } from './classes';
 
 /** Stat points granted per character level-up. */
 export const POINTS_PER_LEVEL = 3;
+/**
+ * Weight that minigame-*trickle* XP carries when deciding which stats a level-up's points go to
+ * (BAL-09). Habit/challenge/dungeon effort counts full; passive minigame trickle counts at this
+ * fraction, so grinding a crawler can't quietly steer the whole allocation. Does NOT change
+ * leveling pace — the full statXp still drives `character.level`; only point *distribution* is
+ * re-weighted. `applyLevelUp` (shared.ts) and `previewNextGains` (below) MUST use this identically.
+ */
+export const MINIGAME_XP_ALLOCATION_WEIGHT = 0.5;
 /** Maximum value any single stat can reach. */
 export const STAT_CAP = 25;
 /** Soft cap on character level; XP past this no longer raises the level. */
@@ -130,11 +138,18 @@ export function allocateStatGains(
 export function previewNextGains(character: {
   statXp: Record<StatId, number>;
   statXpAtLastLevel: Record<StatId, number>;
+  statXpTrickle: Record<StatId, number>;
+  statXpTrickleAtLastLevel: Record<StatId, number>;
   statLevels: Record<StatId, number>;
   classId: string | null;
 }): Record<StatId, number> {
+  // Discount the minigame-trickle portion of each stat's recent delta (BAL-09) — kept in lockstep
+  // with `applyLevelUp` in shared.ts. `full` is the total ledger gain since the last level-up;
+  // `trickle` is the passive-minigame slice of it, re-weighted to MINIGAME_XP_ALLOCATION_WEIGHT.
   const delta = STAT_IDS.reduce((acc, s) => {
-    acc[s] = Math.max(0, (character.statXp[s] ?? 0) - (character.statXpAtLastLevel[s] ?? 0));
+    const full = (character.statXp[s] ?? 0) - (character.statXpAtLastLevel[s] ?? 0);
+    const trickle = (character.statXpTrickle?.[s] ?? 0) - (character.statXpTrickleAtLastLevel?.[s] ?? 0);
+    acc[s] = Math.max(0, full - (1 - MINIGAME_XP_ALLOCATION_WEIGHT) * trickle);
     return acc;
   }, {} as Record<StatId, number>);
   const favored: StatId[] = character.classId ? (rankStats(character.statXp).slice(0, 2) as StatId[]) : [];

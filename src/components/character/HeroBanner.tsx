@@ -7,6 +7,7 @@ import { avatarCrest } from '@/lib/sprites';
 import { Panel } from '@/components/ui/Panel';
 import { Frame } from '@/components/ui/Frame';
 import { Sprite } from '@/components/ui/Sprite';
+import { StreakBonusChip } from './StreakBonusChip';
 
 /** Landing-page hero card: the character's avatar (stand-in crest) + identity + progress. */
 export function HeroBanner() {
@@ -75,6 +76,7 @@ export function HeroBanner() {
             <span className="tabular-nums">{character.energy}</span>
             <span className="text-on-wood-mid">energy</span>
           </span>
+          <StreakBonusChip className="text-xs" />
         </div>
       </div>
     </Panel>

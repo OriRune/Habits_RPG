@@ -11,6 +11,7 @@ import {
   castSpell as minecastSpellFn,
   applyBoonChoice as applyMineBoonChoice,
   placeTombstone,
+  unlockedStartFloor,
   MINE_ENERGY_COST,
 } from '@/engine/mining';
 import { dungeonStamina, boonConsolation } from '@/engine/crawl';
@@ -37,7 +38,8 @@ export interface MiningSlice {
   /** Lost haul from the most recent death — recovered by reaching the tombstone tile. */
   mineTombstone: { floor: number; haul: Reward } | null;
 
-  beginMining: (seed?: number) => void;
+  /** `startFloor` (co-op) pins the run to a shared floor; omitted = solo deeper-start (BAL-25). */
+  beginMining: (seed?: number, startFloor?: number) => void;
   mineMove: (dir: Dir) => void;
   mineStrike: () => void;
   /** `nowMs` is the caller's rAF-clock timestamp — same timebase as mineTick. */
@@ -71,7 +73,7 @@ export const createMiningSlice: StateCreator<
   bestMineScore: 0,
   mineTombstone: null,
 
-  beginMining: (seed) =>
+  beginMining: (seed, startFloor) =>
     set((s) => {
       // Seed the run's RNG: shared mulberry32 for co-op, Math.random for solo.
       setMineRun(seed !== undefined ? mulberry32(seed) : Math.random, seed);
@@ -116,8 +118,11 @@ export const createMiningSlice: StateCreator<
       const agBonus = (gearBonuses(stateWithGear).statBonuses.AG ?? 0);
       const agLevel = s.character.statLevels.AG + agBonus;
 
+      // Solo runs re-enter at the deepest guardian band already cleared; co-op passes an
+      // explicit startFloor of 1 so host+guest generate the same shared map (BAL-25).
+      const start = startFloor ?? unlockedStartFloor(s.deepestMineFloor);
       let mining = generateMine(
-        1,
+        start,
         {
           meleePower: c.meleePower,
           rangedPower: c.rangedPower,
@@ -134,12 +139,12 @@ export const createMiningSlice: StateCreator<
           pickaxePower,
           agLevel,
         },
-        // Floor 1 from the per-floor seed (co-op) so every client matches; solo
+        // The start floor from the per-floor seed (co-op) so every client matches; solo
         // falls back to the live mine RNG (Math.random).
-        seed !== undefined ? mulberry32(floorSeed(seed, 1)) : getMineRng(),
+        seed !== undefined ? mulberry32(floorSeed(seed, start)) : getMineRng(),
       );
-      // If a tombstone exists for floor 1, place it on the generated map.
-      if (s.mineTombstone && s.mineTombstone.floor === 1) {
+      // If a tombstone exists for the start floor, place it on the generated map.
+      if (s.mineTombstone && s.mineTombstone.floor === start) {
         mining = placeTombstone(mining, getMineRng());
       }
       return {

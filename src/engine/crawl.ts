@@ -8,6 +8,8 @@
 // Nothing here is React-aware; every export is a pure function or a type.
 
 import type { StatId } from './stats';
+import { getSpell, SCHOOL_STAT } from './spells';
+import { spellDamageRoll, spellHealAmount } from './combat';
 
 // ---------------------------------------------------------------------------
 // Basic types
@@ -296,8 +298,9 @@ export function manhattan(a: { r: number; c: number }, b: { r: number; c: number
 export const DASH_BASE_CD_MS = 2000;
 /** How many swing intervals (of 240 ms each) the attack button must be held to charge. */
 export const CHARGE_SWING_COUNT = 2;
-/** Damage multiplier applied to a charged/heavy swing. */
-export const CHARGE_DAMAGE_MULT = 1.75;
+/** Damage multiplier applied to a charged/heavy swing. MINI-17: raised 1.75→2.25 so a
+ *  CHARGE_SWING_COUNT-interval hold honestly out-damages mashing (was DPS-negative at 1.75). */
+export const CHARGE_DAMAGE_MULT = 2.25;
 /** How long a staggered monster is briefly frozen after a charged hit (ms). */
 export const STAGGER_MS = 500;
 
@@ -315,6 +318,17 @@ export function dashCooldown(agLevel: number): number {
  */
 export function moveInterval(agLevel: number): number {
   return Math.max(100, 150 - agLevel * 2);
+}
+
+/**
+ * Contact-damage multiplier for depth past the deepest (open-ended) band. Deep
+ * floors/stages would otherwise plateau — every enemy template caps out at the
+ * last band's stats. This ramps monster/beast touch damage by 4% per floor past
+ * the last band's first floor, capped at 2×, so deep runs stay lethal.
+ * `depthPastLastBand` ≤ 0 (shallower than the last band) returns 1.0 (no change).
+ */
+export function lateDepthDamageScale(depthPastLastBand: number): number {
+  return Math.min(2, 1 + 0.04 * Math.max(0, depthPastLastBand));
 }
 
 // ---------------------------------------------------------------------------
@@ -420,5 +434,435 @@ export function shakeOffset(
   return {
     sx: (randX * 2 - 1) * amp,
     sy: (randY * 2 - 1) * amp * 0.6,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Shared crawler behaviours (ARCH-06 twin hoist)
+// ---------------------------------------------------------------------------
+//
+// The mine and forest engines share ~5 near-identical functions (spell casting,
+// rune triggers, co-op contact/damage, boon resolution).  They live here, generic
+// over the run-state (`TState`) and unit (`TUnit`) shapes, with every content lookup
+// (MINE_MONSTERS / FOREST_BEASTS, touchDamage, killMonster / killBeast) injected via
+// a small callback bag so this file stays content/store/net-free.  Each engine keeps
+// its own thin wrapper (`castSpell`, `triggerRunes`, …) that supplies concrete caps.
+
+/** Spell cooldown shared by both crawlers (ms). */
+export const CRAWL_SPELL_CD_MS = 500;
+
+/**
+ * The unit fields the shared crawler bodies read or write directly.  Both
+ * `MineMonster` and `ForestBeast` are structurally assignable to this — the
+ * engine-specific fields (`asleep`, `windupUntilMs`, `flees` on the def) are never
+ * touched here; they only appear inside injected callbacks.
+ */
+export interface CrawlUnit {
+  id: string;
+  key: string;
+  r: number;
+  c: number;
+  hp: number;
+  maxHp: number;
+  readyAtMs: number;
+  frozenUntilMs?: number;
+  poisonDmg?: number;
+  poisonNextTickMs?: number;
+  poisonExpiresMs?: number;
+}
+
+/** Run-state fields the shared spell/rune/contact bodies touch. */
+export interface CrawlRunState {
+  status: 'active' | 'ended' | 'banking' | 'choosing';
+  player: { r: number; c: number; facing: Dir };
+  rows: number;
+  cols: number;
+  hp: number;
+  maxHp: number;
+  mp: number;
+  maxMp: number;
+  sta: number;
+  maxSta: number;
+  staNextRegenMs: number;
+  mpNextRegenMs: number;
+  defense: number;
+  ward: number;
+  damageSpell: number;
+  supportSpell: number;
+  illusionPower: number;
+  knownSpells: string[];
+  activeBoons: string[];
+  playerStatuses: CrawlStatusEffect[];
+  runes: CrawlRune[];
+  nextRuneId: number;
+  ringOfFire: CrawlRingOfFire | null;
+  ringNextHitMs: Record<string, number>;
+  lastHitAtMs: number;
+  lastSpellMs: number;
+}
+
+/** Read/write the engine's unit list (`s.monsters` vs `s.beasts`) + resolve a kill. */
+export interface CrawlUnitCaps<TState, TUnit> {
+  unitsOf(s: TState): TUnit[];
+  withUnits(s: TState, units: TUnit[]): TState;
+  /** Per-engine killMonster / killBeast — grants loot and may end the run. */
+  killUnit(s: TState, unit: TUnit, rng: RNG): TState;
+}
+
+/** Caps for {@link crawlCastSpell}. */
+export interface CrawlSpellCaps<TState, TUnit> extends CrawlUnitCaps<TState, TUnit> {
+  isWalkableAt(s: TState, r: number, c: number): boolean;
+  unitAt(s: TState, r: number, c: number): TUnit | undefined;
+  nearestUnit(s: TState): TUnit | null;
+  /** Combat def for weak/resist/defense lookup (engine defs type these as `string[]`). */
+  unitDef(unit: TUnit): { defense?: number; weakTo?: string[]; resistTo?: string[] } | undefined;
+  /** Mine targets the faced cell first then nearest; forest targets nearest only. */
+  preferFaced: boolean;
+  /** Optional post-teleport hook (forest reveals fog of war). */
+  afterTeleport?(s: TState): TState;
+}
+
+/** Caps for {@link crawlTriggerRunes}. */
+export interface CrawlRuneCaps<TState, TUnit> extends CrawlUnitCaps<TState, TUnit> {
+  iframeMs: number;
+}
+
+/** Caps for {@link crawlCoopClientStep}. */
+export interface CrawlContactCaps<TState, TUnit> {
+  unitsOf(s: TState): TUnit[];
+  /** The non-adjacency toucher predicate (mine: not frozen; forest: awake predator, not frozen). */
+  canStrike(unit: TUnit, nowMs: number): boolean;
+  /** Depth-scaled raw contact damage before mitigation (reads content touchDamage). */
+  contactRaw(unit: TUnit, s: TState): number;
+  defenseBonus(boons: string[]): number;
+  iframeMs: number;
+}
+
+/** Boon-pick state fields + caps for {@link crawlApplyBoonChoice}. */
+export interface CrawlBoonState {
+  status: 'active' | 'ended' | 'banking' | 'choosing';
+  pendingBoonChoice: string[] | null;
+  activeBoons: string[];
+  agLevel: number;
+  maxHp: number;
+  hp: number;
+  moveIntervalMs: number;
+  dashCooldownMs: number;
+}
+export interface CrawlBoonCaps {
+  getBoon(key: string): CrawlBoon | undefined;
+  boonMoveMult(boons: string[]): number;
+  boonDashCdMult(boons: string[]): number;
+}
+
+/**
+ * Cast a spell inside a crawler run (shared body).  Guard order is standardised on
+ * the mine's (status → known → exists → mp → cooldown), so an unknown spell key is
+ * rejected in BOTH crawlers (ARCH-03: the forest previously let a guest/dev-tool cast
+ * any key).  Targeting is forked via `caps.preferFaced` — everything else is identical.
+ */
+export function crawlCastSpell<TState extends CrawlRunState, TUnit extends CrawlUnit>(
+  state: TState,
+  spellKey: string,
+  nowMs: number,
+  rng: RNG,
+  caps: CrawlSpellCaps<TState, TUnit>,
+): TState {
+  if (state.status !== 'active') return state;
+  if (!state.knownSpells.includes(spellKey)) return state;
+  const spell = getSpell(spellKey);
+  if (!spell || state.mp < spell.mpCost) return state;
+  if (nowMs - state.lastSpellMs < CRAWL_SPELL_CD_MS) return state;
+
+  let s: TState = { ...state, mp: state.mp - spell.mpCost, lastSpellMs: nowMs };
+  const schoolStat = SCHOOL_STAT[spell.school];
+
+  const pickTarget = (): TUnit | null => {
+    if (caps.preferFaced) {
+      const { r, c } = facedCell(s.player);
+      return caps.unitAt(s, r, c) ?? caps.nearestUnit(s);
+    }
+    return caps.nearestUnit(s);
+  };
+
+  // Rune placement (on the faced floor tile)
+  if (spell.mechanic === 'rune-fire' || spell.mechanic === 'rune-ice' || spell.mechanic === 'rune-poison') {
+    const kind = spell.mechanic.slice(5) as 'fire' | 'ice' | 'poison';
+    const { r, c } = facedCell(s.player);
+    if (caps.isWalkableAt(s, r, c)) {
+      const { dealt } = spellDamageRoll(spell.power, s.damageSpell, schoolStat, [], [], 0, rng);
+      const rune: CrawlRune = { id: s.nextRuneId, r, c, kind, power: dealt, expiresAtMs: nowMs + 30000 };
+      s = { ...s, runes: [...s.runes, rune], nextRuneId: s.nextRuneId + 1 };
+    }
+    return s;
+  }
+
+  // Ring of fire
+  if (spell.mechanic === 'ring-of-fire') {
+    const dmg = Math.max(2, Math.round(spell.power + s.damageSpell * 0.5));
+    return { ...s, ringOfFire: { expiresAtMs: nowMs + RING_DURATION_MS, dmg }, ringNextHitMs: {} };
+  }
+
+  // Teleport to a random open cell 3-6 steps away
+  if (spell.mechanic === 'teleport') {
+    const { r: pr, c: pc } = s.player;
+    const candidates: Array<{ r: number; c: number }> = [];
+    for (let row = 0; row < s.rows; row++) {
+      for (let col = 0; col < s.cols; col++) {
+        const d = manhattan({ r: row, c: col }, { r: pr, c: pc });
+        if (d >= 3 && d <= 6 && caps.isWalkableAt(s, row, col) && !caps.unitAt(s, row, col)) {
+          candidates.push({ r: row, c: col });
+        }
+      }
+    }
+    if (candidates.length > 0) {
+      const dest = candidates[Math.floor(rng() * candidates.length)];
+      s = { ...s, player: { ...s.player, r: dest.r, c: dest.c } };
+    }
+    return caps.afterTeleport ? caps.afterTeleport(s) : s;
+  }
+
+  // Damage spell: hit the faced/nearest unit, apply status.
+  if (spell.school === 'damage') {
+    const target = pickTarget();
+    if (target) {
+      const def = caps.unitDef(target);
+      const { dealt } = spellDamageRoll(
+        spell.power, s.damageSpell, schoolStat,
+        (def?.weakTo ?? []) as StatId[],
+        (def?.resistTo ?? []) as StatId[],
+        def?.defense ?? 0, rng,
+      );
+      const newHp = target.hp - dealt;
+      if (newHp <= 0) {
+        s = caps.killUnit(s, target, rng);
+      } else {
+        let units: TUnit[] = caps.unitsOf(s).map((u) => (u.id === target.id ? { ...u, hp: newHp } : u));
+        if (spell.status) {
+          const key = spell.status.key;
+          if (key === 'burn' || key === 'poison') {
+            const magnitude = spell.status.magnitude;
+            const durationMs = spell.status.turns * DOT_TICK_MS;
+            units = units.map((u) =>
+              u.id === target.id
+                ? { ...u, poisonDmg: Math.max(u.poisonDmg ?? 0, magnitude), poisonNextTickMs: nowMs + DOT_TICK_MS, poisonExpiresMs: nowMs + durationMs }
+                : u,
+            );
+          } else if (key === 'freeze') {
+            units = units.map((u) =>
+              u.id === target.id ? { ...u, frozenUntilMs: nowMs + FREEZE_DURATION_MS } : u,
+            );
+          }
+        }
+        s = caps.withUnits(s, units);
+      }
+    }
+    return s;
+  }
+
+  // Support spell: heal HP, apply player status (bless)
+  if (spell.school === 'support') {
+    if (spell.power > 0) {
+      const heal = spellHealAmount(spell.power, s.supportSpell);
+      s = { ...s, hp: Math.min(s.maxHp, s.hp + heal) };
+    }
+    if (spell.status) {
+      const { key, magnitude, turns } = spell.status;
+      s = {
+        ...s,
+        playerStatuses: applyStatus(s.playerStatuses, { key: key as CrawlStatusEffect['key'], magnitude, durationMs: turns * DOT_TICK_MS }, nowMs),
+      };
+    }
+    return s;
+  }
+
+  // Illusion spell: debuff the faced/nearest unit.
+  if (spell.school === 'illusion' && spell.status) {
+    const target = pickTarget();
+    if (target) {
+      const { key, magnitude, turns } = spell.status;
+      // BAL-07: CH extends illusion duration on the same floor(CH/4) slope as turn-combat
+      // (magnitude stays untouched here — in the crawler it's DoT damage/tick, not the weaken fraction).
+      const durationMs = (turns + Math.floor(s.illusionPower / 4)) * DOT_TICK_MS;
+      if (key === 'freeze') {
+        s = caps.withUnits(s, caps.unitsOf(s).map((u) =>
+          u.id === target.id ? { ...u, frozenUntilMs: nowMs + Math.max(FREEZE_DURATION_MS, durationMs) } : u,
+        ));
+      } else if (key === 'poison') {
+        s = caps.withUnits(s, caps.unitsOf(s).map((u) =>
+          u.id === target.id
+            ? { ...u, poisonDmg: Math.max(u.poisonDmg ?? 0, magnitude), poisonNextTickMs: nowMs + DOT_TICK_MS, poisonExpiresMs: nowMs + durationMs }
+            : u,
+        ));
+      }
+    }
+    return s;
+  }
+
+  return s;
+}
+
+/**
+ * Trigger any runes stepped on by the player or a unit this tick (shared body).
+ * ARCH-02: the survivor filter drops expired runes UNCONDITIONALLY (was gated on
+ * `triggered.size > 0` in the forest, so forest runes never expired on quiet ticks).
+ */
+export function crawlTriggerRunes<TState extends CrawlRunState, TUnit extends CrawlUnit>(
+  state: TState,
+  nowMs: number,
+  rng: RNG,
+  caps: CrawlRuneCaps<TState, TUnit>,
+): TState {
+  if (state.runes.length === 0) return state;
+
+  const triggered = new Set<number>();
+  let s = state;
+
+  const fireRune = (rune: CrawlRune, unitId: string | null) => {
+    triggered.add(rune.id);
+    if (unitId === null) {
+      // Hit player
+      if (nowMs - s.lastHitAtMs >= caps.iframeMs) {
+        const dealt = Math.max(1, Math.round(rune.power * 0.5) - s.ward);
+        s = { ...s, hp: Math.max(0, s.hp - dealt), lastHitAtMs: nowMs };
+        if (s.hp <= 0) s = { ...s, status: 'ended' };
+      }
+    } else {
+      const unit = caps.unitsOf(s).find((u) => u.id === unitId);
+      if (!unit) return;
+      const newHp = unit.hp - rune.power;
+      if (newHp <= 0) {
+        s = caps.killUnit(s, unit, rng);
+      } else {
+        let units: TUnit[] = caps.unitsOf(s).map((u) => (u.id === unitId ? { ...u, hp: newHp } : u));
+        if (rune.kind === 'fire') {
+          units = units.map((u) =>
+            u.id === unitId
+              ? { ...u, poisonDmg: Math.max(u.poisonDmg ?? 0, Math.round(rune.power * 0.3)), poisonNextTickMs: nowMs + DOT_TICK_MS, poisonExpiresMs: nowMs + DOT_TICK_MS * 3 }
+              : u,
+          );
+        } else if (rune.kind === 'ice') {
+          units = units.map((u) =>
+            u.id === unitId ? { ...u, frozenUntilMs: nowMs + FREEZE_DURATION_MS } : u,
+          );
+        } else if (rune.kind === 'poison') {
+          units = units.map((u) =>
+            u.id === unitId
+              ? { ...u, poisonDmg: Math.max(u.poisonDmg ?? 0, Math.round(rune.power * 0.25)), poisonNextTickMs: nowMs + DOT_TICK_MS, poisonExpiresMs: nowMs + DOT_TICK_MS * 4 }
+              : u,
+          );
+        }
+        s = caps.withUnits(s, units);
+      }
+    }
+  };
+
+  // Check if the player stepped on a rune
+  for (const rune of s.runes) {
+    if (triggered.has(rune.id)) continue;
+    if (rune.r === s.player.r && rune.c === s.player.c) {
+      fireRune(rune, null);
+    }
+  }
+  // Check if any unit stepped on a rune
+  for (const unit of caps.unitsOf(s)) {
+    for (const rune of s.runes) {
+      if (triggered.has(rune.id)) continue;
+      if (rune.r === unit.r && rune.c === unit.c) {
+        fireRune(rune, unit.id);
+      }
+    }
+  }
+
+  // Expire triggered + timed-out runes (ARCH-02: prune expired even on a quiet tick).
+  const survivors = s.runes.filter((r) => !triggered.has(r.id) && r.expiresAtMs > nowMs);
+  return { ...s, runes: survivors };
+}
+
+/**
+ * Co-op guest per-tick: advance only the LOCAL body — sta/mp regen, own contact
+ * damage from an adjacent striker (i-frame gated), status pruning.  Host owns unit
+ * movement/AI/kills.  ARCH-04: contact mitigation is unified with the mine's rule —
+ * baseline defense always applies, bless adds its magnitude on top, ward no longer
+ * reduces contact damage (it still mitigates rune/spell hits).
+ */
+export function crawlCoopClientStep<TState extends CrawlRunState, TUnit extends CrawlUnit>(
+  state: TState,
+  nowMs: number,
+  caps: CrawlContactCaps<TState, TUnit>,
+): TState {
+  if (state.status !== 'active') return state;
+  let s = state;
+
+  if (nowMs >= s.staNextRegenMs && s.sta < s.maxSta) {
+    s = { ...s, sta: Math.min(s.maxSta, s.sta + 1), staNextRegenMs: nowMs + STA_REGEN_MS };
+  }
+  if (nowMs >= s.mpNextRegenMs && s.mp < s.maxMp) {
+    s = { ...s, mp: Math.min(s.maxMp, s.mp + 1), mpNextRegenMs: nowMs + MP_REGEN_MS };
+  }
+
+  let hp = s.hp;
+  let lastHitAtMs = s.lastHitAtMs;
+  if (nowMs - s.lastHitAtMs >= caps.iframeMs) {
+    const toucher = caps.unitsOf(s).find((u) => caps.canStrike(u, nowMs) && adjacent(u, s.player));
+    if (toucher) {
+      const raw = caps.contactRaw(toucher, s);
+      const bless = activeStatus(s.playerStatuses, 'bless', nowMs);
+      const dealt = Math.max(1, raw - s.defense - (bless ? bless.magnitude : 0) - caps.defenseBonus(s.activeBoons));
+      hp = Math.max(0, hp - dealt);
+      lastHitAtMs = nowMs;
+    }
+  }
+
+  const playerStatuses = pruneStatuses(s.playerStatuses, nowMs);
+  if (hp === s.hp && lastHitAtMs === s.lastHitAtMs && s === state) return state;
+  return { ...s, hp, lastHitAtMs, playerStatuses, status: hp <= 0 ? 'ended' : s.status };
+}
+
+/**
+ * Host-side: apply a remote player's attack to a unit by id, so a kill resolves
+ * exactly once on the authoritative host.  Shared by the mine/forest wrappers.
+ */
+export function crawlDamageUnitById<TState extends CrawlRunState, TUnit extends CrawlUnit>(
+  state: TState,
+  unitId: string,
+  dmg: number,
+  rng: RNG,
+  caps: CrawlUnitCaps<TState, TUnit>,
+): TState {
+  if (state.status !== 'active' || dmg <= 0) return state;
+  const unit = caps.unitsOf(state).find((u) => u.id === unitId);
+  if (!unit) return state;
+  const newHp = unit.hp - dmg;
+  if (newHp <= 0) return caps.killUnit(state, unit, rng);
+  return caps.withUnits(state, caps.unitsOf(state).map((u) => (u.id === unitId ? { ...u, hp: newHp } : u)));
+}
+
+/**
+ * Resolve the player's boon pick (shared body): appends the chosen key to
+ * `activeBoons`, clears `pendingBoonChoice`, restores `status:'active'`, and
+ * recomputes `moveIntervalMs`/`dashCooldownMs` so a speed boon is felt immediately.
+ * No-ops if no choice is pending or the key is not in the offered set.
+ */
+export function crawlApplyBoonChoice<T extends CrawlBoonState>(
+  state: T,
+  key: string,
+  caps: CrawlBoonCaps,
+): T {
+  if (state.status !== 'choosing') return state;
+  if (!state.pendingBoonChoice?.includes(key)) return state;
+  const boon = caps.getBoon(key);
+  if (!boon) return state;
+  const activeBoons = [...state.activeBoons, key];
+  const hpBonus = boon.maxHpBonus ?? 0;
+  return {
+    ...state,
+    activeBoons,
+    pendingBoonChoice: null,
+    status: 'active',
+    moveIntervalMs: Math.round(moveInterval(state.agLevel) / caps.boonMoveMult(activeBoons)),
+    dashCooldownMs: Math.round(dashCooldown(state.agLevel) * caps.boonDashCdMult(activeBoons)),
+    maxHp: state.maxHp + hpBonus,
+    hp: Math.min(state.maxHp + hpBonus, state.hp + hpBonus),
   };
 }

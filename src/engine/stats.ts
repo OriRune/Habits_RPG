@@ -26,6 +26,15 @@ export const STATS: StatMeta[] = [
 
 export const STAT_IDS: StatId[] = STATS.map((s) => s.id);
 
+/**
+ * The only stats that can ever carry damage: a weapon's `attackStat` is always ST or DX
+ * (see content/weapons.ts) and every damage spell is WI school (see engine/spells.ts
+ * SCHOOL_STAT). So any affinity content (`weakTo`/`resistTo`) naming a stat outside this
+ * set is dead data — combat can never route a hit through it. Content-lint tests assert
+ * every boss/enemy affinity array is a subset of DAMAGE_STATS.
+ */
+export const DAMAGE_STATS: StatId[] = ['ST', 'DX', 'WI'];
+
 const STAT_BY_ID: Record<StatId, StatMeta> = Object.fromEntries(
   STATS.map((s) => [s.id, s]),
 ) as Record<StatId, StatMeta>;

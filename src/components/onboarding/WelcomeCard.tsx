@@ -39,16 +39,16 @@ export function WelcomeCard() {
           <p className="text-sm leading-snug text-ink-muted">
             Each completion also awards{' '}
             <span className="font-semibold text-ink">Energy</span>. Spend it in the Explore tab to
-            delve dungeons, mine ore, or hunt in the forest.
+            mine ore, hunt the forest, or take a Skill Trial.
           </p>
         </div>
 
         <div className="flex items-start gap-3">
           <TrendingUp className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
           <p className="text-sm leading-snug text-ink-muted">
-            Enough XP summons a{' '}
-            <span className="font-semibold text-ink">Level-Up Trial</span>. Win it to grow stronger
-            and unlock new abilities. The quest log is your foundation — start there.
+            At Level 5, a{' '}
+            <span className="font-semibold text-ink">Trial boss</span> appears to test your growth —
+            win it to grow stronger. The quest log is your foundation — start there.
           </p>
         </div>
       </div>

@@ -66,9 +66,11 @@ export function lockTolerance(
   const openBonus = Math.max(0, level - 1) * LEVEL_OPEN_TOLERANCE_BONUS;
   const dxBonus     = dxLevel * LEVEL_DX_TOLERANCE_BONUS;
   const dxOpenBonus = dxLevel * LEVEL_DX_OPEN_BONUS;
+  // Cap at 2× base (MINI-15) — uncapped bonuses trend late-game locks toward an
+  // auto-3★ (near-full-arc tolerance); the cap keeps them challenging.
   return {
-    toleranceDeg:     BASE_TOLERANCE_DEG[lockIndex]      + bonus     + dxBonus,
-    openToleranceDeg: BASE_OPEN_TOLERANCE_DEG[lockIndex] + openBonus + dxOpenBonus,
+    toleranceDeg:     Math.min(BASE_TOLERANCE_DEG[lockIndex]      + bonus     + dxBonus,     2 * BASE_TOLERANCE_DEG[lockIndex]),
+    openToleranceDeg: Math.min(BASE_OPEN_TOLERANCE_DEG[lockIndex] + openBonus + dxOpenBonus, 2 * BASE_OPEN_TOLERANCE_DEG[lockIndex]),
   };
 }
 

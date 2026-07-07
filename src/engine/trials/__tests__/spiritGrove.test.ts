@@ -11,6 +11,7 @@ import {
   WI_CLUE_SAGE,
   type PreparedRound,
 } from '../spiritGrove';
+import { seededRng, dailySeed } from '../ancientLibrary';
 import type { SpiritGroveRound } from '@/content/trials';
 import { SPIRIT_GROVE_ROUND_COUNT, SPIRIT_GROVE_ROUNDS } from '@/content/trials';
 
@@ -22,6 +23,7 @@ function makeRound(
   choiceCount = 3,
 ): SpiritGroveRound {
   return {
+    id: label,
     omen: `omen-${label}`,
     choices: Array.from({ length: choiceCount }, (_, i) => ({ label: `${label}-choice-${i}` })),
     correctIndex: 0,
@@ -126,6 +128,18 @@ describe('prepareRounds', () => {
     const bOmens = b.map((p) => p.round.omen).join(',');
     expect(aOmens).not.toBe(bOmens);
   });
+
+  // MINI-11: the component drafts with seededRng(dailySeed(iso) ^ attemptNonce). This documents
+  // that wiring: same day + same nonce is stable within an attempt; a new nonce redrafts.
+  it('MINI-11: same day+nonce → stable draft; different nonce → different draft', () => {
+    const iso = '2026-06-18';
+    const omens = (ps: PreparedRound[]) => ps.map((p) => p.round.omen).join(',');
+    const attempt1a = prepareRounds(FULL_POOL, seededRng(dailySeed(iso) ^ 1));
+    const attempt1b = prepareRounds(FULL_POOL, seededRng(dailySeed(iso) ^ 1));
+    const attempt2 = prepareRounds(FULL_POOL, seededRng(dailySeed(iso) ^ 2));
+    expect(omens(attempt1a)).toBe(omens(attempt1b)); // deterministic within an attempt
+    expect(omens(attempt1a)).not.toBe(omens(attempt2)); // a fresh attempt redrafts
+  });
 });
 
 // ── spiritGroveScore ──────────────────────────────────────────────────────────
@@ -158,6 +172,7 @@ describe('validateSpiritGroveRounds', () => {
   it('throws when a round has correctIndex >= choices.length', () => {
     const badPool: SpiritGroveRound[] = [
       {
+        id: 'bad-1',
         omen: 'bad omen',
         choices: [{ label: 'only one' }],
         correctIndex: 1, // out of range for a 1-element choices array
@@ -170,6 +185,7 @@ describe('validateSpiritGroveRounds', () => {
   it('includes the round omen in the error message', () => {
     const badPool: SpiritGroveRound[] = [
       {
+        id: 'bad-2',
         omen: 'The flame gutters in a windless room',
         choices: [{ label: 'Warmth' }],
         correctIndex: 2,
@@ -179,6 +195,11 @@ describe('validateSpiritGroveRounds', () => {
     expect(() => validateSpiritGroveRounds(badPool)).toThrow(
       /The flame gutters in a windless room/,
     );
+  });
+
+  it('throws when two rounds share an id', () => {
+    const dupPool: SpiritGroveRound[] = [makeRound('easy', 'dup'), makeRound('hard', 'dup')];
+    expect(() => validateSpiritGroveRounds(dupPool)).toThrow(/duplicate round id "dup"/);
   });
 });
 
@@ -260,11 +281,72 @@ describe('prepareRounds (harder=true)', () => {
   });
 });
 
+// ── prepareRounds — unseen bias (MINI-16) ────────────────────────────────────
+
+describe('prepareRounds (unseen bias)', () => {
+  it('drafts an unseen round over a seen one within a difficulty (non-vacuous)', () => {
+    // Mark every easy round except e4 as seen.
+    const seen = new Set(['e0', 'e1', 'e2', 'e3']);
+    // Seed 2's UNBIASED draft picks a seen easy round (e2), so the bias has real work to do.
+    const unbiased = prepareRounds(FULL_POOL, mulberry32(2));
+    const biased = prepareRounds(FULL_POOL, mulberry32(2), { seen });
+    const unbiasedEasy = unbiased.find((p) => p.round.difficulty === 'easy')!.round.id;
+    const biasedEasy = biased.find((p) => p.round.difficulty === 'easy')!.round.id;
+    expect(seen.has(unbiasedEasy)).toBe(true); // without the bias, a seen round is shown
+    expect(biasedEasy).toBe('e4'); // with the bias, the lone unseen round is shown instead
+  });
+
+  it('prefers unseen rounds generally across difficulties', () => {
+    // Mark all-but-one of every tier seen; the draft should surface the unseen ones first.
+    const seen = new Set([
+      'e0', 'e1', 'e2', 'e3',
+      'm0', 'm1', 'm2', // 2 medium needed, so m3 & m4 unseen both get drafted
+      'h0', 'h1', 'h2',
+    ]);
+    const biased = prepareRounds(FULL_POOL, mulberry32(2), { seen });
+    const ids = biased.map((p) => p.round.id);
+    expect(ids).toContain('e4');
+    expect(ids).toContain('m3');
+    expect(ids).toContain('m4');
+    // No seen easy round should sneak in when an unseen easy exists.
+    const easyIds = biased.filter((p) => p.round.difficulty === 'easy').map((p) => p.round.id);
+    expect(easyIds).toEqual(['e4']);
+  });
+
+  it('is deterministic for a given (seed, seen) pair', () => {
+    const seen = new Set(['e0', 'e1', 'm0', 'h0', 'h1']);
+    const a = prepareRounds(FULL_POOL, mulberry32(7), { seen });
+    const b = prepareRounds(FULL_POOL, mulberry32(7), { seen });
+    expect(a.map((p) => p.round.id)).toEqual(b.map((p) => p.round.id));
+  });
+
+  it('empty seen set matches the unbiased draft', () => {
+    const withEmpty = prepareRounds(FULL_POOL, mulberry32(3), { seen: new Set() });
+    const without = prepareRounds(FULL_POOL, mulberry32(3));
+    expect(withEmpty.map((p) => p.round.id)).toEqual(without.map((p) => p.round.id));
+  });
+
+  it('all-seen fallback still returns exactly SPIRIT_GROVE_ROUND_COUNT rounds', () => {
+    const seen = new Set(FULL_POOL.map((r) => r.id));
+    const prepared = prepareRounds(FULL_POOL, mulberry32(5), { seen });
+    expect(prepared).toHaveLength(SPIRIT_GROVE_ROUND_COUNT);
+    const diffs = prepared.map((p) => p.round.difficulty);
+    expect(diffs.filter((d) => d === 'easy')).toHaveLength(1);
+    expect(diffs.filter((d) => d === 'medium')).toHaveLength(2);
+    expect(diffs.filter((d) => d === 'hard')).toHaveLength(2);
+  });
+});
+
 // ── Production pool integrity ────────────────────────────────────────────────
 
 describe('SPIRIT_GROVE_ROUNDS production pool', () => {
   it('passes validateSpiritGroveRounds (no out-of-range correctIndex)', () => {
     expect(() => validateSpiritGroveRounds(SPIRIT_GROVE_ROUNDS)).not.toThrow();
+  });
+
+  it('every round has a unique id', () => {
+    const ids = SPIRIT_GROVE_ROUNDS.map((r) => r.id);
+    expect(new Set(ids).size).toBe(SPIRIT_GROVE_ROUNDS.length);
   });
 
   it('every round has exactly 4 choices', () => {

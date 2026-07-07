@@ -15,6 +15,8 @@ import {
   DIRECTIONS,
   REACTION_PERFECT,
   REACTION_GOOD,
+  resolveBlockGate,
+  MASH_LOCKOUT_MS,
 } from '../lastStand';
 import {
   lockpickingScore,
@@ -39,6 +41,9 @@ import {
   resolveContact,
   jumpAirTime,
   maxClearableGap,
+  initChase,
+  stepChase,
+  DASH_COOLDOWN_MS,
   CHASE_TARGET_DISTANCE,
   BASE_SPEED,
   MAX_SPEED,
@@ -54,8 +59,8 @@ import {
   MAX_JUMPS,
   SLIDE_MS,
 } from '../rooftopChase';
-import { armoryScore, armoryAccuracy, ARMORY_LOCKS, SWEET_ZONE_START, SWEET_ZONE_END, SWEET_ZONE_WIDTH } from '../armoryBreak';
-import { marchStep, marchScore, marchStartStamina, generateTerrain, MARCH_TILES, MARCH_START_STA, MARCH_MAX_DISTANCE } from '../longMarch';
+import { armoryScore, armoryAccuracy, projectReleasePower, ARMORY_LOCKS, SWEET_ZONE_START, SWEET_ZONE_END, SWEET_ZONE_WIDTH } from '../armoryBreak';
+import { marchStep, marchScore, marchStartStamina, marchStaminaCap, generateTerrain, MARCH_TILES, MARCH_START_STA, MARCH_MAX_STA, MARCH_SCORE_DISTANCE } from '../longMarch';
 import {
   generateSequence, libraryScore, buildShowSchedule, glyphShowMs, seededRng as alSeededRng, dailySeed,
   LIBRARY_MAX_ROUNDS, LIBRARY_START_LENGTH, GLYPH_SHOW_MS_BASE, GLYPH_SHOW_MS_MIN,
@@ -237,6 +242,21 @@ describe('lockpicking', () => {
     expect(withDx.openToleranceDeg).toBeGreaterThan(noDx.openToleranceDeg);
   });
 
+  it('lockTolerance is capped at 2x base for the Adept lock at high level/DX (MINI-15)', () => {
+    const t = lockTolerance(2, 30, 30);
+    expect(t.toleranceDeg).toBe(2 * BASE_TOLERANCE_DEG[2]);
+    expect(t.openToleranceDeg).toBe(2 * BASE_OPEN_TOLERANCE_DEG[2]);
+  });
+
+  it('lockTolerance stays uncapped for modest level/DX (MINI-15, non-vacuous)', () => {
+    const t = lockTolerance(2, 3, 2);
+    // bonus = (3-1)*0.6 + 2*0.3 = 1.8; openBonus = (3-1)*0.2 + 2*0.1 = 0.6
+    expect(t.toleranceDeg).toBeCloseTo(BASE_TOLERANCE_DEG[2] + 1.8, 5);
+    expect(t.openToleranceDeg).toBeCloseTo(BASE_OPEN_TOLERANCE_DEG[2] + 0.6, 5);
+    expect(t.toleranceDeg).toBeLessThan(2 * BASE_TOLERANCE_DEG[2]);
+    expect(t.openToleranceDeg).toBeLessThan(2 * BASE_OPEN_TOLERANCE_DEG[2]);
+  });
+
   it('lockpickingScore: all locks + full picks = 1.0', () => {
     expect(lockpickingScore(NUM_LOCKS, PICK_BUDGET)).toBe(1);
   });
@@ -318,12 +338,39 @@ describe('rooftopChase', () => {
 
   it('all prop kinds are known prop types', () => {
     // 'crossbowman' was added in Phase E as a second slide-required obstacle.
-    const valid = new Set<string>(['hazard', 'mook', 'lowbar', 'crossbowman']);
+    // 'bolt' (MINI-35) is the crossbowman's jumpable telegraphed projectile.
+    const valid = new Set<string>(['hazard', 'mook', 'lowbar', 'crossbowman', 'bolt']);
     for (const b of generateCourse(seededRng())) {
       for (const p of b.props) {
         expect(valid.has(p.kind)).toBe(true);
       }
     }
+  });
+
+  it('a crossbowman building is paired with a jumpable bolt placed before it (MINI-35)', () => {
+    // Scan several seeds so we reliably hit a crossbowman that fits its bolt.
+    // (Narrow buildings fall back to a lone crossbowman; wide ones pair the bolt.)
+    let sawPaired = false;
+    for (let seed = 1; seed <= 40; seed++) {
+      for (const b of generateCourse(seededRng(seed))) {
+        const bow  = b.props.find((p) => p.kind === 'crossbowman');
+        const bolt = b.props.find((p) => p.kind === 'bolt');
+        // A bolt only ever spawns alongside a crossbowman on the same building.
+        if (bolt) expect(bow).toBeDefined();
+        if (!bow || !bolt) continue;
+        sawPaired = true;
+        // Bolt is telegraphed ahead of the body (lower x) so it can be jumped first.
+        expect(bolt.x).toBeLessThan(bow.x);
+        // There is a reactable gap between clearing the bolt and the body.
+        expect(bow.x - (bolt.x + bolt.width)).toBeGreaterThan(1);
+        // Both props fit within the [+3, -3] safe zone of their building.
+        for (const p of [bow, bolt]) {
+          expect(p.x).toBeGreaterThanOrEqual(b.x + 3 - 1e-6);
+          expect(p.x + p.width).toBeLessThanOrEqual(b.x + b.width - 3 + 1e-6);
+        }
+      }
+    }
+    expect(sawPaired).toBe(true);
   });
 
   it('all props have positive width and sit within their building', () => {
@@ -545,6 +592,23 @@ describe('rooftopChase', () => {
   it('chaseScore negative distance returns 0', () => {
     expect(chaseScore(-10)).toBe(0);
   });
+
+  // ── MINI-12: AG shortens the dash cooldown ───────────────────────────────────
+  it('initChase bakes AG into dashCooldownBaseMs (−60 ms/level)', () => {
+    expect(initChase(seededRng(), 0).dashCooldownBaseMs).toBe(DASH_COOLDOWN_MS);
+    expect(initChase(seededRng(), 5).dashCooldownBaseMs).toBe(DASH_COOLDOWN_MS - 60 * 5);
+  });
+
+  it('dashCooldownBaseMs floors at 1800 ms for high AG', () => {
+    expect(initChase(seededRng(), 100).dashCooldownBaseMs).toBe(1800);
+  });
+
+  it('a dash resets dashCooldownMs to the run base cooldown', () => {
+    const s0 = initChase(seededRng(), 5);
+    const s1 = stepChase(s0, { jumpPressed: false, slidePressed: false, dashPressed: true }, 0.016);
+    expect(s1.dashCooldownMs).toBe(s0.dashCooldownBaseMs);
+    expect(s1.justDashed).toBe(true);
+  });
 });
 
 // ── Armory Break ───────────────────────────────────────────────────────────────
@@ -591,6 +655,39 @@ describe('armoryBreak', () => {
 
   it('armoryScore divides by ARMORY_LOCKS (not num hits)', () => {
     expect(armoryScore([1, 0, 0])).toBeCloseTo(1 / ARMORY_LOCKS, 5);
+  });
+
+  // ── MINI-12: ST widens the sweet zone (scoring reads the passed width) ────────
+  it('a wider zone scores > 0 for a release that scored 0 at the base width', () => {
+    const wider = SWEET_ZONE_WIDTH + 10 * 0.006; // ST 10 → 0.26
+    const pos = SWEET_ZONE_START + SWEET_ZONE_WIDTH + 0.01; // just past the base zone end
+    expect(armoryAccuracy(pos, SWEET_ZONE_WIDTH)).toBe(0);
+    expect(armoryAccuracy(pos, wider)).toBeGreaterThan(0);
+  });
+
+  it('centre still peaks at 1.0 with a widened zone', () => {
+    const wider = SWEET_ZONE_WIDTH + 0.06;
+    const centre = SWEET_ZONE_START + wider / 2;
+    expect(armoryAccuracy(centre, wider)).toBeCloseTo(1, 5);
+  });
+
+  // ── MINI-40c: project release power to the true release instant ───────────────
+  it('projectReleasePower with dt=0 returns the input power unchanged', () => {
+    expect(projectReleasePower(0.5, 1.0, 0)).toBe(0.5);
+  });
+
+  it('projectReleasePower raises power by exactly riseSpeed*dt within bounds', () => {
+    // 0.5 + 1.0 * 0.2 = 0.7
+    expect(projectReleasePower(0.5, 1.0, 0.2)).toBeCloseTo(0.7, 10);
+  });
+
+  it('projectReleasePower clamps to [0, 1]', () => {
+    expect(projectReleasePower(0.9, 1.4, 0.5)).toBe(1); // 0.9 + 0.7 = 1.6 → 1
+    expect(projectReleasePower(-0.2, 0, 0)).toBe(0);    // below 0 → 0
+  });
+
+  it('projectReleasePower treats negative dt as 0 (no backwards projection)', () => {
+    expect(projectReleasePower(0.5, 1.0, -0.3)).toBe(0.5);
   });
 });
 
@@ -650,20 +747,40 @@ describe('longMarch', () => {
     expect(result.distanceDelta).toBe(2);
   });
 
-  it('marchScore: full completion + max distance = 1', () => {
-    expect(marchScore(MARCH_TILES, MARCH_MAX_DISTANCE)).toBe(1);
+  it('marchScore: full completion + strong distance = 1', () => {
+    expect(marchScore(MARCH_TILES, MARCH_SCORE_DISTANCE)).toBe(1);
   });
 
-  it('marchScore: full completion + zero distance = 0.70', () => {
-    expect(marchScore(MARCH_TILES, 0)).toBeCloseTo(0.7, 5);
+  it('marchScore: rest-through (full tiles, zero distance) = 0.50', () => {
+    // Completion floor — a cautious rest-spam is now a 2★, not a near-free 3★.
+    expect(marchScore(MARCH_TILES, 0)).toBeCloseTo(0.5, 5);
   });
 
-  it('marchScore: half tiles + half distance = 0.5', () => {
-    expect(marchScore(MARCH_TILES / 2, MARCH_MAX_DISTANCE / 2)).toBeCloseTo(0.5, 5);
+  it('marchScore: distance 10 with full tiles = 0.75 (the 3★ boundary)', () => {
+    // 3★ (≥0.75) requires real pace management: distance ≥ 10 over the full march.
+    expect(marchScore(MARCH_TILES, 10)).toBeCloseTo(0.75, 5);
+  });
+
+  it('marchScore: distance 5 with full tiles = 0.625 (a 2★, not a 3★)', () => {
+    // Non-vacuous counterfactual: the OLD 0.7/0.3 formula scored ~0.747 here (a near-3★);
+    // the new distance-weighted formula correctly keeps this a 2★.
+    expect(marchScore(MARCH_TILES, 5)).toBeCloseTo(0.625, 5);
   });
 
   it('marchScore: capped at 1', () => {
-    expect(marchScore(MARCH_TILES + 5, MARCH_MAX_DISTANCE + 10)).toBe(1);
+    expect(marchScore(MARCH_TILES + 5, MARCH_SCORE_DISTANCE + 10)).toBe(1);
+  });
+
+  it('marchStaminaCap: base start floors at MARCH_MAX_STA', () => {
+    expect(marchStaminaCap(MARCH_START_STA)).toBe(MARCH_MAX_STA);
+  });
+
+  it('marchStaminaCap: EN buffer raises the cap for the whole run', () => {
+    expect(marchStaminaCap(18)).toBe(18);
+  });
+
+  it('marchStaminaCap: sub-base start still floors at MARCH_MAX_STA', () => {
+    expect(marchStaminaCap(10)).toBe(MARCH_MAX_STA);
   });
 
   it('marchStartStamina: EN 0 returns base', () => {
@@ -810,6 +927,22 @@ describe('ancientLibrary', () => {
   it('dailySeed: produces a stable numeric seed from a known date', () => {
     expect(dailySeed('2026-06-18')).toBe(20260618);
   });
+
+  // ── MINI-11: per-attempt reseed (dailySeed ^ attemptNonce) ───────────────────
+  it('same day + same attempt nonce → identical master sequence (deterministic within a run)', () => {
+    const iso = '2026-06-18';
+    const a = generateSequence(alSeededRng(dailySeed(iso) ^ 3));
+    const b = generateSequence(alSeededRng(dailySeed(iso) ^ 3));
+    expect(a).toEqual(b);
+  });
+
+  it('same day + different attempt nonce → different master sequence (abandon+reopen is not replayable)', () => {
+    const iso = '2026-06-18';
+    const attempt1 = generateSequence(alSeededRng(dailySeed(iso) ^ 1));
+    const attempt2 = generateSequence(alSeededRng(dailySeed(iso) ^ 2));
+    // Pre-fix both attempts used dailySeed(iso) with no nonce → identical → transcribe exploit.
+    expect(attempt1).not.toEqual(attempt2);
+  });
 });
 
 // ── Last Stand ─────────────────────────────────────────────────────────────────
@@ -918,6 +1051,31 @@ describe('lastStand / blockWindowForWave', () => {
       expect(BLOCK_WINDOW_BY_WAVE[i]).toBeLessThanOrEqual(BLOCK_WINDOW_BY_WAVE[i - 1]);
     }
   });
+
+  // ── MINI-12: HP widens the per-wave block window ─────────────────────────────
+  it('HP > 0 widens the window vs the base (20 ms/level)', () => {
+    expect(blockWindowForWave(0, 5)).toBe(BLOCK_WINDOW_BY_WAVE[0] + 5 * 20);
+    expect(blockWindowForWave(0, 5)).toBeGreaterThan(blockWindowForWave(0, 0));
+  });
+
+  it('the widened window is capped at SPAWN_AHEAD_MS', () => {
+    expect(blockWindowForWave(0, 1000)).toBe(SPAWN_AHEAD_MS);
+  });
+
+  it('wave still clamps with an HP bonus applied', () => {
+    const last = BLOCK_WINDOW_BY_WAVE[BLOCK_WINDOW_BY_WAVE.length - 1];
+    expect(blockWindowForWave(999, 3)).toBe(Math.min(SPAWN_AHEAD_MS, last + 3 * 20));
+  });
+
+  // The teeth (6.1 carry-forward): the accept window is now strictly narrower than
+  // the old block-anywhere 1400 ms, so an early press at the old spawn point is out.
+  it('accept window is < SPAWN_AHEAD_MS, so a press at the old spawn point is outside it', () => {
+    const land = SPAWN_AHEAD_MS; // wave-0 attack lands at 1400
+    const win = blockWindowForWave(0, 0);
+    expect(win).toBeLessThan(SPAWN_AHEAD_MS);
+    // Old spawn point (land − SPAWN_AHEAD_MS = 0) now precedes the accept window open (land − win).
+    expect(0).toBeLessThan(land - win);
+  });
 });
 
 describe('lastStand / reactionSpeed', () => {
@@ -943,6 +1101,14 @@ describe('lastStand / reactionSpeed', () => {
   it('clamps to 1 if block time before spawn (negative margin would exceed SPAWN_AHEAD_MS)', () => {
     expect(reactionSpeed(land, -100)).toBe(1);
   });
+
+  // ── MINI-12: windowMs is the scoring denominator ─────────────────────────────
+  it('uses the passed window as the denominator', () => {
+    // A block 700 ms out scores high against a narrow 750 ms window …
+    expect(reactionSpeed(land, land - 700, 750)).toBeGreaterThan(0.9);
+    // … but only ~0.5 against the old 1400 ms default (700 / 1400).
+    expect(reactionSpeed(land, land - 700)).toBeCloseTo(0.5, 5);
+  });
 });
 
 describe('lastStand / reactionRating', () => {
@@ -959,6 +1125,37 @@ describe('lastStand / reactionRating', () => {
   it('speed < REACTION_GOOD → "late"', () => {
     expect(reactionRating(0)).toBe('late');
     expect(reactionRating(REACTION_GOOD - 0.01)).toBe('late');
+  });
+});
+
+describe('lastStand / resolveBlockGate (MINI-10 anti-mash)', () => {
+  it('accepts a matched block when no lockout is active', () => {
+    expect(resolveBlockGate(0, 500, true)).toEqual({ accept: true, lockoutUntil: 0 });
+  });
+
+  it('a whiff is rejected and starts a lockout window', () => {
+    expect(resolveBlockGate(0, 500, false)).toEqual({
+      accept: false,
+      lockoutUntil: 500 + MASH_LOCKOUT_MS,
+    });
+  });
+
+  it('rejects even a WOULD-BE-MATCHED block while locked out — the teeth of the fix', () => {
+    // Whiffed at 500 → locked until 700. A real attack in-window at 600 is still denied,
+    // so blind mashing can no longer catch every lane at spawn.
+    const { lockoutUntil } = resolveBlockGate(0, 500, false);
+    expect(resolveBlockGate(lockoutUntil, 600, true)).toEqual({ accept: false, lockoutUntil });
+  });
+
+  it('a mash-attempt during the window does not extend it (one early press ≠ permanent lock)', () => {
+    const { lockoutUntil } = resolveBlockGate(0, 500, false); // 700
+    // Another whiff at 620 while locked out: rejected, deadline unchanged.
+    expect(resolveBlockGate(lockoutUntil, 620, false)).toEqual({ accept: false, lockoutUntil });
+  });
+
+  it('input reopens once the window elapses', () => {
+    const { lockoutUntil } = resolveBlockGate(0, 500, false); // 700
+    expect(resolveBlockGate(lockoutUntil, 700, true)).toEqual({ accept: true, lockoutUntil });
   });
 });
 

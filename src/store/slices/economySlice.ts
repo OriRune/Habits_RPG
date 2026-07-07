@@ -5,7 +5,7 @@ import { STARTER_SPELLS } from '@/engine/spells';
 import { getItem } from '@/engine/items';
 import { getRecipe, canCraft } from '@/engine/crafting';
 import { toISODate } from '@/engine/date';
-import { type Habit, currentStreak } from '@/engine/habits';
+import { type Habit, currentStreak, mostRecentMissedScheduledDay } from '@/engine/habits';
 import type { GameState } from '../shared';
 
 export interface EconomySlice {
@@ -20,9 +20,11 @@ export interface EconomySlice {
 
   buyItem: (itemKey: string) => void;
   useStreakFreeze: (habitId: string) => void;
+  useRecoveryElixir: (habitId: string) => void;
   claimPartyQuestReward: (questId: string, memberCount: number) => void;
   equipWeapon: (weaponKey: string) => void;
   buyWeapon: (weaponKey: string) => void;
+  buyGear: (gearKey: string) => void;
   learnFromSpellbook: (itemKey: string) => void;
   craft: (recipeKey: string) => void;
   equipGear: (gearKey: string) => void;
@@ -64,6 +66,8 @@ export const createEconomySlice: StateCreator<
       const today = toISODate();
       // Don't consume the item if today is already logged (completed or frozen).
       if (habit.log[today] !== undefined) return s;
+      // Don't spend a freeze protecting an already-dead streak.
+      if (currentStreak(habit, today) === 0) return s;
       return {
         inventory: { ...s.inventory, streak_freeze: s.inventory['streak_freeze'] - 1 },
         habits: s.habits.map((h) => {
@@ -73,6 +77,27 @@ export const createEconomySlice: StateCreator<
             log: { ...h.log, [today]: { xp: 0, frozen: true } },
             lastCompletedISO: today,
           };
+          updated.streak = currentStreak(updated, today);
+          return updated;
+        }),
+      };
+    }),
+
+  useRecoveryElixir: (habitId) =>
+    set((s) => {
+      if ((s.inventory['recovery_elixir'] ?? 0) <= 0) return s;
+      const habit = s.habits.find((h) => h.id === habitId);
+      if (!habit) return s;
+      const today = toISODate();
+      const missed = mostRecentMissedScheduledDay(habit, today);
+      // Nothing to repair — don't consume the elixir.
+      if (missed === undefined) return s;
+      return {
+        inventory: { ...s.inventory, recovery_elixir: s.inventory['recovery_elixir'] - 1 },
+        habits: s.habits.map((h) => {
+          if (h.id !== habitId) return h;
+          // Retroactive repair of a past day; leaves lastCompletedISO (today's completion) alone.
+          const updated: Habit = { ...h, log: { ...h.log, [missed]: { xp: 0, frozen: true } } };
           updated.streak = currentStreak(updated, today);
           return updated;
         }),
@@ -105,6 +130,19 @@ export const createEconomySlice: StateCreator<
       return {
         character: { ...s.character, gold: free ? s.character.gold : s.character.gold - weapon.price },
         ownedWeapons: [...s.ownedWeapons, weaponKey],
+      };
+    }),
+
+  buyGear: (gearKey) =>
+    set((s) => {
+      const gear = getGear(gearKey);
+      if (!gear || gear.price === undefined) return s;
+      if (s.ownedGear.includes(gearKey)) return s;
+      const free = s.settings.unlimitedGold;
+      if (!free && s.character.gold < gear.price) return s;
+      return {
+        character: { ...s.character, gold: free ? s.character.gold : s.character.gold - gear.price },
+        ownedGear: [...s.ownedGear, gearKey],
       };
     }),
 

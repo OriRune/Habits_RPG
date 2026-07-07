@@ -1,12 +1,10 @@
 import { useState } from 'react';
 import { AlertTriangle, BarChart3, Check, Flame, MoreVertical, Pause, Pencil, Play, Archive, Trash2, CalendarClock, Undo2, Star } from 'lucide-react';
 import { getStat } from '@/engine/stats';
-import { type Habit, isCompletedOn, effectiveStatus, weekCompletions } from '@/engine/habits';
+import { type Habit, isCompletedOn, effectiveStatus, weekCompletions, currentStreak } from '@/engine/habits';
 import { habitHealth, type HabitWarning, type HabitActionCode } from '@/engine/habitHealth';
 import { toISODate, parseISODate, addDays } from '@/engine/date';
-import { computeXp } from '@/engine/xp';
 import { useGameStore } from '@/store/useGameStore';
-import { useToastStore } from '@/store/useToastStore';
 import { statCrest } from '@/lib/sprites';
 import { Sprite } from '@/components/ui/Sprite';
 import { cn } from '@/lib/cn';
@@ -41,7 +39,6 @@ export function HabitCard({
   const retireHabit = useGameStore((s) => s.retireHabit);
   const reactivateHabit = useGameStore((s) => s.reactivateHabit);
   const setHabitFocus = useGameStore((s) => s.setHabitFocus);
-  const pushToast = useToastStore((s) => s.pushToast);
   const [dialog, setDialog] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [suspendOpen, setSuspendOpen] = useState(false);
@@ -57,6 +54,7 @@ export function HabitCard({
   const suspended = effectiveStatus(habit, viewDate) === 'suspended';
   const retired = habit.status === 'retired';
   const stat = getStat(habit.stat);
+  const liveStreak = currentStreak(habit, viewDate);
   const week =
     habit.frequency === 'times_per_week'
       ? { done: weekCompletions(habit, viewDate), target: habit.timesPerWeek ?? 1 }
@@ -71,11 +69,9 @@ export function HabitCard({
     if (habit.type === 'quantity') {
       setDialog(true);
     } else {
+      // completeHabit itself pushes the reward-receipt toast (actual XP · gold · energy),
+      // so binary and quantity paths report identically — no separate toast here.
       completeHabit(habit.id, undefined, viewDate);
-      // Show a brief "+XP" toast for binary completions (quantity habits show an
-      // XP preview in CompleteHabitDialog already, so no toast needed there).
-      const xp = computeXp({ difficulty: habit.difficulty, type: 'binary' });
-      pushToast({ text: `+${xp} XP`, color: stat.color });
     }
   }
 
@@ -142,10 +138,10 @@ export function HabitCard({
                 {week.done}/{week.target} this week
               </span>
             )}
-            {!week && habit.streak > 0 && (
+            {!week && liveStreak > 0 && (
               <span className="flex items-center gap-0.5 font-semibold text-ember">
                 <Flame className="h-3 w-3" />
-                {habit.streak}
+                {liveStreak}
               </span>
             )}
             {suspended && (

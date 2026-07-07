@@ -80,8 +80,19 @@ export const STOMP_LEAD_GAIN = 9;
  */
 export const STOMP_CHAIN_BONUS = 2;
 
-/** Lead gained from a single dash burst. */
-export const DASH_LEAD_GAIN = 16;
+/**
+ * Lead gained from a single dash burst.
+ *
+ * Tuned so a dash-only player roughly breaks even at the base cooldown: the
+ * chaser closes CHASER_GAIN_PER_SEC (4.5) × DASH_COOLDOWN_MS (2.6 s) ≈ 11.7 wu
+ * per cooldown, so a 12-wu burst nets only ≈ +0.1 wu/s pre-surge and goes
+ * net-negative once SURGE_REAL_DRAIN kicks in past SURGE_REAL_DRAIN_START.
+ * A pure dash-spammer is now caught after the surge zone unless they also stomp
+ * mooks / slide banners. Still strictly > STOMP_LEAD_GAIN (9) so a dash remains
+ * the easier recovery tool. (AG-floored 1800 ms cooldowns stay net-positive —
+ * high AG remains a real advantage.)
+ */
+export const DASH_LEAD_GAIN = 12;
 
 /** Lead gained from successfully sliding under a lowbar banner (clean slide). */
 export const SLIDE_LEAD_GAIN = 5;
@@ -181,7 +192,7 @@ export function seededRng(seed: number): () => number {
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 /** Kinds of obstacles that sit on a rooftop. 'gap' is no longer a prop kind — gaps are structural. */
-export type PropKind = 'hazard' | 'mook' | 'lowbar' | 'crossbowman';
+export type PropKind = 'hazard' | 'mook' | 'lowbar' | 'crossbowman' | 'bolt';
 
 export interface RoofProp {
   id: number;
@@ -301,12 +312,34 @@ export function generateCourse(rng: () => number, count = BUILDING_COUNT): Build
         kind = 'crossbowman';
         propWidth = 2.5;
       }
-      // Place prop at least 3 wu from the left edge, leaving 3 wu on the right
-      const safeLeft = buildingX + 3;
-      const safeRight = buildingX + buildingWidth - 3 - propWidth;
-      if (safeRight > safeLeft) {
-        const propX = safeLeft + rng() * (safeRight - safeLeft);
-        props.push({ id: propIdCounter++, kind, x: propX, width: propWidth });
+      // Props sit at least 3 wu from each building edge so there's room to react.
+      const zoneLeft = buildingX + 3;
+      const zoneRight = buildingX + buildingWidth - 3;
+      if (kind === 'crossbowman') {
+        // The crossbowman fires a telegraphed bolt: pair a jumpable 'bolt' a few
+        // wu BEFORE the body so the sequence demands a jump (bolt) then a slide
+        // (body) — genuine input variety instead of a reskinned lowbar.
+        const boltWidth = 2;
+        const boltGap = 5;                     // bolt left edge → body left edge
+        const pairSpan = boltGap + propWidth;  // bolt left edge → body right edge
+        if (zoneRight - zoneLeft >= pairSpan) {
+          const boltX = zoneLeft + rng() * (zoneRight - zoneLeft - pairSpan);
+          props.push({ id: propIdCounter++, kind: 'bolt', x: boltX, width: boltWidth });
+          props.push({ id: propIdCounter++, kind: 'crossbowman', x: boltX + boltGap, width: propWidth });
+        } else {
+          // Too narrow to fit the pair fairly — fall back to a lone crossbowman.
+          const soloRight = zoneRight - propWidth;
+          if (soloRight > zoneLeft) {
+            const propX = zoneLeft + rng() * (soloRight - zoneLeft);
+            props.push({ id: propIdCounter++, kind: 'crossbowman', x: propX, width: propWidth });
+          }
+        }
+      } else {
+        const safeRight = zoneRight - propWidth;
+        if (safeRight > zoneLeft) {
+          const propX = zoneLeft + rng() * (safeRight - zoneLeft);
+          props.push({ id: propIdCounter++, kind, x: propX, width: propWidth });
+        }
       }
     }
 
@@ -557,6 +590,11 @@ export function resolveContact(
     }
     case 'hazard':
       return grounded ? 'stumble' : 'clear';
+    case 'bolt':
+      // The crossbowman's telegraphed bolt flies at running height — jump over it.
+      // Mechanical inverse of the crossbowman body (slide-only): together the pair
+      // demands a jump (bolt) then a slide (body). Sliding does not help vs a bolt.
+      return grounded ? 'stumble' : 'clear';
     case 'lowbar':
       return sliding ? 'clear' : 'stumble';
     case 'crossbowman':
@@ -641,6 +679,12 @@ export interface ChaseState {
   slideMs: number;
   dashMs: number;
   dashCooldownMs: number;
+  /**
+   * Base dash cooldown (ms) for this run — the value dashCooldownMs is reset to
+   * after a dash. Derived once in initChase from the AG stat (higher AG → shorter
+   * cooldown, floored at 1800ms). Immutable after init.
+   */
+  readonly dashCooldownBaseMs: number;
   /** Duration remaining for the stomp visual flash (ms). */
   stompFlashMs: number;
 
@@ -711,8 +755,12 @@ export interface ChaseState {
   score: number;
 }
 
-/** Return the initial ChaseState for a fresh run. */
-export function initChase(rng: () => number): ChaseState {
+/**
+ * Return the initial ChaseState for a fresh run.
+ * `agLevel` (the AG stat level) shortens the dash cooldown by 60 ms per level,
+ * floored at 1800 ms, and is baked into dashCooldownBaseMs for the run.
+ */
+export function initChase(rng: () => number, agLevel = 0): ChaseState {
   return {
     buildings: generateCourse(rng),
     heroY: 0,
@@ -725,6 +773,7 @@ export function initChase(rng: () => number): ChaseState {
     slideMs: 0,
     dashMs: 0,
     dashCooldownMs: 0,
+    dashCooldownBaseMs: Math.max(1800, DASH_COOLDOWN_MS - 60 * agLevel),
     stompFlashMs: 0,
     lead: LEAD_START,
     chaserActive: false,
@@ -815,7 +864,7 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
   let justDashed = false;
   if (input.dashPressed && dashCooldownMs <= 0 && !nowStumbling) {
     dashMs         = DASH_DURATION_MS;
-    dashCooldownMs = DASH_COOLDOWN_MS;
+    dashCooldownMs = state.dashCooldownBaseMs;
     justDashed     = true;
   }
 
@@ -1089,6 +1138,7 @@ export function stepChase(state: ChaseState, input: ChaseInput, dtSec: number): 
     slideMs,
     dashMs,
     dashCooldownMs,
+    dashCooldownBaseMs: state.dashCooldownBaseMs,
     stompFlashMs,
     lead:           Math.max(0, newLead),
     chaserActive,

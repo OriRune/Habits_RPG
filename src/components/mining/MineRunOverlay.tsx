@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Heart, Zap, Coins, ChevronsDown, LogOut, Gem, Sparkles } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { useMiningLoop } from '@/hooks/useMiningLoop';
-import { canDescend, facedCell, MINE_DEATH_KEEP, type MineTile, type MineMonster } from '@/engine/mining';
+import { canDescend, facedCell, findTombstone, MINE_DEATH_KEEP, type MineTile, type MineMonster } from '@/engine/mining';
 import { cameraWindow, VIEW } from '@/engine/crawl';
 import { bandForFloor, type CrawlPalette } from '@/engine/crawlBiomes';
 import { useSmoothCamera, type SmoothCameraLayout } from '@/hooks/useSmoothCamera';
@@ -17,6 +17,7 @@ import { FitToWidth } from '@/components/ui/FitToWidth';
 import { cn } from '@/lib/cn';
 import { MineControls } from './MineControls';
 import { CrawlerAvatar } from '@/components/minigame/CrawlerAvatar';
+import { StreakBonusChip } from '@/components/character/StreakBonusChip';
 import { useCoopStore } from '@/net/coop/session';
 import { useAuthStore } from '@/net/auth';
 import { usePartyStore } from '@/hooks/useParty';
@@ -149,6 +150,7 @@ export function MineRunOverlay() {
   const chooseMineBoon = useGameStore((s) => s.chooseMineBoon);
   const skipMineBoon = useGameStore((s) => s.skipMineBoon);
   const isFirstRun = useGameStore((s) => s.deepestMineFloor === 0);
+  const habitBonus = useGameStore((s) => s.character.habitBonus);
   const mineTombstone = useGameStore((s) => s.mineTombstone);
   const remotePlayers = useCoopStore((s) => s.remotePlayers);
   const coopSession = useCoopStore((s) => s.session);
@@ -451,21 +453,24 @@ export function MineRunOverlay() {
   const baseR0 = Math.max(0, r0 - MARGIN);
   const baseC0 = Math.max(0, c0 - MARGIN);
 
-  // Shaft directional indicator — show an arrow when the shaft is off-screen.
-  const shaftDir = (() => {
-    const sp = mine.shaftPos;
-    if (!sp) return null;
-    const inViewport = sp.r >= r0 && sp.r < r0 + VIEW && sp.c >= c0 && sp.c < c0 + VIEW;
+  // Directional compass — an 8-way arrow to an off-screen point of interest (null when on-screen).
+  const compassTo = (target: { r: number; c: number } | null | undefined) => {
+    if (!target) return null;
+    const inViewport = target.r >= r0 && target.r < r0 + VIEW && target.c >= c0 && target.c < c0 + VIEW;
     if (inViewport) return null;
-    const dr = sp.r - mine.player.r;
-    const dc = sp.c - mine.player.c;
+    const dr = target.r - mine.player.r;
+    const dc = target.c - mine.player.c;
     if (Math.abs(dr) > Math.abs(dc) * 1.5) return dr > 0 ? '↓' : '↑';
     if (Math.abs(dc) > Math.abs(dr) * 1.5) return dc > 0 ? '→' : '←';
     if (dr > 0 && dc > 0) return '↘';
     if (dr > 0 && dc < 0) return '↙';
     if (dr < 0 && dc > 0) return '↗';
     return '↖';
-  })();
+  };
+  // Shaft directional indicator — show an arrow when the shaft is off-screen.
+  const shaftDir = compassTo(mine.shaftPos);
+  // MINI-31: tombstone compass — points back to a dropped tombstone so recovery isn't a blind sweep.
+  const tombDir = compassTo(findTombstone(mine));
 
   const inView = (mr: number, mc: number) => {
     const vi = mr - baseR0;
@@ -516,6 +521,15 @@ export function MineRunOverlay() {
               title="Shaft direction"
             >
               Shaft {shaftDir}
+            </span>
+          )}
+          {/* Tombstone direction badge — appears when a dropped tombstone is off-screen (MINI-31) */}
+          {tombDir && (
+            <span
+              className="ml-2 rounded px-1 py-0.5 text-[10px] font-bold text-rose-300 bg-rose-900/40 border border-rose-600/50"
+              title="Tombstone direction — recover your dropped haul"
+            >
+              🪦 {tombDir}
             </span>
           )}
           {mine.activeBoons?.map((key) => {
@@ -1075,7 +1089,7 @@ export function MineRunOverlay() {
             </p>
             <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-parchment-200">
               <span className="flex items-center gap-1 text-gold-bright">
-                <Coins className="h-3.5 w-3.5" /> {mine.haul.gold ?? 0}
+                <Coins className="h-3.5 w-3.5" /> {Math.round((mine.haul.gold ?? 0) * habitBonus)}
               </span>
               {haulMats.map(([key, n]) => (
                 <HaulMat key={key} matKey={key} qty={n} />
@@ -1084,6 +1098,7 @@ export function MineRunOverlay() {
                 <span className="text-parchment-300/50">nothing gathered</span>
               )}
             </div>
+            <StreakBonusChip className="text-[11px]" />
             <Button variant="primary" onClick={endMining} className="mt-1 px-4 py-2 text-sm">
               Bank &amp; Leave
             </Button>
@@ -1136,7 +1151,7 @@ export function MineRunOverlay() {
                 <div className="flex flex-col items-center gap-1">
                   <span className="font-display text-[10px] uppercase tracking-wider text-emerald-400/80">Kept (50%)</span>
                   <div className="flex flex-wrap justify-center gap-x-2 gap-y-0.5 text-parchment-200">
-                    <span className="flex items-center gap-1 text-gold-bright"><Coins className="h-3 w-3" /> {keptGold}</span>
+                    <span className="flex items-center gap-1 text-gold-bright"><Coins className="h-3 w-3" /> {Math.round(keptGold * habitBonus)}</span>
                     {keptMats.map(([key, n]) => <HaulMat key={key} matKey={key} qty={n} />)}
                     {keptGold === 0 && keptMats.length === 0 && <span className="text-parchment-300/50">nothing</span>}
                   </div>
@@ -1156,6 +1171,7 @@ export function MineRunOverlay() {
                   )}
                 </div>
               </div>
+              <StreakBonusChip className="text-[11px]" />
               <Button variant="primary" onClick={endMining} className="mt-1 px-4 py-2 text-sm">
                 Retrieve Haul &amp; Leave
               </Button>

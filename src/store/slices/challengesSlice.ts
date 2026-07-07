@@ -6,6 +6,7 @@ import {
   CHALLENGE_TEMPLATES,
   resolveChallenge,
   suggestReward,
+  clampReward,
   rivalGoal,
 } from '@/engine/challenges';
 import { weeklyRotation } from '@/engine/weekly';
@@ -106,7 +107,9 @@ export const createChallengesSlice: StateCreator<
         tag: draft.tag,
         goal,
         durationDays,
-        reward: rewardOverride ?? suggestReward(base),
+        // Clamp any hand-edited override to the auto-balanced bounds so a custom challenge
+        // can't mint arbitrary XP/gold off one completion (HABIT-01).
+        reward: rewardOverride ? clampReward(rewardOverride) : suggestReward(base),
         custom: true,
       };
       return { customChallenges: [...s.customChallenges, def] };

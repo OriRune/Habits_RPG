@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { Heart, Zap, Sparkles, Swords, Crosshair, LogOut, Skull, Trophy, FlaskRound, Volume2, VolumeX } from 'lucide-react';
+import { Heart, Zap, Sparkles, Swords, Crosshair, LogOut, Skull, Trophy, FlaskRound, Volume2, VolumeX, Coins } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { useArenaLoop } from '@/hooks/useArenaLoop';
 import type { ArenaState, ArenaStatusEffect, TelegraphKind, ArenaRune } from '@/engine/arena';
-import { previewRuneTarget } from '@/engine/arena';
+import { previewRuneTarget, arenaReward } from '@/engine/arena';
 import { boardPixelSize, board, cellEquals, cellToPixel, step, neighbors, inBoard, type Cell, type Dir } from '@/engine/grid';
 import { getSpell, type StatusKey } from '@/engine/spells';
 import { getItem } from '@/engine/items';
 import { Button } from '@/components/ui/Button';
+import { StreakBonusChip } from '@/components/character/StreakBonusChip';
 import { cn } from '@/lib/cn';
 import * as sfx from '@/lib/sfx';
 import { ArenaControls } from './ArenaControls';
@@ -27,7 +28,7 @@ function centerFor(h: Cell, radius: number): { x: number; y: number } {
 }
 
 const STATUS_GLYPH: Record<StatusKey, string> = { bless: '🛡️', burn: '🔥', weaken: '🔻', blind: '💫', freeze: '❄️', poison: '☠️' };
-const TELEGRAPH_LABEL: Record<TelegraphKind, string> = { slam: 'SLAM', line: 'LINE', nova: 'NOVA', volley: 'VOL' };
+const TELEGRAPH_LABEL: Record<TelegraphKind, string> = { slam: 'SLAM', line: 'LINE', nova: 'NOVA', volley: 'VOL', charge: 'RUSH' };
 const RUNE_GLYPH: Record<ArenaRune['kind'], string> = { fire: '🔥', ice: '❄️', poison: '☠️' };
 const MINION_GLYPH: Record<string, string> = { bat: '🦇', archer: '🐺' };
 const RUNE_COLOR: Record<ArenaRune['kind'], string> = { fire: 'rgba(239,68,68,0.35)', ice: 'rgba(96,165,250,0.35)', poison: 'rgba(134,239,172,0.30)' };
@@ -104,6 +105,7 @@ export function ArenaOverlay() {
   const arena = useGameStore((s) => s.arena);
   const endArena = useGameStore((s) => s.endArena);
   const beginArenaBanking = useGameStore((s) => s.beginArenaBanking);
+  const habitBonus = useGameStore((s) => s.character.habitBonus);
   // Slot bindings: persisted across runs via settings so players don't have to rebind each time.
   const arenaBindLeft = useGameStore((s) => s.settings.arenaBindLeft);
   const arenaBindRight = useGameStore((s) => s.settings.arenaBindRight);
@@ -559,6 +561,15 @@ export function ArenaOverlay() {
             </p>
             {/* Run summary — statUsage and damageDealt are available on ArenaState until endArena clears it */}
             <RunSummary arena={arena} />
+            {(() => {
+              const goldOut = Math.round((arenaReward(arena).gold ?? 0) * habitBonus);
+              return goldOut > 0 ? (
+                <span className="flex items-center gap-1 text-xs text-gold-bright">
+                  <Coins className="h-3.5 w-3.5" /> {goldOut}
+                </span>
+              ) : null;
+            })()}
+            <StreakBonusChip className="text-[11px]" />
             <Button variant="primary" onClick={endArena} className="mt-1 px-4 py-2 text-sm">
               {won ? 'Claim Reward' : 'Leave the Arena'}
             </Button>

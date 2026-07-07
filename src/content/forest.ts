@@ -191,6 +191,13 @@ export const FOREST_BEASTS: Record<string, ForestBeastDef> = {
     band: 'ancient', defense: 2, weakTo: ['WI'], resistTo: ['DX'],
     dropMaterial: 'amber_resin', dropAmount: [1, 2],
   },
+  // Deep-ancient sprinter (stages 12+): sub-300ms cadence outruns the player, so
+  // deep stages can no longer be strolled through untouched.
+  amber_stalker: {
+    key: 'amber_stalker', name: 'Amber Stalker', glyph: '🐆', color: '#e8a020',
+    stageMin: 12, hp: 26, touchDamage: 13, moveCadenceMs: 250, aggroRadius: 5, bounty: [40, 60],
+    band: 'ancient', flees: false, weakTo: ['WI'], resistTo: ['DX'],
+  },
 };
 
 // ============================================================================

@@ -71,7 +71,7 @@ export function createGameStore() {
     }),
     {
       name: 'habits-rpg-save',
-      version: 27,
+      version: 32,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -127,6 +127,24 @@ export function createGameStore() {
       // v26: First-run welcome card — new `hasSeenWelcome` boolean (false on fresh saves, stamped
       //      true on existing saves so veterans are never shown the card).
       // v27: Mine tombstone — new `mineTombstone` field (null on existing saves; set on death).
+      // v28: Daily-reminder offer card — new `reminderCardDismissed` boolean (false on existing
+      //      saves via merge, so veterans see the card once after a missed day if reminders are off).
+      // v29: Economy-integrity markers — new optional Habit fields `lastEnergyGrantISO` and
+      //      `lastMilestoneGrant` gate the once-per-day energy/milestone grants (HABIT-04/16 + the
+      //      3.4 milestone claw-back). Absent on existing habits → treated as "not yet granted", so
+      //      the first post-upgrade completion behaves exactly as before; no backfill needed.
+      // v30: Minigame-trickle allocation ledger (BAL-09) — new Character fields `statXpTrickle` and
+      //      `statXpTrickleAtLastLevel` let level-ups discount passive minigame XP when distributing
+      //      stat points. Both backfill to zero on existing saves, so all accrued XP counts as
+      //      full-weight until the next post-upgrade minigame run — no retroactive penalty. Leveling
+      //      pace (driven by total statXp) is unchanged.
+      // v31: Trial retry integrity (MINI-11) — new top-level `trialAttemptNonce` (monotonic
+      //      counter XOR'd into the daily seed of the deterministic trials so abandon+reopen
+      //      draws a fresh challenge). Backfills to 0 on existing saves via merge; a scalar,
+      //      so the default `...p` merge carries it — no explicit merge line needed.
+      // v32: Spirit Grove recall bias (MINI-16) — new top-level `spiritGroveSeen` (round ids the
+      //      player has been shown; drafts bias toward unseen). Backfills to [] on existing saves;
+      //      an array carried by the default merge, so no explicit merge line needed.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {
@@ -152,9 +170,12 @@ export function createGameStore() {
               ...p.character,
               statLevels: p.character.statLevels ?? statLevelsFromXp(p.character.statXp ?? emptyStatXP()),
               statXpAtLastLevel: p.character.statXpAtLastLevel ?? { ...(p.character.statXp ?? emptyStatXP()) },
+              // v30: zero-init the trickle sub-ledger — past XP counts full-weight (no retroactive penalty).
+              statXpTrickle: p.character.statXpTrickle ?? emptyStatXP(),
+              statXpTrickleAtLastLevel: p.character.statXpTrickleAtLastLevel ?? emptyStatXP(),
             }
           : p.character;
-        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, arena: null, tactics: null, created: true, hasSeenWelcome: true, trialsClearedOn: p.trialsClearedOn ?? emptyTrialsClearedOn(), bestTrialScore: p.bestTrialScore ?? emptyBestTrialScore(), dungeonHistory: p.dungeonHistory ?? [], claimedPartyQuests: p.claimedPartyQuests ?? [], earnings: p.earnings ?? freshEarningsLedger(), energyLog: p.energyLog ?? {}, mineTombstone: p.mineTombstone ?? null } as GameState;
+        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, arena: null, tactics: null, created: true, hasSeenWelcome: true, trialsClearedOn: p.trialsClearedOn ?? emptyTrialsClearedOn(), bestTrialScore: p.bestTrialScore ?? emptyBestTrialScore(), dungeonHistory: p.dungeonHistory ?? [], claimedPartyQuests: p.claimedPartyQuests ?? [], earnings: p.earnings ?? freshEarningsLedger(), energyLog: p.energyLog ?? {}, mineTombstone: p.mineTombstone ?? null, reminderCardDismissed: p.reminderCardDismissed ?? false, trialAttemptNonce: p.trialAttemptNonce ?? 0, spiritGroveSeen: p.spiritGroveSeen ?? [] } as GameState;
       },
       // Deep-merge the nested `character`/`settings` objects so fields added in later versions
       // (e.g. statLevels) always fall back to their defaults instead of being dropped by the

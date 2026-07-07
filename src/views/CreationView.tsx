@@ -17,6 +17,19 @@ const PER_STAT_MAX = CREATION_STAT_MAX - BASE_STAT_LEVEL;
 /** The template group pre-selected by default for quick-start and fresh creation. */
 const DEFAULT_GROUP_ID = 'beginner_fitness';
 
+/** Signature spell granted by "Quick start" — the first of the signature choices. */
+export const QUICK_START_SPELL = SIGNATURE_SPELL_CHOICES[0];
+
+/**
+ * Stat spread applied by "Quick start" so a quick-starter still spends all
+ * STARTING_STAT_POINTS instead of silently forfeiting them: max out the starter
+ * weapon's attack stat, then put the remainder into Endurance for survivability.
+ */
+export function quickStartAllocations(): Partial<Record<StatId, number>> {
+  const attackStat = getWeapon(STARTER_WEAPON).attackStat;
+  return { [attackStat]: PER_STAT_MAX, EN: STARTING_STAT_POINTS - PER_STAT_MAX };
+}
+
 /**
  * First-run onboarding: name the hero, spend the starting stat points, pick a starting weapon
  * plus a signature spell, and choose starter habit templates. On "Begin Adventure", starter habits
@@ -73,7 +86,12 @@ export function CreationView() {
 
   const quickStart = () => {
     seedHabits([DEFAULT_GROUP_ID]);
-    createCharacter({ name, allocations: {}, weaponKey: STARTER_WEAPON, spellKey: '' });
+    createCharacter({
+      name,
+      allocations: quickStartAllocations(),
+      weaponKey: STARTER_WEAPON,
+      spellKey: QUICK_START_SPELL,
+    });
   };
 
   return (
@@ -250,6 +268,11 @@ export function CreationView() {
               None selected — you can add habits after creation.
             </p>
           )}
+          {selectedGroupIds.size > 2 && (
+            <p className="text-center text-xs text-ink-light/60">
+              Starting small works best — you can add more habits anytime.
+            </p>
+          )}
         </Panel>
 
         <Divider />
@@ -259,6 +282,9 @@ export function CreationView() {
             <Sword className="mr-2 inline h-4 w-4" />
             Begin Adventure
           </Button>
+          {(!weaponKey || !spellKey) && (
+            <p className="text-xs text-ember">Choose a weapon and spell to begin.</p>
+          )}
           {remaining > 0 && (
             <p className="text-xs text-parchment-300/80">
               {remaining} point{remaining === 1 ? '' : 's'} unspent — you can still begin.

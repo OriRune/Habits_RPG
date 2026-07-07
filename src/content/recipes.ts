@@ -15,7 +15,8 @@
 //              - weapon key must exist in content/weapons.ts
 //              - item   key must exist in content/items.ts
 //  materials Map of material id → quantity. Material ids (content/materials.ts):
-//              leather, iron_bar, cloth_roll, bronze_bar, herbs, crystals.
+//              leather, iron_bar, cloth_roll, bronze_bar, herbs, crystals,
+//              obsidian, frost_quartz, amber_resin.
 //  gold      Optional gold cost on top of materials.
 //  description Optional note.
 // ============================================================================
@@ -93,5 +94,26 @@ export const RECIPES: Record<string, RecipeDef> = {
     result: { kind: 'weapon', key: 'short_bow' },
     materials: { leather: 2, cloth_roll: 1 },
     gold: 20,
+  },
+  mithril_pickaxe: {
+    key: 'mithril_pickaxe',
+    name: 'Mithril Toolkit',
+    result: { kind: 'gear', key: 'mithril_pickaxe' },
+    materials: { obsidian: 4, frost_quartz: 2 },
+    gold: 150,
+  },
+  obsidian_plate: {
+    key: 'obsidian_plate',
+    name: 'Obsidian Plate',
+    result: { kind: 'gear', key: 'obsidian_plate' },
+    materials: { obsidian: 3, frost_quartz: 2, iron_bar: 2 },
+    gold: 130,
+  },
+  resin_trinket: {
+    key: 'resin_trinket',
+    name: 'Amber Charm',
+    result: { kind: 'gear', key: 'resin_trinket' },
+    materials: { amber_resin: 3, crystals: 2 },
+    gold: 100,
   },
 };

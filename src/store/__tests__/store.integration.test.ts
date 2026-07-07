@@ -4,7 +4,7 @@ import { STAT_IDS, emptyStatXP } from '@/engine/stats';
 import { levelForTotalXp } from '@/engine/leveling';
 import { bossForLevel } from '@/engine/bosses';
 import { type BattleState } from '@/engine/combat';
-import { type DungeonRoom, merchantOffers } from '@/engine/dungeon';
+import { type DungeonRoom, merchantOffers, combatRoomGold, bossRoomGold } from '@/engine/dungeon';
 import { type FloorMap } from '@/engine/dungeonMap';
 import { type MineState, type MineTile } from '@/engine/mining';
 import { getWeapon, STARTER_WEAPON } from '@/engine/weapons';
@@ -13,11 +13,15 @@ import { BOONS } from '@/content/boons';
 import { type ForestState, type ForestTile, FOREST_WINDUP_MS } from '@/engine/forest';
 import { getEncounter, startEncounter } from '@/engine/encounters';
 import { toISODate, weekKey, _setNow, _resetNow, addDays } from '@/engine/date';
-import { MAX_ENERGY } from '../shared';
+import { MAX_ENERGY, fighterFor } from '../shared';
+import type { HexBattleState, HeroOpts } from '@/engine/hexBattle';
+import { selectHabitBonusInfo } from '../selectors';
 import { BASE_STAT_LEVEL } from '@/engine/progression';
 import { freshEarningsLedger } from '@/engine/balance';
-import { completionRatio, COMPLETION_CAP, UNCAPPED_RATIO_CAP } from '@/engine/xp';
+import { completionRatio, COMPLETION_CAP, UNCAPPED_RATIO_CAP, habitGold, computeXp } from '@/engine/xp';
 import { statCompletedWithin } from '@/engine/habits';
+import { trialReward } from '@/engine/trials/trials';
+import { useToastStore } from '@/store/useToastStore';
 import { resetRunRng } from '../runRng';
 
 /** A trivial single-path floor map for tests: one room per layer, linked in sequence. */
@@ -155,6 +159,17 @@ describe('createCharacter (onboarding)', () => {
     expect(get().hasSeenWelcome).toBe(false);
   });
 
+  it('a fresh store has reminderCardDismissed === false', () => {
+    expect(get().reminderCardDismissed).toBe(false);
+  });
+
+  it('dismissReminderCard flips reminderCardDismissed to true; resetGame clears it', () => {
+    get().dismissReminderCard();
+    expect(get().reminderCardDismissed).toBe(true);
+    get().resetGame();
+    expect(get().reminderCardDismissed).toBe(false);
+  });
+
   it('addHabit seeds starter habits before createCharacter completes', () => {
     get().addHabit({ name: 'Walk 10 minutes', stat: 'AG', type: 'binary', frequency: 'daily', difficulty: 'easy' });
     get().addHabit({ name: 'Stretch', stat: 'AG', type: 'binary', frequency: 'daily', difficulty: 'easy' });
@@ -184,8 +199,19 @@ describe('completeHabit', () => {
   it('records energy earned in energyLog for today', () => {
     get().addHabit({ name: 'Read', stat: 'KN', type: 'binary', frequency: 'daily', difficulty: 'normal' });
     get().completeHabit(get().habits[0].id);
-    const today = new Date().toISOString().slice(0, 10);
+    // Key via the engine date seam (local date, like the store) — NOT new Date().toISOString()
+    // (UTC), which diverges from the store's key past the local/UTC midnight boundary.
+    const today = toISODate();
     expect(get().energyLog[today]?.earned).toBe(1);
+  });
+
+  it('scales granted habit XP with character level (BAL-01)', () => {
+    get().addHabit({ name: 'Read', stat: 'KN', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    // Bump to L10 → base 20 × (1 + 0.15×9) = 47. Guards the habitsSlice level seam, not just computeXp.
+    useGameStore.setState({ character: { ...get().character, level: 10 } });
+    get().completeHabit(get().habits[0].id);
+    expect(get().character.statXp.KN).toBe(47);
+    expect(get().earnings.xp.habit).toBe(47);
   });
 
   it('reverses earnings ledger on uncomplete', () => {
@@ -256,6 +282,7 @@ describe('level-up trial resolution', () => {
       phases: [],
       phaseIndex: 0,
       relief: 0,
+      hpDefeated: 0,
       bossMaxMp: 0,
       bossMp: 0,
       bossMaxSta: 0,
@@ -353,9 +380,24 @@ describe('custom challenges & weekly loop', () => {
     expect(def.reward.statXp?.ST).toBeGreaterThan(0);
   });
 
-  it('honors a manual reward override', () => {
-    get().createCustomChallenge({ name: 'Override', kind: 'count', goal: 5, durationDays: 7 }, { gold: 12 });
-    expect(get().customChallenges[0].reward).toEqual({ gold: 12 });
+  it('honors an in-bounds manual reward override', () => {
+    get().createCustomChallenge(
+      { name: 'Override', kind: 'count', goal: 5, durationDays: 7, stat: 'ST' },
+      { gold: 100, statXp: { ST: 200 } },
+    );
+    // 100 ∈ [20,300], 200 ∈ [30,400] → passed through unchanged.
+    expect(get().customChallenges[0].reward).toEqual({ gold: 100, statXp: { ST: 200 } });
+  });
+
+  it('clamps an out-of-bounds reward override so one habit tap cannot mint arbitrary value (HABIT-01)', () => {
+    get().createCustomChallenge(
+      // A trivial count-1 / 1-day challenge with a 999999 reward — completes off a single log.
+      { name: 'Exploit', kind: 'count', goal: 1, durationDays: 1, stat: 'ST' },
+      { gold: 999999, statXp: { ST: 999999 } },
+    );
+    const reward = get().customChallenges[0].reward;
+    expect(reward.gold).toBe(300); // clamped to the suggestReward ceiling
+    expect(reward.statXp).toEqual({ ST: 400 }); // clamped to the stat-XP ceiling
   });
 
   it('starts a custom challenge from the combined pool', () => {
@@ -407,13 +449,238 @@ describe('shop & streak freeze', () => {
     expect(get().inventory['streak_freeze']).toBeUndefined();
   });
 
-  it('consumes a streak freeze to protect a habit', () => {
+  it('consumes a streak freeze to protect a live streak', () => {
+    const day1 = new Date(2025, 3, 1); // 2025-04-01 — build a streak
+    const day2 = new Date(2025, 3, 2); // 2025-04-02 — freeze (not yet done today)
+    _setNow(() => day1);
     useGameStore.setState({ inventory: { streak_freeze: 1 } });
     get().addHabit({ name: 'Meditate', stat: 'WI', type: 'binary', frequency: 'daily', difficulty: 'normal' });
     const id = get().habits[0].id;
+    get().completeHabit(id); // live streak 1
+    _setNow(() => day2);
     get().useStreakFreeze(id);
     expect(get().inventory['streak_freeze']).toBe(0);
     expect(get().habits[0].lastCompletedISO).toBeDefined();
+    _resetNow();
+  });
+
+  it('refuses to consume a streak freeze when the live streak is already 0 (HABIT-02)', () => {
+    _setNow(() => new Date(2025, 4, 10)); // 2025-05-10
+    useGameStore.setState({ inventory: { streak_freeze: 1 } });
+    get().addHabit({ name: 'Run', stat: 'ST', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    // Fresh habit, no completions → live streak 0 → freeze must refuse (don't protect a dead streak).
+    get().useStreakFreeze(id);
+    expect(get().inventory['streak_freeze']).toBe(1); // item NOT consumed
+    _resetNow();
+  });
+
+  it('recovery elixir bridges a missed day and restores the streak (HABIT-15)', () => {
+    const day1 = new Date(2025, 5, 1); // 2025-06-01
+    const day2 = new Date(2025, 5, 2); // 2025-06-02
+    // day3 (2025-06-03) missed — no freeze
+    const day4 = new Date(2025, 5, 4); // 2025-06-04
+
+    _setNow(() => day1);
+    useGameStore.setState({ inventory: { recovery_elixir: 1 } });
+    get().addHabit({ name: 'Meditate', stat: 'WI', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    get().completeHabit(id);
+
+    _setNow(() => day2);
+    get().completeHabit(id, undefined, toISODate(day2));
+
+    _setNow(() => day4);
+    get().completeHabit(id, undefined, toISODate(day4));
+    expect(get().habits[0].streak).toBe(1); // broke — day3 missed
+
+    // Repair the missed day3 retroactively → day1+day2+day4 count, day3 frozen bridges.
+    get().useRecoveryElixir(id);
+    expect(get().inventory['recovery_elixir']).toBe(0);
+    expect(get().habits[0].streak).toBe(3);
+    _resetNow();
+  });
+
+  it('recovery elixir is not consumed when there is no missed day to repair (HABIT-15)', () => {
+    const day1 = new Date(2025, 6, 1); // 2025-07-01
+    const day2 = new Date(2025, 6, 2); // 2025-07-02
+
+    _setNow(() => day1);
+    useGameStore.setState({ inventory: { recovery_elixir: 1 } });
+    get().addHabit({ name: 'Meditate', stat: 'WI', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    get().completeHabit(id);
+
+    _setNow(() => day2);
+    get().completeHabit(id, undefined, toISODate(day2));
+    // No gap in the schedule → nothing to repair.
+    get().useRecoveryElixir(id);
+    expect(get().inventory['recovery_elixir']).toBe(1); // item NOT consumed
+    _resetNow();
+  });
+
+  /** Seed `habit` with completed days for the `n` days immediately before `today` (today left pending). */
+  function seedPriorStreak(id: string, todayISO: string, n: number) {
+    const log: Record<string, { xp: number }> = {};
+    for (let i = 1; i <= n; i++) log[addDays(todayISO, -i)] = { xp: 20 };
+    // Backdate createdISO before the earliest seeded day, or currentStreak's
+    // `cursor >= createdISO` guard would stop before counting the streak.
+    useGameStore.setState({
+      habits: get().habits.map((h) =>
+        h.id === id ? { ...h, log, createdISO: addDays(todayISO, -n) } : h,
+      ),
+    });
+  }
+
+  it('grants a milestone reward (Streak Freeze + gold) when a streak reaches 30 (HABIT-13)', () => {
+    const today = new Date(2025, 7, 30); // 2025-08-30
+    _setNow(() => today);
+    useGameStore.setState({ inventory: {}, character: { ...get().character, gold: 0 } });
+    get().addHabit({ name: 'Meditate', stat: 'WI', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    seedPriorStreak(id, toISODate(today), 29); // 29-day streak ending yesterday
+    get().completeHabit(id); // today → streak 30 (a milestone)
+    expect(get().habits[0].streak).toBe(30);
+    expect(get().inventory['streak_freeze']).toBe(1); // milestone grants a free freeze
+    expect(get().character.gold).toBe(habitGold('normal') + 100); // base + milestone bonus
+    _resetNow();
+  });
+
+  it('grants NO milestone reward when the new streak is not 7/30/100 (HABIT-13)', () => {
+    const today = new Date(2025, 8, 10); // 2025-09-10
+    _setNow(() => today);
+    useGameStore.setState({ inventory: {}, character: { ...get().character, gold: 0 } });
+    get().addHabit({ name: 'Meditate', stat: 'WI', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    seedPriorStreak(id, toISODate(today), 5); // → streak 6 after today, not a milestone
+    get().completeHabit(id);
+    expect(get().habits[0].streak).toBe(6);
+    expect(get().inventory['streak_freeze']).toBeUndefined(); // no freeze
+    expect(get().character.gold).toBe(habitGold('normal')); // base gold only, no bonus
+    _resetNow();
+  });
+
+  it('does not fire a milestone for a backdated completion (HABIT-13)', () => {
+    const today = new Date(2025, 9, 20); // 2025-10-20
+    _setNow(() => today);
+    useGameStore.setState({ inventory: {}, character: { ...get().character, gold: 0 } });
+    get().addHabit({ name: 'Meditate', stat: 'WI', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    // 6 days before yesterday logged; yesterday is the gap we backfill → the *reference* streak
+    // would compute to 7, but a backdated fill must not celebrate.
+    const yest = addDays(toISODate(today), -1);
+    const log: Record<string, { xp: number }> = {};
+    for (let i = 2; i <= 7; i++) log[addDays(toISODate(today), -i)] = { xp: 20 };
+    useGameStore.setState({
+      habits: get().habits.map((h) =>
+        h.id === id ? { ...h, log, createdISO: addDays(toISODate(today), -8) } : h,
+      ),
+    });
+    get().completeHabit(id, undefined, yest); // backdated fill of yesterday (reference streak = 7)
+    expect(get().inventory['streak_freeze']).toBeUndefined(); // no milestone on a backdate
+    // Base gold is still granted, but the 7-day milestone's +25g must NOT be — proves the isToday gate.
+    expect(get().character.gold).toBe(habitGold('normal'));
+    _resetNow();
+  });
+
+  it('does NOT grant a milestone for a times_per_week habit (week-counted streak) (HABIT-13)', () => {
+    const today = new Date(2025, 10, 12); // 2025-11-12
+    _setNow(() => today);
+    useGameStore.setState({ inventory: {}, character: { ...get().character, gold: 0 } });
+    get().addHabit({
+      name: 'Gym', stat: 'ST', type: 'binary', frequency: 'times_per_week', timesPerWeek: 1, difficulty: 'normal',
+    });
+    const id = get().habits[0].id;
+    const t = toISODate(today);
+    const log: Record<string, { xp: number }> = {};
+    for (let w = 1; w <= 6; w++) log[addDays(t, -7 * w)] = { xp: 20 }; // one completion in each prior week
+    useGameStore.setState({
+      habits: get().habits.map((h) => (h.id === id ? { ...h, log, createdISO: addDays(t, -49) } : h)),
+    });
+    get().completeHabit(id); // this week met → currentStreak = 7 weeks
+    expect(get().habits[0].streak).toBe(7);
+    // Week-counted streaks are excluded from milestones (no "7-day" reward, no farmable re-grant).
+    expect(get().character.gold).toBe(habitGold('normal')); // base only, no +25 milestone
+    _resetNow();
+  });
+
+  it('pushes a reward-receipt toast with the actual granted values on a same-day completion (HABIT-06)', () => {
+    _setNow(() => new Date(2025, 3, 12)); // 2025-04-12
+    useGameStore.setState({ inventory: {}, character: { ...get().character, gold: 0 } });
+    get().addHabit({ name: 'Read', stat: 'KN', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    get().completeHabit(id);
+    const xp = computeXp({ difficulty: 'normal', type: 'binary' });
+    const gold = habitGold('normal');
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts[toasts.length - 1]?.text).toBe(`+${xp} XP · +${gold}g · +1⚡`);
+    _resetNow();
+  });
+
+  it('receipt toast notes no energy was granted on a backdated completion (BAL-21)', () => {
+    const today = new Date(2025, 3, 20); // 2025-04-20
+    _setNow(() => today);
+    useGameStore.setState({ inventory: {}, character: { ...get().character, gold: 0 } });
+    get().addHabit({ name: 'Read', stat: 'KN', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    const yest = addDays(toISODate(today), -1);
+    useGameStore.setState({
+      habits: get().habits.map((h) => (h.id === id ? { ...h, createdISO: addDays(toISODate(today), -5) } : h)),
+    });
+    get().completeHabit(id, undefined, yest); // backdated fill → no energy
+    const xp = computeXp({ difficulty: 'normal', type: 'binary' });
+    const gold = habitGold('normal');
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts[toasts.length - 1]?.text).toBe(`+${xp} XP · +${gold}g · logged late — no energy`);
+    _resetNow();
+  });
+
+  it('does not mint energy on complete→spend→uncomplete→re-complete (HABIT-04)', () => {
+    _setNow(() => new Date(2025, 5, 10)); // 2025-06-10
+    useGameStore.setState({ inventory: {}, character: { ...get().character, energy: 0 } });
+    get().addHabit({ name: 'Run', stat: 'ST', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    get().completeHabit(id); // +1 energy → 1 (marker stamped on the habit)
+    expect(get().character.energy).toBe(1);
+    useGameStore.setState({ character: { ...get().character, energy: 0 } }); // spend it elsewhere
+    get().uncompleteHabit(id); // refund skipped at 0, but the marker survives the entry delete
+    expect(get().character.energy).toBe(0);
+    get().completeHabit(id); // same-day re-completion must NOT grant a fresh +1
+    expect(get().character.energy).toBe(0); // leak closed
+    _resetNow();
+  });
+
+  it('does not deduct phantom energy when uncompleting a completion made at MAX_ENERGY (HABIT-16)', () => {
+    _setNow(() => new Date(2025, 5, 11)); // 2025-06-11
+    useGameStore.setState({ inventory: {}, character: { ...get().character, energy: MAX_ENERGY } });
+    get().addHabit({ name: 'Row', stat: 'ST', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    get().completeHabit(id); // at cap → the +1 is clamped away, so no grant marker is set
+    expect(get().character.energy).toBe(MAX_ENERGY);
+    get().uncompleteHabit(id); // must NOT deduct energy that was never effectively granted
+    expect(get().character.energy).toBe(MAX_ENERGY);
+    _resetNow();
+  });
+
+  it('claws back a streak milestone on uncomplete and does not re-mint on same-day re-complete (3.4 deferred)', () => {
+    const today = new Date(2025, 6, 30); // 2025-07-30
+    _setNow(() => today);
+    useGameStore.setState({ inventory: {}, character: { ...get().character, gold: 0 } });
+    get().addHabit({ name: 'Meditate', stat: 'WI', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    seedPriorStreak(id, toISODate(today), 29); // today → streak 30, a milestone
+    get().completeHabit(id);
+    expect(get().character.gold).toBe(habitGold('normal') + 100); // base + milestone
+    expect(get().inventory['streak_freeze']).toBe(1);
+    // Uncomplete reverses BOTH the base gold and the off-ledger milestone gold + freeze.
+    get().uncompleteHabit(id);
+    expect(get().character.gold).toBe(0);
+    expect(get().inventory['streak_freeze'] ?? 0).toBe(0);
+    // Re-complete the same day: base gold returns, but the milestone must NOT re-mint (marker).
+    get().completeHabit(id);
+    expect(get().character.gold).toBe(habitGold('normal'));
+    expect(get().inventory['streak_freeze'] ?? 0).toBe(0);
+    _resetNow();
   });
 
   it('does not consume item when habit is already logged today', () => {
@@ -563,6 +830,22 @@ describe('dungeon expeditions', () => {
     expect(get().dungeon!.nodeId).toBeNull();
   });
 
+  it('treasure: an already-owned weapon drop rerolls into gold instead of vanishing (MINI-39)', () => {
+    const run = makeRun({ rooms: [{ type: 'combat' }, { type: 'treasure' }], depth: 3 });
+    useGameStore.setState({
+      ownedWeapons: ['worn_sword', 'iron_mace', 'short_bow'], // owns both droppable weapons
+      dungeon: { ...run, nodeId: null, choices: ['n1_0'], path: ['n0_0'] },
+    });
+    // Math.random=0 forces resolveTreasure to roll a weapon drop → iron_mace (WEAPON_DROPS[0]).
+    const rng = vi.spyOn(Math, 'random').mockReturnValue(0);
+    get().dungeonChoosePath('n1_0');
+    const loot = get().dungeon!.roomLoot!;
+    rng.mockRestore();
+    expect(loot.weapons ?? []).toHaveLength(0); // owned weapon didn't survive as dead loot
+    // base gold (60 + depth*10 = 90) + reroll (30 + 5*depth = 45) = 135
+    expect(loot.gold).toBe(135);
+  });
+
   it('an encounter choice advances the encounter and may accrue floor loot', () => {
     useGameStore.setState({
       dungeon: makeRun({
@@ -602,6 +885,7 @@ describe('dungeon expeditions', () => {
     expect(get().combatStats.defenseXp).toBeGreaterThan(0); // physical foe trains Defense
     expect(get().character.statXp.ST).toBeGreaterThan(0); // win grants the attack-stat XP
     expect(get().character.statXp.HP).toBeGreaterThan(0); // ...and HP for enduring the fight
+    expect(run.floorReward.gold).toBe(combatRoomGold(1)); // plain combat win pays depth-scaled gold (MINI-05)
   });
 
   it('is gated until the dungeon unlock level (3)', () => {
@@ -649,7 +933,7 @@ describe('dungeon expeditions', () => {
     const run = get().dungeon!;
     expect(run.atCheckpoint).toBe(true);
     expect(run.status).toBe('active');
-    expect(run.bankedReward.gold).toBe(20); // floor loot locked in
+    expect(run.bankedReward.gold).toBe(20 + combatRoomGold(1)); // floor loot (incl. combat-win gold) locked in
     expect(run.hp).toBe(18); // HP carries over — no free full heal
     expect(run.pendingBoon).toBeNull(); // the boon now comes from Press On, not floor clear
   });
@@ -689,6 +973,33 @@ describe('dungeon expeditions', () => {
     lose.mockRestore();
   });
 
+  it('shrine: praying reads Wisdom only — high Charisma no longer carries the roll (BAL-07)', () => {
+    // WI 0, CH 30, roll 0.5. New WI-only chance = clamp(0.3 + (0-6)*0.07) = 0.15 → 0.5 fails → curse.
+    // Under the old max(WI,CH), power would be 30 → chance 0.95 → 0.5 would have blessed. Non-vacuous.
+    useGameStore.setState({
+      character: { ...get().character, statLevels: { ...get().character.statLevels, WI: 0, CH: 30 } },
+      dungeon: makeRun({ rooms: [{ type: 'shrine' }, { type: 'combat' }] }),
+    });
+    const roll = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    get().dungeonShrine('pray');
+    expect(get().dungeon!.pendingBoon).toBeNull(); // CH couldn't save the roll
+    expect(get().dungeon!.relics).toHaveLength(1); // cursed instead
+    roll.mockRestore();
+  });
+
+  it('shrine: a run-buff (relic) WI bonus now carries the pray check (MINI-27)', () => {
+    // Character WI 0 + a +20 WI run-buff, roll 0.5. Raw WI=0 → chance 0.15 → fails → curse (old bug).
+    // With the run-buff folded in (WI=20) → chance 0.95 → succeeds → boon. Non-vacuous.
+    useGameStore.setState({
+      character: { ...get().character, statLevels: { ...get().character.statLevels, WI: 0 } },
+      dungeon: makeRun({ rooms: [{ type: 'shrine' }, { type: 'combat' }], runBuff: { WI: 20 } }),
+    });
+    const roll = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    get().dungeonShrine('pray');
+    expect(get().dungeon!.pendingBoon).not.toBeNull(); // the run-buff carried the roll
+    roll.mockRestore();
+  });
+
   it('shrine: offering blood costs HP and guarantees a boon', () => {
     useGameStore.setState({ dungeon: makeRun({ rooms: [{ type: 'shrine' }, { type: 'combat' }], hp: 100, maxHp: 100 }) });
     get().dungeonShrine('offer');
@@ -726,6 +1037,34 @@ describe('dungeon expeditions', () => {
     expect(d.floorReward.gold ?? 0).toBeGreaterThan(0);
   });
 
+  it('boss: winning pays the boss gold bounty, credits every phase, and clears its loss counter (MINI-04/29)', () => {
+    get().resetGame();
+    useGameStore.setState({
+      dungeonBossLosses: { bone_tyrant_d1: 2 }, // prior attempts had earned relief
+      dungeon: makeRun({
+        rooms: [{ type: 'boss' }, { type: 'combat' }],
+        battle: { status: 'won', bossId: 'bone_tyrant_d1', playerHp: 30, playerMp: 5, playerSta: 3, bossMaxHp: 60, hpDefeated: 120, attackSchool: 'physical' } as BattleState,
+      }),
+    });
+    get().dungeonAdvance();
+    const d = get().dungeon!;
+    expect(d.floorReward.gold).toBe(bossRoomGold(1)); // marquee boss payout, not combatRoomGold
+    expect(d.damageDealt).toBe(120); // whole two-phase fight (hpDefeated), not just the last form's 60
+    expect(get().dungeonBossLosses['bone_tyrant_d1']).toBe(0); // relief tally reset on victory
+  });
+
+  it('boss: losing tallies a loss so the retry earns anti-frustration relief', () => {
+    get().resetGame();
+    useGameStore.setState({
+      dungeon: makeRun({
+        rooms: [{ type: 'boss' }, { type: 'combat' }],
+        battle: { status: 'lost', bossId: 'bone_tyrant_d1', playerHp: 0, playerMp: 0, playerSta: 0, bossMaxHp: 60, attackSchool: 'physical' } as BattleState,
+      }),
+    });
+    get().dungeonAdvance();
+    expect(get().dungeonBossLosses['bone_tyrant_d1']).toBe(1);
+  });
+
   it('rest: healing restores HP; fortify offers a boon', () => {
     useGameStore.setState({ dungeon: makeRun({ rooms: [{ type: 'rest' }, { type: 'combat' }], hp: 40, maxHp: 100 }) });
     get().dungeonRest('heal');
@@ -736,7 +1075,7 @@ describe('dungeon expeditions', () => {
     expect(get().dungeon!.pendingBoon).not.toBeNull();
   });
 
-  it('fleeing keeps all gathered loot; defeat forfeits most of the floor', () => {
+  it('fleeing keeps most gathered loot (0.6); defeat forfeits most of the floor', () => {
     useGameStore.setState({
       dungeon: makeRun({
         rooms: [{ type: 'combat' }],
@@ -747,7 +1086,7 @@ describe('dungeon expeditions', () => {
     get().dungeonAdvance();
     expect(get().dungeon!.status).toBe('ended');
     expect(get().dungeon!.cleared).toBe(false);
-    expect(get().dungeon!.bankedReward.gold).toBe(100); // clean escape keeps it all
+    expect(get().dungeon!.bankedReward.gold).toBe(60); // retreat keeps 0.6 of gathered loot (MINI-30)
 
     useGameStore.setState({
       dungeon: makeRun({
@@ -773,6 +1112,7 @@ describe('dungeon expeditions', () => {
   it('descending from a checkpoint builds a deeper floor and records the depth', () => {
     get().resetGame();
     useGameStore.setState({
+      character: { ...get().character, energy: 5 },
       dungeon: makeRun({ rooms: [{ type: 'combat' }], atCheckpoint: true, depth: 1, hp: 30, maxHp: 100 }),
     });
     get().dungeonDescend('pressOn');
@@ -785,6 +1125,29 @@ describe('dungeon expeditions', () => {
     expect(run.hp).toBe(30); // Press On keeps your wounds
     expect(run.pendingBoon).not.toBeNull(); // ...and grants a boon
     expect(get().deepestFloor).toBe(2); // record updated
+    expect(get().character.energy).toBe(5); // descending to floor ≤3 is free (BAL-13)
+  });
+
+  it('descending past floor 3 charges 1 energy, unless unlimited (BAL-13)', () => {
+    get().resetGame();
+    useGameStore.setState({
+      character: { ...get().character, energy: 5 },
+      dungeon: makeRun({ rooms: [{ type: 'combat' }], atCheckpoint: true, depth: 3, hp: 30, maxHp: 100 }),
+    });
+    get().dungeonDescend('pressOn'); // depth 3 → 4 (past floor 3)
+    expect(get().dungeon!.depth).toBe(4);
+    expect(get().character.energy).toBe(4); // charged 1 energy
+
+    // Unlimited energy bypasses the charge.
+    get().resetGame();
+    useGameStore.setState({
+      settings: { ...get().settings, unlimitedEnergy: true },
+      character: { ...get().character, energy: 5 },
+      dungeon: makeRun({ rooms: [{ type: 'combat' }], atCheckpoint: true, depth: 3, hp: 30, maxHp: 100 }),
+    });
+    get().dungeonDescend('pressOn');
+    expect(get().dungeon!.depth).toBe(4);
+    expect(get().character.energy).toBe(5); // no deduction with unlimitedEnergy
   });
 
   it('resting at a checkpoint heals but grants no boon', () => {
@@ -1035,8 +1398,11 @@ describe('deep mine', () => {
     expect(get().mining!.haul.gold ?? 0).toBeGreaterThan(0);
   });
 
-  it('endMining banks the haul into the economy and records the deepest floor', () => {
-    useGameStore.setState({ mining: makeMine({ haul: { gold: 50, materials: { iron_bar: 3 } }, deepest: 4 }) });
+  it('endMining on the entrance (safe tile) banks the full haul and records the deepest floor', () => {
+    // BAL-12: full 1.0 payout requires standing on the entrance when end-banking.
+    const tiles = makeMine().tiles;
+    tiles[2][2] = { kind: 'entrance' };
+    useGameStore.setState({ mining: makeMine({ tiles, haul: { gold: 50, materials: { iron_bar: 3 } }, deepest: 4 }) });
     const goldBefore = get().character.gold;
     const ironBefore = get().materials.iron_bar ?? 0;
     get().endMining();
@@ -1049,6 +1415,28 @@ describe('deep mine', () => {
     expect(get().earnings.xp.mine).toBeGreaterThan(0);
     expect(get().earnings.gold.mine).toBe(50);
     expect(get().earnings.count.mine).toBe(1);
+  });
+
+  it('endMining off a safe tile keeps only MINE_STASH_KEEP of the haul (BAL-12)', () => {
+    // Default player stands on a floor tile (not the entrance) → 0.8 payout, pricing the
+    // risk of not trekking back to the entrance for a full-value bank.
+    useGameStore.setState({ mining: makeMine({ haul: { gold: 50, materials: { iron_bar: 3 } }, deepest: 4 }) });
+    const goldBefore = get().character.gold;
+    const ironBefore = get().materials.iron_bar ?? 0;
+    get().endMining();
+    expect(get().mining).toBeNull();
+    expect(get().character.gold).toBe(goldBefore + 40); // floor(50 * 0.8)
+    expect(get().materials.iron_bar).toBe(ironBefore + 2); // floor(3 * 0.8)
+  });
+
+  it('beginMining (solo) starts at the deepest cleared guardian band; co-op stays at floor 1 (BAL-25)', () => {
+    useGameStore.setState({ character: { ...get().character, energy: 10 }, deepestMineFloor: 8 });
+    get().beginMining(); // solo → past the floor-7 guardian
+    expect(get().mining!.floor).toBe(7);
+    // Co-op passes an explicit startFloor of 1 (see net/coop/session.ts beginRun) → shared map.
+    useGameStore.setState({ mining: null, character: { ...get().character, energy: 10 } });
+    get().beginMining(4242, 1);
+    expect(get().mining!.floor).toBe(1);
   });
 
   it('mineTick flips to ended on death; endMining then banks the haul', () => {
@@ -1072,8 +1460,8 @@ describe('deep mine', () => {
     expect(get().deepestMineFloor).toBe(2);
   });
 
-  it('persists at version 27', () => {
-    expect(useGameStore.persist.getOptions().version).toBe(27);
+  it('persists at version 32', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(32);
   });
 
   it('coopApplyWorld drops a stale/duplicate world slice (t guard)', () => {
@@ -1215,8 +1603,11 @@ describe('wild forest', () => {
     expect(get().forest!.haul.materials?.herbs ?? 0).toBeGreaterThan(0);
   });
 
-  it('beginForestBanking shows the summary, and endForest banks the full haul', () => {
-    useGameStore.setState({ forest: makeForest({ haul: { gold: 20, materials: { herbs: 3 } }, deepest: 3 }) });
+  it('beginForestBanking shows the summary, and endForest on a clearing banks the full haul', () => {
+    // BAL-12: full 1.0 payout requires standing on a safe harbour (clearing/entrance).
+    const tiles = makeForest().tiles;
+    tiles[2][2] = { kind: 'clearing' };
+    useGameStore.setState({ forest: makeForest({ tiles, haul: { gold: 20, materials: { herbs: 3 } }, deepest: 3 }) });
     get().beginForestBanking();
     expect(get().forest!.status).toBe('banking');
     const goldBefore = get().character.gold;
@@ -1226,6 +1617,29 @@ describe('wild forest', () => {
     expect(get().character.gold).toBe(goldBefore + 20); // full haul kept on a voluntary bank
     expect(get().materials.herbs).toBe(herbsBefore + 3);
     expect(get().deepestForestStage).toBe(3);
+  });
+
+  it('endForest off a safe tile keeps only FOREST_STASH_KEEP of the haul (BAL-12)', () => {
+    // Default player stands on a trail tile (not a clearing/entrance) → 0.8 payout, so a
+    // full-value end-bank beats banking wherever the run happens to end.
+    useGameStore.setState({ forest: makeForest({ haul: { gold: 20, materials: { herbs: 3 } }, deepest: 3 }) });
+    get().beginForestBanking();
+    const goldBefore = get().character.gold;
+    const herbsBefore = get().materials.herbs ?? 0;
+    get().endForest();
+    expect(get().forest).toBeNull();
+    expect(get().character.gold).toBe(goldBefore + 16); // floor(20 * 0.8)
+    expect(get().materials.herbs).toBe(herbsBefore + 2); // floor(3 * 0.8)
+  });
+
+  it('beginForest (solo) starts at the deepest cleared guardian stage; co-op stays at stage 1 (BAL-25)', () => {
+    useGameStore.setState({ character: { ...get().character, energy: 10 }, deepestForestStage: 5 });
+    get().beginForest(); // solo → past the stage-4 guardian
+    expect(get().forest!.stage).toBe(4);
+    // Co-op passes an explicit startStage of 1 (see net/coop/session.ts beginRun) → shared map.
+    useGameStore.setState({ forest: null, character: { ...get().character, energy: 10 } });
+    get().beginForest(4242, 1);
+    expect(get().forest!.stage).toBe(1);
   });
 
   it('forestTick flips to ended on death without committing; endForest then forfeits half', () => {
@@ -1484,7 +1898,8 @@ function makeMinimalMine(over: { haul?: Record<string, unknown>; deepest?: numbe
   return {
     status: 'active', floor: 1, deepest: over.deepest ?? 0, score: over.score ?? 0,
     haul: over.haul ?? {}, player: { r: 0, c: 0 }, hp: 10, maxHp: 10,
-    tiles: [], monsters: [], runes: [], lastHitAtMs: -1000, pickaxePower: 1,
+    // Player stands on the entrance (safe tile) so end-banking pays full value (BAL-12).
+    tiles: [[{ kind: 'entrance' }]], monsters: [], runes: [], lastHitAtMs: -1000, pickaxePower: 1,
     killsThisFloor: 0, ringOfFire: null, ringNextHitMs: {}, playerStatuses: [],
     lastSpellMs: -1000, nextRuneId: 1, lastDashMs: -2000, dashCooldownMs: 2000,
     moveIntervalMs: 150, agLevel: 0, activeBoons: [], pendingBoonChoice: null,
@@ -1495,25 +1910,28 @@ function makeMinimalMine(over: { haul?: Record<string, unknown>; deepest?: numbe
 describe('Skill Trials — energy cost (Stage 3.1)', () => {
   // Use repeatMinigames: true to bypass the stat gate (§4.4) — these tests focus on
   // energy mechanics only; the stat gate is tested separately in Stage 4.4 tests.
+  // 6.7: energy is charged at Begin (beginTrial), not on completion.
 
-  it('deducts 1 energy on completeTrial', () => {
+  it('deducts 1 energy on beginTrial', () => {
     useGameStore.setState({
       character: { ...get().character, energy: 5 },
       settings: { ...get().settings, repeatMinigames: true },
     });
-    get().completeTrial('lockpicking', 1);
+    const res = get().beginTrial('lockpicking');
+    expect(res).toEqual({ ok: true });
     expect(get().character.energy).toBe(4);
   });
 
-  it('completeTrial is a no-op when energy is 0', () => {
+  it('beginTrial is a no-op when energy is 0', () => {
     useGameStore.setState({
       character: { ...get().character, energy: 0 },
       settings: { ...get().settings, repeatMinigames: true },
     });
-    const xpBefore = totalXp(get().character.statXp);
-    get().completeTrial('rooftop_chase', 1);
-    expect(totalXp(get().character.statXp)).toBe(xpBefore);
-    expect(get().character.energy).toBe(0);
+    const nonceBefore = get().trialAttemptNonce;
+    const res = get().beginTrial('rooftop_chase');
+    expect(res).toEqual({ ok: false, reason: 'energy' });
+    expect(get().character.energy).toBe(0);       // no debit
+    expect(get().trialAttemptNonce).toBe(nonceBefore); // no state change at all
   });
 
   it('ignores energy cost when unlimitedEnergy is on', () => {
@@ -1521,10 +1939,138 @@ describe('Skill Trials — energy cost (Stage 3.1)', () => {
       character: { ...get().character, energy: 0 },
       settings: { ...get().settings, unlimitedEnergy: true, repeatMinigames: true },
     });
-    const xpBefore = totalXp(get().character.statXp);
-    get().completeTrial('armory_break', 1);
-    expect(totalXp(get().character.statXp)).toBeGreaterThan(xpBefore);
+    const res = get().beginTrial('armory_break');
+    expect(res).toEqual({ ok: true });
     expect(get().character.energy).toBe(0); // not touched when free
+  });
+
+  it('completeTrial does not charge energy again after a successful begin (no double-charge)', () => {
+    useGameStore.setState({
+      character: { ...get().character, energy: 5 },
+      settings: { ...get().settings, repeatMinigames: true },
+    });
+    get().beginTrial('armory_break');
+    expect(get().character.energy).toBe(4); // charged once at begin
+    get().completeTrial('armory_break', 1);
+    expect(get().character.energy).toBe(4); // completion does not debit again
+  });
+});
+
+describe('Skill Trials — retry integrity (MINI-11)', () => {
+  it('beginTrial advances the nonce on success (and charges energy)', () => {
+    useGameStore.setState({
+      trialAttemptNonce: 0,
+      character: { ...get().character, energy: 5 },
+      settings: { ...get().settings, repeatMinigames: true },
+    });
+    expect(get().beginTrial('ancient_library')).toEqual({ ok: true });
+    expect(get().trialAttemptNonce).toBe(1);
+    expect(get().character.energy).toBe(4);
+    expect(get().beginTrial('ancient_library')).toEqual({ ok: true });
+    expect(get().trialAttemptNonce).toBe(2);
+    // Each Begin advances it, so a reopened deterministic trial (Library/Grove) is seeded
+    // with a fresh nonce and can't replay the previous attempt's challenge.
+  });
+
+  it('completeTrial does not touch the attempt nonce (it advances on start, not finish)', () => {
+    useGameStore.setState({
+      character: { ...get().character, energy: 5 },
+      settings: { ...get().settings, repeatMinigames: true },
+      trialAttemptNonce: 7,
+    });
+    get().completeTrial('lockpicking', 1);
+    expect(get().trialAttemptNonce).toBe(7);
+  });
+});
+
+describe('Skill Trials — charge on start / gate honesty (6.7)', () => {
+  it('begin then abandon (no completeTrial) still spends 1 energy — no free reroll', () => {
+    useGameStore.setState({
+      character: { ...get().character, energy: 5 },
+      settings: { ...get().settings, repeatMinigames: true },
+    });
+    expect(get().beginTrial('spirit_grove')).toEqual({ ok: true });
+    // Player closes the modal without finishing → no refund.
+    expect(get().character.energy).toBe(4);
+  });
+
+  it('completeTrial returns true and banks on a clean run', () => {
+    useGameStore.setState({
+      character: { ...get().character, energy: 5 },
+      settings: { ...get().settings, repeatMinigames: true },
+      trialsClearedOn: { ...get().trialsClearedOn, lockpicking: 'not-today' },
+    });
+    const xpBefore = totalXp(get().character.statXp);
+    const banked = get().completeTrial('lockpicking', 1);
+    expect(banked).toBe(true);
+    expect(totalXp(get().character.statXp)).toBeGreaterThan(xpBefore);
+  });
+
+  it('completeTrial returns false (not banked) when already cleared today', () => {
+    const today = toISODate();
+    useGameStore.setState({
+      character: { ...get().character, energy: 5 },
+      // NOTE: repeatMinigames off so the daily-clear idempotency guard is active.
+      trialsClearedOn: { ...get().trialsClearedOn, lockpicking: today },
+    });
+    const xpBefore = totalXp(get().character.statXp);
+    const banked = get().completeTrial('lockpicking', 1);
+    expect(banked).toBe(false);
+    expect(totalXp(get().character.statXp)).toBe(xpBefore); // no reward granted
+  });
+
+  it('beginTrial returns { ok:false, reason:"cleared" } when already cleared today', () => {
+    const today = toISODate();
+    useGameStore.setState({
+      character: { ...get().character, energy: 5 },
+      trialsClearedOn: { ...get().trialsClearedOn, lockpicking: today },
+    });
+    const res = get().beginTrial('lockpicking');
+    expect(res).toEqual({ ok: false, reason: 'cleared' });
+    expect(get().character.energy).toBe(5); // refused before charging
+  });
+});
+
+describe('Skill Trials — Spirit Grove recall bias & mastery gold (MINI-16)', () => {
+  it('markSpiritGroveSeen unions and dedups round ids', () => {
+    useGameStore.setState({ spiritGroveSeen: [] });
+    get().markSpiritGroveSeen(['sg-e1', 'sg-m1']);
+    get().markSpiritGroveSeen(['sg-m1', 'sg-h1']); // sg-m1 repeats — must not duplicate
+    expect([...get().spiritGroveSeen].sort()).toEqual(['sg-e1', 'sg-h1', 'sg-m1']);
+  });
+
+  it('pays a ×1.15 prestige gold bonus once the player has a perfect Spirit Grove best', () => {
+    useGameStore.setState({
+      character: { ...get().character, energy: 5, gold: 0 },
+      settings: { ...get().settings, repeatMinigames: true },
+      bestTrialScore: { ...get().bestTrialScore, spirit_grove: 1 },
+    });
+    const base = trialReward('WI', 0.6, get().character.level).gold ?? 0;
+    get().completeTrial('spirit_grove', 0.6);
+    expect(get().character.gold).toBe(Math.round(base * 1.15));
+    expect(get().character.gold).not.toBe(base); // non-vacuous: the bonus actually changed the payout
+  });
+
+  it('does not apply the mastery bonus without a perfect best', () => {
+    useGameStore.setState({
+      character: { ...get().character, energy: 5, gold: 0 },
+      settings: { ...get().settings, repeatMinigames: true },
+      bestTrialScore: { ...get().bestTrialScore, spirit_grove: 0 },
+    });
+    const base = trialReward('WI', 0.6, get().character.level).gold ?? 0;
+    get().completeTrial('spirit_grove', 0.6);
+    expect(get().character.gold).toBe(base); // un-multiplied
+  });
+
+  it('does not apply the mastery bonus to a non-Grove trial even with a perfect Grove best', () => {
+    useGameStore.setState({
+      character: { ...get().character, energy: 5, gold: 0 },
+      settings: { ...get().settings, repeatMinigames: true },
+      bestTrialScore: { ...get().bestTrialScore, spirit_grove: 1, lockpicking: 1 },
+    });
+    const base = trialReward('DX', 0.6, get().character.level).gold ?? 0;
+    get().completeTrial('lockpicking', 0.6); // lockpicking = DX; gate is strict on spirit_grove
+    expect(get().character.gold).toBe(base); // un-multiplied
   });
 });
 
@@ -1588,6 +2134,26 @@ describe('habitBonus streak multiplier (Stage 3.4)', () => {
     _resetNow();
   });
 
+  it('selectHabitBonusInfo counts only streak-tracked habits on a healthy run', () => {
+    // 4 scheduled habits (3 with streak ≥ 3) plus 1 as_needed that must be excluded from both counts.
+    get().addHabit({ name: 'A', stat: 'ST', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    get().addHabit({ name: 'B', stat: 'EN', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    get().addHabit({ name: 'C', stat: 'WI', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    get().addHabit({ name: 'D', stat: 'DX', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    get().addHabit({ name: 'E', stat: 'CH', type: 'binary', frequency: 'as_needed', difficulty: 'normal' });
+    // Assign streaks by name (robust to insertion order): A/B/C healthy, D tracked-but-not-healthy,
+    // E as_needed with a high streak that must still be ignored.
+    const byName: Record<string, number> = { A: 5, B: 3, C: 4, D: 2, E: 9 };
+    useGameStore.setState({
+      habits: get().habits.map((h) => ({ ...h, streak: byName[h.name] })),
+      character: { ...get().character, habitBonus: 1.15 },
+    });
+    const info = selectHabitBonusInfo(get());
+    expect(info.trackedCount).toBe(4); // E (as_needed) excluded
+    expect(info.healthyCount).toBe(3); // D (streak 2) below the ≥3 threshold
+    expect(info.bonus).toBe(1.15);
+  });
+
   it('mining gold is multiplied by habitBonus', () => {
     // Inject bonus directly, then run a mine with a known haul and check gold delta.
     useGameStore.setState({ character: { ...get().character, habitBonus: 1.25 } });
@@ -1609,6 +2175,30 @@ describe('minigame trickle split (Stage 3.5)', () => {
     const enGain = get().character.statXp.EN - xpBefore.EN;
     expect(stGain + enGain).toBe(4); // total = CRAWLER_XP_BASE, not 8
     expect(enGain).toBe(2);          // floor(4/2), not 4 (the old doubled value)
+  });
+});
+
+describe('minigame-trickle ledger (BAL-09)', () => {
+  it('mining commit records its trickle into statXpTrickle, matching the statXp gain', () => {
+    const trickleBefore = { ...get().character.statXpTrickle };
+    const xpBefore = { ...get().character.statXp };
+    useGameStore.setState({ mining: makeMinimalMine({ haul: {}, deepest: 0, score: 0 }) });
+    get().endMining();
+    const ch = get().character;
+    // deepest 0 → trickle 4 → ST:2, EN:2; the SAME amounts must also land in the trickle sub-ledger.
+    expect(ch.statXpTrickle.ST - trickleBefore.ST).toBe(ch.statXp.ST - xpBefore.ST);
+    expect(ch.statXpTrickle.EN - trickleBefore.EN).toBe(ch.statXp.EN - xpBefore.EN);
+    expect(ch.statXpTrickle.ST - trickleBefore.ST).toBe(2);
+  });
+
+  it('habit completion adds to statXp but NOT to the trickle ledger', () => {
+    get().addHabit({ name: 'Read', stat: 'KN', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits.find((h) => h.name === 'Read')!.id;
+    const xpBefore = get().character.statXp.KN;
+    const trickleBefore = get().character.statXpTrickle.KN;
+    get().completeHabit(id);
+    expect(get().character.statXp.KN).toBeGreaterThan(xpBefore); // habit XP landed…
+    expect(get().character.statXpTrickle.KN).toBe(trickleBefore); // …but is full-weight, not trickle
   });
 });
 
@@ -1652,27 +2242,28 @@ describe('MAX_ENERGY clamp (Stage 4.3)', () => {
 });
 
 describe('stat gate on Skill Trials (Stage 4.4)', () => {
+  // 6.7: the stat gate now lives on beginTrial (it charges energy after all gates pass).
   afterEach(() => _resetNow());
 
-  it('completeTrial is blocked when no habit of that stat was logged in the last 7 days', () => {
-    // No habits at all → lockpicking (DX) is blocked.
+  it('beginTrial is blocked when no habit of that stat was logged in the last 7 days', () => {
+    // No habits at all → lockpicking (DX) is blocked, and no energy is spent.
     useGameStore.setState({ character: { ...get().character, energy: 5 } });
-    const xpBefore = totalXp(get().character.statXp);
-    get().completeTrial('lockpicking', 1);
-    expect(totalXp(get().character.statXp)).toBe(xpBefore); // no-op
+    const res = get().beginTrial('lockpicking');
+    expect(res).toEqual({ ok: false, reason: 'stat' });
+    expect(get().character.energy).toBe(5); // gate refused before charging
   });
 
-  it('completeTrial succeeds after completing a same-stat habit today', () => {
+  it('beginTrial succeeds after completing a same-stat habit today', () => {
     // Add a DX habit and complete it today.
     get().addHabit({ name: 'DX work', stat: 'DX', type: 'binary', frequency: 'daily', difficulty: 'normal' });
     get().completeHabit(get().habits[0].id);
     useGameStore.setState({ character: { ...get().character, energy: 5 } });
-    const xpBefore = totalXp(get().character.statXp);
-    get().completeTrial('lockpicking', 1); // lockpicking = DX stat
-    expect(totalXp(get().character.statXp)).toBeGreaterThan(xpBefore);
+    const res = get().beginTrial('lockpicking'); // lockpicking = DX stat
+    expect(res).toEqual({ ok: true });
+    expect(get().character.energy).toBe(4);
   });
 
-  it('completeTrial is blocked when the only same-stat completion is 8 days old', () => {
+  it('beginTrial is blocked when the only same-stat completion is 8 days old', () => {
     const today = toISODate();
     const eightDaysAgo = addDays(today, -8); // outside the 7-day window
     get().addHabit({ name: 'DX old', stat: 'DX', type: 'binary', frequency: 'daily', difficulty: 'normal' });
@@ -1685,20 +2276,28 @@ describe('stat gate on Skill Trials (Stage 4.4)', () => {
       })),
       character: { ...get().character, energy: 5 },
     });
-    const xpBefore = totalXp(get().character.statXp);
-    get().completeTrial('lockpicking', 1);
-    expect(totalXp(get().character.statXp)).toBe(xpBefore); // outside window → blocked
+    const res = get().beginTrial('lockpicking');
+    expect(res).toEqual({ ok: false, reason: 'stat' }); // outside window → blocked
+    expect(get().character.energy).toBe(5);
   });
 
-  it('repeatMinigames bypasses the stat gate (dev bypass)', () => {
-    // No habits at all, but repeatMinigames is on — trial should succeed.
+  it('completeTrial no longer stat-gates — it banks regardless of recent same-stat habits', () => {
+    // No same-stat habit in the window, but completeTrial (post-play) must still bank.
+    useGameStore.setState({ character: { ...get().character, energy: 5 } });
+    const xpBefore = totalXp(get().character.statXp);
+    const banked = get().completeTrial('lockpicking', 1);
+    expect(banked).toBe(true);
+    expect(totalXp(get().character.statXp)).toBeGreaterThan(xpBefore);
+  });
+
+  it('repeatMinigames bypasses the stat gate on beginTrial (dev bypass)', () => {
+    // No habits at all, but repeatMinigames is on — begin should succeed.
     useGameStore.setState({
       character: { ...get().character, energy: 5 },
       settings: { ...get().settings, repeatMinigames: true },
     });
-    const xpBefore = totalXp(get().character.statXp);
-    get().completeTrial('lockpicking', 1);
-    expect(totalXp(get().character.statXp)).toBeGreaterThan(xpBefore);
+    expect(get().beginTrial('lockpicking')).toEqual({ ok: true });
+    expect(get().character.energy).toBe(4);
   });
 
   it('statCompletedWithin returns true within the window and false outside', () => {
@@ -1746,6 +2345,64 @@ describe('claimPartyQuestReward (Stage 5.1)', () => {
   });
 });
 
+describe('beginTactics tier selection (MINI-08)', () => {
+  it('clamps the chosen tier to [TACTICS_UNLOCK_LEVEL, character.level]', () => {
+    useGameStore.setState({
+      character: { ...get().character, level: 7 },
+      settings: { ...get().settings, unlimitedEnergy: true },
+      tactics: null,
+    });
+    // Below the unlock floor (4) → clamps up.
+    get().beginTactics(undefined, 2);
+    expect(get().tactics!.tier).toBe(4);
+
+    // Above the character's level → clamps down to the level.
+    useGameStore.setState({ tactics: null });
+    get().beginTactics(undefined, 9);
+    expect(get().tactics!.tier).toBe(7);
+
+    // A valid pick passes through unchanged.
+    useGameStore.setState({ tactics: null });
+    get().beginTactics(undefined, 5);
+    expect(get().tactics!.tier).toBe(5);
+
+    // Default (no pick) uses the character's level — today's behaviour.
+    useGameStore.setState({ tactics: null });
+    get().beginTactics();
+    expect(get().tactics!.tier).toBe(7);
+  });
+
+  it('beginTacticsCoop still auto-derives tier from level (no picker)', () => {
+    useGameStore.setState({ character: { ...get().character, level: 7 }, tactics: null });
+    const s = get();
+    const hostHero: HeroOpts = {
+      fighter: fighterFor(s), ag: s.character.statLevels.AG, knownSpells: s.knownSpells, id: 'p0',
+    };
+    get().beginTacticsCoop({ heroes: [hostHero], seed: 7 });
+    expect(get().tactics!.tier).toBe(7);
+  });
+});
+
+describe('commitTactics material bundle + clone (BAL-10)', () => {
+  it('a win banks the tier-scaled material bundle and clones state.materials (no aliasing)', () => {
+    useGameStore.setState({
+      character: { ...get().character, level: 6 },
+      materials: {},
+      // Minimal won run — tacticsReward only reads status/radius/tier/objective/enemies.
+      tactics: { radius: 3, tier: 5, status: 'won', objective: null, enemies: [] } as unknown as HexBattleState,
+    });
+    const matsBefore = get().materials;
+    get().endTactics();
+    expect(get().tactics).toBeNull();
+    // Bundle landed: qty = 1 + floor(5/4) = 2 of each.
+    expect(get().materials.cloth_roll).toBe(2);
+    expect(get().materials.bronze_bar).toBe(2);
+    // cloneMaterials:true → applyReward mutated a fresh object, not the prior snapshot.
+    expect(get().materials).not.toBe(matsBefore);
+    expect(matsBefore).toEqual({}); // prior snapshot untouched (proves no in-place aliasing)
+  });
+});
+
 describe('beginTacticsCoop no-op invariant (MP-10)', () => {
   it('returns the existing board unchanged when a tactics fight already exists', () => {
     // MP-10 leans on this contract: once a board exists, beginTacticsCoop is a
@@ -1772,6 +2429,32 @@ describe('crafting & equipment', () => {
     expect(get().character.gold).toBe(0);
   });
 
+  it('crafts each new late-tier recipe, consuming exact materials and gold', () => {
+    useGameStore.setState({
+      materials: { obsidian: 7, frost_quartz: 4, iron_bar: 2, amber_resin: 3, crystals: 2 },
+      character: { ...get().character, gold: 380 },
+    });
+
+    get().craft('mithril_pickaxe'); // obsidian:4, frost_quartz:2, gold:150
+    expect(get().ownedGear).toContain('mithril_pickaxe');
+    expect(get().materials.obsidian).toBe(3);
+    expect(get().materials.frost_quartz).toBe(2);
+    expect(get().character.gold).toBe(230);
+
+    get().craft('obsidian_plate'); // obsidian:3, frost_quartz:2, iron_bar:2, gold:130
+    expect(get().ownedGear).toContain('obsidian_plate');
+    expect(get().materials.obsidian).toBe(0);
+    expect(get().materials.frost_quartz).toBe(0);
+    expect(get().materials.iron_bar).toBe(0);
+    expect(get().character.gold).toBe(100);
+
+    get().craft('resin_trinket'); // amber_resin:3, crystals:2, gold:100
+    expect(get().ownedGear).toContain('resin_trinket');
+    expect(get().materials.amber_resin).toBe(0);
+    expect(get().materials.crystals).toBe(0);
+    expect(get().character.gold).toBe(0);
+  });
+
   it('will not craft without enough materials', () => {
     useGameStore.setState({ materials: { leather: 1 } }); // leather_vest needs 3
     get().craft('leather_vest');
@@ -1790,6 +2473,28 @@ describe('crafting & equipment', () => {
   it('will not equip unowned gear', () => {
     get().equipGear('bronze_plate');
     expect(get().equipment.armor).toBeNull();
+  });
+
+  it('buys and equips gear from the shop', () => {
+    useGameStore.setState({ character: { ...get().character, gold: 200 } });
+    get().buyGear('iron_pickaxe');
+    expect(get().ownedGear).toContain('iron_pickaxe');
+    expect(get().character.gold).toBe(0); // 200 - 200
+    get().equipGear('iron_pickaxe');
+    expect(get().equipment.tool).toBe('iron_pickaxe');
+  });
+
+  it('will not buy gear without enough gold, and never double-buys', () => {
+    useGameStore.setState({ character: { ...get().character, gold: 50 }, ownedGear: [] });
+    get().buyGear('iron_pickaxe'); // costs 200
+    expect(get().ownedGear).not.toContain('iron_pickaxe');
+    expect(get().character.gold).toBe(50); // unchanged
+
+    useGameStore.setState({ character: { ...get().character, gold: 500 } });
+    get().buyGear('iron_pickaxe');
+    get().buyGear('iron_pickaxe'); // second buy is a no-op
+    expect(get().ownedGear.filter((k) => k === 'iron_pickaxe')).toHaveLength(1);
+    expect(get().character.gold).toBe(300); // charged exactly once
   });
 
   it('equipped gear boosts matching habit XP', () => {
@@ -1815,7 +2520,7 @@ describe('loadout: weapons & spells', () => {
     useGameStore.setState({ character: { ...get().character, gold: 200 } });
     get().buyWeapon('short_bow');
     expect(get().ownedWeapons).toContain('short_bow');
-    expect(get().character.gold).toBe(80); // 200 - 120
+    expect(get().character.gold).toBe(145); // 200 - 55 (BAL-15: short_bow price cut 120→55)
     get().equipWeapon('short_bow');
     expect(get().equippedWeapon).toBe('short_bow');
   });

@@ -11,6 +11,7 @@ import {
   advance as forestAdvanceFn,
   activateShrine as forestActivateShrine,
   coopClientStep as forestCoopClientStep,
+  unlockedStartStage,
   FOREST_ENERGY_COST,
 } from '@/engine/forest';
 import { dungeonStamina, boonConsolation } from '@/engine/crawl';
@@ -33,7 +34,8 @@ export interface ForestSlice {
   deepestForestStage: number;
   bestForestScore: number;
 
-  beginForest: (seed?: number) => void;
+  /** `startStage` (co-op) pins the run to a shared stage; omitted = solo deeper-start (BAL-25). */
+  beginForest: (seed?: number, startStage?: number) => void;
   forestMove: (dir: Dir) => void;
   /** `nowMs` is the caller's rAF-clock timestamp — same timebase as forestTick. */
   forestAct: (nowMs: number) => void;
@@ -70,7 +72,7 @@ export const createForestSlice: StateCreator<
   deepestForestStage: 0,
   bestForestScore: 0,
 
-  beginForest: (seed) =>
+  beginForest: (seed, startStage) =>
     set((s) => {
       // Seed the run's RNG: shared mulberry32 for co-op, Math.random for solo.
       setForestRun(seed !== undefined ? mulberry32(seed) : Math.random, seed);
@@ -112,8 +114,11 @@ export const createForestSlice: StateCreator<
       const agBonusF = (gearBonuses(stateWithGear).statBonuses.AG ?? 0);
       const agLevelF = s.character.statLevels.AG + agBonusF;
 
+      // Solo runs re-enter at the deepest guardian band already cleared; co-op passes an
+      // explicit startStage of 1 so host+guest generate the same shared map (BAL-25).
+      const start = startStage ?? unlockedStartStage(s.deepestForestStage);
       const forest = generateForest(
-        1,
+        start,
         {
           meleePower: c.meleePower,
           rangedPower: c.rangedPower,
@@ -130,8 +135,8 @@ export const createForestSlice: StateCreator<
           chopPower,
           agLevel: agLevelF,
         },
-        // Stage 1 from the per-stage seed (co-op parity); solo uses live forest RNG.
-        seed !== undefined ? mulberry32(floorSeed(seed, 1)) : getForestRng(),
+        // The start stage from the per-stage seed (co-op parity); solo uses live forest RNG.
+        seed !== undefined ? mulberry32(floorSeed(seed, start)) : getForestRng(),
       );
       return {
         character: {

@@ -114,6 +114,17 @@ export interface BossDef {
   rewards: { gold: number; items: string[] };
 }
 
+/**
+ * Neutral moveset shared by every generic (non-named) Trial Guardian. Themed to no
+ * particular biome so it reads well at any tier: a plain strike, a telegraphed heavy,
+ * and a defensive guard that punishes mindless attack-spam by varying the tempo.
+ */
+export const TRIAL_GUARDIAN_MOVESET: EnemyMove[] = [
+  { kind: 'attack', weight: 2, label: 'strikes with focused resolve', icon: '⚔️' },
+  { kind: 'heavy',  weight: 1, mult: 1.8, label: 'gathers its power for a decisive blow', icon: '💥' },
+  { kind: 'guard',  weight: 1, bonus: 4, label: 'steels itself against your assault', icon: '🛡️' },
+];
+
 /** Named bosses from the brief, keyed by the level tier they guard. */
 export const NAMED_BOSSES: Record<number, BossDef> = {
   5: {
@@ -124,13 +135,25 @@ export const NAMED_BOSSES: Record<number, BossDef> = {
     baseHp: 85,
     attack: 6,
     defense: 1,
-    weakTo: ['KN', 'DX'],
+    weakTo: ['DX'],
     phases: [
-      { hp: 85, attack: 6, defense: 1, attackSchool: 'physical', weakTo: ['KN', 'DX'] },
+      {
+        hp: 85, attack: 6, defense: 1, attackSchool: 'physical', weakTo: ['DX'],
+        moveset: [
+          { kind: 'attack', weight: 3, label: 'oozes forward and slaps you', icon: '🫧' },
+          { kind: 'heavy',  weight: 1, mult: 1.4, label: 'quivers, then lunges with sudden urgency', icon: '💥' },
+          { kind: 'guard',  weight: 1, bonus: 3, label: 'congeals into a stubborn "later" shell', icon: '🛡️' },
+        ],
+      },
       {
         hp: 40, attack: 9, defense: 0, attackSchool: 'magic',
         weakTo: ['DX'], recoverMs: 500,
         transitionMsg: "The slime surges — 'Now it's urgent!'",
+        moveset: [
+          { kind: 'attack', weight: 3, label: 'flings a glob of last-minute panic', icon: '⚡' },
+          { kind: 'heavy',  weight: 1, mult: 1.4, label: 'erupts into a frantic overdrive', icon: '💥' },
+          { kind: 'inflict', weight: 1, inflictKey: 'burn', inflictTurns: 1, inflictMag: 1, label: 'spatters you with caustic slime', icon: '🔥' },
+        ],
       },
     ],
     rewards: { gold: 100, items: ['healing_potion'] },
@@ -144,8 +167,13 @@ export const NAMED_BOSSES: Record<number, BossDef> = {
     baseHp: 130,
     attack: 11,
     defense: 2,
-    weakTo: ['CH', 'AG'],
-    resistTo: ['ST'],
+    weakTo: ['ST', 'DX'],
+    resistTo: ['WI'],
+    moveset: [
+      { kind: 'attack', weight: 2, label: 'barks a command and jabs', icon: '🥊' },
+      { kind: 'heavy',  weight: 1, mult: 1.9, label: 'winds up a piston-driven haymaker', icon: '💥' },
+      { kind: 'guard',  weight: 1, bonus: 4, label: 'snaps into a rigid parade guard', icon: '🛡️' },
+    ],
     rewards: { gold: 130, items: [] },
   },
 
@@ -157,8 +185,13 @@ export const NAMED_BOSSES: Record<number, BossDef> = {
     baseHp: 190,
     attack: 10,
     defense: 4,
-    weakTo: ['AG'],
-    resistTo: ['ST', 'EN'],
+    weakTo: ['WI'],
+    resistTo: [],
+    moveset: [
+      { kind: 'attack', weight: 2, label: 'flops a smothering cushion onto you', icon: '🛋️' },
+      { kind: 'heavy',  weight: 1, mult: 1.8, label: 'envelops you in a crushing hug', icon: '💥' },
+      { kind: 'inflict', weight: 1, inflictKey: 'weaken', inflictTurns: 3, inflictMag: 0.3, label: 'lulls you into cozy lethargy', icon: '😴' },
+    ],
     rewards: { gold: 185, items: ['healing_potion'] },
   },
 
@@ -172,8 +205,13 @@ export const NAMED_BOSSES: Record<number, BossDef> = {
     defense: 1,
     ward: 3,
     attackSchool: 'magic',
-    weakTo: ['WI', 'KN'],
-    resistTo: ['CH'],
+    weakTo: ['WI'],
+    resistTo: [],
+    moveset: [
+      { kind: 'attack', weight: 2, label: 'flings a spike of dread', icon: '👻' },
+      { kind: 'multi',  weight: 1, hits: 3, label: 'scatters panicked strikes from every direction', icon: '🌫️' },
+      { kind: 'inflict', weight: 1, inflictKey: 'blind', inflictTurns: 2, inflictMag: 1, label: 'floods your vision with racing thoughts', icon: '😵‍💫' },
+    ],
     rewards: { gold: 230, items: [] },
   },
 
@@ -185,13 +223,25 @@ export const NAMED_BOSSES: Record<number, BossDef> = {
     baseHp: 360,
     attack: 18,
     defense: 5,
-    weakTo: ['WI', 'EN'],
+    weakTo: ['ST', 'DX', 'WI'],
     phases: [
-      { hp: 240, attack: 18, defense: 5, attackSchool: 'physical', weakTo: ['WI', 'EN'] },
+      {
+        hp: 240, attack: 18, defense: 5, attackSchool: 'physical', weakTo: ['ST', 'DX'],
+        moveset: [
+          { kind: 'attack', weight: 2, label: 'hammers you with an ashen fist', icon: '🗿' },
+          { kind: 'heavy',  weight: 1, mult: 1.9, label: 'raises both fists and brings down a crushing slam', icon: '💥' },
+          { kind: 'guard',  weight: 1, bonus: 5, label: 'hardens its slag-crusted hide', icon: '🛡️' },
+        ],
+      },
       {
         hp: 120, attack: 22, defense: 3, ward: 2, attackSchool: 'magic',
         weakTo: ['WI'], recoverMs: 480,
         transitionMsg: 'The golem shifts to emergency overdrive!',
+        moveset: [
+          { kind: 'attack', weight: 2, label: 'vents a jet of super-heated cinders', icon: '🔥' },
+          { kind: 'heavy',  weight: 1, mult: 1.7, label: 'overloads its core into a detonating shockwave', icon: '💥' },
+          { kind: 'inflict', weight: 1, inflictKey: 'burn', inflictTurns: 3, inflictMag: 2, label: 'bathes you in furnace-hot exhaust', icon: '♨️' },
+        ],
       },
     ],
     rewards: { gold: 500, items: ['recovery_elixir', 'healing_potion'] },
@@ -206,13 +256,25 @@ export const NAMED_BOSSES: Record<number, BossDef> = {
     attack: 15,
     defense: 3,
     ward: 2,
-    weakTo: ['KN', 'DX'],
+    weakTo: ['ST', 'DX', 'WI'],
     phases: [
-      { hp: 200, attack: 15, defense: 3, ward: 2, attackSchool: 'physical', weakTo: ['KN', 'DX'] },
+      {
+        hp: 200, attack: 15, defense: 3, ward: 2, attackSchool: 'physical', weakTo: ['ST', 'DX'],
+        moveset: [
+          { kind: 'attack', weight: 2, label: 'lashes out with your own reflection', icon: '🪞' },
+          { kind: 'heavy',  weight: 1, mult: 1.9, label: 'mirrors your strongest blow back at you', icon: '💥' },
+          { kind: 'inflict', weight: 1, inflictKey: 'weaken', inflictTurns: 3, inflictMag: 0.4, label: 'shows you a fear that saps your resolve', icon: '😨' },
+        ],
+      },
       {
         hp: 150, attack: 18, defense: 1, ward: 5, attackSchool: 'magic',
-        weakTo: ['DX'], recoverMs: 520,
+        weakTo: ['WI'], recoverMs: 520,
         transitionMsg: 'The Mirror Demon shifts planes — reality warps!',
+        moveset: [
+          { kind: 'attack', weight: 2, label: 'hurls a shard of fractured self', icon: '✨' },
+          { kind: 'heavy',  weight: 1, mult: 1.8, label: 'warps reality and strikes from an impossible angle', icon: '🌀' },
+          { kind: 'inflict', weight: 1, inflictKey: 'blind', inflictTurns: 2, inflictMag: 1, label: 'splinters into a blinding hall of mirrors', icon: '😵‍💫' },
+        ],
       },
     ],
     rewards: { gold: 380, items: ['recovery_elixir'] },
@@ -226,18 +288,39 @@ export const NAMED_BOSSES: Record<number, BossDef> = {
     baseHp: 300,
     attack: 17,
     defense: 4,
-    weakTo: ['DX', 'EN'],
+    weakTo: ['ST', 'DX', 'WI'],
     phases: [
-      { hp: 300, attack: 17, defense: 4, attackSchool: 'physical', weakTo: ['DX', 'EN'] },
+      {
+        hp: 300, attack: 17, defense: 4, attackSchool: 'physical', weakTo: ['ST', 'DX'],
+        moveset: [
+          { kind: 'attack', weight: 2, label: 'swings a piston-timed gauntlet', icon: '⚙️' },
+          { kind: 'heavy',  weight: 1, mult: 1.9, label: 'winds its mainspring and unleashes a hammer-blow', icon: '💥' },
+          { kind: 'guard',  weight: 1, bonus: 5, label: 'locks its gears into a defensive lattice', icon: '🛡️' },
+        ],
+      },
       {
         hp: 200, attack: 22, defense: 2, attackSchool: 'magic',
-        weakTo: ['DX'], recoverMs: 420, spawnOnEntry: 2,
+        weakTo: ['WI'], recoverMs: 420, spawnOnEntry: 2,
         transitionMsg: 'OVERCLOCK INITIATED — limiters removed!',
+        moveset: [
+          { kind: 'attack', weight: 2, label: 'fires a precision arc of energy', icon: '⚡' },
+          { kind: 'heavy',  weight: 1, mult: 1.8, label: 'channels overclocked power into a searing lance', icon: '💥' },
+          { kind: 'enrage', weight: 1, bonus: 4, label: 'strips another limiter, accelerating', icon: '♨️' },
+        ],
       },
     ],
     rewards: { gold: 500, items: ['recovery_elixir', 'healing_potion'] },
   },
 };
+
+/**
+ * Generic (non-named) boss reward for a given tier. This is the repeatable curve
+ * used by Arena at every tier and by the generic level-up trial fallback — kept
+ * separate from NAMED_BOSSES `.rewards`, which are one-shot level-up payouts.
+ */
+export function genericBossReward(tier: number): { gold: number; items: string[] } {
+  return { gold: 40 + tier * 8, items: tier % 3 === 0 ? ['healing_potion'] : [] };
+}
 
 /**
  * Boss for a level-up trial at the given target level. Uses a named boss when the
@@ -253,9 +336,12 @@ export function bossForLevel(targetLevel: number): BossDef {
     name: `Trial Guardian (Lv ${t})`,
     flavor: 'A manifestation of the challenge between you and your next level.',
     baseHp: 55 + t * 8,
-    attack: 4 + Math.round(t * 0.7),
+    // Attack ramps at 0.7/level to the STAT_CAP horizon (t=30), then flattens to
+    // 0.25/level so late gates stay winnable against the player's +6-weapon ceiling.
+    attack: 4 + Math.round(0.7 * Math.min(t, 30) + 0.25 * Math.max(0, t - 30)),
     defense: Math.floor(t / 8),
     weakTo: [],
-    rewards: { gold: 40 + t * 8, items: t % 3 === 0 ? ['healing_potion'] : [] },
+    moveset: TRIAL_GUARDIAN_MOVESET,
+    rewards: genericBossReward(t),
   };
 }

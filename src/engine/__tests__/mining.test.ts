@@ -5,9 +5,14 @@ import {
   tryMove,
   strike,
   stepMonsters,
+  castSpell,
   oreYield,
   isWalkable,
   applyBoonChoice,
+  placeTombstone,
+  findTombstone,
+  unlockedStartFloor,
+  isMineSafeBankTile,
   type MineState,
   type MineTile,
   type MineSnapshot,
@@ -15,9 +20,9 @@ import {
   MINE_ROWS,
   MINE_COLS,
 } from '../mining';
-import { MINE_ORES } from '@/content/mining';
+import { MINE_ORES, MINE_MONSTERS } from '@/content/mining';
 import { getWeapon, STARTER_WEAPON } from '@/engine/weapons';
-import { STA_REGEN_MS, MP_REGEN_MS } from '@/engine/crawl';
+import { STA_REGEN_MS, MP_REGEN_MS, lateDepthDamageScale } from '@/engine/crawl';
 
 const WEAPON = getWeapon(STARTER_WEAPON);
 
@@ -110,6 +115,55 @@ function makeState(over: Partial<MineState> = {}): MineState {
     ...over,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Twin-hoist regressions (ARCH-02/03/05) — mine side of the shared crawl.ts bodies
+// ---------------------------------------------------------------------------
+
+describe('crawl twin hoist (mine side)', () => {
+  it('prunes an expired rune on a quiet tick (ARCH-02 parity)', () => {
+    const s = makeState({
+      monsters: [],
+      runes: [{ id: 1, r: 1, c: 1, kind: 'fire', power: 5, expiresAtMs: 500 }],
+    });
+    const out = stepMonsters(s, 1000, rngFrom(1));
+    expect(out.runes).toHaveLength(0);
+  });
+
+  it('rejects a spell not in knownSpells (ARCH-03 parity)', () => {
+    const s = makeState({ knownSpells: [], mp: 8 });
+    const out = castSpell(s, 'sparks', 1000, rngFrom(1));
+    expect(out).toBe(s); // no-op
+    expect(out.mp).toBe(8);
+  });
+
+  it('two monsters funnelling into one cell do not both occupy it (ARCH-05)', () => {
+    // Bedrock everywhere except a T-funnel where (3,3) is the only cell that brings
+    // both monsters closer to the player at (3,5).
+    const rows = 7;
+    const cols = 7;
+    const tiles: MineTile[][] = [];
+    for (let r = 0; r < rows; r++) {
+      const row: MineTile[] = [];
+      for (let c = 0; c < cols; c++) row.push({ kind: 'bedrock' });
+      tiles.push(row);
+    }
+    for (const [r, c] of [[2, 3], [4, 3], [3, 3], [3, 4], [3, 5]] as [number, number][]) {
+      tiles[r][c] = { kind: 'floor' };
+    }
+    const s = makeState({
+      tiles,
+      player: { r: 3, c: 5, facing: 'left' },
+      monsters: [
+        { id: 'a', key: 'cave_slug', r: 2, c: 3, hp: 8, maxHp: 8, readyAtMs: 0 },
+        { id: 'b', key: 'cave_slug', r: 4, c: 3, hp: 8, maxHp: 8, readyAtMs: 0 },
+      ],
+    });
+    const out = stepMonsters(s, 1000, rngFrom(1));
+    const cells = out.monsters.map((m) => `${m.r},${m.c}`);
+    expect(new Set(cells).size).toBe(cells.length); // no same-tile stacking
+  });
+});
 
 describe('generateMine', () => {
   const mine = generateMine(1, SNAP, rngFrom(42));
@@ -248,6 +302,44 @@ describe('strike', () => {
     expect(bankedGold + bankedMats).toBeGreaterThan(0);
   });
 
+  it('always banks guaranteed bounty gold on a non-guardian kill (BAL-11)', () => {
+    const min = MINE_MONSTERS['cave_slug'].bounty[0]; // 1
+    for (let seed = 0; seed < 30; seed++) {
+      const s = makeState({
+        meleePower: 20,
+        monsters: [{ id: 'a', key: 'cave_slug', r: 3, c: 4, hp: 8, maxHp: 8, readyAtMs: 0 }],
+      });
+      const after = strike(s, rngFrom(seed));
+      expect(after.monsters).toHaveLength(0);
+      // Bounty gold lands even on seeds where the pool pick is a material.
+      expect(after.haul.gold ?? 0).toBeGreaterThanOrEqual(min);
+    }
+  });
+
+  it('kill-loot scales with the wielded attack stat, not always meleePower (MINI-19)', () => {
+    const totalLoot = (h: MineState['haul']) =>
+      (h.gold ?? 0) + Object.values(h.materials ?? {}).reduce((a, n) => a + n, 0);
+    // Same power (20), same seed → identical rng draws; only the attack-stat
+    // routing differs. An archer (DX, meleePower 0) must not out-loot a melee.
+    // hp 1 dies to a single strike; maxHp 40 drives the swings-to-kill loot formula.
+    const monster = { id: 'a', key: 'cave_slug', r: 3, c: 4, hp: 1, maxHp: 40, readyAtMs: 0 };
+    const melee = makeState({
+      weapon: { ...WEAPON, attackStat: 'ST' },
+      meleePower: 20,
+      rangedPower: 0,
+      monsters: [{ ...monster }],
+    });
+    const archer = makeState({
+      weapon: { ...WEAPON, attackStat: 'DX' },
+      meleePower: 0,
+      rangedPower: 20,
+      monsters: [{ ...monster }],
+    });
+    const meleeLoot = totalLoot(strike(melee, rngFrom(7)).haul);
+    const archerLoot = totalLoot(strike(archer, rngFrom(7)).haul);
+    expect(archerLoot).toBeLessThanOrEqual(meleeLoot);
+  });
+
   it('cannot swing with no stamina', () => {
     const tiles = makeState().tiles;
     tiles[3][4] = { kind: 'rock', durability: 2 };
@@ -293,6 +385,19 @@ describe('stepMonsters', () => {
     const after = stepMonsters(s, 1000, rngFrom(1));
     expect(after.hp).toBe(0);
     expect(after.status).toBe('ended');
+  });
+
+  it('MINI-17: a frozen monster deals no contact damage, then bites once thawed (forest parity)', () => {
+    const frozen = makeState({
+      hp: 50,
+      defense: 0,
+      lastHitAtMs: -1000,
+      monsters: [{ id: 'a', key: 'cave_slug', r: 3, c: 4, hp: 8, maxHp: 8, readyAtMs: 999999, frozenUntilMs: 5000 }],
+    });
+    // now 1000 < frozenUntilMs 5000 → staggered, can't bite (pre-fix it dealt 4).
+    expect(stepMonsters(frozen, 1000, rngFrom(1)).hp).toBe(50);
+    // Once the freeze lapses (now 6000 ≥ 5000) contact damage resumes: cave_slug touchDamage 4.
+    expect(stepMonsters(frozen, 6000, rngFrom(1)).hp).toBe(46);
   });
 });
 
@@ -402,5 +507,75 @@ describe('boon effects in strike', () => {
     const boon = strike(makeState({ tiles, activeBoons: ['vein_sense'] }), fixedRng);
     expect(base.haul.gold).toBe(3);
     expect(boon.haul.gold).toBe(6);
+  });
+});
+
+describe('unlockedStartFloor (BAL-25)', () => {
+  // MINE_GUARDIAN_FLOORS = { 7, 15 }.
+  it('starts at floor 1 until a guardian band is descended past', () => {
+    expect(unlockedStartFloor(0)).toBe(1);
+    expect(unlockedStartFloor(6)).toBe(1);
+    expect(unlockedStartFloor(7)).toBe(1); // at the floor-7 guardian, not yet PAST it
+  });
+  it('unlocks a boundary only once the player has gone strictly below it', () => {
+    expect(unlockedStartFloor(8)).toBe(7); // past floor 7
+    expect(unlockedStartFloor(15)).toBe(7); // at the floor-15 guardian, past floor 7 only
+    expect(unlockedStartFloor(16)).toBe(15); // past floor 15
+    expect(unlockedStartFloor(99)).toBe(15); // clamps to the deepest boundary
+  });
+});
+
+describe('isMineSafeBankTile (BAL-12)', () => {
+  it('is true only on the entrance', () => {
+    expect(isMineSafeBankTile('entrance')).toBe(true);
+    expect(isMineSafeBankTile('floor')).toBe(false);
+    expect(isMineSafeBankTile('shaft')).toBe(false);
+    expect(isMineSafeBankTile(undefined)).toBe(false);
+  });
+});
+
+describe('deep-floor difficulty (MINI-20)', () => {
+  it('spawns the sub-300ms magma sprinter on deep floors', () => {
+    let sawFast = false;
+    let minCadence = Infinity;
+    for (let seed = 0; seed < 8; seed++) {
+      const mine = generateMine(24, SNAP, rngFrom(seed));
+      for (const m of mine.monsters) {
+        minCadence = Math.min(minCadence, MINE_MONSTERS[m.key]?.moveCadenceMs ?? Infinity);
+        if (m.key === 'cinder_wisp') sawFast = true;
+      }
+    }
+    expect(sawFast).toBe(true);           // the new fast template actually spawns
+    expect(minCadence).toBeLessThan(300); // nothing was sub-300 pre-fix
+  });
+
+  it('monster count keeps climbing past the old cap of 10', () => {
+    const mine = generateMine(24, SNAP, rngFrom(3));
+    expect(mine.monsters.length).toBeGreaterThan(10); // pre-fix: Math.min(10, …) capped at 10
+  });
+
+  it('lateDepthDamageScale ramps 4%/floor and caps at 2×', () => {
+    expect(lateDepthDamageScale(0)).toBe(1);      // at the band start — no change
+    expect(lateDepthDamageScale(-5)).toBe(1);     // shallower — clamped to 1
+    expect(lateDepthDamageScale(5)).toBeGreaterThan(1);
+    expect(lateDepthDamageScale(5)).toBeCloseTo(1.2, 5);
+    expect(lateDepthDamageScale(1000)).toBe(2);   // capped
+  });
+});
+
+describe('MINI-31: findTombstone', () => {
+  it('returns null on a floor with no tombstone', () => {
+    const mine = generateMine(1, SNAP, rngFrom(11));
+    expect(findTombstone(mine)).toBeNull();
+  });
+
+  it('locates a placed tombstone tile', () => {
+    const mine = generateMine(1, SNAP, rngFrom(11));
+    const withTomb = placeTombstone(mine, rngFrom(3));
+    const pos = findTombstone(withTomb);
+    expect(pos).not.toBeNull();
+    expect(withTomb.tiles[pos!.r][pos!.c].kind).toBe('tombstone');
+    // The scan is a pure read — it must not mutate the passed state.
+    expect(findTombstone(mine)).toBeNull();
   });
 });

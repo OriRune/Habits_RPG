@@ -1,9 +1,11 @@
 // "Plan Your Week" modal — pick 1–3 focus habits at the start of each week.
 // Triggered automatically after the weekly report or manually from the dashboard.
 import { CalendarDays, Star } from 'lucide-react';
-import { type WeeklyReport } from '@/engine/weekly';
+import { type WeeklyReport, weeklyRotation } from '@/engine/weekly';
 import { useGameStore } from '@/store/useGameStore';
 import { getStat } from '@/engine/stats';
+import { rankStats } from '@/engine/classes';
+import { toISODate, weekKey } from '@/engine/date';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/cn';
@@ -18,9 +20,18 @@ interface PlanWeekModalProps {
 export function PlanWeekModal({ lastReport, onClose }: PlanWeekModalProps) {
   const allHabits = useGameStore((s) => s.habits);
   const setHabitFocus = useGameStore((s) => s.setHabitFocus);
+  const character = useGameStore((s) => s.character);
+  const challenges = useGameStore((s) => s.challenges);
+  const startChallenge = useGameStore((s) => s.startChallenge);
 
   const activeHabits = allHabits.filter((h) => h.status === 'active');
   const focusCount = activeHabits.filter((h) => h.focus).length;
+
+  // This week's challenge rotation, minus any already-active ones (mirrors ChallengesView).
+  const classStat = character.classId ? rankStats(character.statXp)[0] : null;
+  const rotation = weeklyRotation(weekKey(toISODate()), classStat);
+  const activeIds = new Set(challenges.filter((c) => c.status === 'active').map((c) => c.def.id));
+  const rotationAvail = rotation.filter((d) => !activeIds.has(d.id));
 
   return (
     <Modal title="Plan Your Week" onClose={onClose}>
@@ -102,6 +113,35 @@ export function PlanWeekModal({ lastReport, onClose }: PlanWeekModalProps) {
             })}
           </div>
         </div>
+
+        {/* This week's challenge rotation — one-tap accept (HABIT-23). */}
+        {rotationAvail.length > 0 && (
+          <div>
+            <p className="mb-2 font-display text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
+              This week's trials
+            </p>
+            <div className="space-y-1.5">
+              {rotationAvail.map((d) => (
+                <div
+                  key={d.id}
+                  className="flex items-center gap-2.5 rounded-md border border-ink-light/30 px-3 py-2 text-sm"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-semibold text-ink">{d.name}</div>
+                    <div className="truncate text-xs text-ink-muted">{d.description}</div>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    onClick={() => startChallenge(d.id)}
+                    className="shrink-0 px-3 py-1.5 text-xs"
+                  >
+                    Accept
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <Button onClick={onClose} className="w-full py-2">
           {focusCount > 0 ? `Focus on ${focusCount} habit${focusCount !== 1 ? 's' : ''} this week` : "I'll decide later"}

@@ -15,7 +15,7 @@ import {
   effectiveStatus,
   weekCompletions,
 } from '@/engine/habits';
-import { toISODate } from '@/engine/date';
+import { toISODate, now } from '@/engine/date';
 import { levelProgress } from '@/engine/leveling';
 import { rankStats } from '@/engine/classes';
 import { deriveCombatant } from '@/engine/combat';
@@ -25,6 +25,7 @@ import { previewNextGains } from '@/engine/progression';
 import { buildDailySummary, type DailySummary } from '@/engine/dashboard';
 import { accountHealth, recoveryState, type RecoveryState } from '@/engine/habitHealth';
 import { type GameState, totalXp } from './useGameStore';
+import { habitBonusCounts } from './shared';
 
 /** Cheapest minigame entry cost (Skill Trial = 1 energy). Used for the "energy ready" hint. */
 const MIN_MINIGAME_COST = 1;
@@ -124,13 +125,13 @@ export function selectNextStatGains(s: GameState): Record<StatId, number> {
 /** Full daily summary for the dashboard command center. */
 export function selectDailySummary(s: GameState): DailySummary {
   const today = toISODate();
-  const loadWarning = selectHabitLoadWarning(s) !== null;
   const recovery = recoveryState(s.habits, today);
   return buildDailySummary(s.habits, today, {
     currentEnergy: s.character.energy,
     minMinigameCost: MIN_MINIGAME_COST,
-    loadWarning,
     struggling: recovery.struggling,
+    nowHour: now().getHours(),
+    streakFreezes: s.inventory['streak_freeze'] ?? 0,
   });
 }
 
@@ -182,6 +183,20 @@ export function selectBalanceReport(s: GameState): BalanceReport {
 
 export function selectEnergySummary(s: GameState): EnergySummary {
   return buildEnergySummary(s.energyLog ?? {}, toISODate());
+}
+
+/**
+ * Habit-streak minigame-gold multiplier plus the raw counts behind it, for the streak-bonus
+ * readout ("Streak bonus ×1.15 — 3 of 4 habits on streak"). `bonus` is the stored multiplier;
+ * the counts are recomputed live so the chip stays truthful between recompute calls.
+ */
+export function selectHabitBonusInfo(s: GameState): {
+  bonus: number;
+  trackedCount: number;
+  healthyCount: number;
+} {
+  const { tracked, healthy } = habitBonusCounts(s.habits);
+  return { bonus: s.character.habitBonus, trackedCount: tracked, healthyCount: healthy };
 }
 
 export type { DailySummary, RecoveryState };

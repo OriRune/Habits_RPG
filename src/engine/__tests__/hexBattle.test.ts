@@ -106,11 +106,12 @@ function fighter(over: Partial<Combatant> = {}): Fighter {
 
 // --- Formulas -----------------------------------------------------------------------------------
 describe('AG / elevation formulas', () => {
-  it('moveTilesFor scales with AG and caps at 6', () => {
+  it('moveTilesFor scales with AG and caps at 7 (AG 20)', () => {
     expect(moveTilesFor(1)).toBe(2);
     expect(moveTilesFor(8)).toBe(4);
     expect(moveTilesFor(16)).toBe(6);
-    expect(moveTilesFor(25)).toBe(6);
+    expect(moveTilesFor(20)).toBe(7); // BAL-23: AG 20 is now the ceiling (was capped at 6)
+    expect(moveTilesFor(25)).toBe(7);
   });
 
   it('climbFor scales with AG and caps at 3', () => {
@@ -321,6 +322,44 @@ describe('playerCastSpell', () => {
   });
 });
 
+// BAL-08: push and blink finally deliver the CH/KN payoff their tooltips promise.
+describe('positional spell scaling (BAL-08)', () => {
+  // Open board, no walls — the foe travels its full distance so we can measure it.
+  function pushTo(illusionPower: number): number {
+    const s = makeState({
+      radius: 6,
+      tiles: tilesFor(6),
+      knownSpells: ['push'],
+      player: makePlayer({ q: 0, r: 0 }, { illusionPower }),
+      enemies: [makeEnemy(1, { q: 1, r: 0 })], // adjacent, due east
+    });
+    const next = playerCastSpell(s, 'push', { q: 1, r: 0 }, HALF);
+    return hexDistance(next.player.hex, next.enemies[0].hex);
+  }
+
+  it('Force Push hurls the foe 2 tiles at CH 0 and farther with Charisma', () => {
+    expect(pushTo(0)).toBe(1 + 2); // adjacent (dist 1) + 2 push = 3
+    expect(pushTo(16)).toBe(1 + 4); // +floor(16/8)=+2 tiles → dist 5
+    expect(pushTo(16)).toBeGreaterThan(pushTo(0));
+  });
+
+  function blinkRadius(supportSpell: number): number {
+    const s = makeState({
+      radius: 6,
+      tiles: tilesFor(6),
+      knownSpells: ['blink'],
+      player: makePlayer({ q: 0, r: 0 }, { supportSpell }),
+    });
+    const tiles = computeTargetable(s, { kind: 'spell', spellKey: 'blink' });
+    return Math.max(...tiles.map((h) => hexDistance({ q: 0, r: 0 }, h)));
+  }
+
+  it('Blink reaches 2 squares at KN 0 and farther with Knowledge', () => {
+    expect(blinkRadius(0)).toBe(2);
+    expect(blinkRadius(16)).toBe(4); // 2 + floor(16/8) = 4
+  });
+});
+
 // --- Enemy AI -----------------------------------------------------------------------------------
 describe('enemy turn', () => {
   it('an out-of-range foe closes the distance, then strikes when adjacent', () => {
@@ -347,6 +386,65 @@ describe('enemy turn', () => {
     const s = makeState({ enemies: [makeEnemy(1, { q: 1, r: 0 }, { statuses: [{ key: 'freeze', turns: 2, magnitude: 1 }] })] });
     const next = endPlayerTurn(s, HIGH);
     expect(next.player.hp).toBe(100); // it was adjacent but frozen
+  });
+});
+
+// --- Charger lunge (MINI-09): a kited charger closes on the third turn ---------------------------
+describe('charger lunge anti-kite', () => {
+  // Board wide enough to hold a distance-5 foe; the hero never moves (endPlayerTurn only).
+  const wide = tilesFor(5);
+
+  it('a charger kept out of reach for two turns lunges with a doubled budget on the third', () => {
+    // moveTiles:1 charger at distance 5 — its normal budget closes only 1 tile/turn, never reaching.
+    const s0 = makeState({
+      radius: 5, tiles: wide,
+      player: makePlayer({ q: 0, r: 0 }, { hp: 500, maxHp: 500 }),
+      enemies: [makeEnemy(1, { q: 5, r: 0 }, { aiArchetype: 'charger', moveTiles: 1, attack: 5 })],
+    });
+    const s1 = endPlayerTurn(s0, HIGH); // turn 1: dist 5 → 4, turnsOutOfReach = 1
+    const s2 = endPlayerTurn(s1, HIGH); // turn 2: dist 4 → 3, turnsOutOfReach = 2
+    expect(hexDistance(s2.enemies[0].hex, s2.player.hex)).toBe(3);
+    const s3 = endPlayerTurn(s2, HIGH); // turn 3: lunge — doubled budget closes 2 tiles into reach
+    // The lunge closes 2 tiles in one turn (3 → 1), which a single move budget could never do.
+    expect(hexDistance(s3.enemies[0].hex, s3.player.hex)).toBeLessThanOrEqual(1);
+    expect(s3.log.some((l) => l.includes('lunges forward'))).toBe(true);
+  });
+
+  it('the lunge out-paces a max-distance kiter on a medium board (2×+1, not 2×)', () => {
+    // The finding's headline case. Radius-4 (medium) board: max distance 8, real enemy moveTiles 3.
+    // A plain 2× lunge (=6) lands at distance 2 — one short of melee — so a wall-pegged max-AG bow
+    // player (top move 6, here the stationary hero at the far wall = the worst case) survives forever.
+    // The 2×+1 budget (=7) crosses from 8 straight into melee reach. turnsOutOfReach seeded to 2 so
+    // this single enemy phase IS the lunge turn.
+    const r4 = tilesFor(4);
+    const s0 = makeState({
+      radius: 4, tiles: r4,
+      player: makePlayer({ q: -4, r: 0 }, { hp: 500, maxHp: 500 }),
+      enemies: [makeEnemy(1, { q: 4, r: 0 }, { aiArchetype: 'charger', moveTiles: 3, attack: 5, turnsOutOfReach: 2 })],
+    });
+    expect(hexDistance(s0.enemies[0].hex, s0.player.hex)).toBe(8);
+    const s1 = endPlayerTurn(s0, HIGH); // lunge: budget 7 closes 8 → ≤1 (old budget 6 stalls at 2)
+    expect(hexDistance(s1.enemies[0].hex, s1.player.hex)).toBeLessThanOrEqual(1);
+    expect(s1.log.some((l) => l.includes('lunges forward'))).toBe(true);
+  });
+
+  it('flankers also lunge; holders and kiters never do', () => {
+    const r4 = tilesFor(4);
+    const setup = (arch: 'flanker' | 'holder' | 'kiter') =>
+      makeState({
+        radius: 4, tiles: r4,
+        player: makePlayer({ q: -4, r: 0 }, { hp: 500, maxHp: 500 }),
+        enemies: [makeEnemy(1, { q: 4, r: 0 }, { aiArchetype: arch, moveTiles: 3, attack: 5, turnsOutOfReach: 2, range: arch === 'kiter' ? 3 : 1 })],
+      });
+    // Flanker is a melee "close-to-engage" archetype → it lunges and connects like a charger.
+    const flank = endPlayerTurn(setup('flanker'), HIGH);
+    expect(flank.log.some((l) => l.includes('lunges forward'))).toBe(true);
+    // Holder (holds ground) and kiter (wants range) never get the doubled budget — scope guard.
+    for (const arch of ['holder', 'kiter'] as const) {
+      const next = endPlayerTurn(setup(arch), HIGH);
+      expect(next.log.some((l) => l.includes('lunges forward')), `${arch} must not lunge`).toBe(false);
+      expect(hexDistance(next.enemies[0].hex, next.player.hex), `${arch} closed too far`).toBeGreaterThan(1);
+    }
   });
 });
 
@@ -391,14 +489,62 @@ describe('win / lose detection', () => {
 
 // --- Reward -------------------------------------------------------------------------------------
 describe('tacticsReward', () => {
-  it('pays scaling gold on a win and nothing otherwise', () => {
-    expect(tacticsReward(makeState({ status: 'won', tier: 5 }))).toEqual({ gold: 70 });
+  it('pays scaling gold + a material bundle on a win, and nothing on an undamaged loss', () => {
+    // tier-5, radius-3 (sizeBonus 0): 40 * 1.75 = 70 gold; bundle qty = 1 + floor(5/4) = 2.
+    expect(tacticsReward(makeState({ status: 'won', tier: 5 }))).toEqual({
+      gold: 70,
+      materials: { cloth_roll: 2, bronze_bar: 2 },
+    });
     expect(tacticsReward(makeState({ status: 'lost', tier: 5 }))).toEqual({});
     expect(tacticsReward(makeState({ status: 'active', tier: 5 }))).toEqual({});
   });
 
   it('adds a potion at higher tiers', () => {
     expect(tacticsReward(makeState({ status: 'won', tier: 8 })).items).toEqual(['healing_potion']);
+  });
+
+  it('MINI-22: bigger boards pay more gold at the same tier', () => {
+    const small = tacticsReward(makeState({ status: 'won', tier: 5, radius: 3 })).gold!;
+    const large = tacticsReward(makeState({ status: 'won', tier: 5, radius: 6 })).gold!;
+    expect(large).toBeGreaterThan(small);
+    // radius-6 sizeBonus = 4 → 40 * 1.75 * (1 + 0.15*4) = 70 * 1.6 = 112.
+    expect(large).toBe(112);
+  });
+
+  it('BAL-10: a win awards the tier-scaled material bundle', () => {
+    const r5 = tacticsReward(makeState({ status: 'won', tier: 5 }));
+    expect(r5.materials).toEqual({ cloth_roll: 2, bronze_bar: 2 });
+    const r8 = tacticsReward(makeState({ status: 'won', tier: 8 })); // 1 + floor(8/4) = 3
+    expect(r8.materials).toEqual({ cloth_roll: 3, bronze_bar: 3 });
+  });
+
+  it('MINI-23: a loss/retreat pays gold proportional to damage dealt; no damage pays nothing', () => {
+    // Two 30-HP foes; one worn to 15 HP → 15/60 = 0.25 of the standing force ground down.
+    const damaged = makeState({
+      status: 'lost', tier: 5,
+      enemies: [makeEnemy(1, { q: 1, r: 0 }, { hp: 15, maxHp: 30 }), makeEnemy(2, { q: 0, r: 1 })],
+    });
+    // baseGold (tier 5, radius 3) = 70 → round(70 * 0.25) = 18.
+    expect(tacticsReward(damaged)).toEqual({ gold: 18 });
+
+    // A retreat (status 'active') with the same partial damage also pays proportionally.
+    expect(tacticsReward({ ...damaged, status: 'active' }).gold).toBe(18);
+
+    // Kills count too (MINI-23): two 30-HP foes spawned (enemyForceMaxHp 60), ONE slain and
+    // removed by checkOutcome, the survivor at full HP → 30/60 = 0.5 of the force destroyed.
+    const oneKilled = makeState({
+      status: 'active', tier: 5, enemyForceMaxHp: 60,
+      enemies: [makeEnemy(2, { q: 0, r: 1 })], // survivor at 30/30; the other is gone
+    });
+    // round(70 * 0.5) = 35 — a survivors-only metric would have paid 0 here.
+    expect(tacticsReward(oneKilled)).toEqual({ gold: 35 });
+
+    // Fresh retreat — enemies untouched — pays nothing (guard: no chip damage = no reward).
+    const fresh = makeState({
+      status: 'active', tier: 5,
+      enemies: [makeEnemy(1, { q: 1, r: 0 }), makeEnemy(2, { q: 0, r: 1 })],
+    });
+    expect(tacticsReward(fresh)).toEqual({});
   });
 });
 
@@ -410,6 +556,8 @@ describe('generateSkirmish', () => {
     expect(Object.keys(s.tiles)).toHaveLength(37); // radius-3 board
     expect(s.enemies.length).toBeGreaterThanOrEqual(2);
     expect(s.enemies.length).toBeLessThanOrEqual(5);
+    // Frozen as-spawned force HP is captured for the retreat-reward denominator (MINI-23).
+    expect(s.enemyForceMaxHp).toBe(s.enemies.reduce((sum, e) => sum + e.maxHp, 0));
     expect(s.player.hex).toEqual({ q: 0, r: 3 });
     expect(s.player.movesLeft).toBe(moveTilesFor(8));
     // Mechanic spells are filtered out of the action set.
@@ -606,6 +754,31 @@ describe('objective: beacon', () => {
     const s = beaconState(4, false); // one more tick → progress=5=target
     const s1 = endPlayerTurn(s, seeded(1));
     expect(s1.objective?.complete).toBe(true);
+  });
+
+  // MINI-24: decisive wins used to forfeit the beacon (needs 5 turns; a fast kill never gets there).
+  it('auto-completes on a decisive win when the beacon was never breached', () => {
+    const objective: TacticsObjective = {
+      kind: 'beacon', label: 'Hold the Beacon', desc: '', target: 5, progress: 2, // well short of 5
+      beaconHex: { q: 3, r: 0 }, complete: false, failed: false,
+    };
+    const enemy = makeEnemy(1, { q: 1, r: 0 }, { hp: 1 }); // adjacent, one-shot
+    const s0 = makeState({ enemies: [enemy], objective });
+    const s1 = playerAttack(s0, { q: 1, r: 0 }, seeded(1));
+    expect(s1.status).toBe('won');
+    expect(s1.objective?.complete).toBe(true); // clearing the board IS holding it
+  });
+
+  it('does NOT auto-complete a win if the beacon was contested earlier', () => {
+    const objective: TacticsObjective = {
+      kind: 'beacon', label: 'Hold the Beacon', desc: '', target: 5, progress: 2,
+      beaconHex: { q: 3, r: 0 }, beaconBroken: true, complete: false, failed: false,
+    };
+    const enemy = makeEnemy(1, { q: 1, r: 0 }, { hp: 1 });
+    const s0 = makeState({ enemies: [enemy], objective });
+    const s1 = playerAttack(s0, { q: 1, r: 0 }, seeded(1));
+    expect(s1.status).toBe('won');
+    expect(s1.objective?.complete).toBe(false); // ceding the tile forfeits the freebie
   });
 });
 

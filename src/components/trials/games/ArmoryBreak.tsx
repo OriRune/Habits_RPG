@@ -3,13 +3,15 @@
 // Three locks of rising difficulty; the zone sits mid-meter with an overshoot penalty.
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { armoryAccuracy, armoryScore, ARMORY_LOCKS, SWEET_ZONE_START, SWEET_ZONE_WIDTH } from '@/engine/trials/armoryBreak';
+import { armoryAccuracy, armoryScore, projectReleasePower, ARMORY_LOCKS, SWEET_ZONE_START, SWEET_ZONE_WIDTH } from '@/engine/trials/armoryBreak';
 import { play as sfxPlay } from '@/lib/sfx';
 import { MashMeter } from '../MashMeter';
 import { cn } from '@/lib/cn';
 
 interface ArmoryBreakProps {
   onFinish: (score01: number) => void;
+  /** ST stat level — widens each lock's sweet zone (scoring + visual). */
+  stLevel: number;
 }
 
 // Per-lock difficulty: rise speed increases and zone narrows on lock 3.
@@ -19,11 +21,24 @@ const LOCK_CONFIG = [
   { riseSpeed: 1.40, zoneWidth: SWEET_ZONE_WIDTH * 0.75 }, // lock 3 — fast, narrower
 ] as const;
 
+/** ST widens the sweet zone by this much (meter fraction) per stat level. */
+const ST_ZONE_WIDEN_PER_LEVEL = 0.006;
+
 const FALL_SPEED = 0.5;
 const INTER_LOCK_PAUSE_MS = 400;
 const FINISH_DELAY_MS = 600;
 
-export function ArmoryBreak({ onFinish }: ArmoryBreakProps) {
+/**
+ * Effective sweet-zone width for a lock, widened by the ST stat level.
+ * Capped at 2× the lock's base so high ST never makes the trial trivial.
+ * Used for BOTH the accuracy scoring and the MashMeter visual so they never drift.
+ */
+function effectiveZoneWidth(lock: number, stLevel: number): number {
+  const base = LOCK_CONFIG[Math.min(lock, LOCK_CONFIG.length - 1)].zoneWidth;
+  return Math.min(base * 2, base + stLevel * ST_ZONE_WIDEN_PER_LEVEL);
+}
+
+export function ArmoryBreak({ onFinish, stLevel }: ArmoryBreakProps) {
   const [currentLock, setCurrentLock] = useState(0);
   const [power, setPower] = useState(0);
   const [held, setHeld] = useState(false);
@@ -38,18 +53,26 @@ export function ArmoryBreak({ onFinish }: ArmoryBreakProps) {
   const heldRef = useRef(false);
   const accuraciesRef = useRef<number[]>([]);
   const transitioningRef = useRef(false);
+  const currentLockRef = useRef(0);
 
   // Mirror state to refs for safe rAF/callback access without stale closures.
   powerRef.current = power;
   heldRef.current = held;
   accuraciesRef.current = accuracies;
   transitioningRef.current = transitioning;
+  currentLockRef.current = currentLock;
 
   const handleRelease = useCallback(() => {
     if (done || !heldRef.current || transitioningRef.current) return;
     setHeld(false);
     heldRef.current = false;
-    const acc = armoryAccuracy(powerRef.current);
+    // Project power forward from the last rAF frame to the true release instant so a
+    // well-timed release isn't quantized down to the previous frame's value. (MINI-40c)
+    const releaseTs = performance.now();
+    const dtSeconds = lastTs.current ? Math.max(0, (releaseTs - lastTs.current) / 1000) : 0;
+    const { riseSpeed } = LOCK_CONFIG[Math.min(currentLockRef.current, LOCK_CONFIG.length - 1)];
+    const releasePower = projectReleasePower(powerRef.current, riseSpeed, dtSeconds);
+    const acc = armoryAccuracy(releasePower, effectiveZoneWidth(currentLockRef.current, stLevel));
     sfxPlay(acc >= 0.35 ? 'armoryLockCrack' : 'armoryLockMiss');
     const next = [...accuraciesRef.current, acc];
     if (next.length >= ARMORY_LOCKS) {
@@ -70,7 +93,7 @@ export function ArmoryBreak({ onFinish }: ArmoryBreakProps) {
         setTransitioning(false);
       }, INTER_LOCK_PAUSE_MS);
     }
-  }, [done, onFinish]);
+  }, [done, onFinish, stLevel]);
 
   const handlePress = useCallback(() => {
     if (done || transitioningRef.current) return;
@@ -122,7 +145,6 @@ export function ArmoryBreak({ onFinish }: ArmoryBreakProps) {
   const resultLabels = accuracies.map(a =>
     a >= 0.7 ? 'Great' : a >= 0.35 ? 'OK' : 'Missed'
   );
-  const lockCfg = LOCK_CONFIG[Math.min(currentLock, LOCK_CONFIG.length - 1)];
 
   return (
     <div className="flex flex-col items-center gap-6 px-2">
@@ -139,7 +161,7 @@ export function ArmoryBreak({ onFinish }: ArmoryBreakProps) {
             lockedAccuracy={accuracies[i]}
             label={`Lock ${i + 1}`}
             zoneStart={SWEET_ZONE_START}
-            zoneWidth={i === currentLock && !done ? lockCfg.zoneWidth : SWEET_ZONE_WIDTH}
+            zoneWidth={effectiveZoneWidth(i, stLevel)}
           />
         ))}
       </div>

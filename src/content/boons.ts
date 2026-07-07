@@ -58,7 +58,9 @@ export const BOONS: Record<string, CrawlBoon> = {
   lantern: {
     key: 'lantern', name: 'Lantern',
     desc: 'See 2 tiles further in the fog.', icon: '🔦',
-    game: 'forest', sightBonus: 2,
+    // MINI-31: mine fog was pure friction with no counterplay — the mine already reads sightBonus,
+    // so the lantern belongs in both crawlers (it was needlessly gated to the forest).
+    game: 'both', sightBonus: 2,
   },
 };
 
