@@ -82,6 +82,10 @@ export const MINE_ORES: Record<string, MineOreDef> = {
     key: 'bronze_vein', name: 'Bronze Vein', glyph: '⛏', color: '#a06a3a',
     floorMin: 1, weight: 3, durability: 2, grants: { kind: 'material', material: 'bronze_bar', amount: [1, 2] },
   },
+  stone_lode: {
+    key: 'stone_lode', name: 'Stone Lode', glyph: '▪', color: '#8a8a8a',
+    floorMin: 1, weight: 3, durability: 2, grants: { kind: 'material', material: 'stone', amount: [1, 2] },
+  },
   iron_vein: {
     key: 'iron_vein', name: 'Iron Vein', glyph: '⛏', color: '#7a8590',
     floorMin: 3, weight: 2.5, durability: 3, grants: { kind: 'material', material: 'iron_bar', amount: [1, 2] },
@@ -195,9 +199,3 @@ export const MINE_GUARDIAN_FLOORS: Record<number, string> = {
   15: 'magma_colossus',
 };
 
-export function getMineOre(key: string): MineOreDef | undefined {
-  return MINE_ORES[key];
-}
-export function getMineMonster(key: string): MineMonsterDef | undefined {
-  return MINE_MONSTERS[key];
-}

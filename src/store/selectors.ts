@@ -13,7 +13,7 @@ import {
   isCompletedOn,
   isLoggableOn,
   effectiveStatus,
-  weekCompletions,
+  habitBonusCounts,
 } from '@/engine/habits';
 import { toISODate, now } from '@/engine/date';
 import { levelProgress } from '@/engine/leveling';
@@ -24,8 +24,8 @@ import { consistencyScore, consistencyTrend, dayOfWeekBreakdown } from '@/engine
 import { previewNextGains } from '@/engine/progression';
 import { buildDailySummary, type DailySummary } from '@/engine/dashboard';
 import { accountHealth, recoveryState, type RecoveryState } from '@/engine/habitHealth';
+import { townPerks, prestigeOf, type TownPerks } from '@/engine/town';
 import { type GameState, totalXp } from './useGameStore';
-import { habitBonusCounts } from './shared';
 
 /** Cheapest minigame entry cost (Skill Trial = 1 energy). Used for the "energy ready" hint. */
 const MIN_MINIGAME_COST = 1;
@@ -38,17 +38,20 @@ export function selectLevelProgress(s: GameState) {
   return levelProgress(totalXp(s.character.statXp));
 }
 
-/**
- * Habits to show on the main tracker today: active habits loggable today, plus suspended
- * habits (shown marked). Retired habits are excluded.
- */
-export function selectDashboardHabits(s: GameState): Habit[] {
-  return makeSelectDashboardHabits(toISODate())(s);
+/** Active Homestead perks (derived from completed buildings). */
+export function selectTownPerks(s: GameState): TownPerks {
+  return townPerks(s.town);
+}
+
+/** Homestead prestige total (derived from completed tiers + decor). */
+export function selectTownPrestige(s: GameState): number {
+  return prestigeOf(s.town);
 }
 
 /**
- * Date-parameterized version of {@link selectDashboardHabits}: the habits to show on the tracker
- * for a given ISO day (used when browsing/editing past days). Reflects that day's lifecycle state.
+ * The habits to show on the main tracker for a given ISO day: active habits loggable that day,
+ * plus suspended habits (shown marked); retired habits are excluded. Date-parameterized so it also
+ * serves browsing/editing past days — it reflects that day's lifecycle state.
  */
 export function makeSelectDashboardHabits(iso: string) {
   return (s: GameState): Habit[] =>
@@ -62,16 +65,6 @@ export function makeSelectDashboardHabits(iso: string) {
 
 export function isHabitDoneToday(h: Habit): boolean {
   return isCompletedOn(h, toISODate());
-}
-
-export function isHabitSuspended(h: Habit): boolean {
-  return effectiveStatus(h, toISODate()) === 'suspended';
-}
-
-/** Weekly progress for a times_per_week habit (else null). */
-export function selectWeekProgress(h: Habit): { done: number; target: number } | null {
-  if (h.frequency !== 'times_per_week') return null;
-  return { done: weekCompletions(h, toISODate()), target: h.timesPerWeek ?? 1 };
 }
 
 export function selectTopStats(s: GameState): StatId[] {
@@ -165,8 +158,7 @@ const DUNGEON_MILESTONES: ReadonlyArray<{ depth: number; label: string }> = [
 /**
  * Dungeon milestone progress: the player's deepest-ever floor and the next
  * depth gate they haven't reached yet, or null when all are cleared.
- * Mirrors the inline `milestoneHint` logic in DungeonView so other views
- * (CharacterView, etc.) can display consistent progress text.
+ * Consumed by DungeonView (and available to other views) for consistent progress text.
  */
 export function selectDungeonMilestone(s: GameState): {
   deepestFloor: number;

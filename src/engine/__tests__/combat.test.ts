@@ -8,7 +8,7 @@ import {
   type RNG,
 } from '../combat';
 import { emptyStatLevels } from '../progression';
-import { emptyCombatStats } from '../combatStats';
+import { emptyCombatStats, combatXpForWin, dungeonCombatStatXp } from '../combatStats';
 import { getWeapon, STARTER_WEAPON } from '../weapons';
 import { bossForLevel } from '../bosses';
 
@@ -278,5 +278,25 @@ describe('illusionBoost (BAL-07 CH scaling)', () => {
     // base 0.4 + floor(24/6)=4 · 0.05 = 0.6 — a flat +floor(CH/6) would have given a broken 4.4.
     expect(illusionBoost({ key: 'weaken' as const, turns: 3, magnitude: 0.4 }, 24).magnitude).toBeCloseTo(0.6, 5);
     expect(illusionBoost({ key: 'weaken' as const, turns: 3, magnitude: 0.4 }, 12).magnitude).toBeCloseTo(0.5, 5);
+  });
+});
+
+// ARCH-25c: pin the combat-stat reward formulas (combatStats.ts). These pure fns feed
+// dungeonSlice's win rewards; a coefficient drift here would silently rebalance the mode.
+describe('combat-stat reward formulas (ARCH-25c)', () => {
+  it('combatXpForWin scales as 12 + round(enemyMaxHp / 6)', () => {
+    expect(combatXpForWin(0)).toBe(12);
+    expect(combatXpForWin(60)).toBe(22);   // 12 + 10
+    expect(combatXpForWin(100)).toBe(29);  // 12 + round(16.67)
+  });
+
+  it('dungeonCombatStatXp = 8 + round(hp/10), split 60/40 attack/HP', () => {
+    const a = dungeonCombatStatXp(100); // total 8 + 10 = 18
+    expect(a).toEqual({ total: 18, atkShare: 11, hpShare: 7 }); // round(18·0.6)=11
+    const b = dungeonCombatStatXp(0);   // total 8
+    expect(b).toEqual({ total: 8, atkShare: 5, hpShare: 3 });   // round(8·0.6)=5
+    // the split always reconstitutes total (no rounding leak)
+    expect(a.atkShare + a.hpShare).toBe(a.total);
+    expect(b.atkShare + b.hpShare).toBe(b.total);
   });
 });

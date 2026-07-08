@@ -6,7 +6,7 @@ import { useEffect, useRef, type MutableRefObject } from 'react';
 import { useGameStore } from '@/store/useGameStore';
 import { canDescend, facedCell, facedMonsterId, type Dir } from '@/engine/mining';
 import { CHARGE_SWING_COUNT, DASH_BASE_CD_MS, CHARGE_DAMAGE_MULT } from '@/engine/crawl';
-import { boonChargeReduce } from '@/content/boons';
+import { boonChargeReduce } from '@/engine/crawl';
 import { useCoopStore } from '@/net/coop/session';
 import { useAuthStore } from '@/net/auth';
 
@@ -98,8 +98,11 @@ export function useMiningLoop(): MiningControls {
         chargeConsumed.current = false;
       }
     };
+    // Alt-tab/window blur can drop a keyup, leaving a direction stuck held (auto-walk on return).
+    const onBlur = () => { held.current.clear(); lastDir.current = null; };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
 
     let raf = 0;
     let lastMove = 0;
@@ -120,10 +123,17 @@ export function useMiningLoop(): MiningControls {
         spellQueue.current = null;
       }
 
-      // Dash — fires once on Shift press in the current facing direction.
+      // Dash — fires once on Shift press in the currently-held direction, falling back to facing.
+      // Manual-QA: holding a direction + Shift dashes that way; nothing held dashes toward facing.
       if (dashQueued.current) {
         dashQueued.current = false;
-        const dir = lastDir.current ?? run.player.facing;
+        const heldDir =
+          lastDir.current && held.current.has(lastDir.current)
+            ? lastDir.current
+            : held.current.size > 0
+              ? [...held.current][0]
+              : null;
+        const dir = heldDir ?? run.player.facing;
         const cd = run.dashCooldownMs ?? DASH_BASE_CD_MS;
         const lastDash = run.lastDashMs ?? -cd;
         if (now - lastDash >= cd) {
@@ -241,6 +251,7 @@ export function useMiningLoop(): MiningControls {
       cancelAnimationFrame(raf);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
       held.current.clear();
     };
   }, []);

@@ -762,7 +762,7 @@ export function BattleScene({
 
         {/* Mute toggle */}
         <button
-          className="absolute right-1.5 top-1.5 z-10 rounded p-0.5 text-parchment-300/40 transition-colors hover:text-parchment-200"
+          className="absolute right-1.5 top-1.5 z-10 flex h-11 w-11 items-center justify-center rounded text-parchment-300/40 transition-colors hover:text-parchment-200"
           onClick={(e) => { e.stopPropagation(); updateSettings({ soundEnabled: !soundEnabled }); void sfx.resume(); }}
           title={soundEnabled ? 'Mute sounds' : 'Unmute sounds'}
           aria-label={soundEnabled ? 'Mute' : 'Unmute'}
@@ -892,7 +892,11 @@ export function BattleScene({
 function SubmenuHeader({ title, onBack }: { title: string; onBack: () => void }) {
   return (
     <div className="flex items-center gap-2">
-      <button onClick={onBack} className="text-parchment-300 hover:text-gold-bright">
+      <button
+        onClick={onBack}
+        aria-label="Back"
+        className="-ml-2 flex h-11 w-11 items-center justify-center text-parchment-300 hover:text-gold-bright"
+      >
         <ChevronLeft className="h-5 w-5" />
       </button>
       <span className="font-display text-sm font-semibold text-gold-bright">{title}</span>

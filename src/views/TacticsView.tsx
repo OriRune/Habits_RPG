@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Grid3x3, Zap, Mountain, Sparkles, Gift } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
+import { useIsCoarsePointer } from '@/hooks/useIsCoarsePointer';
 import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
 import { TACTICS_ENERGY_COST, TACTICS_UNLOCK_LEVEL, TACTICS_GRANTED_SPELLS, STA_REGEN_PER_TURN, isTacticsLoadoutSpell, type TacticsSize } from '@/engine/hexBattle';
 import { getSpell } from '@/engine/spells';
@@ -50,6 +51,8 @@ export function TacticsView() {
       return [...prev, key];
     });
   }
+
+  const coarse = useIsCoarsePointer();
 
   const unlocked = level >= TACTICS_UNLOCK_LEVEL;
   const canEnter = unlocked && energy >= TACTICS_ENERGY_COST;
@@ -240,14 +243,16 @@ export function TacticsView() {
             if (canEnter && showAdventureRitual) { setShowRitual(true); return; }
             void sfxResume(); beginTactics(eligibleSpells.length > 0 ? loadout : undefined, tier);
           }}
-          disabled={!canEnter}
+          disabled={!canEnter || coarse}
           className="w-full py-2.5"
         >
-          {!unlocked
-            ? `Unlocks at Level ${TACTICS_UNLOCK_LEVEL}`
-            : canEnter
-              ? 'Begin the Skirmish'
-              : `Need ${TACTICS_ENERGY_COST} energy (complete habits)`}
+          {coarse
+            ? 'Best played on desktop'
+            : !unlocked
+              ? `Unlocks at Level ${TACTICS_UNLOCK_LEVEL}`
+              : canEnter
+                ? 'Begin the Skirmish'
+                : `Need ${TACTICS_ENERGY_COST} energy (complete habits)`}
         </Button>
         {showRitual && (
           <AdventureRitualModal

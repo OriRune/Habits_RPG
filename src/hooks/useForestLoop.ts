@@ -5,7 +5,7 @@ import { useEffect, useRef } from 'react';
 import { useGameStore } from '@/store/useGameStore';
 import { canAdvance, isOnShrine, facedCell, facedBeastId, rangedBeastId, type Dir, type ForestState } from '@/engine/forest';
 import { CHARGE_SWING_COUNT, DASH_BASE_CD_MS, CHARGE_DAMAGE_MULT } from '@/engine/crawl';
-import { boonChargeReduce } from '@/content/boons';
+import { boonChargeReduce } from '@/engine/crawl';
 import { useCoopStore } from '@/net/coop/session';
 import { useAuthStore } from '@/net/auth';
 
@@ -107,8 +107,11 @@ export function useForestLoop(): ForestControlsApi {
         chargeConsumed.current = false;
       }
     };
+    // Alt-tab/window blur can drop a keyup, leaving a direction stuck held (auto-walk on return).
+    const onBlur = () => { held.current.clear(); lastDir.current = null; };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
 
     let raf = 0;
     let lastMove = 0;
@@ -272,6 +275,7 @@ export function useForestLoop(): ForestControlsApi {
       cancelAnimationFrame(raf);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
       held.current.clear();
     };
   }, []);

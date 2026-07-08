@@ -15,6 +15,7 @@ import {
   isWalkable,
   isOnShrine,
   isVisible,
+  sightRadiusFor,
   canAdvance,
   unlockedStartStage,
   isForestSafeBankTile,
@@ -196,6 +197,15 @@ describe('generateForest', () => {
   it('has at least one spring on the map', () => {
     const springs = forest.tiles.flat().filter((t) => t.kind === 'node' && t.nodeKey === 'spring');
     expect(springs.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('sightRadiusFor — Homestead Watchtower sight bonus (10.5)', () => {
+  it('adds the sight bonus on top of the (trail) base radius', () => {
+    // makeForest parks the player on a trail tile, so the base is the standard SIGHT_RADIUS.
+    const base = sightRadiusFor(makeForest());
+    expect(sightRadiusFor(makeForest({ sightBonus: 0 }))).toBe(base);
+    expect(sightRadiusFor(makeForest({ sightBonus: 1 }))).toBe(base + 1);
   });
 });
 

@@ -91,6 +91,10 @@ export const FOREST_NODES: Record<string, ForestNodeDef> = {
     key: 'flower_bush', name: 'Flower Bush', glyph: '🌸', color: '#d96aa0',
     stageMin: 1, weight: 3, grants: { kind: 'material', material: 'herbs', amount: [1, 2] },
   },
+  timber_stand: {
+    key: 'timber_stand', name: 'Timber Stand', glyph: '🌲', color: '#5a7a3a',
+    stageMin: 1, weight: 3, grants: { kind: 'material', material: 'wood', amount: [1, 2] },
+  },
   flax_plant: {
     key: 'flax_plant', name: 'Flax & Cotton', glyph: '🌾', color: '#c9b34f',
     stageMin: 1, weight: 3, grants: { kind: 'material', material: 'cloth_roll', amount: [1, 2] },
@@ -248,9 +252,3 @@ export const FOREST_GUARDIAN_STAGES: Record<number, string> = {
   8: 'ancient_guardian',
 };
 
-export function getForestNode(key: string): ForestNodeDef | undefined {
-  return FOREST_NODES[key];
-}
-export function getForestBeast(key: string): ForestBeastDef | undefined {
-  return FOREST_BEASTS[key];
-}

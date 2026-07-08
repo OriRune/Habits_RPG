@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Swords, Zap } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
+import { useIsCoarsePointer } from '@/hooks/useIsCoarsePointer';
 import { ARENA_ENERGY_COST, ARENA_UNLOCK_LEVEL } from '@/engine/arena';
 import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
 import { bossForLevel } from '@/engine/bosses';
@@ -25,6 +26,8 @@ export function ArenaView() {
   const arenaSpeed = useGameStore((s) => s.settings.arenaSpeed);
   const beginArena = useGameStore((s) => s.beginArena);
   const showAdventureRitual = useGameStore((s) => s.settings.showAdventureRitual);
+
+  const coarse = useIsCoarsePointer();
 
   const unlocked = level >= ARENA_UNLOCK_LEVEL;
   const canEnter = unlocked && energy >= ARENA_ENERGY_COST;
@@ -85,14 +88,16 @@ export function ArenaView() {
 
         <Button
           onClick={() => canEnter && showAdventureRitual ? setShowRitual(true) : beginArena()}
-          disabled={!canEnter}
+          disabled={!canEnter || coarse}
           className="w-full py-2.5"
         >
-          {!unlocked
-            ? `Unlocks at Level ${ARENA_UNLOCK_LEVEL}`
-            : canEnter
-              ? 'Enter the Arena'
-              : `Need ${ARENA_ENERGY_COST} energy (complete habits)`}
+          {coarse
+            ? 'Best played on desktop'
+            : !unlocked
+              ? `Unlocks at Level ${ARENA_UNLOCK_LEVEL}`
+              : canEnter
+                ? 'Enter the Arena'
+                : `Need ${ARENA_ENERGY_COST} energy (complete habits)`}
         </Button>
         {showRitual && (
           <AdventureRitualModal

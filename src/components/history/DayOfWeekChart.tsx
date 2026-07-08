@@ -1,15 +1,13 @@
 // Completion rate by day of week — 7 bars, Sun..Sat.
-import { type Habit } from '@/engine/habits';
-import { dayOfWeekBreakdown } from '@/engine/tracking';
-import { toISODate } from '@/engine/date';
+import { useGameStore } from '@/store/useGameStore';
+import { selectDayOfWeek } from '@/store/selectors';
 import { Panel } from '@/components/ui/Panel';
 import { cn } from '@/lib/cn';
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-export function DayOfWeekChart({ habits }: { habits: Habit[] }) {
-  const today = toISODate();
-  const breakdown = dayOfWeekBreakdown(habits, today);
+export function DayOfWeekChart() {
+  const breakdown = useGameStore(selectDayOfWeek);
 
   const maxPct = Math.max(
     1,

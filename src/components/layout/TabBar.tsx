@@ -45,7 +45,7 @@ interface NavProps {
 
 export function BottomBar({ active, onChange, badges }: NavProps) {
   return (
-    <nav className="texture-wood sticky bottom-0 z-10 border-t-2 border-gold-deep shadow-wood lg:hidden">
+    <nav className="texture-wood sticky bottom-0 z-10 border-t-2 border-gold-deep shadow-wood pb-[env(safe-area-inset-bottom)] lg:hidden">
       <div className="mx-auto flex max-w-2xl">
         {NAV_ITEMS.map(({ id, label, icon: Icon }) => {
           const isActive = active === id;

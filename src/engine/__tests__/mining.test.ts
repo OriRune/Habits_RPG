@@ -13,6 +13,9 @@ import {
   findTombstone,
   unlockedStartFloor,
   isMineSafeBankTile,
+  sightRadiusFor,
+  MINE_SIGHT_RADIUS,
+  MINE_DEATH_KEEP,
   type MineState,
   type MineTile,
   type MineSnapshot,
@@ -20,9 +23,10 @@ import {
   MINE_ROWS,
   MINE_COLS,
 } from '../mining';
+import { splitHaul } from '../forest';
 import { MINE_ORES, MINE_MONSTERS } from '@/content/mining';
 import { getWeapon, STARTER_WEAPON } from '@/engine/weapons';
-import { STA_REGEN_MS, MP_REGEN_MS, lateDepthDamageScale } from '@/engine/crawl';
+import { STA_REGEN_MS, MP_REGEN_MS, FREEZE_DURATION_MS, lateDepthDamageScale } from '@/engine/crawl';
 
 const WEAPON = getWeapon(STARTER_WEAPON);
 
@@ -162,6 +166,74 @@ describe('crawl twin hoist (mine side)', () => {
     const out = stepMonsters(s, 1000, rngFrom(1));
     const cells = out.monsters.map((m) => `${m.r},${m.c}`);
     expect(new Set(cells).size).toBe(cells.length); // no same-tile stacking
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MINI-33 residual: rune placement / rune trigger / ring-of-fire. Exercises the
+// shared crawl.ts spell + rune bodies through the mine's castSpell + stepMonsters
+// path (existing coverage only hit the `sparks` damage spell).
+// ---------------------------------------------------------------------------
+
+describe('crawl spell mechanics (mine wrapper)', () => {
+  it('casts fire_rune onto the faced tile with a 30s lifetime', () => {
+    // player at (3,3) facing 'right' → faced cell (3,4), an interior floor tile
+    const s = makeState({ knownSpells: ['fire_rune'], mp: 8 });
+    const out = castSpell(s, 'fire_rune', 1000, rngFrom(1));
+    expect(out.mp).toBe(1); // 8 − 7 mpCost
+    expect(out.runes).toHaveLength(1);
+    const rune = out.runes[0];
+    expect(rune).toMatchObject({ r: 3, c: 4, kind: 'fire' });
+    expect(rune.expiresAtMs).toBe(1000 + 30000);
+    expect(rune.power).toBeGreaterThan(0);
+  });
+
+  it('casts ice_rune (kind "ice") onto the faced tile', () => {
+    const s = makeState({ knownSpells: ['ice_rune'], mp: 8 });
+    const out = castSpell(s, 'ice_rune', 1000, rngFrom(1));
+    expect(out.runes).toHaveLength(1);
+    expect(out.runes[0]).toMatchObject({ r: 3, c: 4, kind: 'ice' });
+    expect(out.runes[0].expiresAtMs).toBe(1000 + 30000);
+  });
+
+  it('a monster on a fire rune takes rune.power damage + burn, and the rune is consumed', () => {
+    // Adjacent-to-player monster stays put (won't path) so it sits on the rune when it fires.
+    const s = makeState({
+      monsters: [{ id: 'm', key: 'cave_slug', r: 3, c: 4, hp: 8, maxHp: 8, readyAtMs: 0 }],
+      runes: [{ id: 1, r: 3, c: 4, kind: 'fire', power: 5, expiresAtMs: 60000 }],
+    });
+    const out = stepMonsters(s, 1000, rngFrom(1));
+    const m = out.monsters.find((x) => x.id === 'm')!;
+    expect(m.hp).toBe(3);              // 8 − 5 rune power
+    expect(m.poisonDmg).toBe(2);       // round(5 · 0.3) burn DoT
+    expect(out.runes).toHaveLength(0); // consumed on trigger
+  });
+
+  it('a monster on an ice rune is frozen and the rune is consumed', () => {
+    const s = makeState({
+      monsters: [{ id: 'm', key: 'cave_slug', r: 3, c: 4, hp: 8, maxHp: 8, readyAtMs: 0 }],
+      runes: [{ id: 1, r: 3, c: 4, kind: 'ice', power: 5, expiresAtMs: 60000 }],
+    });
+    const out = stepMonsters(s, 1000, rngFrom(1));
+    const m = out.monsters.find((x) => x.id === 'm')!;
+    expect(m.frozenUntilMs).toBe(1000 + FREEZE_DURATION_MS);
+    expect(m.hp).toBe(3);              // ice runes still deal their power (8 − 5)
+    expect(out.runes).toHaveLength(0);
+  });
+
+  it('ring_of_fire scorches a monster adjacent to the player', () => {
+    const s = makeState({
+      knownSpells: ['ring_of_fire'],
+      mp: 10,
+      maxMp: 10,
+      monsters: [{ id: 'm', key: 'cave_slug', r: 3, c: 4, hp: 8, maxHp: 8, readyAtMs: 0 }],
+    });
+    const cast = castSpell(s, 'ring_of_fire', 1000, rngFrom(1));
+    expect(cast.ringOfFire).not.toBeNull();
+    expect(cast.ringOfFire!.dmg).toBe(7); // max(2, round(6 + 2·0.5))
+    const out = stepMonsters(cast, 1100, rngFrom(1));
+    const m = out.monsters.find((x) => x.id === 'm')!;
+    expect(m.hp).toBe(1); // 8 − 7 ring damage
   });
 });
 
@@ -560,6 +632,32 @@ describe('deep-floor difficulty (MINI-20)', () => {
     expect(lateDepthDamageScale(5)).toBeGreaterThan(1);
     expect(lateDepthDamageScale(5)).toBeCloseTo(1.2, 5);
     expect(lateDepthDamageScale(1000)).toBe(2);   // capped
+  });
+});
+
+describe('sightRadiusFor (ARCH-14)', () => {
+  it('returns the base radius with no boons', () => {
+    expect(sightRadiusFor(makeState({ activeBoons: [] }))).toBe(MINE_SIGHT_RADIUS);
+  });
+
+  it('widens by the Lantern boon bonus (+2)', () => {
+    expect(sightRadiusFor(makeState({ activeBoons: ['lantern'] }))).toBe(MINE_SIGHT_RADIUS + 2);
+  });
+
+  it('widens by the Homestead Watchtower sight bonus (+1) and stacks with the boon (10.5)', () => {
+    expect(sightRadiusFor(makeState({ sightBonus: 1 }))).toBe(MINE_SIGHT_RADIUS + 1);
+    expect(sightRadiusFor(makeState({ activeBoons: ['lantern'], sightBonus: 1 }))).toBe(MINE_SIGHT_RADIUS + 3);
+  });
+});
+
+describe('death split via splitHaul (ARCH-14)', () => {
+  it('kept + lost reconstruct the original haul at MINE_DEATH_KEEP', () => {
+    const haul = { gold: 15, materials: { stone: 3, iron_bar: 1 } };
+    const { kept, lost } = splitHaul(haul, MINE_DEATH_KEEP);
+    expect((kept.gold ?? 0) + (lost.gold ?? 0)).toBe(haul.gold);
+    for (const [mat, qty] of Object.entries(haul.materials)) {
+      expect((kept.materials?.[mat] ?? 0) + (lost.materials?.[mat] ?? 0)).toBe(qty);
+    }
   });
 });
 

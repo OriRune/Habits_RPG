@@ -75,6 +75,15 @@ vi.mock('@/net/supabaseClient', () => {
   };
 });
 
+// The real env module reads `import.meta.env.VITE_SUPABASE_*`, which is unset in the
+// test bundle (both ''), so flushOnHide's raw keepalive REST write (9.5) would always
+// hit the empty-URL fallback. Give it concrete values so the keepalive path is testable.
+vi.mock('@/net/env', () => ({
+  SUPABASE_URL: 'https://test.supabase.co',
+  SUPABASE_ANON_KEY: 'anon-key',
+  isBackendConfigured: () => true,
+}));
+
 // ─── 3. Now import the modules under test (after mocks are registered) ────────
 
 import {
@@ -85,9 +94,11 @@ import {
   wipeLocalSave,
   resolveSaveConflict,
   useSaveConflictStore,
+  foregroundRepull,
+  flushOnHide,
 } from '../cloudSave';
 import { useAuthStore } from '../auth';
-import { useGameStore } from '@/store/useGameStore';
+import { useGameStore, cancelPersistedSave } from '@/store/useGameStore';
 import { useToastStore } from '@/store/useToastStore';
 
 // ─── 4. Helpers ───────────────────────────────────────────────────────────────
@@ -155,6 +166,11 @@ describe('cloudSave', () => {
 
     // Stub out rehydrate so pullCloudSave doesn't try to rehydrate the store
     vi.spyOn(useGameStore.persist, 'rehydrate').mockResolvedValue(undefined);
+
+    // The persist write is now trailing-debounced (ARCH-07); the setState above
+    // queued one. Drop it so durableEnvelope()'s flush can't later overwrite the
+    // STORAGE_KEY envelope this beforeEach set up directly.
+    cancelPersistedSave();
   });
 
   // ─── durableEnvelope ─────────────────────────────────────────────────────
@@ -1010,6 +1026,129 @@ describe('cloudSave', () => {
       await expect(pushCloudSave()).resolves.toBe(true);
       expect(mocks.insertImpl).not.toHaveBeenCalled();
       expect(mocks.updateSelectImpl).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── Foreground re-pull (item 9.4) ───────────────────────────────────────
+  // pullCloudSave's select() → maybeSingle() (mocks.maybySingleImpl) is the first
+  // await in the function, so it fires synchronously when foregroundRepull does not
+  // short-circuit — asserting on its call count tells us whether the pull ran.
+
+  describe('foreground re-pull (9.4)', () => {
+    it('pulls when local is clean', async () => {
+      mocks.maybySingleImpl.mockResolvedValue({ data: null, error: null });
+      // No cloud row → the pull imports local via an insert; stub it so the
+      // (unawaited) background pull resolves instead of leaving a rejection.
+      mocks.insertImpl.mockResolvedValue({ data: null, error: null });
+      // beforeEach cleared DIRTY_KEY, so local is clean here.
+      foregroundRepull();
+      expect(mocks.maybySingleImpl).toHaveBeenCalledTimes(1);
+      await new Promise((r) => setTimeout(r, 0)); // let the background pull settle
+    });
+
+    it('skips the pull when local is dirty (never rolls back unsynced edits on a wake)', () => {
+      localStorage.setItem(DIRTY_KEY, '1');
+      mocks.maybySingleImpl.mockResolvedValue({ data: null, error: null });
+      foregroundRepull();
+      expect(mocks.maybySingleImpl).not.toHaveBeenCalled();
+    });
+
+    it('skips the pull while a first-sign-in conflict is pending', () => {
+      useSaveConflictStore.setState({
+        conflict: {
+          local: { level: 1, habitCount: 0, lastActiveISO: null },
+          cloud: { level: 2, habitCount: 0, lastActiveISO: null },
+        },
+      });
+      mocks.maybySingleImpl.mockResolvedValue({ data: null, error: null });
+      foregroundRepull();
+      expect(mocks.maybySingleImpl).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── Durable log-and-lock flush (item 9.5) ───────────────────────────────
+
+  describe('durable log-and-lock flush (9.5)', () => {
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+
+    /** Seed the module-private lastPulledVersion to 1 via a first-write insert push. */
+    async function seedVersion1() {
+      mocks.insertImpl.mockResolvedValueOnce({ data: null, error: null });
+      await pushCloudSave(); // lastPulledVersion: null → 1; clears dirty; stamps owner
+    }
+
+    /** Sign in with an access token so the keepalive REST write can authenticate. */
+    function signInWithToken() {
+      useAuthStore.setState({
+        status: 'signedIn',
+        session: { user: { id: 'uid-test' }, access_token: 'test-token' } as Session,
+        username: 'Tester',
+      });
+    }
+
+    it('sends a CAS-guarded keepalive PATCH with the auth headers when dirty', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => [{ version: 2 }] });
+      vi.stubGlobal('fetch', fetchMock);
+      signInWithToken();
+      await seedVersion1();
+      localStorage.setItem(DIRTY_KEY, '1'); // a fresh edit made after the last sync
+
+      flushOnHide();
+
+      // fetch fires synchronously (before the response await), so we can assert now.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toContain('/rest/v1/saves');
+      expect(url).toContain('user_id=eq.uid-test');
+      expect(url).toContain('version=eq.1'); // CAS guard = last-pulled version
+      expect(url).toContain('select=version');
+      expect(opts.method).toBe('PATCH');
+      expect(opts.keepalive).toBe(true);
+      const headers = opts.headers as Record<string, string>;
+      expect(headers.apikey).toBe('anon-key');
+      expect(headers.Authorization).toBe('Bearer test-token');
+      expect(headers.Prefer).toBe('return=representation');
+      const bodyObj = JSON.parse(opts.body as string) as { version: number; state: unknown };
+      expect(bodyObj.version).toBe(2); // next = base + 1
+      expect(bodyObj.state).toBeTruthy();
+
+      // On a confirming response the markers advance and dirty clears.
+      await tick();
+      expect(localStorage.getItem(SYNCED_VERSION_KEY)).toBe('2');
+      expect(localStorage.getItem(DIRTY_KEY)).toBeNull();
+
+      vi.unstubAllGlobals();
+    });
+
+    it('does nothing when local is clean (no unsynced edits)', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => [{ version: 2 }] });
+      vi.stubGlobal('fetch', fetchMock);
+      signInWithToken();
+      await seedVersion1(); // this clears the dirty flag
+
+      flushOnHide();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      vi.unstubAllGlobals();
+    });
+
+    it('falls back to the ordinary push for an oversized (>64 KiB) save', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => [{ version: 2 }] });
+      vi.stubGlobal('fetch', fetchMock);
+      signInWithToken();
+      await seedVersion1();
+      // A save whose serialized envelope blows past the ~64 KiB keepalive cap.
+      localStorage.setItem(STORAGE_KEY, makeEnvelope({ blob: 'x'.repeat(80_000) }));
+      localStorage.setItem(DIRTY_KEY, '1');
+      mocks.updateSelectImpl.mockResolvedValue({ data: [{ version: 2 }], error: null });
+
+      flushOnHide();
+
+      // No keepalive write; the CAS update path (updateSelectImpl) carries it instead.
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(mocks.updateSelectImpl).toHaveBeenCalled();
+      await tick();
+      vi.unstubAllGlobals();
     });
   });
 });

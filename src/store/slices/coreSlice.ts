@@ -19,9 +19,10 @@ import {
   freshCharacter,
   freshSettings,
   fighterFor,
-  MAX_ENERGY,
+  maxEnergyFor,
 } from '../shared';
 import { freshEarningsLedger } from '@/engine/balance';
+import { freshTown } from '@/engine/town';
 
 export interface CoreSlice {
   character: Character;
@@ -149,7 +150,7 @@ export const createCoreSlice: StateCreator<
     set((s) => ({ character: { ...s.character, classId: null } })),
 
   devFillEnergy: () =>
-    set((s) => ({ character: { ...s.character, energy: MAX_ENERGY } })),
+    set((s) => ({ character: { ...s.character, energy: maxEnergyFor(s) } })),
 
   devAddGold: (amount) =>
     set((s) => ({
@@ -211,5 +212,8 @@ export const createCoreSlice: StateCreator<
       energyLog: {},
       mineTombstone: null,
       claimedPartyQuests: [],
+      gearQuality: {},
+      weaponQuality: {},
+      town: freshTown(),
     })),
 });

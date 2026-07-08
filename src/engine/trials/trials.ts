@@ -8,8 +8,10 @@ import type { Reward } from '@/engine/challenges';
 /**
  * Result of attempting to begin a trial. `beginTrial` evaluates the daily-clear,
  * energy, and stat gates before charging energy; the reason lets the UI explain a refusal.
+ * `practice` is set only when a Homestead Training Yard lets the player replay a trial
+ * already cleared today — a free run (no energy, no reward) so the UI can flag it.
  */
-export type TrialBeginResult = { ok: true } | { ok: false; reason: 'cleared' | 'energy' | 'stat' };
+export type TrialBeginResult = { ok: true; practice?: boolean } | { ok: false; reason: 'cleared' | 'energy' | 'stat' };
 
 // ── Trial registry ─────────────────────────────────────────────────────────────
 

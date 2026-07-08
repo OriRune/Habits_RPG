@@ -174,7 +174,7 @@ export function ArmoryBreak({ onFinish, stLevel }: ArmoryBreakProps) {
       ) : (
         <button
           className={cn(
-            'select-none rounded-md border-2 border-gold-deep px-8 py-5 font-display text-lg font-bold text-wood-900 shadow-gold transition-all duration-75',
+            'select-none touch-none rounded-md border-2 border-gold-deep px-8 py-5 font-display text-lg font-bold text-wood-900 shadow-gold transition-all duration-75',
             held
               ? 'bg-gradient-to-b from-amber-600 to-amber-800 ring-2 ring-gold-bright scale-95'
               : 'bg-gradient-to-b from-gold-bright to-gold-deep active:scale-95',

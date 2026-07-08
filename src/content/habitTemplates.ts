@@ -5,23 +5,6 @@ import type { NewHabitInput } from '@/store/shared';
 import type { StatId } from '@/engine/stats';
 
 // ---------------------------------------------------------------------------
-// Category → stat suggestion map
-// ---------------------------------------------------------------------------
-
-export const CATEGORY_STAT_SUGGESTIONS: Record<string, StatId[]> = {
-  Fitness: ['ST', 'EN', 'AG', 'HP'],
-  Reading: ['KN', 'WI'],
-  Writing: ['KN', 'CH'],
-  Study: ['KN', 'WI'],
-  Cleaning: ['EN'],
-  Social: ['CH'],
-  Meditation: ['WI'],
-  Creative: ['CH', 'KN'],
-  Sleep: ['HP', 'EN'],
-  Custom: ['ST', 'EN', 'DX', 'AG', 'WI', 'CH', 'KN', 'HP'],
-};
-
-// ---------------------------------------------------------------------------
 // Template group
 // ---------------------------------------------------------------------------
 

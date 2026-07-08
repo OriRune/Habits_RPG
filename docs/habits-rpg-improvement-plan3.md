@@ -1,6 +1,6 @@
 # Habits RPG — Improvement Plan 3
 
-> **Current roadmap** as of 2026-07-06. Supersedes `habits-rpg-improvement-plan2.md`
+> **Current roadmap** as of 2026-07-07. Supersedes `habits-rpg-improvement-plan2.md`
 > (2026-06-22; kept for history — its Phases 1–8 shipped and its residuals are carried
 > here). Sourced from the 2026-07 project audit: the evidence for every item below lives
 > in `docs/audit-2026-07/` under the cited finding ID (ARCH/HABIT/BAL/MINI/MP-NN), with
@@ -41,10 +41,12 @@ habits. Two audit-driven amendments:
 5. Re-couple progression to habits: scale habit XP (BAL-01), add real gold sinks (BAL-03/-05), kill the Arena farm (BAL-04).
 6. Give every combat mode one threat the player can't outrun; fix the anti-melee boss gate (BAL-02, MINI-03..09).
 7. Put tests where the bugs live: persist migrate/merge, net hooks, trial components (ARCH-08, MP-28, MINI-33).
+8. Mobile companion basics (Phase 9) — the installed PWA handles the daily loop on a phone. Executes **before** Phase 8: phone logging serves the core habit loop; the Forge is new content.
+9. The Homestead (Phase 10) — the isometric town-builder resource sink, executing **after** Phase 8 (the Forge lands first; the Smithy perk consumes Forge constants). Full phase order: 7 → 9 → 8 → 10.
 
 ## Non-goals (avoid for now)
 
-- **No new minigame except the Forge** (Phase 8) — and the Forge exists to serve the economy (BAL-03/-05/-16/-17), not to add content for its own sake.
+- **No new minigame except the Forge** (Phase 8) and the Homestead (Phase 10) — both exist to serve the economy, not to add content for its own sake: the Forge delivers Phase 4.4's recipes (BAL-03/-05/-16/-17); the Homestead is the repeatable gold/material sink that closes the ≥500g deferred gap (BAL-05, see the deferred table).
 - **No server-authoritative saves.** Option A (friendly trust) holds for saves — add only the three cheap server predicates (quest deadline, `p_amount` ceiling, confirm 0009 live). No save validation, no anti-cheat expansion.
 - **No host migration or WebRTC transport.** Host-drop-strands-guests stays accepted; fix the *lifecycle* bugs instead (MP-08/-09/-10).
 - **No delta-encoding rewrite of the co-op protocol.** Trim the obvious waste (MP-22, MP-29d/e) and measure the free-tier budget first.
@@ -179,21 +181,21 @@ to at least one named-boss move; a kiter dies sometimes in every mode.
 **Acceptance:** no trial is 3★-able without engaging its mechanic; abandoning and
 retrying yields a fresh challenge at the same price.
 
-# Phase 7 — Structure, tests, and docs ⏳
+# Phase 7 — Structure, tests, and docs ✅ 2026-07-07
 
 **Goal:** stop the drift machines. Do 7.1 before touching crawler features.
 
 | # | Item | Findings | Status |
 |---|---|---|---|
 | 7.1 | **Hoist the crawler twins into `crawl.ts`** (start: `applyBoonChoice`, `coopClientStep`, `damageXById`; then `castSpell`/`triggerRunes`) — structurally closes the rune-expiry, spell-guard, and mitigation forks (decide the mitigation rule once, mine's formula, and document it); check `newOccupied` or delete it | ARCH-06, ARCH-02, ARCH-03, ARCH-04, ARCH-05 | ✅ |
-| 7.2 | Crawler UI extraction (`useCrawlRunFx`, shared Gauge/BoonPanel/RemoteCrawlers/SpellBar); mine gets engine `sightRadiusFor` + `splitHaul`; torch glow follows sight radius; dash/blur/score asymmetries unified | ARCH-15, ARCH-14, MINI-38 | ⏳ |
-| 7.3 | Persist performance: trailing-debounce storage adapter (profile first per 01's manual check) | ARCH-07 | ⏳ |
-| 7.4 | Layer hygiene: boon reducers + `rollBoonChoices` → engine; extend the layering test (content is data-only; engine touches no DOM/globals); `applyPalette` → lib; extract `stepLockpick` into the engine; split `shared.ts` along its seams (types / engine rules / commit orchestration) | ARCH-11, ARCH-12, ARCH-13, ARCH-10 | ⏳ |
-| 7.5 | Targeted test debt (beyond 1.9/2.9): empty-boon transition + timebase specs; TacticsOverlay/LastStand/LongMarch component smokes; encounter-graph integrity test; `computeMood`/combatStats tables; hexBattle split (tactics 5A) + overlay test (5B) | MINI-33, ARCH-17, ARCH-25, tactics plan | ⏳ |
-| 7.6 | Small-defect batch: elite `earnedXp` spread fix; battle-action/earnings-clone/begin-preamble dedup; sfx mute edge; SPELLBOOK_KEYS derived from items; dead exports pruned; selectors used by DungeonView/AccountSummary/DayOfWeekChart; forest.ts:923 `nowMs`; enrage case in tactics; objective chime | ARCH-09, ARCH-21, ARCH-22, ARCH-23, ARCH-19, ARCH-20, ARCH-25, MINI-36 | ⏳ |
-| 7.7 | Doc pass: update CLAUDE.md/AGENTS.md (all six energy costs, 12-slice store, `net/coop/reduce.ts`); INDEX drift fixed at synthesis — keep it current; archive proposals below | ARCH-18 | ⏳ |
+| 7.2 | Crawler UI extraction (`useCrawlRunFx`, shared Gauge/BoonPanel/RemoteCrawlers/SpellBar); mine gets engine `sightRadiusFor` + `splitHaul`; torch glow follows sight radius; dash/blur/score asymmetries unified | ARCH-15, ARCH-14, MINI-38 | ✅ |
+| 7.3 | Persist performance: trailing-debounce storage adapter (profile first per 01's manual check) | ARCH-07 | ✅ |
+| 7.4 | Layer hygiene: boon reducers + `rollBoonChoices` → engine; extend the layering test (content is data-only; engine touches no DOM/globals); `applyPalette` → lib; extract `stepLockpick` into the engine; split `shared.ts` along its seams (types / engine rules / commit orchestration) | ARCH-11, ARCH-12, ARCH-13, ARCH-10 | ✅ |
+| 7.5 | Targeted test debt (beyond 1.9/2.9): empty-boon transition + timebase specs; TacticsOverlay/LastStand/LongMarch component smokes; encounter-graph integrity test; `computeMood`/combatStats tables; hexBattle split (tactics 5A) + overlay test (5B) | MINI-33, ARCH-17, ARCH-25, tactics plan | ✅ |
+| 7.6 | Small-defect batch: elite `earnedXp` spread fix; battle-action/earnings-clone/begin-preamble dedup; sfx mute edge; SPELLBOOK_KEYS derived from items; dead exports pruned; selectors used by DungeonView/AccountSummary/DayOfWeekChart; forest.ts:923 `nowMs`; enrage case in tactics; objective chime | ARCH-09, ARCH-21, ARCH-22, ARCH-23, ARCH-19, ARCH-20, ARCH-25, MINI-36 | ✅ |
+| 7.7 | Doc pass: update CLAUDE.md/AGENTS.md (all six energy costs, 12-slice store, `net/coop/reduce.ts`); INDEX drift fixed at synthesis — keep it current; archive proposals below | ARCH-18 | ✅ |
 
-# Phase 8 — The Forge ⏳
+# Phase 8 — The Forge ✅ 2026-07-07
 
 **Goal:** the one sanctioned new minigame, built because the economy needs it: it is
 the delivery vehicle for Phase 4.4's recipes and the game's first repeatable
@@ -201,15 +203,71 @@ quality-tier gold/material sink.
 
 | # | Item | Findings | Status |
 |---|---|---|---|
-| 8.1 | Apply the plan corrections before building: `shared.ts:647` is the single weapon-lookup seam (no bare `getWeapon` in slices); PaperDoll path; refreshed line refs | MINI-41 | ⏳ |
-| 8.2 | Add the dead-end materials (BAL-16 list) to the recipe-design inputs so Forge recipes consume them | BAL-16 | ⏳ |
-| 8.3 | Build per `docs/forge-minigame-development-plan.md` (two-phase DX/ST hammering, Crude/Normal/Fine/Masterwork tiers) | forge plan | ⏳ |
+| 8.1 | Apply the plan corrections before building: `shared.ts:647` is the single weapon-lookup seam (no bare `getWeapon` in slices); PaperDoll path; refreshed line refs. *(Re-verified at execution: ARCH-10 moved the seams to `commit.ts` — gearFor :78, weapon seam :136; forge plan rev 2.1 updated)* | MINI-41 | ✅ |
+| 8.2 | Add the dead-end materials (BAL-16 list) to the recipe-design inputs so Forge recipes consume them | BAL-16 | ✅ |
+| 8.3 | Build per `docs/forge-minigame-development-plan.md` (two-phase DX/ST hammering, Crude/Normal/Fine/Masterwork tiers) — all six milestones shipped (M1 quality model + persist v33, M2 engine reducer, M3 modal UI, M4 tier display, M5 Re-forge + Fuel/Flux, M6 polish/SFX/a11y); fable-session verifier PASS; M6 playtest/tuning items flagged for Orion in the execution log | forge plan | ✅ |
+
+# Phase 9 — Mobile companion basics ✅ 2026-07-07
+
+**Goal:** the installed PWA (shipped under 3.1, commit `556aaf2`) works as a phone
+companion for the daily loop — log habits, check progress, chat with the party.
+Real-time minigames stay desktop-only by design; Skill Trials (all eight are
+touch-playable) and the turn-based boss battle stay available. Executes **before**
+Phase 8 (see priority summary): phone logging serves the core habit loop, the Forge
+is new content.
+
+| # | Item | Findings | Status |
+|---|---|---|---|
+| 9.1 | **Coarse-pointer gate for real-time modes**: small `useIsCoarsePointer` hook (`matchMedia('(pointer: coarse)')` — the only matchMedia use today is reduced-motion in `useSmoothCamera.ts`); "best on desktop" disabled state on the ExploreView mine/forest cards, BattleView arena/tactics cards, and PartyView co-op raid launch buttons; Delve gets a hands-on touch check and is gated only if unplayable (it's turn-based) | — | ✅ |
+| 9.2 | **Touch-fix the logging surface** (`HabitCard.tsx`): seal button ≥44px (now 36px `h-9 w-9`); undo affordance visible without hover (now a `group-hover` icon swap); kebab dropdown → bottom sheet on mobile via the existing `Modal.tsx` bottom-sheet pattern | — | ✅ |
+| 9.3 | **Standalone display polish**: `viewport-fit=cover` in `index.html`; `env(safe-area-inset-bottom)` padding on the BottomBar (`sticky bottom-0` today, no inset — sits under gesture bars); `overscroll-behavior` to suppress pull-to-refresh. None of this exists today | — | ✅ |
+| 9.4 | **Foreground re-pull**: on `visibilitychange→visible`, re-pull the cloud save when local is clean (CAS version check) so a resumed phone sees desktop progress — today `pullCloudSave` runs only at startup/sign-in and on push-conflict, so a resumed PWA stays stale until its next push loses the CAS race; must respect the 1.1/1.6 dirty-flag and conflict rules | MP-16 adjacent | ✅ |
+| 9.5 | **Durable log-and-lock flush**: the `visibilitychange→hidden` push is a plain async fetch (no `keepalive`/`sendBeacon`, no `pagehide` listener) — log a habit, lock the phone, and the write can die with the frozen tab; give the hidden-flush a delivery guarantee (keepalive REST write; note supabase-js may not expose `keepalive`) | MP-26 adjacent | ✅ |
+| 9.6 | **Touch QA pass** on what stays available on phones: the three keyboard-first trials (Lockpicking, Rooftop Chase, Armory Break — pointer paths exist but hand-untested) and BattleOverlay; fix small touch nits only, no redesigns | — | ✅ |
+
+**Acceptance:** a phone user can install, log/undo habits with touch-sized targets,
+see streaks/character/party chat, and clear a trial or a boss fight; real-time modes
+say "desktop only" instead of starting an unplayable run; a habit logged right before
+the screen locks reaches the cloud; reopening the app shows desktop-side progress
+without a manual reload.
+
+# Phase 10 — The Homestead ✅ 2026-07-07
+
+**Goal:** the second sanctioned minigame, built because the economy still needs it: a
+persistent isometric town whose construction is the repeatable scaling gold/material
+sink (closes the ≥500g deferred gap below), whose inputs revive the doubly-dead
+`stone`/`wood` materials, and whose pacing is driven by live habit completions —
+logging habits literally builds the town. Full design in
+`docs/homestead-development-plan.md` (locked: non-resource perks only, habit-driven
+labor with a daily cap, solo v1 with party-visit forward-compat, procedural SVG art,
+touch-first — this mode is NOT gated by 9.1). Executes **after** Phase 8 (the Smithy
+perk consumes Forge constants).
+
+| # | Item | Findings | Status |
+|---|---|---|---|
+| 10.1 | **Engine + catalog + slice + persistence (M1)**: pure `engine/town.ts` (placement/occupancy/labor/prestige/refund rules), `content/townBuildings.ts`/`townDecor.ts` catalogs, `townSlice` spend actions on the `craft()` pattern, persist v33 (`town ?? freshTown()`), and `stone_lode`/`timber_stand` source nodes in mine/forest content so the dead materials start dropping early | BAL-05, BAL-16, homestead plan | ✅ |
+| 10.2 | **Labor pipeline (M2)**: difficulty-scaled labor on live habit completion via its own `lastLaborGrantISO` marker (independent of the energy gate), claw-back on uncomplete (bank first, clamped), daily cap 24 as the BAL-22 guard, receipt-toast `+N 🔨`, project settle + completion toast | BAL-22, homestead plan | ✅ |
+| 10.3 | **Iso renderer + entry (M3)**: square-grid projection module `components/town/iso.ts` (tactics `iso.ts` precedent), four-layer SVG `TownCanvas` with memoized ground + painter-order objects, ref-driven pan/pinch, palette-aware procedural art kit, lazy `TownView` behind a 4th Explore hub card | homestead plan | ✅ |
+| 10.4 | **Build UX (M4, go-live)**: bottom-sheet palette, ghost placement with Confirm/Rotate/Cancel (44px targets, no tap-to-commit), building card (upgrade/move/demolish), scaffold + progress ring, pure-gold deed purchases (500/1,500/4,000g) behind prestige gates | BAL-05, homestead plan | ✅ |
+| 10.5 | **Perk wiring (M5)**: the non-resource perk set at verified seams — crawler `sightBonus`/stamina snapshot fields, `merchantOffers` discount, trial practice mode, `maxEnergyFor` cap bump, engine-internal mason/queue perks, Forge sweet-zone hook; regression guard: zero buildings ⇒ byte-identical baselines | homestead plan | ✅ |
+| 10.6 | **Art, balance, polish (M6)**: full per-building composers ×3 tiers, palette QA matrix, deed/tier pacing tuned against real earnings-ledger gold/day, mobile + reduced-motion QA, party-visit payload freeze (`TownState` v1, never broadcast in v1), CLAUDE.md/INDEX updates | homestead plan | ✅ |
+
+**Acceptance:** a player who owns everything else always has a gold/material target
+worth wanting (a deed ≥500g or a tier upgrade); stone and wood drop and get consumed;
+labor comes only from live habit completions, difficulty-scaled and daily-capped; no
+building produces any resource; the town renders and plays on a phone; a v32 save
+loads clean with an empty town and loses nothing.
 
 ---
 
 # Work status
 
-All items ⏳ as of 2026-07-06. Update markers in place as work lands; when a phase
+As of 2026-07-07 (evening): **all ten phases ✅** (dates beside headings). Phase 8
+closed via `check 8` (full suite 1801 green, typecheck clean, weapon-seam grep clean);
+its end-to-end feel criteria need Orion's manual playtest — checklist in the execution
+log's `check 8` row. Phase 10 acceptance is met at the code level (full suite 1801
+green); the "renders and plays on a phone" criterion needs Orion's manual QA — checklist
+in the execution log's 10.6 row. Update markers in place as work lands; when a phase
 completes, note the date beside its heading (plan2 convention).
 
 ## Still open / deferred
@@ -230,9 +288,11 @@ Consciously deferred — tracked so they aren't lost, with the deciding context:
 | Dungeon BoonChoice timing + scene art | Section 04 dungeon-plan leftovers. | P3 |
 | Energy decay / weekly carryover | **Decided (item 4.10, BAL-18):** cap lowered `MAX_ENERGY` 50→15 (~2–3 days of typical spend) so the reserve is a real spend-pacing lever, not an anti-bug ceiling — a lapsed player can't return to ~16–25 banked runs funded by zero fresh habits. Active decay and weekly carryover stay out; the cap alone prevents hoarding. Existing over-cap saves settle on their next energy action (no force-clamp on load, Option A). | Decided |
 | Boss-gate energy cost / retries (BAL-19) | **Decided (item 4.10):** level-up boss battles stay free with unlimited retries — energy-gating a mandatory progression gate would be punitive, and it isn't farmable (one `pendingLevelUp` per level, nulled before the reward pays). The spec's unbuilt "Boss dungeon = 10 Energy" premium mode stays out of scope. | Decided |
-| ≥500g gold sink (Phase 4 acceptance gap) | **Accepted gap at `check 4` (2026-07-06):** the ≥500g "always something to want" bar is unmet by a *pure-gold* target — max purchasable is a 220g spellbook; the 4.4 recipes gate on materials with ≤150g gold components. Judged substantially met via total acquisition effort (mithril toolkit's material+gold cost is ≥500g-worth), so Phase 4 was date-stamped. Deferred: add ONE ≥500g pure-gold target — options weighed at check 4 were a repeatable scaling sink (reforge/re-roll, best fit for "always"), a single ~600–800g aspirational item, or exposing late crafted gear for gold. Any new gold-priced item must respect 4.10/BAL-15 (no decoy premiums) and not undercut 4.4's crafted obsidian_plate/mithril power tier. | Design call |
+| ≥500g gold sink (Phase 4 acceptance gap) | **Accepted gap at `check 4` (2026-07-06):** the ≥500g "always something to want" bar is unmet by a *pure-gold* target — max purchasable is a 220g spellbook; the 4.4 recipes gate on materials with ≤150g gold components. Judged substantially met via total acquisition effort (mithril toolkit's material+gold cost is ≥500g-worth), so Phase 4 was date-stamped. **Resolved by Phase 10:** the repeatable-scaling-sink option won — the Homestead's land deeds are pure-gold targets at 500/1,500/4,000g and building-tier upgrades keep a gold price on the board for months. Deeds respect 4.10/BAL-15 (land, not items — no decoy premium, no power undercut of 4.4's crafted tier). | → Phase 10 |
 | Trivial-breadth energy exploit (BAL-22) | **Surfaced at `check 4`:** habit-share criterion 1 is MET for realistic mixed play (56–70% habit at L10–L20) but a min-effort player logging 8 *easy* habits still earns +1 energy each (flat, `habitsSlice.ts`) to fund the XP-dense trials, dipping habit share to ~36%. Not a Phase-4 item (BAL-22 unaddressed). Recommended fix: cap energy-earning completions/day (~8) rather than touching the +1 rule — closes the exploit without penalizing engaged players. | Deferred |
+| Background push reminders | Daily notification with the app *closed* — needs a SW push handler, Supabase edge function + cron, and VAPID keys. Follow-up to HABIT-03/item 3.1 (install cue + foreground reminder shipped; execution log records background push as out of scope). Pairs with Phase 9's companion goal; revisit once Phase 9 lands and phone usage is observed. | P2 |
 | plan2 Phase 9 (habit chains, real-life bosses, seasonal events, class habit bonuses, smarter recommendations) | Carried forward unchanged — still deferred until the habit core and economy work above is stable. | Deferred |
+| Phase 7 cosmetic P3 nits (from `check 7` code-health audit) | Three residues the auditor flagged as optional/defensible-to-leave: (a) `hexBattle/index.ts` barrel surfaces 5 internal-only helpers (climbForEnemy/tacticsDamageFraction/heightDamageMult/nearestHero/livingHeroes) consumed only within the package + tests — over-exposed public API; (b) `tryMove`/`tryDash` twins not hoisted (mining.ts ~L834-879 ≈ forest.ts ~L937-980, differ only by unitAt cap + forest's `reveal()` wrap) — ~40 lines of residual crawler duplication a future `crawlTryMove`/`crawlTryDash` generic could fold; (c) `selectDungeonMilestone` returns a `deepestFloor` field its only consumer (DungeonView) ignores. All P3 cosmetic, no correctness/layering impact. | P3 cleanup |
 
 # Success criteria
 

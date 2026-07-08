@@ -21,15 +21,7 @@ import { mergeReward } from './dungeon';
 import { attackRoll } from './combat';
 import type { WeaponDef } from './weapons';
 import { MINE_ORES, MINE_MONSTERS, MINE_GUARDIAN_FLOORS, type MineOreDef } from '@/content/mining';
-import {
-  BOONS,
-  boonMeleeMult,
-  boonDefenseBonus,
-  boonYieldMult,
-  boonMoveMult,
-  boonDashCdMult,
-  rollBoonChoices,
-} from '@/content/boons';
+import { BOONS } from '@/content/boons';
 import { bandForFloor, MINE_BANDS } from './crawlBiomes';
 
 /** First floor of the deepest (open-ended) band — anchor for late-depth damage scaling. */
@@ -58,6 +50,13 @@ import {
   dashCooldown,
   moveInterval,
   boonConsolation,
+  boonMeleeMult,
+  boonDefenseBonus,
+  boonYieldMult,
+  boonMoveMult,
+  boonDashCdMult,
+  boonSightBonus,
+  rollBoonChoices,
   lateDepthDamageScale,
   crawlCastSpell,
   crawlTriggerRunes,
@@ -80,6 +79,8 @@ export const MINE_BASE_ROWS = 33;
 export const MINE_BASE_COLS = 33;
 export const MINE_MAX_ROWS = 57;
 export const MINE_MAX_COLS = 57;
+/** Base sight radius in tiles — the Lantern boon adds to this via boonSightBonus. */
+export const MINE_SIGHT_RADIUS = 4;
 /** The map grows by this many cells per floor band. */
 const MINE_SCALE_PER_BAND = 4;
 /** Floors per growth band. */
@@ -187,6 +188,9 @@ export interface MineSnapshot {
   /** Active boon keys carried from the previous floor. Optional so callers that
    *  construct a snapshot literal without boons (e.g. beginMining) don't break. */
   activeBoons?: string[];
+  /** Homestead Watchtower sight bonus (0 or 1) snapshotted at run start. Optional so
+   *  callers without a town perk (or old saves) default to 0. See sightRadiusFor. */
+  sightBonus?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -255,6 +259,9 @@ export interface MineState {
   agLevel: number;
   /** Position of the descent shaft on the current floor — for the HUD directional indicator. */
   shaftPos?: { r: number; c: number };
+  /** Homestead Watchtower sight bonus (0 or 1), snapshotted at run start and carried
+   *  across floors via mineSnapshot. Added by sightRadiusFor. */
+  sightBonus?: number;
 }
 
 /**
@@ -315,6 +322,11 @@ export function facedCell(state: MineState): { r: number; c: number } {
 
 export function canDescend(state: MineState): boolean {
   return tileAt(state, state.player.r, state.player.c)?.kind === 'shaft';
+}
+
+/** Current sight radius — base plus the Lantern boon and the Watchtower town perk. Mirrors forest.sightRadiusFor. */
+export function sightRadiusFor(state: MineState): number {
+  return MINE_SIGHT_RADIUS + boonSightBonus(state.activeBoons) + (state.sightBonus ?? 0);
 }
 
 /** Nearest monster to the player (for damage-school spells). */
@@ -735,6 +747,7 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
     activeBoons,
     pendingBoonChoice: null,
     shaftPos: { r: shaftR, c: shaftC },
+    sightBonus: snapshot.sightBonus,
   };
 }
 
@@ -756,6 +769,7 @@ export function mineSnapshot(state: MineState): MineSnapshot {
     pickaxePower: state.pickaxePower,
     agLevel: state.agLevel,
     activeBoons: state.activeBoons,
+    sightBonus: state.sightBonus,
   };
 }
 

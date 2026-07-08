@@ -77,7 +77,12 @@ Improvement plan archived — see [`archived/forest-improvement-plan.md`](./arch
 ### The Forge (planned, not yet built)
 | File | Description |
 |---|---|
-| [`forge-minigame-development-plan.md`](./forge-minigame-development-plan.md) | Design/build plan (not started as of 2026-07-05) to turn the existing one-click Forge crafting screen (`src/components/inventory/ForgeSection.tsx`, `src/engine/crafting.ts`) into a two-phase DX/ST-driven hammering minigame that sets item quality tiers (Crude/Normal/Fine/Masterwork). None of the proposed engine/UI machinery exists yet. |
+| [`forge-minigame-development-plan.md`](./forge-minigame-development-plan.md) | Design/build plan (revision 2, 2026-07-07; not started) to turn the existing one-click Forge crafting screen (`src/components/inventory/ForgeSection.tsx`, `src/engine/crafting.ts`) into a two-phase DX/ST-driven hammering minigame with a heat economy (light/heavy strikes, re-stoking) that sets item quality tiers (Crude/Normal/Fine/Masterwork), plus a Re-forge gold sink and a Fuel & Flux slot for BAL-16 dead-end materials. None of the proposed engine/UI machinery exists yet. |
+
+### The Homestead (town-builder)
+| File | Description |
+|---|---|
+| [`homestead-development-plan.md`](./homestead-development-plan.md) | Design/build plan for **The Homestead** — a persistent isometric town-builder that is the repeatable gold + material sink (BAL-05), fuelled by habit-earned *labor* (no energy cost). **All milestones M1–M6 landed** (Phase 10 of plan3). Engine: `src/engine/town.ts` (pure reducer) + catalogs `src/content/townBuildings.ts`, `townDecor.ts`; store `src/store/slices/townSlice.ts` (persist v34); renderer `src/components/town/` (`iso.ts`, `TownCanvas.tsx`, `townArt.tsx`, `TownBuildPanel.tsx`, `TownBuildingCard.tsx`) + `src/views/TownView.tsx`. |
 
 ### Hex Tactics
 | File | Description |

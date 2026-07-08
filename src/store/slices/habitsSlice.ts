@@ -14,6 +14,8 @@ import { getStat } from '@/engine/stats';
 import { useToastStore } from '@/store/useToastStore';
 import { challengeProgress, isExpired } from '@/engine/challenges';
 import { gearXpMultiplier } from '@/engine/gear';
+import { applyLabor, settleProjects, clawBackLabor, laborFor, type TownProject } from '@/engine/town';
+import { TOWN_BUILDINGS } from '@/content/townBuildings';
 import type { GameState, NewHabitInput } from '../shared';
 import {
   uid,
@@ -22,7 +24,8 @@ import {
   recomputeHabitBonus,
   applyWeeklyRollover,
   checkLevelUp,
-  MAX_ENERGY,
+  cloneEarnings,
+  maxEnergyFor,
 } from '../shared';
 import { freshEarningsLedger } from '@/engine/balance';
 
@@ -161,9 +164,19 @@ export const createHabitsSlice: StateCreator<
 
   completeHabit: (id, actual, dateISO) => {
     let milestone: StreakMilestone | null = null;
+    // Homestead projects finished by this completion's labor — celebrated post-commit.
+    let completedProjects: TownProject[] = [];
     // Reward-receipt: the actual granted values, surfaced as one toast after the commit.
     let receipt:
-      | { xp: number; gold: number; energyGranted: boolean; backdated: boolean; color?: string }
+      | {
+          xp: number;
+          gold: number;
+          energyGranted: boolean;
+          backdated: boolean;
+          labor: number;
+          townCapReached: boolean;
+          color?: string;
+        }
       | null = null;
     set((s) => {
       const today = toISODate();
@@ -184,7 +197,13 @@ export const createHabitsSlice: StateCreator<
       // complete→spend→uncomplete→re-complete cannot re-mint it (HABIT-04). Backdated logs
       // never grant energy.
       const grantEnergy =
-        isToday && habit.lastEnergyGrantISO !== day && s.character.energy < MAX_ENERGY;
+        isToday && habit.lastEnergyGrantISO !== day && s.character.energy < maxEnergyFor(s);
+
+      // The Homestead earns labor on the same live-completion path, but with its OWN marker and
+      // NO full-energy gate — labor must not silently stop on a day the energy bar is capped.
+      // Backdated logs grant no labor (live-only, like energy). HABIT-04: the marker survives an
+      // uncomplete, so a same-day re-complete can't re-mint labor.
+      const grantLabor = isToday && habit.lastLaborGrantISO !== day;
 
       // Build the completed habit up front so milestone eligibility can read the fresh streak.
       const updated: Habit = {
@@ -195,6 +214,7 @@ export const createHabitsSlice: StateCreator<
       };
       updated.streak = currentStreak(updated, today);
       if (grantEnergy) updated.lastEnergyGrantISO = day;
+      if (grantLabor) updated.lastLaborGrantISO = day;
 
       // Streak milestone (7/30/100 days) — day-scheduled only, live completion only, and once
       // per habit per day: the marker blocks a same-day re-mint after an uncomplete (deferred
@@ -222,6 +242,8 @@ export const createHabitsSlice: StateCreator<
         gold,
         energyGranted: grantEnergy,
         backdated: !isToday,
+        labor: 0, // filled in by the labor block below (actual amount credited today)
+        townCapReached: false,
         color: getStat(habit.stat).color,
       };
 
@@ -231,12 +253,7 @@ export const createHabitsSlice: StateCreator<
         character: { ...s.character, statXp: { ...s.character.statXp } },
         inventory: { ...s.inventory },
         completionLog: { ...s.completionLog },
-        earnings: {
-          ...baseEarnings,
-          xp: { ...baseEarnings.xp },
-          gold: { ...baseEarnings.gold },
-          count: { ...baseEarnings.count },
-        },
+        earnings: cloneEarnings(baseEarnings),
         energyLog: { ...s.energyLog },
         habits: s.habits.map((h) => (h.id === id ? updated : h)),
       };
@@ -279,10 +296,27 @@ export const createHabitsSlice: StateCreator<
             (next.inventory['streak_freeze'] ?? 0) + milestoneReward.freezes;
         }
       }
+      // Grant habit-earned labor to the Homestead: bank + drain into the queue (day-capped), then
+      // settle any project the fresh labor completed. `laborToday` before/after the applyLabor is
+      // the amount actually credited (the daily cap can swallow part or all of it). The town rides
+      // the `...s` spread, so a plain `next.town` reassignment is enough.
+      if (grantLabor) {
+        const laborBefore = next.town.laborToday;
+        const { town, completed } = settleProjects(
+          applyLabor(next.town, laborFor(habit.difficulty), today),
+        );
+        next.town = town;
+        const credited = town.laborToday - laborBefore;
+        if (receipt) {
+          receipt.labor = credited;
+          receipt.townCapReached = credited === 0; // grant attempted, day cap swallowed it whole
+        }
+        completedProjects = completed;
+      }
       recomputeHabitBonus(next.character, next.habits);
       checkLevelUp(next);
       // Defensive ceiling: clamp energy regardless of code path (§4.3).
-      next.character.energy = Math.max(0, Math.min(next.character.energy, MAX_ENERGY));
+      next.character.energy = Math.max(0, Math.min(next.character.energy, maxEnergyFor(next)));
       return next;
     });
 
@@ -293,6 +327,8 @@ export const createHabitsSlice: StateCreator<
         gold: number;
         energyGranted: boolean;
         backdated: boolean;
+        labor: number;
+        townCapReached: boolean;
         color?: string;
       } = receipt;
       const parts = [`+${r.xp} XP`];
@@ -301,6 +337,10 @@ export const createHabitsSlice: StateCreator<
       // re-log or an at-cap completion simply omits the energy line (no misleading "late" copy).
       if (r.energyGranted) parts.push('+1⚡');
       else if (r.backdated) parts.push('logged late — no energy');
+      // Homestead labor: +N 🔨 when it banked; a fully day-capped grant says why not (mirrors
+      // the "logged late" copy). Backdated logs never grant labor, so this stays silent for them.
+      if (r.labor > 0) parts.push(`+${r.labor} 🔨`);
+      else if (r.townCapReached) parts.push('town cap reached');
       useToastStore.getState().pushToast({ text: parts.join(' · '), color: r.color });
     }
 
@@ -311,6 +351,16 @@ export const createHabitsSlice: StateCreator<
       if (m.freezes > 0) bits.push(`+${m.freezes} Streak Freeze`);
       useToastStore.getState().pushToast({
         text: `🔥 ${m.days}-day streak! ${bits.join(' · ')}`,
+        color: '#f59e0b',
+        ttlMs: 5000,
+      });
+    }
+
+    // Homestead building celebration — one per project this completion's labor finished off.
+    for (const p of completedProjects) {
+      const name = TOWN_BUILDINGS[p.key]?.name ?? p.key;
+      useToastStore.getState().pushToast({
+        text: `🏗️ ${name} complete!`,
         color: '#f59e0b',
         ttlMs: 5000,
       });
@@ -332,19 +382,14 @@ export const createHabitsSlice: StateCreator<
         character: { ...s.character, statXp: { ...s.character.statXp } },
         inventory: { ...s.inventory },
         completionLog: { ...s.completionLog },
-        earnings: {
-          ...baseEarnings,
-          xp: { ...baseEarnings.xp },
-          gold: { ...baseEarnings.gold },
-          count: { ...baseEarnings.count },
-        },
+        earnings: cloneEarnings(baseEarnings),
         energyLog: { ...s.energyLog },
         habits: s.habits.map((h) => {
           if (h.id !== id) return h;
           const log = { ...h.log };
           delete log[day];
-          // The energy/milestone grant markers stay on the habit (spread via ...h) — they are
-          // intentionally NOT cleared here, so a same-day re-completion can't re-mint (HABIT-04).
+          // The energy/labor/milestone grant markers stay on the habit (spread via ...h) — they
+          // are intentionally NOT cleared here, so a same-day re-completion can't re-mint (HABIT-04).
           const updated: Habit = { ...h, log };
           const keys = Object.keys(log).filter((k) => k <= today).sort();
           updated.lastCompletedISO = keys.length ? keys[keys.length - 1] : undefined;
@@ -378,6 +423,14 @@ export const createHabitsSlice: StateCreator<
         next.energyLog[today] = { earned: Math.max(0, todayEntry.earned - 1), spent: todayEntry.spent };
       }
 
+      // Claw back the Homestead labor this completion granted today (bank first, then the
+      // least-progressed active project), all clamped at 0. Labor that already completed a project
+      // is an accepted, clamped leak (same philosophy as the milestone claw-back). The marker is
+      // intentionally NOT cleared, so a same-day re-completion won't re-mint labor (HABIT-04).
+      if (day === today && habit.lastLaborGrantISO === day) {
+        next.town = clawBackLabor(next.town, laborFor(habit.difficulty), today);
+      }
+
       // Claw back a streak-milestone bonus paid out for this day (gold + freezes), clamped at 0
       // so a freeze spent since the grant can't drive inventory negative. The marker stays
       // stamped so re-completing the same day doesn't re-mint the milestone (deferred from 3.4).
@@ -402,7 +455,7 @@ export const createHabitsSlice: StateCreator<
 
       recomputeHabitBonus(next.character, next.habits);
       // Defensive ceiling: mirrors completeHabit clamp (§4.3); purely defensive on uncomplete.
-      next.character.energy = Math.max(0, Math.min(next.character.energy, MAX_ENERGY));
+      next.character.energy = Math.max(0, Math.min(next.character.energy, maxEnergyFor(next)));
       return next;
     }),
 

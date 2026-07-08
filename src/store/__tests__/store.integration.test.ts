@@ -3,17 +3,18 @@ import { useGameStore, totalXp, withCharacterDefaults, type DungeonRun } from '.
 import { STAT_IDS, emptyStatXP } from '@/engine/stats';
 import { levelForTotalXp } from '@/engine/leveling';
 import { bossForLevel } from '@/engine/bosses';
+import { dungeonCombatStatXp } from '@/engine/combatStats';
 import { type BattleState } from '@/engine/combat';
 import { type DungeonRoom, merchantOffers, combatRoomGold, bossRoomGold } from '@/engine/dungeon';
 import { type FloorMap } from '@/engine/dungeonMap';
 import { type MineState, type MineTile } from '@/engine/mining';
 import { getWeapon, STARTER_WEAPON } from '@/engine/weapons';
-import { STA_REGEN_MS, MP_REGEN_MS, BOON_CONSOLATION_HEAL, BOON_CONSOLATION_GOLD } from '@/engine/crawl';
+import { STA_REGEN_MS, MP_REGEN_MS, BOON_CONSOLATION_HEAL, BOON_CONSOLATION_GOLD, dungeonStamina } from '@/engine/crawl';
 import { BOONS } from '@/content/boons';
 import { type ForestState, type ForestTile, FOREST_WINDUP_MS } from '@/engine/forest';
 import { getEncounter, startEncounter } from '@/engine/encounters';
 import { toISODate, weekKey, _setNow, _resetNow, addDays } from '@/engine/date';
-import { MAX_ENERGY, fighterFor } from '../shared';
+import { MAX_ENERGY, maxEnergyFor, fighterFor } from '../shared';
 import type { HexBattleState, HeroOpts } from '@/engine/hexBattle';
 import { selectHabitBonusInfo } from '../selectors';
 import { BASE_STAT_LEVEL } from '@/engine/progression';
@@ -613,7 +614,8 @@ describe('shop & streak freeze', () => {
     const xp = computeXp({ difficulty: 'normal', type: 'binary' });
     const gold = habitGold('normal');
     const toasts = useToastStore.getState().toasts;
-    expect(toasts[toasts.length - 1]?.text).toBe(`+${xp} XP · +${gold}g · +1⚡`);
+    // A normal habit also grants +2 Homestead labor (M2), appended to the receipt.
+    expect(toasts[toasts.length - 1]?.text).toBe(`+${xp} XP · +${gold}g · +1⚡ · +2 🔨`);
     _resetNow();
   });
 
@@ -1035,6 +1037,11 @@ describe('dungeon expeditions', () => {
     const d = get().dungeon!;
     expect(d.pendingBoon).not.toBeNull();
     expect(d.floorReward.gold ?? 0).toBeGreaterThan(0);
+    // ARCH-09: the elite-win branch must carry the earnedXp accrued from the fight forward.
+    // The pre-fix `...run` spread rebuilt workingRun from the pre-battle snapshot, dropping the
+    // earnedXp set one line earlier (so it landed as undefined, forfeiting the dungeon XP).
+    const { atkShare, hpShare } = dungeonCombatStatXp(60); // bossMaxHp above; no multi-phase hpDefeated
+    expect(d.earnedXp).toBe(atkShare + hpShare);
   });
 
   it('boss: winning pays the boss gold bounty, credits every phase, and clears its loss counter (MINI-04/29)', () => {
@@ -1460,8 +1467,8 @@ describe('deep mine', () => {
     expect(get().deepestMineFloor).toBe(2);
   });
 
-  it('persists at version 32', () => {
-    expect(useGameStore.persist.getOptions().version).toBe(32);
+  it('persists at version 34', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(34);
   });
 
   it('coopApplyWorld drops a stale/duplicate world slice (t guard)', () => {
@@ -1789,6 +1796,43 @@ describe('wild forest', () => {
       get().endForest();
       // The post-stash haul was 0, so death forfeits nothing extra.
       expect(get().character.gold).toBe(goldBefore + 80);
+    });
+  });
+
+  describe('MINI-38: forest score folds banked gold', () => {
+    // Mirrors commitMining: the forest score must include the banked gold so resource-gathering
+    // builds score alongside kills. Non-vacuous — fails against the old `scoreValue: run.score`.
+
+    it('live path: bestForestScore = run.score + banked gold (full haul on a clearing)', () => {
+      const tiles = makeForest().tiles;
+      tiles[2][2] = { kind: 'clearing' }; // player at [2,2] → safe bank tile → full haul kept
+      useGameStore.setState({
+        forest: makeForest({ tiles, score: 50, haul: { gold: 20 }, deepest: 3 }),
+        bestMineScore: 0, bestForestScore: 0,
+      });
+      get().beginForestBanking();
+      get().endForest();
+      expect(get().forest).toBeNull();
+      expect(get().bestForestScore).toBe(70); // 50 score + 20 banked gold (not 50)
+    });
+
+    it('death path: bestForestScore folds the KEPT (post-split) gold', () => {
+      useGameStore.setState({
+        forest: makeForest({
+          hp: 3,
+          score: 30,
+          haul: { gold: 10 },
+          deepest: 2,
+          beasts: [{ id: 'a', key: 'wild_boar', r: 2, c: 3, hp: 8, maxHp: 8, readyAtMs: 999999, asleep: false }],
+        }),
+        bestMineScore: 0, bestForestScore: 0,
+      });
+      get().forestTick(1000);
+      get().forestTick(1000 + FOREST_WINDUP_MS + 50); // wild_boar 4 dmg > 3 hp → 'ended'
+      expect(get().forest!.status).toBe('ended');
+      get().endForest();
+      expect(get().forest).toBeNull();
+      expect(get().bestForestScore).toBe(35); // 30 score + floor(10 * 0.5) kept gold (not 30)
     });
   });
 });
@@ -2227,6 +2271,71 @@ describe('uncapped quantity XP cap at 10× (Stage 4.2)', () => {
     get().completeHabit(id, 100); // 100× target
     // normal base = 20, uncapped ratio capped at 10 → 20 * 10 = 200 (not 2000).
     expect(get().character.statXp.EN - xpBefore).toBe(200);
+  });
+});
+
+describe('Homestead perks — live seams (10.5)', () => {
+  it('a completed Bathhouse adds +10 crawler stamina at run start (mine + forest)', () => {
+    useGameStore.setState({ character: { ...get().character, energy: 10 } });
+    const en = get().character.statLevels.EN;
+    // Baseline (no buildings): maxSta == dungeonStamina(EN) — starter gear adds no EN.
+    get().beginMining();
+    expect(get().mining!.maxSta).toBe(dungeonStamina(en));
+    useGameStore.setState({ mining: null });
+    get().beginForest();
+    expect(get().forest!.maxSta).toBe(dungeonStamina(en));
+    // Seed a completed Bathhouse (perks derive from buildings only — placement not needed).
+    useGameStore.setState({
+      mining: null, forest: null,
+      character: { ...get().character, energy: 10 },
+      town: { ...get().town, buildings: [{ id: 'bh', key: 'bathhouse', r: 0, c: 0, tier: 1 }] },
+    });
+    get().beginMining();
+    expect(get().mining!.maxSta).toBe(dungeonStamina(en) + 10);
+    useGameStore.setState({ mining: null });
+    get().beginForest();
+    expect(get().forest!.maxSta).toBe(dungeonStamina(en) + 10);
+  });
+
+  it('a Training Yard turns a trial cleared today into a free Practice run', () => {
+    const today = toISODate();
+    get().addHabit({ name: 'DX', stat: 'DX', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    get().completeHabit(get().habits[0].id); // same-stat completion (stat gate) + trial cleared marker below
+    useGameStore.setState({
+      character: { ...get().character, energy: 5 },
+      trialsClearedOn: { ...get().trialsClearedOn, lockpicking: today },
+      town: { ...get().town, buildings: [{ id: 'ty', key: 'training_yard', r: 0, c: 0, tier: 1 }] },
+    });
+    const nonceBefore = get().trialAttemptNonce;
+    const res = get().beginTrial('lockpicking');
+    expect(res).toEqual({ ok: true, practice: true });
+    expect(get().character.energy).toBe(5);                 // free — no energy charged
+    expect(get().trialAttemptNonce).toBe(nonceBefore + 1);  // nonce still bumps for a fresh draw
+    // completeTrial still refuses to re-bank a same-day clear → practice pays no reward.
+    expect(get().completeTrial('lockpicking', 1)).toBe(false);
+  });
+
+  it('a completed Granary raises the energy cap: grant fires at 15/16, clamp settles at 17', () => {
+    get().addHabit({ name: 'ST', stat: 'ST', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    useGameStore.setState({
+      character: { ...get().character, energy: MAX_ENERGY }, // 15 — the old ceiling
+      town: { ...get().town, buildings: [{ id: 'gr', key: 'granary', r: 0, c: 0, tier: 1 }] },
+    });
+    expect(maxEnergyFor(get())).toBe(MAX_ENERGY + 2); // 17
+    get().completeHabit(id);
+    expect(get().character.energy).toBe(MAX_ENERGY + 1); // grant allowed at 15 → 16 (below raised cap)
+  });
+
+  it('the Granary clamp settles above-cap energy to 17, not 15', () => {
+    get().addHabit({ name: 'ST', stat: 'ST', type: 'binary', frequency: 'daily', difficulty: 'normal' });
+    const id = get().habits[0].id;
+    useGameStore.setState({
+      character: { ...get().character, energy: 99 }, // above any cap
+      town: { ...get().town, buildings: [{ id: 'gr', key: 'granary', r: 0, c: 0, tier: 1 }] },
+    });
+    get().completeHabit(id);
+    expect(get().character.energy).toBe(MAX_ENERGY + 2); // clamped to 17, not 15
   });
 });
 

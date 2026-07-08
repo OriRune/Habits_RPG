@@ -46,6 +46,9 @@ body,
 
 body {
   margin: 0;
+  /* Suppress the browser's pull-to-refresh / rubber-band bounce in the installed
+     PWA — the document is the only scroll surface (no internal scroller to exempt). */
+  overscroll-behavior-y: none;
   color: rgb(var(--c-parchment-200));
   font-family: theme('fontFamily.serif');
   font-size: 17px;
@@ -202,6 +205,19 @@ body {
 @keyframes mine-sparkle {
   0%, 100% { opacity: 0.07; transform: scale(0.7); }
   50%       { opacity: 0.52; transform: scale(1.35); }
+}
+
+/* Homestead: a building's completion sparkle burst (fx layer, reduced-motion gated). */
+@keyframes town-sparkle-burst {
+  0%   { opacity: 0;   transform: scale(0.4); }
+  30%  { opacity: 1;   transform: scale(1.15); }
+  100% { opacity: 0;   transform: scale(1.5); }
+}
+
+/* Homestead: a freshly-deeded district unfolds with a brief golden shimmer. */
+@keyframes town-unfold {
+  0%   { opacity: 0.55; }
+  100% { opacity: 0; }
 }
 
 /* Crawl avatar — gentle idle breathe when standing still. */
@@ -390,6 +406,15 @@ body {
   [style*='arena-hit'],
   [style*='arena-boss-die'],
   [style*='arena-boss-phase']           { animation-duration: 1ms !important; }
+}
+
+/* The Forge — Fine/Masterwork result spark burst. Small radial sparks; each span
+   sets its own --a angle and flies outward. Only rendered when NOT reduced-motion
+   (gated in JS), so no media guard needed here. */
+@keyframes forge-spark {
+  0%   { opacity: 0; transform: rotate(var(--a, 0deg)) translateX(3px) scale(0.4); }
+  25%  { opacity: 1; }
+  100% { opacity: 0; transform: rotate(var(--a, 0deg)) translateX(28px) scale(1); }
 }
 
 /* Lockpicking — pick-snap violent jolt */

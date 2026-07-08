@@ -14,10 +14,10 @@ import {
   unlockedStartStage,
   FOREST_ENERGY_COST,
 } from '@/engine/forest';
-import { dungeonStamina, boonConsolation } from '@/engine/crawl';
+import { boonConsolation } from '@/engine/crawl';
 import { mulberry32, floorSeed } from '@/engine/rng';
 import { getGear } from '@/engine/gear';
-import { rollBoonChoices } from '@/content/boons';
+import { rollBoonChoices } from '@/engine/crawl';
 import {
   type WorldSliceInput,
   applyForestWorldSlice,
@@ -26,7 +26,8 @@ import {
   applyForestRemoteAttack,
 } from '@/net/coop/reduce';
 import type { GameState } from '../shared';
-import { fighterFor, gearBonuses, commitForest, commitForestDeath, energySpentPatch, stashForest } from '../shared';
+import { crawlerLoadout, commitForest, commitForestDeath, energySpentPatch, stashForest } from '../shared';
+import { townPerks } from '@/engine/town';
 import { getForestRng, getForestBaseSeed, setForestRun, acceptForestWorldT } from '../runRng';
 
 export interface ForestSlice {
@@ -85,34 +86,17 @@ export const createForestSlice: StateCreator<
       if (s.forest && seed === undefined) return s;
       if (!free && s.character.energy < FOREST_ENERGY_COST) return s.forest ? { ...s, forest: null } : s;
 
-      // Grant the stone_pickaxe (toolkit) if the player has no tool yet
-      let ownedGear = s.ownedGear;
-      let equipment = s.equipment;
-      const hasAnyTool = ownedGear.some((k) => {
-        const g = getGear(k);
-        return g?.chopping != null || g?.mining != null;
-      });
-      if (!hasAnyTool) {
-        ownedGear = [...ownedGear, 'stone_pickaxe'];
-        if (!equipment.tool) {
-          equipment = { ...equipment, tool: 'stone_pickaxe' };
-        }
-      }
-
-      const stateWithGear: typeof s = { ...s, ownedGear, equipment };
-      const fighter = fighterFor(stateWithGear);
-      const { c } = fighter;
-      const gear = gearBonuses(stateWithGear);
-      const enBonus = gear.statBonuses.EN ?? 0;
-      const maxSta = dungeonStamina(s.character.statLevels.EN + enBonus);
+      // Grant a starter tool if needed, then snapshot the fighter/stamina/AG loadout
+      // (shared with beginMining via crawlerLoadout).
+      const { ownedGear, equipment, fighter, c, maxSta, agLevel } = crawlerLoadout(
+        s,
+        (g) => g.chopping != null || g.mining != null,
+      );
 
       // Chopping power from equipped tool gear
       const toolKey = equipment.tool;
       const toolGear = toolKey ? getGear(toolKey) : undefined;
       const chopPower = toolGear?.chopping?.power ?? 0;
-      // AG level for dash cooldown + move speed
-      const agBonusF = (gearBonuses(stateWithGear).statBonuses.AG ?? 0);
-      const agLevelF = s.character.statLevels.AG + agBonusF;
 
       // Solo runs re-enter at the deepest guardian band already cleared; co-op passes an
       // explicit startStage of 1 so host+guest generate the same shared map (BAL-25).
@@ -133,7 +117,9 @@ export const createForestSlice: StateCreator<
           weapon: fighter.weapon,
           knownSpells: s.knownSpells,
           chopPower,
-          agLevel: agLevelF,
+          agLevel,
+          // Homestead Watchtower (sight perk): +1 sight radius, snapshotted at run start (co-op-safe).
+          sightBonus: townPerks(s.town).sightBonus,
         },
         // The start stage from the per-stage seed (co-op parity); solo uses live forest RNG.
         seed !== undefined ? mulberry32(floorSeed(seed, start)) : getForestRng(),

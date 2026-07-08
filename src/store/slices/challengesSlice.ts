@@ -20,6 +20,7 @@ import {
   applyWeeklyRollover,
   applyReward,
   checkLevelUp,
+  cloneEarnings,
 } from '../shared';
 import { freshEarningsLedger } from '@/engine/balance';
 
@@ -78,12 +79,7 @@ export const createChallengesSlice: StateCreator<
         character: { ...s.character, statXp: { ...s.character.statXp } },
         inventory: { ...s.inventory },
         materials: { ...s.materials },
-        earnings: {
-          ...baseEarnings,
-          xp: { ...baseEarnings.xp },
-          gold: { ...baseEarnings.gold },
-          count: { ...baseEarnings.count },
-        },
+        earnings: cloneEarnings(baseEarnings),
         challenges: s.challenges.map((x, i) =>
           i === index ? { ...x, status: 'claimed' as const } : x,
         ),

@@ -41,6 +41,8 @@ const SCENES: Record<string, SceneLook> = {
   'dungeon:retreat': { glyph: '🏳️', color: '#6b6b6b', caption: 'You retreat' },
   // Weekly loop
   'weekly:report': { glyph: '📖', color: '#7a5a2e', caption: 'The week in review' },
+  // Crafting
+  'forge:anvil': { glyph: '🔨', color: '#b5502a', caption: 'The Forge' },
 };
 
 const FALLBACK: SceneLook = { glyph: '❓', color: '#4a3320', caption: '' };

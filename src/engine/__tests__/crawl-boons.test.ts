@@ -5,8 +5,8 @@
 // ============================================================================
 
 import { describe, it, expect } from 'vitest';
+import { BOONS } from '@/content/boons';
 import {
-  BOONS,
   rollBoonChoices,
   boonMeleeMult,
   boonDefenseBonus,
@@ -15,7 +15,7 @@ import {
   boonDashCdMult,
   boonSightBonus,
   boonChargeReduce,
-} from '@/content/boons';
+} from '@/engine/crawl';
 import {
   generateMine,
   tryMove as mineTryMove,

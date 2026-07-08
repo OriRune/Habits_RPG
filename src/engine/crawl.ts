@@ -10,6 +10,9 @@
 import type { StatId } from './stats';
 import { getSpell, SCHOOL_STAT } from './spells';
 import { spellDamageRoll, spellHealAmount } from './combat';
+// Engine imports the boon DATA table from content (the allowed direction); the boon
+// EFFECT reducers + roller live here in the engine (ARCH-11), not in content/.
+import { BOONS } from '@/content/boons';
 
 // ---------------------------------------------------------------------------
 // Basic types
@@ -27,10 +30,6 @@ export const DIRS: Record<Dir, [number, number]> = {
 
 /** The 4-direction offsets as an iterable array (used in BFS loops). */
 const DIR_OFFSETS: [number, number][] = [[-1, 0], [1, 0], [0, -1], [0, 1]];
-
-export function sign(n: number): number {
-  return n > 0 ? 1 : n < 0 ? -1 : 0;
-}
 
 export function randInt(min: number, max: number, rng: RNG): number {
   return min + Math.floor(rng() * (max - min + 1));
@@ -75,43 +74,10 @@ export function dungeonStamina(enLevel: number): number {
 // ---------------------------------------------------------------------------
 
 /**
- * BFS from `target` (the player's position) across cells where `passable(r,c)` is true.
- * Returns a distance map  `"r,c" → distance`  so each monster can pick the optimal next
- * step with `flowStep`.  Does NOT include monster occupation in `passable` — that is
- * handled per-monster inside `flowStep` via the `blocked` set.
- */
-export function floodField(
-  target: { r: number; c: number },
-  rows: number,
-  cols: number,
-  passable: (r: number, c: number) => boolean,
-): Map<string, number> {
-  const dist = new Map<string, number>();
-  const startKey = `${target.r},${target.c}`;
-  dist.set(startKey, 0);
-  const queue: Array<{ r: number; c: number }> = [target];
-  while (queue.length > 0) {
-    const cur = queue.shift()!;
-    const d = dist.get(`${cur.r},${cur.c}`)!;
-    for (const [dr, dc] of DIR_OFFSETS) {
-      const nr = cur.r + dr;
-      const nc = cur.c + dc;
-      if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
-      const k = `${nr},${nc}`;
-      if (dist.has(k)) continue;
-      if (!passable(nr, nc)) continue;
-      dist.set(k, d + 1);
-      queue.push({ r: nr, c: nc });
-    }
-  }
-  return dist;
-}
-
-/**
  * Multi-source BFS: floods from several target cells at once, so each cell's
  * distance is to the *nearest* target. Used for co-op enemy targeting (chase the
- * closest of several players). With a single target this is identical to
- * {@link floodField}, so the single-player path is unchanged.
+ * closest of several players). With a single target this behaves like a plain
+ * single-source BFS, so the single-player path is unchanged.
  */
 export function floodFieldMulti(
   targets: ReadonlyArray<{ r: number; c: number }>,
@@ -275,7 +241,7 @@ export const RING_DURATION_MS = 8000;
 // ---------------------------------------------------------------------------
 
 /** Get the tile in front of `player` (the cell the player is facing). */
-export function facedCell(player: { r: number; c: number; facing: Dir }): { r: number; c: number } {
+function facedCell(player: { r: number; c: number; facing: Dir }): { r: number; c: number } {
   const [dr, dc] = DIRS[player.facing];
   return { r: player.r + dr, c: player.c + dc };
 }
@@ -404,6 +370,94 @@ export function boonConsolation<
     hp: Math.min(state.maxHp, state.hp + BOON_CONSOLATION_HEAL),
     haul: { ...state.haul, gold: (state.haul.gold ?? 0) + BOON_CONSOLATION_GOLD },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Boon effect reducers — fold across activeBoons to get the combined modifier.
+// These are game RULES (multiplicative vs additive stacking), so they live in the
+// engine (ARCH-11); the BOONS table they read is data and stays in content/.
+// All boons stack multiplicatively for *Mult reducers, additively for *Bonus/*Reduce.
+// ---------------------------------------------------------------------------
+
+/** Combined weapon damage multiplier from held boons (multiplicative stack). */
+export function boonMeleeMult(keys: string[]): number {
+  return keys.reduce((acc, k) => {
+    const b = BOONS[k];
+    return b?.meleeMult != null ? acc * b.meleeMult : acc;
+  }, 1);
+}
+
+/** Combined flat contact-damage reduction from held boons (additive stack). */
+export function boonDefenseBonus(keys: string[]): number {
+  return keys.reduce((acc, k) => {
+    const b = BOONS[k];
+    return b?.defenseBonus != null ? acc + b.defenseBonus : acc;
+  }, 0);
+}
+
+/** Combined ore/chop/gather yield multiplier from held boons (multiplicative stack). */
+export function boonYieldMult(keys: string[]): number {
+  return keys.reduce((acc, k) => {
+    const b = BOONS[k];
+    return b?.yieldMult != null ? acc * b.yieldMult : acc;
+  }, 1);
+}
+
+/** Combined move-speed multiplier from held boons (multiplicative stack).
+ *  Applied as: `moveIntervalMs = base / boonMoveMult(keys)`. */
+export function boonMoveMult(keys: string[]): number {
+  return keys.reduce((acc, k) => {
+    const b = BOONS[k];
+    return b?.moveMult != null ? acc * b.moveMult : acc;
+  }, 1);
+}
+
+/** Combined dash-cooldown multiplier from held boons (multiplicative stack).
+ *  Applied as: `dashCooldownMs = base * boonDashCdMult(keys)`. */
+export function boonDashCdMult(keys: string[]): number {
+  return keys.reduce((acc, k) => {
+    const b = BOONS[k];
+    return b?.dashCdMult != null ? acc * b.dashCdMult : acc;
+  }, 1);
+}
+
+/** Combined sight-radius bonus from held boons (additive stack). */
+export function boonSightBonus(keys: string[]): number {
+  return keys.reduce((acc, k) => {
+    const b = BOONS[k];
+    return b?.sightBonus != null ? acc + b.sightBonus : acc;
+  }, 0);
+}
+
+/** Combined charge-interval reduction from held boons (additive stack).
+ *  Subtracted from CHARGE_SWING_COUNT in the rAF loops. */
+export function boonChargeReduce(keys: string[]): number {
+  return keys.reduce((acc, k) => {
+    const b = BOONS[k];
+    return b?.chargeReduce != null ? acc + b.chargeReduce : acc;
+  }, 0);
+}
+
+/**
+ * Pick up to 3 distinct boon options from those eligible for `game`, excluding
+ * any boons the player already holds (no duplication — each key is unique).
+ * Uses the injected `rng` for determinism.
+ */
+export function rollBoonChoices(
+  game: 'mine' | 'forest',
+  activeBoons: string[],
+  rng: RNG,
+): string[] {
+  const held = new Set(activeBoons);
+  const pool = Object.values(BOONS).filter(
+    (b) => (b.game === 'both' || b.game === game) && !held.has(b.key),
+  );
+  // Fisher-Yates shuffle
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, 3).map((b) => b.key);
 }
 
 // ---------------------------------------------------------------------------

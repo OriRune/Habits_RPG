@@ -108,6 +108,9 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
   const [courtHistory, setCourtHistory] = useState<CourtChoiceRecord[]>([]);
   // 6.7: why a Begin was refused (energy/daily-clear/stat gate) — shown inline on the intro.
   const [beginError, setBeginError] = useState<'cleared' | 'energy' | 'stat' | null>(null);
+  // 10.5: Homestead Training Yard let this already-cleared trial be replayed for free — a
+  // Practice run (no energy, no reward, best score untouched). Drives the honest badge/notice.
+  const [isPractice, setIsPractice] = useState(false);
   // BAL-20: false when completeTrial refused to bank (already cleared today) — the result
   // panel then shows an honest "not banked" note instead of implying a reward was granted.
   const [banked, setBanked] = useState(true);
@@ -286,6 +289,7 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
                   const res = beginTrial(trialId);
                   if (!res.ok) { setBeginError(res.reason); return; }
                   setBeginError(null);
+                  setIsPractice(!!res.practice);
                   setStage('playing');
                 }}
                 className="w-full py-3 text-base"
@@ -297,6 +301,13 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
 
           {stage === 'playing' && (
             <div className="space-y-4">
+              {isPractice && (
+                <div className="text-center">
+                  <span className="inline-block rounded-full border border-gold-deep/40 bg-parchment-100/60 px-2.5 py-0.5 text-[11px] font-display font-semibold text-gold-deep">
+                    Practice · no energy, no reward
+                  </span>
+                </div>
+              )}
               <GameComponent trialId={trialId} onFinish={handleFinish} enLevel={enLevel} chLevel={chLevel} agLevel={agLevel} stLevel={stLevel} hpLevel={hpLevel} attemptNonce={attemptNonce} />
             </div>
           )}
@@ -321,7 +332,9 @@ export function TrialModal({ trialId, onClose }: TrialModalProps) {
                 {!banked ? (
                   <div className="rounded-md border border-gold-deep/20 bg-parchment-100/60 p-3">
                     <p className="text-sm text-ink-muted">
-                      This run wasn't banked — you already completed this trial today. No reward granted.
+                      {isPractice
+                        ? 'Practice run — no energy spent and no reward banked. Your best score is untouched.'
+                        : "This run wasn't banked — you already completed this trial today. No reward granted."}
                     </p>
                   </div>
                 ) : (

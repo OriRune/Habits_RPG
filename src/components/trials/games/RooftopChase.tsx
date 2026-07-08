@@ -663,7 +663,7 @@ function RooftopChaseRun({ onRunDone, agLevel }: { onRunDone: (r: RunResult) => 
       {/* ── Play area — FitToWidth scales it down on narrow screens ─────────── */}
       <FitToWidth contentWidth={VIEW_W} contentHeight={VIEW_H}>
       <div
-        className="relative overflow-hidden rounded-lg border-2 border-gold-deep/50 select-none cursor-pointer"
+        className="relative overflow-hidden rounded-lg border-2 border-gold-deep/50 select-none cursor-pointer touch-manipulation"
         style={{ width: VIEW_W, height: VIEW_H }}
         onClick={controls.jump}
         role="button"
@@ -920,7 +920,7 @@ function RooftopChaseRun({ onRunDone, agLevel }: { onRunDone: (r: RunResult) => 
         {/* Sound mute toggle */}
         <button
           onClick={(e) => { e.stopPropagation(); updateSettings({ soundEnabled: !soundEnabled }); }}
-          className="absolute top-1.5 left-2 z-10 select-none rounded px-1 py-0.5 font-display text-[11px] text-parchment-300/60 hover:text-parchment-100 transition-colors"
+          className="absolute top-1.5 left-2 z-10 flex h-11 w-11 items-center justify-center select-none rounded font-display text-[11px] text-parchment-300/60 hover:text-parchment-100 transition-colors"
           aria-label={soundEnabled ? 'Mute sound' : 'Unmute sound'}
           title={soundEnabled ? 'Mute sound' : 'Unmute sound'}
         >

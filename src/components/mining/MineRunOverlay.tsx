@@ -2,13 +2,13 @@ import { useState, useEffect, useRef } from 'react';
 import { Heart, Zap, Coins, ChevronsDown, LogOut, Gem, Sparkles } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { useMiningLoop } from '@/hooks/useMiningLoop';
-import { canDescend, facedCell, findTombstone, MINE_DEATH_KEEP, type MineTile, type MineMonster } from '@/engine/mining';
+import { canDescend, facedCell, findTombstone, sightRadiusFor, MINE_DEATH_KEEP } from '@/engine/mining';
+import { splitHaul } from '@/engine/forest';
 import { cameraWindow, VIEW } from '@/engine/crawl';
 import { bandForFloor, type CrawlPalette } from '@/engine/crawlBiomes';
 import { useSmoothCamera, type SmoothCameraLayout } from '@/hooks/useSmoothCamera';
 import { MINE_ORES, MINE_MONSTERS } from '@/content/mining';
-import { BOONS, boonSightBonus } from '@/content/boons';
-import { getSpell } from '@/engine/spells';
+import { BOONS } from '@/content/boons';
 import { mineRockSprite, mineFloorTile, mineOreSprite, mineMaterialIcon } from '@/lib/minigameArt';
 import { getMaterial } from '@/engine/materials';
 import * as sfx from '@/lib/sfx';
@@ -17,6 +17,11 @@ import { FitToWidth } from '@/components/ui/FitToWidth';
 import { cn } from '@/lib/cn';
 import { MineControls } from './MineControls';
 import { CrawlerAvatar } from '@/components/minigame/CrawlerAvatar';
+import { CrawlGauge } from '@/components/minigame/CrawlGauge';
+import { RemoteCrawlers } from '@/components/minigame/RemoteCrawlers';
+import { BoonChoicePanel } from '@/components/minigame/BoonChoicePanel';
+import { useCrawlRunFx } from '@/components/minigame/useCrawlRunFx';
+import { CrawlSpellBar } from '@/components/minigame/CrawlSpellBar';
 import { StreakBonusChip } from '@/components/character/StreakBonusChip';
 import { useCoopStore } from '@/net/coop/session';
 import { useAuthStore } from '@/net/auth';
@@ -27,8 +32,6 @@ const CELL = 52;
 const BOARD_PX = VIEW * CELL;
 const MARGIN = 1;
 const RENDER_VIEW = VIEW + 2 * MARGIN;
-/** Base sight radius in tiles — Lantern boon adds to this via boonSightBonus. */
-const MINE_SIGHT_RADIUS = 4;
 
 /** Deterministic 0..1 hash for a cell — stable across renders. */
 function cellHash(r: number, c: number): number {
@@ -93,9 +96,6 @@ function rockStyle(r: number, c: number, palette: CrawlPalette): React.CSSProper
   };
 }
 
-type LootPop = { key: string; r: number; c: number; at: number; text: string; color: string };
-/** One-shot impact / dash-ring VFX burst rendered inside the world container. */
-type VfxPop = { key: string; r: number; c: number; at: number; anim: string; size: number; color: string };
 
 function OreIcon({ oreKey, color }: { oreKey: string; color: string }) {
   if (oreKey === 'gold_vein') return <Coins className="h-6 w-6" style={{ color }} />;
@@ -103,23 +103,6 @@ function OreIcon({ oreKey, color }: { oreKey: string; color: string }) {
   if (oreKey === 'crystal_node' || oreKey === 'gemstone_node') return <Gem className="h-6 w-6" style={{ color }} />;
   const ore = MINE_ORES[oreKey];
   return <span style={{ color }}>{ore?.glyph ?? '?'}</span>;
-}
-
-function Gauge({
-  icon, value, max, fill,
-}: { icon: React.ReactNode; value: number; max: number; fill: string }) {
-  const pct = max > 0 ? Math.max(0, Math.min(100, Math.round((value / max) * 100))) : 0;
-  return (
-    <div className="flex items-center gap-1.5">
-      {icon}
-      <div className="h-2.5 w-24 overflow-hidden rounded-full border border-gold-deep/50 bg-wood-900">
-        <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: fill }} />
-      </div>
-      <span className="font-display text-[11px] tabular-nums text-parchment-300">
-        {Math.max(0, Math.round(value))}/{max}
-      </span>
-    </div>
-  );
 }
 
 /**
@@ -193,151 +176,38 @@ export function MineRunOverlay() {
     return () => cancelAnimationFrame(rafId);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Moving flag — true for ~250 ms after any player step
-  const [moving, setMoving] = useState(false);
-  const prevPosRef = useRef<{ r: number; c: number } | null>(null);
-  const movingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   // First-run hint system — each hint shows once per mount; auto-dismisses after 5 s.
   const [activeHint, setActiveHint] = useState<string | null>(null);
   const hintFiredRef = useRef<Set<string>>(new Set());
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shaftWasOffscreenRef = useRef(false);
 
-  const [pops, setPops] = useState<Array<{ key: string; r: number; c: number; at: number }>>([]);
-  const [lootPops, setLootPops] = useState<LootPop[]>([]);
-  // Phase 6: combat number floaters, one-shot VFX bursts, vignette + descent wipe
-  const [dmgPops, setDmgPops] = useState<LootPop[]>([]);
-  const [vfxPops, setVfxPops] = useState<VfxPop[]>([]);
-  const [hitAt, setHitAt] = useState(0);
   const [wipeAt, setWipeAt] = useState(0);
   const floorMountRef = useRef(false);
-  const prevRef = useRef<{
-    tiles: MineTile[][];
-    monsters: MineMonster[];
-    haul: { gold?: number; materials?: Record<string, number> };
-    sta: number;
-    hp: number;
-    lastDashMs: number;
-    status: string;
-    floor: number;
-  } | null>(null);
 
-  useEffect(() => {
-    if (!mine) { prevRef.current = null; prevPosRef.current = null; return; }
-
-    // Moving detection
-    const pos = mine.player;
-    const prev2 = prevPosRef.current;
-    if (prev2 && (prev2.r !== pos.r || prev2.c !== pos.c)) {
-      setMoving(true);
-      if (movingTimerRef.current) clearTimeout(movingTimerRef.current);
-      movingTimerRef.current = setTimeout(() => setMoving(false), 250);
-    }
-    prevPosRef.current = { r: pos.r, c: pos.c };
-
-    const prev = prevRef.current;
-    prevRef.current = { tiles: mine.tiles, monsters: mine.monsters, haul: mine.haul, sta: mine.sta, hp: mine.hp, lastDashMs: mine.lastDashMs, status: mine.status, floor: mine.floor };
-    if (!prev) return;
-    const now = Date.now();
-    const newPops: Array<{ key: string; r: number; c: number; at: number }> = [];
-    let eventPos: { r: number; c: number } | null = null;
-    mine.tiles.forEach((row, r) =>
-      row.forEach((tile, c) => {
-        const was = prev.tiles[r]?.[c];
-        if (tile.kind === 'floor' && (was?.kind === 'rock' || was?.kind === 'ore')) {
-          newPops.push({ key: `t-${r}-${c}-${now}`, r, c, at: now });
-          eventPos = { r, c };
-          sfx.play(was.kind === 'ore' ? 'mineOreBreak' : 'mineRockBreak');
-        }
-      }),
-    );
-    const liveIds = new Set(mine.monsters.map((m) => m.id));
-    prev.monsters.forEach((m) => {
-      if (!liveIds.has(m.id)) {
-        newPops.push({ key: `m-${m.id}-${now}`, r: m.r, c: m.c, at: now });
-        eventPos = { r: m.r, c: m.c };
-        sfx.play('enemyDeath');
-      }
-    });
-    if (newPops.length > 0) {
-      setPops((ps) => [...ps.filter((p) => now - p.at < 550), ...newPops]);
-      setTimeout(() => setPops((ps) => ps.filter((p) => Date.now() - p.at < 550)), 600);
-    }
-    if (eventPos) {
-      const pos2 = eventPos as { r: number; c: number };
-      const newLootPops: LootPop[] = [];
-      const goldDelta = (mine.haul.gold ?? 0) - (prev.haul.gold ?? 0);
-      if (goldDelta > 0) {
-        newLootPops.push({ key: `lg-${now}`, ...pos2, at: now, text: `+${goldDelta} gold`, color: '#e8c860' });
-      } else {
-        for (const [matKey, val] of Object.entries(mine.haul.materials ?? {})) {
-          const delta = val - ((prev.haul.materials ?? {})[matKey] ?? 0);
-          if (delta > 0) {
-            const mat = getMaterial(matKey);
-            newLootPops.push({
-              key: `lm-${now}`, ...pos2, at: now,
-              text: `+${delta} ${mat?.name ?? matKey}`,
-              color: mat?.color ?? '#f3e7c9',
-            });
-            break;
-          }
-        }
-      }
-      const netSta = mine.sta - prev.sta;
-      if (netSta > 0) {
-        newLootPops.push({ key: `ls-${now}`, ...pos2, at: now, text: `+${netSta} sta`, color: '#22d3ee' });
-      }
-      if (newLootPops.length > 0) {
-        setLootPops((ps) => [...ps.filter((p) => now - p.at < 1400), ...newLootPops]);
-        setTimeout(() => setLootPops((ps) => ps.filter((p) => Date.now() - p.at < 1400)), 1450);
-      }
-    }
-
-    // --- Phase 6: Combat damage floaters + screen shake ---
-    const newDmgPops: LootPop[] = [];
-    const newVfxPops: VfxPop[] = [];
-
-    // Monster HP diffs — emit a damage number and flash the entity element.
-    const monsterSnap = new Map(prev.monsters.map((m) => [m.id, m]));
-    for (const m of mine.monsters) {
-      const was = monsterSnap.get(m.id);
-      if (was && m.hp < was.hp) {
-        const dmg = was.hp - m.hp;
-        const isHeavy = dmg >= was.maxHp * 0.35;
-        newDmgPops.push({
-          key: `dmg-${m.id}-${now}`,
-          r: m.r, c: m.c, at: now,
-          text: `-${Math.round(dmg)}`,
-          color: isHeavy ? '#fbbf24' : '#f87171',
-        });
-        sfx.play('swing');
-        // Flash the entity element directly — avoids a re-render.
-        const el = moverRefs.current.get(m.id);
-        if (el) {
-          el.classList.add('crawler-hit-flash');
-          setTimeout(() => el.classList.remove('crawler-hit-flash'), 220);
-        }
-        if (isHeavy) shake(5, 220);
-      }
-    }
-
-    // Player took damage → red floater + vignette + shake.
-    if (mine.hp < prev.hp) {
-      const dmg = prev.hp - mine.hp;
-      newDmgPops.push({
-        key: `pdmg-${now}`,
-        r: mine.player.r, c: mine.player.c, at: now,
-        text: `-${Math.round(dmg)}`,
-        color: '#f87171',
-      });
-      setHitAt(now);
-      shake(8, 300);
-      sfx.play('playerHurt');
-      if (playerRef.current) {
-        playerRef.current.classList.add('crawler-hit-flash');
-        setTimeout(() => playerRef.current?.classList.remove('crawler-hit-flash'), 220);
-      }
+  // Shared state-diff FX (destruction pops, loot/damage floaters, dash rings, shake).
+  // Mine wires all six SFX sites and the mine-only descent/defeat stings; onPlayerHit
+  // drives the first-run dash hint (kept here, out of the shared hook).
+  const { moving, pops, lootPops, dmgPops, vfxPops, hitAt } = useCrawlRunFx(mine ?? null, {
+    moverRefs, playerRef, shake, cell: CELL,
+    materialName: getMaterial,
+    unitsOf: (m) => m.monsters,
+    tileBreak: (tile, was) =>
+      tile.kind === 'floor' && (was?.kind === 'rock' || was?.kind === 'ore') ? was.kind : null,
+    dashColor: 'rgba(100,200,255,0.75)',
+    lootPopWindow: 1400,
+    lootPopTimeout: 1450,
+    statusOf: (m) => m.status,
+    depthOf: (m) => m.floor,
+    sfx: {
+      onBreak: (kind) => sfx.play(kind === 'ore' ? 'mineOreBreak' : 'mineRockBreak'),
+      onKill: () => sfx.play('enemyDeath'),
+      onHit: () => sfx.play('swing'),
+      onPlayerHurt: () => sfx.play('playerHurt'),
+      onDescend: () => sfx.play('mineDescent'),
+      onDefeat: () => sfx.play('defeat'),
+    },
+    onPlayerHit: () => {
       // First-run hint: explain dash on first hit
       if (isFirstRun && !hintFiredRef.current.has('damage')) {
         hintFiredRef.current.add('damage');
@@ -345,45 +215,8 @@ export function MineRunOverlay() {
         setActiveHint('Hold [Shift] to dash — you\'re briefly immune while dashing.');
         hintTimerRef.current = setTimeout(() => setActiveHint(null), 5500);
       }
-    }
-
-    // Player healed.
-    if (mine.hp > prev.hp && prev.hp > 0) {
-      const heal = mine.hp - prev.hp;
-      newDmgPops.push({
-        key: `heal-${now}`,
-        r: mine.player.r, c: mine.player.c, at: now,
-        text: `+${Math.round(heal)}`,
-        color: '#34d399',
-      });
-    }
-
-    // Floor changed → descent SFX.
-    if (mine.floor > (prev.floor ?? 0)) sfx.play('mineDescent');
-    // Run ended → defeat sting.
-    if (mine.status === 'ended' && prev.status !== 'ended') sfx.play('defeat');
-
-    // Dash fired → light shake + expanding ring.
-    if (mine.lastDashMs !== prev.lastDashMs && mine.lastDashMs > 0) {
-      shake(4, 180);
-      newVfxPops.push({
-        key: `dash-${now}`,
-        r: mine.player.r, c: mine.player.c, at: now,
-        anim: 'arena-cast 0.4s ease-out forwards',
-        size: Math.round(CELL * 1.1),
-        color: 'rgba(100,200,255,0.75)',
-      });
-    }
-
-    if (newDmgPops.length > 0) {
-      setDmgPops((ps) => [...ps.filter((p) => now - p.at < 850), ...newDmgPops]);
-      setTimeout(() => setDmgPops((ps) => ps.filter((p) => Date.now() - p.at < 850)), 900);
-    }
-    if (newVfxPops.length > 0) {
-      setVfxPops((ps) => [...ps.filter((p) => now - p.at < 500), ...newVfxPops]);
-      setTimeout(() => setVfxPops((ps) => ps.filter((p) => Date.now() - p.at < 500)), 550);
-    }
-  }, [mine]); // eslint-disable-line react-hooks/exhaustive-deps
+    },
+  });
 
   // Phase 6: floor-change wipe (skip first mount).
   useEffect(() => {
@@ -443,7 +276,7 @@ export function MineRunOverlay() {
 
   const band = bandForFloor(mine.floor);
   /** Sight radius for fog of war — base + Lantern boon bonus. */
-  const sightR = MINE_SIGHT_RADIUS + boonSightBonus(mine.activeBoons ?? []);
+  const sightR = sightRadiusFor(mine);
   const dead = mine.status === 'ended';
   const onShaft = canDescend(mine);
   const faced = facedCell(mine);
@@ -544,10 +377,10 @@ export function MineRunOverlay() {
           })}
         </span>
         <div className="flex flex-col items-end gap-1">
-          <Gauge icon={<Heart className="h-3.5 w-3.5 text-stat-HP" />} value={mine.hp} max={mine.maxHp} fill="#2e8a5e" />
-          <Gauge icon={<Zap className="h-3.5 w-3.5 text-stat-AG" />} value={mine.sta} max={mine.maxSta} fill="#b8860b" />
+          <CrawlGauge icon={<Heart className="h-3.5 w-3.5 text-stat-HP" />} value={mine.hp} max={mine.maxHp} fill="#2e8a5e" />
+          <CrawlGauge icon={<Zap className="h-3.5 w-3.5 text-stat-AG" />} value={mine.sta} max={mine.maxSta} fill="#b8860b" />
           {mine.maxMp > 0 && (
-            <Gauge icon={<Sparkles className="h-3.5 w-3.5 text-blue-400" />} value={mine.mp} max={mine.maxMp} fill="#4f7ed4" />
+            <CrawlGauge icon={<Sparkles className="h-3.5 w-3.5 text-blue-400" />} value={mine.mp} max={mine.maxMp} fill="#4f7ed4" />
           )}
           {/* Charge bar — filled while holding Space; updated imperatively via rAF */}
           <div className="flex items-center gap-1.5">
@@ -733,7 +566,7 @@ export function MineRunOverlay() {
         <div
           className="pointer-events-none absolute inset-0 z-[5]"
           style={{
-            background: `radial-gradient(circle ${4.2 * CELL}px at ${lightX}px ${lightY}px, transparent 40%, rgba(8,4,1,0.38) 62%, rgba(5,2,0,0.72) 82%, rgba(2,1,0,0.90) 100%)`,
+            background: `radial-gradient(circle ${(sightR + 0.5) * CELL}px at ${lightX}px ${lightY}px, transparent 40%, rgba(8,4,1,0.38) 62%, rgba(5,2,0,0.72) 82%, rgba(2,1,0,0.90) 100%)`,
             animation: 'mine-torch-flicker 3.2s ease-in-out infinite',
           }}
         />
@@ -926,37 +759,19 @@ export function MineRunOverlay() {
           );
         })}
 
-        {/* Co-op party members — positions arrive over the broadcast channel (~10 Hz).
-            Registered as movers so the rAF loop interpolates them in world-pixel space
-            (smooth cell-to-cell glide) and keeps the baseC0/baseR0 offset cancelled, so
-            they stay locked to their cell as the camera scrolls — same path as monsters. */}
-        {Object.values(remotePlayers).map((p) => {
-          if (p.floor !== mine.floor) return null;
-          const vj = p.c - baseC0;
-          const vi = p.r - baseR0;
-          if (vi < 0 || vi >= RENDER_VIEW || vj < 0 || vj >= RENDER_VIEW) return null;
-          return (
-            <div
-              key={p.userId}
-              ref={(el) => {
-                const id = `rp:${p.userId}`;
-                if (el) moverRefs.current.set(id, el);
-                else moverRefs.current.delete(id);
-              }}
-              className="pointer-events-none absolute z-[9]"
-              style={{
-                width: CELL,
-                height: CELL,
-                transform: `translate(${vj * CELL}px, ${vi * CELL}px)`,
-              }}
-            >
-              <CrawlerAvatar variant="miner" facing={p.facing} moving dead={p.hp <= 0} cell={CELL} />
-              <span className="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-black/60 px-1 font-display text-[9px] text-gold-bright">
-                {nameFor(p.userId, p.username)}
-              </span>
-            </div>
-          );
-        })}
+        {/* Co-op party members — see RemoteCrawlers. Mine draws them at z 9 (own player z 9). */}
+        <RemoteCrawlers
+          remotePlayers={remotePlayers}
+          currentDepth={mine.floor}
+          baseR0={baseR0}
+          baseC0={baseC0}
+          RENDER_VIEW={RENDER_VIEW}
+          CELL={CELL}
+          moverRefs={moverRefs}
+          nameFor={nameFor}
+          variant="miner"
+          zIndex={9}
+        />
 
         {/* Player — rAF drives position */}
         <div
@@ -1105,43 +920,22 @@ export function MineRunOverlay() {
           </div>
         )}
 
-        {/* Boon choice panel (pauses the run while the player picks) */}
-        {mine.status === 'choosing' && mine.pendingBoonChoice && (
-          <div className="pointer-events-auto absolute inset-0 z-40 flex flex-col items-center justify-center gap-4 rounded-md bg-black/85 p-4">
-            <p className="font-display text-lg font-bold text-gold-bright">Choose a Boon</p>
-            <div className="flex gap-3">
-              {mine.pendingBoonChoice.map((key) => {
-                const boon = BOONS[key];
-                if (!boon) return null;
-                return (
-                  <button
-                    key={key}
-                    onClick={() => { sfx.play('mineBoonOpen'); chooseMineBoon(key); }}
-                    className="flex flex-col items-center gap-1.5 rounded-md border border-gold-deep/60 bg-parchment-300/20 p-3 text-center hover:bg-parchment-300/40 transition-colors w-28"
-                  >
-                    <span className="text-3xl leading-none">{boon.icon}</span>
-                    <span className="font-display text-sm font-bold text-gold-bright">{boon.name}</span>
-                    <span className="text-[11px] text-parchment-300 leading-tight">{boon.desc}</span>
-                  </button>
-                );
-              })}
-            </div>
-            <button
-              onClick={() => skipMineBoon()}
-              className="rounded-md border border-parchment-300/40 px-4 py-1.5 text-sm text-parchment-300 hover:bg-parchment-300/20 transition-colors"
-            >
-              Skip
-            </button>
-          </div>
-        )}
+        {/* Boon choice panel (pauses the run while the player picks). Mine plays a sound
+            on pick and shows the cards statically (no stagger animation). */}
+        <BoonChoicePanel
+          status={mine.status}
+          pendingBoonChoice={mine.pendingBoonChoice}
+          onChoose={(key) => { sfx.play('mineBoonOpen'); chooseMineBoon(key); }}
+          onSkip={() => skipMineBoon()}
+        />
 
         {/* Death overlay */}
         {mine.status === 'ended' && (() => {
-          const fullGold = mine.haul.gold ?? 0;
-          const keptGold = Math.floor(fullGold * MINE_DEATH_KEEP);
-          const lostGold = fullGold - keptGold;
-          const keptMats = haulMats.map(([key, n]) => [key, Math.floor(n * MINE_DEATH_KEEP)] as [string, number]).filter(([, n]) => n > 0);
-          const lostMats = haulMats.map(([key, n]) => [key, n - Math.floor(n * MINE_DEATH_KEEP)] as [string, number]).filter(([, n]) => n > 0);
+          const death = splitHaul(mine.haul, MINE_DEATH_KEEP);
+          const keptGold = death.kept.gold ?? 0;
+          const lostGold = death.lost.gold ?? 0;
+          const keptMats = Object.entries(death.kept.materials ?? {}).filter(([, n]) => n > 0);
+          const lostMats = Object.entries(death.lost.materials ?? {}).filter(([, n]) => n > 0);
           return (
             <div className="pointer-events-auto absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 rounded-md bg-black/80 p-4 text-center">
               <span className="text-4xl leading-none">💀</span>
@@ -1181,34 +975,18 @@ export function MineRunOverlay() {
       </div>
       </FitToWidth>
 
-      {/* Spell ability bar */}
-      {mine.knownSpells.length > 0 && mine.status === 'active' && (
-        <div className="flex w-full max-w-lg items-center gap-2">
-          <span className="font-display text-[10px] uppercase tracking-wider text-parchment-300/60">Spells</span>
-          {mine.knownSpells.slice(0, 4).map((key, i) => {
-            const spell = getSpell(key);
-            if (!spell) return null;
-            const canCast = mine.mp >= spell.mpCost;
-            return (
-              <button
-                key={key}
-                onClick={() => controls.castSpell(key)}
-                title={`${spell.name} — ${spell.description}`}
-                disabled={!canCast}
-                className={cn(
-                  'flex flex-col items-center gap-0.5 rounded border px-2 py-1 text-[11px] font-display transition-colors',
-                  canCast
-                    ? 'border-blue-400/50 bg-blue-900/40 text-blue-300 hover:bg-blue-800/50'
-                    : 'border-parchment-300/20 bg-wood-900/40 text-parchment-300/40',
-                )}
-              >
-                <span className="text-[13px]">{spell.name}</span>
-                <span className="text-[10px] text-blue-300/70">[{i + 1}] {spell.mpCost}mp</span>
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {/* Spell ability bar — blue accent, hidden while not active, 2-line cards. */}
+      <CrawlSpellBar
+        knownSpells={mine.knownSpells}
+        mp={mine.mp}
+        status={mine.status}
+        onCast={(key) => controls.castSpell(key)}
+        accent="blue"
+        hideWhenInactive
+        tooltip={(spell) => `${spell.name} — ${spell.description}`}
+        layout="two-line"
+        maxWidthClass="max-w-lg"
+      />
 
       {/* Descend / leave */}
       <div className="flex w-full max-w-lg flex-col items-center gap-1">

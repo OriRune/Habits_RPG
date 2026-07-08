@@ -7,6 +7,7 @@ import { Pickaxe, Trees, Swords } from 'lucide-react';
 import { useAuthStore } from '@/net/auth';
 import { getLeaderboard, type LeaderboardRow } from '@/net/party';
 import { partyActions, usePartyStore } from '@/hooks/useParty';
+import { useIsCoarsePointer } from '@/hooks/useIsCoarsePointer';
 import { joinCoop, startCoop, useCoopStore } from '@/net/coop/session';
 import { CreateJoinPanel } from '@/components/party/CreateJoinPanel';
 import { PartyChat } from '@/components/party/PartyChat';
@@ -164,6 +165,7 @@ function CoopRaidPanel() {
   const myId = useAuthStore((s) => s.session?.user?.id);
   const session = useCoopStore((s) => s.session);
   const joined = useCoopStore((s) => s.joined);
+  const coarse = useIsCoarsePointer();
   const [busy, setBusy] = useState(false);
 
   // A live session someone else started that I haven't joined yet.
@@ -190,11 +192,16 @@ function CoopRaidPanel() {
           </p>
           <Button
             className="flex w-full items-center justify-center gap-2"
-            disabled={busy}
+            disabled={busy || coarse}
             onClick={() => session && joinCoop(session)}
           >
             <GameIcon size={16} /> {session?.game === 'tactics' ? 'Join the skirmish' : 'Join the raid'}
           </Button>
+          {coarse && (
+            <p className="text-center text-[11px] italic text-ink-muted">
+              Co-op raids are best on desktop.
+            </p>
+          )}
         </div>
       ) : (
         <>
@@ -204,7 +211,7 @@ function CoopRaidPanel() {
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             <Button
               className="flex items-center justify-center gap-2"
-              disabled={busy}
+              disabled={busy || coarse}
               onClick={async () => {
                 setBusy(true);
                 await startCoop(party.id, 'mine');
@@ -215,7 +222,7 @@ function CoopRaidPanel() {
             </Button>
             <Button
               className="flex items-center justify-center gap-2"
-              disabled={busy}
+              disabled={busy || coarse}
               onClick={async () => {
                 setBusy(true);
                 await startCoop(party.id, 'forest');
@@ -226,7 +233,7 @@ function CoopRaidPanel() {
             </Button>
             <Button
               className="flex items-center justify-center gap-2"
-              disabled={busy}
+              disabled={busy || coarse}
               onClick={async () => {
                 setBusy(true);
                 await startCoop(party.id, 'tactics');
@@ -236,6 +243,11 @@ function CoopRaidPanel() {
               <Swords size={16} /> Hex Tactics
             </Button>
           </div>
+          {coarse && (
+            <p className="text-[11px] italic text-ink-muted">
+              Co-op raids are best on desktop.
+            </p>
+          )}
         </>
       )}
     </Panel>

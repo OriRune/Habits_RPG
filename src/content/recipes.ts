@@ -101,6 +101,7 @@ export const RECIPES: Record<string, RecipeDef> = {
     result: { kind: 'gear', key: 'mithril_pickaxe' },
     materials: { obsidian: 4, frost_quartz: 2 },
     gold: 150,
+    reforgeAnchor: 'obsidian',
   },
   obsidian_plate: {
     key: 'obsidian_plate',
@@ -108,6 +109,7 @@ export const RECIPES: Record<string, RecipeDef> = {
     result: { kind: 'gear', key: 'obsidian_plate' },
     materials: { obsidian: 3, frost_quartz: 2, iron_bar: 2 },
     gold: 130,
+    reforgeAnchor: 'obsidian',
   },
   resin_trinket: {
     key: 'resin_trinket',
@@ -115,5 +117,6 @@ export const RECIPES: Record<string, RecipeDef> = {
     result: { kind: 'gear', key: 'resin_trinket' },
     materials: { amber_resin: 3, crystals: 2 },
     gold: 100,
+    reforgeAnchor: 'amber_resin',
   },
 };

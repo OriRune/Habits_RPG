@@ -5,6 +5,7 @@ import { type Habit, isCompletedOn, effectiveStatus, weekCompletions, currentStr
 import { habitHealth, type HabitWarning, type HabitActionCode } from '@/engine/habitHealth';
 import { toISODate, parseISODate, addDays } from '@/engine/date';
 import { useGameStore } from '@/store/useGameStore';
+import { useIsCoarsePointer } from '@/hooks/useIsCoarsePointer';
 import { statCrest } from '@/lib/sprites';
 import { Sprite } from '@/components/ui/Sprite';
 import { cn } from '@/lib/cn';
@@ -48,6 +49,7 @@ export function HabitCard({
   // Escape hatch: "Log older entry…" opens a full-range DatePicker for genuine backdated corrections.
   const [logOlderOpen, setLogOlderOpen] = useState(false);
   const [olderDate, setOlderDate] = useState<string | null>(null);
+  const coarse = useIsCoarsePointer();
 
   const done = isCompletedOn(habit, viewDate);
   const warnings = habitHealth(habit, viewDate);
@@ -75,6 +77,38 @@ export function HabitCard({
     }
   }
 
+  // Shared option list — rendered inside an absolute dropdown (mouse) or a bottom-sheet Modal (touch).
+  const menuItems = (
+    <>
+      <MenuItem icon={Pencil} label="Edit…" onClick={() => { setEditOpen(true); setMenuOpen(false); }} />
+      {onViewHistory && (
+        <MenuItem icon={BarChart3} label="View History" onClick={() => { onViewHistory(habit.id); setMenuOpen(false); }} />
+      )}
+      {!retired && !suspended && (
+        <MenuItem
+          icon={Star}
+          label={habit.focus ? 'Remove focus' : 'Mark as focus'}
+          onClick={() => { setHabitFocus(habit.id, !habit.focus); setMenuOpen(false); }}
+        />
+      )}
+      {done && (
+        <MenuItem icon={Undo2} label="Mark incomplete" onClick={() => { uncompleteHabit(habit.id, viewDate); setMenuOpen(false); }} />
+      )}
+      {!retired && (
+        <MenuItem icon={CalendarClock} label="Log older entry…" onClick={() => { setLogOlderOpen(true); setMenuOpen(false); }} />
+      )}
+      {suspended || retired ? (
+        <MenuItem icon={Play} label="Reactivate" onClick={() => { reactivateHabit(habit.id); setMenuOpen(false); }} />
+      ) : (
+        <MenuItem icon={Pause} label="Suspend…" onClick={() => { setSuspendOpen(true); setMenuOpen(false); }} />
+      )}
+      {!retired && (
+        <MenuItem icon={Archive} label="Retire" onClick={() => { retireHabit(habit.id); setMenuOpen(false); }} />
+      )}
+      <MenuItem icon={Trash2} label="Delete" danger onClick={() => { setDeleteOpen(true); setMenuOpen(false); }} />
+    </>
+  );
+
   return (
     <>
       <div
@@ -92,15 +126,15 @@ export function HabitCard({
           onClick={onSeal}
           disabled={suspended || retired}
           className={cn(
-            'group flex h-9 w-9 shrink-0 items-center justify-center rounded-full border-2 transition',
+            'group flex h-11 w-11 shrink-0 items-center justify-center rounded-full border-2 transition',
             done
               ? 'border-gold-deep bg-gradient-to-b from-gold-bright to-gold-deep text-wood-900 shadow-gold-sm enabled:hover:from-gold'
               : 'border-ink-light/50 enabled:hover:border-gold-deep enabled:hover:bg-gold/10 disabled:opacity-50',
           )}
           aria-label={done ? 'Mark incomplete' : 'Complete habit'}
         >
-          {done && <Check className="h-5 w-5 group-enabled:group-hover:hidden" />}
-          {done && <Undo2 className="hidden h-4 w-4 group-enabled:group-hover:block" />}
+          {done && <Check className={cn('h-5 w-5', coarse ? 'hidden' : 'group-enabled:group-hover:hidden')} />}
+          {done && <Undo2 className={cn('h-4 w-4', coarse ? 'block' : 'hidden group-enabled:group-hover:block')} />}
         </button>
 
         <Sprite
@@ -168,43 +202,25 @@ export function HabitCard({
         <div className="relative shrink-0">
           <button
             onClick={() => setMenuOpen((o) => !o)}
-            className="text-ink-light/60 hover:text-ink"
+            className="-m-1.5 p-1.5 text-ink-light/60 hover:text-ink"
             aria-label="Habit options"
           >
             <MoreVertical className="h-4 w-4" />
           </button>
           {menuOpen && (
-            <>
-              <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
-              <div className="absolute right-0 top-6 z-20 w-40 overflow-hidden rounded-md border border-gold-deep/40 bg-parchment-100 shadow-gold-sm">
-                <MenuItem icon={Pencil} label="Edit…" onClick={() => { setEditOpen(true); setMenuOpen(false); }} />
-                {onViewHistory && (
-                  <MenuItem icon={BarChart3} label="View History" onClick={() => { onViewHistory(habit.id); setMenuOpen(false); }} />
-                )}
-                {!retired && !suspended && (
-                  <MenuItem
-                    icon={Star}
-                    label={habit.focus ? 'Remove focus' : 'Mark as focus'}
-                    onClick={() => { setHabitFocus(habit.id, !habit.focus); setMenuOpen(false); }}
-                  />
-                )}
-                {done && (
-                  <MenuItem icon={Undo2} label="Mark incomplete" onClick={() => { uncompleteHabit(habit.id, viewDate); setMenuOpen(false); }} />
-                )}
-                {!retired && (
-                  <MenuItem icon={CalendarClock} label="Log older entry…" onClick={() => { setLogOlderOpen(true); setMenuOpen(false); }} />
-                )}
-                {suspended || retired ? (
-                  <MenuItem icon={Play} label="Reactivate" onClick={() => { reactivateHabit(habit.id); setMenuOpen(false); }} />
-                ) : (
-                  <MenuItem icon={Pause} label="Suspend…" onClick={() => { setSuspendOpen(true); setMenuOpen(false); }} />
-                )}
-                {!retired && (
-                  <MenuItem icon={Archive} label="Retire" onClick={() => { retireHabit(habit.id); setMenuOpen(false); }} />
-                )}
-                <MenuItem icon={Trash2} label="Delete" danger onClick={() => { setDeleteOpen(true); setMenuOpen(false); }} />
-              </div>
-            </>
+            coarse ? (
+              // On touch, render the options as a bottom sheet (Modal is bottom-anchored on phones).
+              <Modal title="Habit options" onClose={() => setMenuOpen(false)}>
+                {menuItems}
+              </Modal>
+            ) : (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
+                <div className="absolute right-0 top-6 z-20 w-40 overflow-hidden rounded-md border border-gold-deep/40 bg-parchment-100 shadow-gold-sm">
+                  {menuItems}
+                </div>
+              </>
+            )
           )}
         </div>
       </div>

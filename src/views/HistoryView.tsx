@@ -50,7 +50,7 @@ export function HistoryView({
         {habits.length > 0 && (
           <>
             <AccountSummary habits={habits} />
-            <DayOfWeekChart habits={habits} />
+            <DayOfWeekChart />
           </>
         )}
 

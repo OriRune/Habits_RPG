@@ -29,7 +29,7 @@ import {
   damageBeastById,
 } from '@/engine/forest';
 import { mulberry32, floorSeed } from '@/engine/rng';
-import { rollBoonChoices } from '@/content/boons';
+import { rollBoonChoices } from '@/engine/crawl';
 import { MINE_MONSTERS } from '@/content/mining';
 import { FOREST_BEASTS } from '@/content/forest';
 import {

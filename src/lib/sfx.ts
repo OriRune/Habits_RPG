@@ -19,6 +19,8 @@
 //
 // Adding cues: extend SfxCue and add a matching entry to _CUES.
 
+import type { MineBandId } from '@/engine/crawlBiomes';
+
 export type SfxCue =
   // ── Ancient Library ────────────────────────────────
   /** Two-note ascending chime — a round of glyphs memorised correctly. */
@@ -69,6 +71,8 @@ export type SfxCue =
   | 'playerHurt'
   /** Subtle tick for turn boundary. */
   | 'turnEnd'
+  /** Brief two-note ascending ping — a mid-match secondary objective secured (not the match-won fanfare). */
+  | 'tacticsObjective'
   /** Rising triumphant fanfare — battle won. */
   | 'victory'
   /** Descending somber tones — battle lost. */
@@ -151,7 +155,16 @@ export type SfxCue =
   /** Stately two-note sine chord + coin jingle — spoils banked safely. */
   | 'dungeonBank'
   /** Deep whoosh + sub-bass boom — descending to the next floor. */
-  | 'dungeonDescend';
+  | 'dungeonDescend'
+  // ── The Forge ──────────────────────────────────────────────────────────────
+  /** Rising sawtooth + noise — bellows stoking the fire while held. */
+  | 'forgeStoke'
+  /** Bright hammer-on-anvil ring — an accurate strike lands. */
+  | 'forgeStrikeGood'
+  /** Dull clang — a strike lands off the sweet-zone. */
+  | 'forgeStrikeMiss'
+  /** Short triumphant fanfare — the piece is finished (result reveal). */
+  | 'forgeComplete';
 
 // ── Module-level singletons ────────────────────────────────────────────────────
 
@@ -294,7 +307,7 @@ function _noise(
  */
 function _buildAmbient(
   ctx: AudioContext,
-  bandId: string,
+  bandId: MineBandId,
   dest: AudioNode,
 ): (OscillatorNode | AudioBufferSourceNode)[] {
   const nodes: (OscillatorNode | AudioBufferSourceNode)[] = [];
@@ -599,6 +612,30 @@ const _CUES: Record<SfxCue, (ctx: AudioContext) => void> = {
   /** Turn boundary — short, quiet sine blip. */
   turnEnd(ctx) {
     _osc(ctx, 'sine', 490, 380, 0.08, 0.12, 0.005);
+  },
+
+  /**
+   * Objective secured (mid-match) — a brief two-note ascending triangle ping.
+   * Deliberately shorter and simpler than the `victory` fanfare so a completed
+   * side-objective never reads as the match being won.
+   */
+  tacticsObjective(ctx) {
+    const t = ctx.currentTime;
+    const notes = [659, 988]; // E5 → B5, a rising perfect-fifth ping
+    notes.forEach((freq, i) => {
+      const t0 = t + i * 0.08;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.linearRampToValueAtTime(0.20, t0 + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.18);
+      osc.connect(gain);
+      gain.connect(_masterGain!);
+      osc.start(t0);
+      osc.stop(t0 + 0.22);
+    });
   },
 
   /**
@@ -1015,6 +1052,48 @@ const _CUES: Record<SfxCue, (ctx: AudioContext) => void> = {
     _osc(ctx, 'sawtooth', 65, 28, 0.65, 0.18, 0.030);    // cavernous groan
     _osc(ctx, 'sine', 100, 38, 0.52, 0.12, 0.020);       // sub-bass resonance
   },
+
+  // ── The Forge ──────────────────────────────────────────────────────────────
+  // Templated from the Armory Break cue set (armoryCharge / armoryLockCrack /
+  // armoryLockMiss / armoryFinish) — same synth vocabulary, forge naming.
+
+  /** Rising sawtooth + noise — bellows stoking, played on stoke start. */
+  forgeStoke(ctx) {
+    _noise(ctx, 120, 700, 0.90, 0.22, 'bandpass', 2.8);
+    _osc(ctx, 'sawtooth', 55, 180, 0.90, 0.14, 0.05);
+  },
+
+  /** Bright metallic ring — an accurate hammer strike (acc > 0.5). */
+  forgeStrikeGood(ctx) {
+    _osc(ctx, 'square', 260, 80, 0.20, 0.40, 0.004);
+    _noise(ctx, 800, 180, 0.15, 0.28, 'bandpass', 2.0);
+    _osc(ctx, 'sine', 520, 160, 0.28, 0.18, 0.003);
+  },
+
+  /** Dull clang — a strike off the sweet-zone (acc ≤ 0.5). */
+  forgeStrikeMiss(ctx) {
+    _osc(ctx, 'triangle', 110, 42, 0.22, 0.35, 0.005);
+    _noise(ctx, 180, 52, 0.15, 0.16, 'lowpass', 0.8);
+  },
+
+  /** Short triumphant fanfare — the piece is finished (result reveal). */
+  forgeComplete(ctx) {
+    const t = ctx.currentTime;
+    [330, 415, 523, 880].forEach((freq, i) => {
+      const t0 = t + i * 0.07;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.linearRampToValueAtTime(0.30, t0 + 0.010);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
+      osc.connect(gain);
+      gain.connect(_masterGain!);
+      osc.start(t0);
+      osc.stop(t0 + 0.28);
+    });
+  },
 };
 
 // ── Public API ─────────────────────────────────────────────────────────────────
@@ -1165,7 +1244,7 @@ export function spikeDrone(): void {
  * Safe to call before the AudioContext is resumed — nodes are created and will
  * begin emitting audio once the context is resumed by a user gesture.
  */
-export function startMineAmbient(bandId: string): void {
+export function startMineAmbient(bandId: MineBandId): void {
   if (bandId === _ambBandId) return;
   const ctx = getCtx();
 
@@ -1192,7 +1271,10 @@ export function startMineAmbient(bandId: string): void {
   _ambNodes = _buildAmbient(ctx, bandId, ag);
 
   const t = ctx.currentTime;
-  ag.gain.linearRampToValueAtTime(_muted ? 0.0001 : AMB_GAIN, t + AMB_FADE_S);
+  // Ramp to full ambient gain unconditionally — the master gain owns mute, so an
+  // ambient started while muted must not pin its own gain low (it would stay silent
+  // after setMuted(false), which only restores the master gain).
+  ag.gain.linearRampToValueAtTime(AMB_GAIN, t + AMB_FADE_S);
 }
 
 /**

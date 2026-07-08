@@ -57,6 +57,13 @@ export interface Habit {
    */
   lastEnergyGrantISO?: string;
   /**
+   * ISO date labor was last granted to the Homestead for this habit. Uses its OWN marker
+   * (not the energy one — labor has no full-energy gate), living on the habit so it survives
+   * an uncomplete: a same-day complete→uncomplete→re-complete cannot re-mint labor (HABIT-04).
+   * Never cleared on uncomplete.
+   */
+  lastLaborGrantISO?: string;
+  /**
    * The streak-milestone bonus last paid out for this habit (day-scheduled only). Lets
    * uncomplete claw back the exact gold/freezes and blocks a same-day re-mint of the
    * milestone (deferred from item 3.4). Never cleared on uncomplete.
@@ -290,4 +297,32 @@ export function resolveCompletion(
   });
 
   return { xp, recovery };
+}
+
+// ---------------------------------------------------------------------------
+// Habit-streak minigame-gold multiplier (§6.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * The raw counts behind the streak-bonus multiplier: how many habits are streak-tracked
+ * (active, scheduled) and how many of those are on a healthy (streak ≥ 3) run. Surfaced to the
+ * UI so the streak-bonus chip can show "N of M habits on streak" alongside the multiplier.
+ * as_needed habits are excluded — they never break streak.
+ */
+export function habitBonusCounts(habits: Habit[]): { tracked: number; healthy: number } {
+  const tracked = habits.filter((h) => h.status === 'active' && h.frequency !== 'as_needed');
+  const healthy = tracked.filter((h) => h.streak >= 3).length;
+  return { tracked: tracked.length, healthy };
+}
+
+/**
+ * The habit-streak minigame-gold multiplier (1.0–1.25) from the current active habits.
+ * healthy = fraction of tracked habits with streak ≥ 3.
+ * Bonus tiers: ≥100% → 1.25, ≥75% → 1.15, ≥50% → 1.10, else → 1.0.
+ */
+export function habitStreakBonus(habits: Habit[]): number {
+  const { tracked, healthy } = habitBonusCounts(habits);
+  if (tracked === 0) return 1;
+  const frac = healthy / tracked;
+  return frac >= 1 ? 1.25 : frac >= 0.75 ? 1.15 : frac >= 0.5 ? 1.1 : 1;
 }

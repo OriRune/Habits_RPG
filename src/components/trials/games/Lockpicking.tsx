@@ -7,21 +7,16 @@ import { useGameStore } from '@/store/useGameStore';
 import * as sfx from '@/lib/sfx';
 import {
   generateLocks,
-  allowedTurn,
-  canOpen,
-  breakTime,
   lockpickingScore,
   NUM_LOCKS,
   PICK_BUDGET,
   PICK_MIN_DEG,
   PICK_MAX_DEG,
-  CYLINDER_OPEN_DEG,
-  CYLINDER_TURN_SPEED,
-  CYLINDER_RETURN_SPEED,
-  PICK_KEY_SPEED,
   LOCK_LABELS,
   type LockConfig,
+  type LockpickEvent,
 } from '@/engine/trials/lockpicking';
+import { useLockpickLoop } from '@/hooks/useLockpickLoop';
 
 export interface LockpickingProps {
   onFinish: (score: number) => void;
@@ -62,6 +57,26 @@ function warmthGlowColor(warmth: number): string {
   const bv = Math.round(a[2] + (b[2] - a[2]) * f);
   const al = (a[3] + (b[3] - a[3]) * f).toFixed(2);
   return `rgba(${r},${g},${bv},${al})`;
+}
+
+/**
+ * Derive the status hint from the sim state (view concern — the engine emits no
+ * text). Mirrors the branch-by-branch hints of the original loop.
+ */
+function deriveHint(state: { phase: Phase; warmth: number; jamming: boolean }): string | null {
+  switch (state.phase) {
+    case 'revealing': return 'Out of picks!';
+    case 'breaking':  return 'Pick snapped!';
+    case 'turning':
+      if (state.jamming) {
+        if (state.warmth > 0.65) return 'Getting warmer…';
+        if (state.warmth > 0.3)  return 'Keep looking…';
+        return 'Wrong angle';
+      }
+      return state.warmth > 0.9 ? 'Almost there!' : null;
+    default:
+      return null;
+  }
 }
 
 // ── SVG pieces ────────────────────────────────────────────────────────────────
@@ -313,49 +328,51 @@ export function Lockpicking({ onFinish }: LockpickingProps) {
 
   // Locks are generated once per session and held in a stable ref.
   // generateLocks accepts any () => number RNG — swap for a seeded generator here if needed.
-  const locks = useRef<LockConfig[]>(null as unknown as LockConfig[]);
-  if (!locks.current) locks.current = generateLocks(Math.random, level, dxLevel);
+  const locksRef = useRef<LockConfig[]>(null as unknown as LockConfig[]);
+  if (!locksRef.current) locksRef.current = generateLocks(Math.random, level, dxLevel);
 
-  // ── Render state ──────────────────────────────────────────────────────────
-  const [pickDeg, setPickDeg]                 = useState(90);
-  const [cylinderDeg, setCylinderDeg]         = useState(0);
-  const [shakeX, setShakeX]                   = useState(0);
-  const [shakeY, setShakeY]                   = useState(0);
-  const [warmth, setWarmth]                   = useState(0);
-  const [idleProximity, setIdleProximity]     = useState(0); // passive proximity hint
-  const [stressRatio, setStressRatio]         = useState(0); // jam timer fraction → pick stress
-  const [flashType, setFlashType]             = useState<FlashType>(null);
-  const [platePulse, setPlatePulse]           = useState(false);
-  const [pickBroken, setPickBroken]           = useState(false);
-  const [phase, setPhase]                     = useState<Phase>('idle');
-  const [currentLock, setCurrentLock]         = useState(0);
-  const [picksRemaining, setPicksRemaining]   = useState(PICK_BUDGET);
-  const [locksOpened, setLocksOpened]         = useState(0);
-  const [lockResults, setLockResults]         = useState<('open' | 'failed' | null)[]>(
-    () => Array(NUM_LOCKS).fill(null),
-  );
-  const [hint, setHint]                       = useState<string | null>(null);
+  // ── View-only effect state (not part of the sim) ──────────────────────────
+  const [shakeX, setShakeX]         = useState(0);
+  const [shakeY, setShakeY]         = useState(0);
+  const [flashType, setFlashType]   = useState<FlashType>(null);
+  const [platePulse, setPlatePulse] = useState(false);
+  const [pickBroken, setPickBroken] = useState(false);
+  const [ended, setEnded]           = useState(false); // true once onFinish has fired
 
-  // ── Refs (read directly in RAF loop to avoid stale closures) ─────────────
-  const pickDegRef          = useRef(90);
-  const cylinderDegRef      = useRef(0);
-  const torqueHeldRef       = useRef(false);
-  const pickKeyDirRef       = useRef(0);
-  const jamTimeRef          = useRef(0);
-  const phaseRef            = useRef<Phase>('idle');
-  const currentLockRef      = useRef(0);
-  const picksRemainingRef   = useRef(PICK_BUDGET);
-  const locksOpenedRef      = useRef(0);
-  const rafRef              = useRef<number | null>(null);
-  const lastTsRef           = useRef<number | null>(null);
-  const doneRef             = useRef(false);
-  const lockAreaRef         = useRef<HTMLDivElement>(null);
-  const lastScrapeRef       = useRef(0); // timestamp of last scrape SFX
+  const lockAreaRef   = useRef<HTMLDivElement>(null);
+  const lastScrapeRef = useRef(0); // timestamp of last scrape SFX
+  const doneRef       = useRef(false);
 
-  phaseRef.current          = phase;
-  currentLockRef.current    = currentLock;
-  picksRemainingRef.current = picksRemaining;
-  locksOpenedRef.current    = locksOpened;
+  // ── Finish helper (guards against a double-submit) ────────────────────────
+  const finish = useCallback((score: number) => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    setEnded(true);
+    onFinish(score);
+  }, [onFinish]);
+
+  // ── SFX event bridge — the engine emits tags; the view maps them to sound ──
+  const handleEvent = useCallback((tag: LockpickEvent) => {
+    if (tag === 'jam') {
+      // Throttled scrape SFX — fire at most once per ~350 ms.
+      const now = performance.now();
+      if (now - lastScrapeRef.current > 350) {
+        sfx.play('lockScrape');
+        lastScrapeRef.current = now;
+      }
+    } else if (tag === 'snap') {
+      lastScrapeRef.current = 0;
+    }
+  }, []);
+
+  const { state, controls } = useLockpickLoop(locksRef.current, handleEvent);
+  const { setPickDir, pressTorque, releaseTorque, aimPick } = controls;
+
+  const {
+    phase, pickDeg, cylinderDeg, warmth, idleProximity, stressRatio,
+    currentLock, picksRemaining, lockResults,
+  } = state;
+  const isDone = state.done || ended;
 
   // ── Flash + plate pulse effects on phase transitions ─────────────────────
   useEffect(() => {
@@ -379,271 +396,56 @@ export function Lockpicking({ onFinish }: LockpickingProps) {
     }
   }, [phase]);
 
-  // ── Finish helper ─────────────────────────────────────────────────────────
-  const finish = useCallback((opened: number, picks: number) => {
-    if (doneRef.current) return;
-    doneRef.current = true;
-    phaseRef.current = 'done';
-    setPhase('done');
-    onFinish(lockpickingScore(opened, picks));
-  }, [onFinish]);
+  // ── Shake — random jitter while jamming (view-only; uses Math.random) ─────
+  // Runs once per new sim state (per frame). setShake* does not change `state`,
+  // so the effect never re-triggers itself — no render loop.
+  useEffect(() => {
+    if (state.jamming) {
+      const severity = 1 - state.warmth;
+      const amp = 8 * Math.pow(severity, 0.7);
+      setShakeX((Math.random() * 2 - 1) * amp);
+      setShakeY((Math.random() * 2 - 1) * amp * 0.6);
+    } else {
+      setShakeX(0);
+      setShakeY(0);
+    }
+  }, [state]);
+
+  // ── Finish when the final lock opens (engine sets state.done) ─────────────
+  useEffect(() => {
+    if (state.done) finish(state.score);
+  }, [state.done, state.score, finish]);
 
   // ── Sweet-spot reveal on terminal failure ────────────────────────────────
   useEffect(() => {
     if (phase !== 'revealing') return;
-    setHint('Out of picks!');
-    // Auto-advance after 1.6s; player can skip early via the Continue button
-    const t = setTimeout(() => finish(locksOpenedRef.current, 0), 1600);
+    // Auto-advance after 1.6s; player can skip early via the Continue button.
+    const t = setTimeout(() => finish(lockpickingScore(state.locksOpened, 0)), 1600);
     return () => clearTimeout(t);
-  }, [phase, finish]);
+  }, [phase, state.locksOpened, finish]);
 
-  // ── RAF loop ──────────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (phase === 'done' || phase === 'revealing') return;
-
-    lastTsRef.current = null;
-
-    const loop = (ts: number) => {
-      if (phaseRef.current === 'done') return;
-
-      if (lastTsRef.current === null) lastTsRef.current = ts;
-      const dt = Math.min((ts - lastTsRef.current) / 1000, 0.05);
-      lastTsRef.current = ts;
-
-      const ph = phaseRef.current;
-
-      // ── Breaking: cylinder snaps back ────────────────────────────────────
-      if (ph === 'breaking') {
-        cylinderDegRef.current = Math.max(0, cylinderDegRef.current - CYLINDER_RETURN_SPEED * 2.5 * dt);
-        setCylinderDeg(cylinderDegRef.current);
-        if (cylinderDegRef.current <= 0) {
-          // Out of picks — reveal the sweet spot briefly, then finish
-          if (picksRemainingRef.current <= 0) {
-            phaseRef.current = 'revealing';
-            setPhase('revealing');
-            setShakeX(0);
-            setShakeY(0);
-            setWarmth(0);
-            setStressRatio(0);
-            return; // RAF stops here; the 'revealing' useEffect drives the timeout
-          }
-          phaseRef.current = 'idle';
-          setPhase('idle');
-          setHint(null);
-          setWarmth(0);
-          setStressRatio(0);
-          setShakeX(0);
-          setShakeY(0);
-        }
-        rafRef.current = requestAnimationFrame(loop);
-        return;
-      }
-
-      // ── Opening: cylinder sweeps to 90° ──────────────────────────────────
-      if (ph === 'opening') {
-        cylinderDegRef.current = Math.min(
-          CYLINDER_OPEN_DEG,
-          cylinderDegRef.current + CYLINDER_TURN_SPEED * 2.5 * dt,
-        );
-        setCylinderDeg(cylinderDegRef.current);
-        if (cylinderDegRef.current >= CYLINDER_OPEN_DEG) {
-          const nextOpened = locksOpenedRef.current + 1;
-          locksOpenedRef.current = nextOpened;
-          setLocksOpened(nextOpened);
-          setLockResults((prev) => {
-            const copy = [...prev];
-            copy[currentLockRef.current] = 'open';
-            return copy;
-          });
-          if (nextOpened >= NUM_LOCKS) {
-            finish(nextOpened, picksRemainingRef.current);
-          } else {
-            const nextLock = currentLockRef.current + 1;
-            currentLockRef.current = nextLock;
-            setCurrentLock(nextLock);
-            cylinderDegRef.current = 0;
-            setCylinderDeg(0);
-            jamTimeRef.current = 0;
-            // Reset pick to center so the next lock starts fair
-            pickDegRef.current = 90;
-            setPickDeg(90);
-            phaseRef.current = 'idle';
-            setPhase('idle');
-            setHint(null);
-            setWarmth(0);
-            setIdleProximity(0);
-            setStressRatio(0);
-          }
-        }
-        rafRef.current = requestAnimationFrame(loop);
-        return;
-      }
-
-      // ── Idle / turning ────────────────────────────────────────────────────
-
-      if (pickKeyDirRef.current !== 0) {
-        pickDegRef.current = clamp(
-          pickDegRef.current + pickKeyDirRef.current * PICK_KEY_SPEED * dt,
-          PICK_MIN_DEG,
-          PICK_MAX_DEG,
-        );
-        setPickDeg(pickDegRef.current);
-      }
-
-      const lock = locks.current[currentLockRef.current];
-      const turn = allowedTurn(pickDegRef.current, lock);
-      const targetCylinder = turn * CYLINDER_OPEN_DEG;
-
-      if (torqueHeldRef.current) {
-        phaseRef.current = 'turning';
-        setPhase('turning');
-
-        if (cylinderDegRef.current < targetCylinder) {
-          cylinderDegRef.current = Math.min(
-            targetCylinder,
-            cylinderDegRef.current + CYLINDER_TURN_SPEED * dt,
-          );
-        } else if (cylinderDegRef.current > targetCylinder) {
-          cylinderDegRef.current = Math.max(
-            targetCylinder,
-            cylinderDegRef.current - CYLINDER_RETURN_SPEED * dt,
-          );
-        }
-        setCylinderDeg(cylinderDegRef.current);
-        setWarmth(turn);
-
-        const isJamming = turn < 1 && cylinderDegRef.current >= targetCylinder - 0.5;
-
-        if (isJamming) {
-          jamTimeRef.current += dt;
-
-          const bt = breakTime(pickDegRef.current, lock, currentLockRef.current);
-          const sr = Math.min(jamTimeRef.current / bt, 1);
-          setStressRatio(sr);
-
-          // Throttled scrape SFX — fire at most once per ~350 ms
-          const now = performance.now();
-          if (now - lastScrapeRef.current > 350) {
-            sfx.play('lockScrape');
-            lastScrapeRef.current = now;
-          }
-
-          const severity = 1 - turn;
-          const amp = 8 * Math.pow(severity, 0.7);
-          setShakeX((Math.random() * 2 - 1) * amp);
-          setShakeY((Math.random() * 2 - 1) * amp * 0.6);
-
-          if (jamTimeRef.current > bt) {
-            jamTimeRef.current = 0;
-            lastScrapeRef.current = 0;
-            setShakeX(0);
-            setShakeY(0);
-            setWarmth(0);
-            setStressRatio(0);
-            setIdleProximity(0);
-            const newPicks = picksRemainingRef.current - 1;
-            picksRemainingRef.current = newPicks;
-            setPicksRemaining(newPicks);
-            torqueHeldRef.current = false;
-
-            if (newPicks <= 0) {
-              setLockResults((prev) => {
-                const copy = [...prev];
-                copy[currentLockRef.current] = 'failed';
-                return copy;
-              });
-            }
-            // Always enter breaking phase — finish() fires when the cylinder returns (if 0 picks)
-            phaseRef.current = 'breaking';
-            setPhase('breaking');
-            setHint('Pick snapped!');
-          } else {
-            if (turn > 0.65) setHint('Getting warmer…');
-            else if (turn > 0.3) setHint('Keep looking…');
-            else setHint('Wrong angle');
-          }
-        } else {
-          setShakeX(0);
-          setShakeY(0);
-          setStressRatio(0);
-          jamTimeRef.current = 0;
-
-          if (canOpen(pickDegRef.current, lock) && cylinderDegRef.current >= CYLINDER_OPEN_DEG - 1) {
-            torqueHeldRef.current = false;
-            phaseRef.current = 'opening';
-            setPhase('opening');
-            setHint(null);
-            setWarmth(0);
-          } else if (turn > 0.9) {
-            setHint('Almost there!');
-          } else {
-            setHint(null);
-          }
-        }
-      } else {
-        // Idle — passive proximity signal (faint glow when pick is in the turn zone)
-        setIdleProximity(turn);
-
-        phaseRef.current = 'idle';
-        setPhase('idle');
-        jamTimeRef.current = 0;
-        setShakeX(0);
-        setShakeY(0);
-        setWarmth(0);
-        setStressRatio(0);
-        setHint(null);
-
-        if (cylinderDegRef.current > 0) {
-          cylinderDegRef.current = Math.max(0, cylinderDegRef.current - CYLINDER_RETURN_SPEED * dt);
-          setCylinderDeg(cylinderDegRef.current);
-        }
-      }
-
-      rafRef.current = requestAnimationFrame(loop);
-    };
-
-    rafRef.current = requestAnimationFrame(loop);
-    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, [phase === 'done' || phase === 'revealing', finish]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ── Keyboard ──────────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (phase === 'done') return;
-    const down = (e: KeyboardEvent) => {
-      if (e.code === 'ArrowLeft'  || e.code === 'KeyA') { e.preventDefault(); pickKeyDirRef.current = -1; }
-      else if (e.code === 'ArrowRight' || e.code === 'KeyD') { e.preventDefault(); pickKeyDirRef.current = 1; }
-      else if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); torqueHeldRef.current = true; }
-    };
-    const up = (e: KeyboardEvent) => {
-      if (e.code === 'ArrowLeft' || e.code === 'KeyA' || e.code === 'ArrowRight' || e.code === 'KeyD') pickKeyDirRef.current = 0;
-      else if (e.code === 'Space' || e.code === 'ArrowUp') torqueHeldRef.current = false;
-    };
-    window.addEventListener('keydown', down);
-    window.addEventListener('keyup', up);
-    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
-  }, [phase]);
+  // ── Hint text — derived from the sim (view concern) ───────────────────────
+  const hint = deriveHint(state);
 
   // ── Pointer (mouse / touch) ───────────────────────────────────────────────
   const handlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (phaseRef.current === 'done' || phaseRef.current === 'revealing') return;
+    if (isDone || phase === 'revealing') return;
     const rect = lockAreaRef.current?.getBoundingClientRect();
     if (!rect) return;
     const deg = pointerToDeg(rect.left + rect.width / 2, rect.top + rect.height / 2, e.clientX, e.clientY);
-    pickDegRef.current = deg;
-    setPickDeg(deg);
-  }, []);
+    aimPick(deg);
+  }, [aimPick, isDone, phase]);
 
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
-    torqueHeldRef.current = true;
+    pressTorque();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }, []);
+  }, [pressTorque]);
 
-  const handlePointerUp = useCallback(() => { torqueHeldRef.current = false; }, []);
+  const handlePointerUp = useCallback(() => { releaseTorque(); }, [releaseTorque]);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
-  const isDone = phase === 'done';
   const PLATE    = 200;
   const CENTER   = PLATE / 2;
   const CYL_SIZE = 88;
@@ -651,7 +453,7 @@ export function Lockpicking({ onFinish }: LockpickingProps) {
 
   const cylinderCssRot = -cylinderDeg;
 
-  const torqueActive = phase === 'turning' || (torqueHeldRef.current && phase !== 'breaking');
+  const torqueActive = phase === 'turning' || (state.torqueHeld && phase !== 'breaking');
   const glowColor    = warmthGlowColor(warmth);
   const glowRadius   = 8 + warmth * 18;
   const cylinderGlow = torqueActive && warmth > 0
@@ -743,9 +545,9 @@ export function Lockpicking({ onFinish }: LockpickingProps) {
           <ArcTicks center={CENTER} radius={CENTER - 6} />
 
           {/* Sweet-spot reveal — shown for ~1.6s after all picks are spent */}
-          {phase === 'revealing' && (
+          {phase === 'revealing' && !isDone && (
             <SweetSpotReveal
-              lock={locks.current[currentLock]}
+              lock={locksRef.current[currentLock]}
               center={CENTER}
               radius={CENTER - 6}
             />
@@ -857,9 +659,9 @@ export function Lockpicking({ onFinish }: LockpickingProps) {
         <div className="flex items-center gap-3">
           <button
             className="h-12 w-12 rounded-lg border-2 border-gold-deep/70 bg-wood-800 font-display text-base font-bold text-parchment-200 shadow-wood active:scale-95 touch-none"
-            onPointerDown={(e) => { e.preventDefault(); pickKeyDirRef.current = -1; }}
-            onPointerUp={() => { pickKeyDirRef.current = 0; }}
-            onPointerLeave={() => { pickKeyDirRef.current = 0; }}
+            onPointerDown={(e) => { e.preventDefault(); setPickDir(-1); }}
+            onPointerUp={() => { setPickDir(0); }}
+            onPointerLeave={() => { setPickDir(0); }}
             disabled={phase === 'revealing'}
             aria-hidden={phase === 'revealing'}
             style={phase === 'revealing' ? { opacity: 0.2, pointerEvents: 'none' } : undefined}
@@ -869,24 +671,24 @@ export function Lockpicking({ onFinish }: LockpickingProps) {
             className="h-12 flex-1 rounded-lg border-2 border-gold-deep bg-gradient-to-b from-gold-bright to-gold-deep font-display text-sm font-black text-wood-900 shadow-gold active:scale-95 touch-none"
             onPointerDown={(e) => {
               e.preventDefault();
-              if (phaseRef.current === 'revealing') {
+              if (phase === 'revealing') {
                 // Skip the reveal hold and go straight to the result screen
-                finish(locksOpenedRef.current, 0);
+                finish(lockpickingScore(state.locksOpened, 0));
                 return;
               }
-              torqueHeldRef.current = true;
+              pressTorque();
             }}
-            onPointerUp={() => { torqueHeldRef.current = false; }}
-            onPointerLeave={() => { torqueHeldRef.current = false; }}
+            onPointerUp={() => { releaseTorque(); }}
+            onPointerLeave={() => { releaseTorque(); }}
           >
             {phase === 'revealing' ? 'Continue →' : 'Turn Lock'}
           </button>
 
           <button
             className="h-12 w-12 rounded-lg border-2 border-gold-deep/70 bg-wood-800 font-display text-base font-bold text-parchment-200 shadow-wood active:scale-95 touch-none"
-            onPointerDown={(e) => { e.preventDefault(); pickKeyDirRef.current = 1; }}
-            onPointerUp={() => { pickKeyDirRef.current = 0; }}
-            onPointerLeave={() => { pickKeyDirRef.current = 0; }}
+            onPointerDown={(e) => { e.preventDefault(); setPickDir(1); }}
+            onPointerUp={() => { setPickDir(0); }}
+            onPointerLeave={() => { setPickDir(0); }}
             disabled={phase === 'revealing'}
             aria-hidden={phase === 'revealing'}
             style={phase === 'revealing' ? { opacity: 0.2, pointerEvents: 'none' } : undefined}

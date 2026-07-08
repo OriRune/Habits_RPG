@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import { type CombatStats, emptyCombatStats, combatXpForWin, dungeonCombatStatXp } from '@/engine/combatStats';
-import { type CombatAction, playerAction } from '@/engine/combat';
+import { type CombatAction } from '@/engine/combat';
 import { getWeapon } from '@/engine/weapons';
 import { getRelic, rollBoons, rollCurse } from '@/engine/relics';
 import type { StatId } from '@/engine/stats';
@@ -15,17 +15,20 @@ import type { GameState, DungeonRunSummary } from '../shared';
 import {
   runStatBonuses,
   fighterFor,
-  topUpFighter,
+  resolveBattleAction,
+  cloneEarnings,
   applyReward,
   grantStatXp,
+  enterRoom,
+  energySpentPatch,
+} from '../shared';
+import {
   boonMaxTier,
   offerBoon,
   resolveCurrentNode,
   currentRoom,
-  enterRoom,
   finishRun,
-  energySpentPatch,
-} from '../shared';
+} from '@/engine/dungeonRun';
 import { freshEarningsLedger } from '@/engine/balance';
 
 const FLOOR_LOSS_KEEP = 0.25;
@@ -187,13 +190,7 @@ export const createDungeonSlice: StateCreator<
     set((s) => {
       const run = s.dungeon;
       if (!run || !run.battle || run.battle.status !== 'active') return s;
-      let battle = playerAction(run.battle, fighterFor(s, run.battle.buffs), action);
-      if (s.settings.invincible) battle = topUpFighter(battle);
-
-      const inventory = { ...s.inventory };
-      if (action.kind === 'item' && (inventory[action.itemKey] ?? 0) > 0) {
-        inventory[action.itemKey] -= 1;
-      }
+      const { battle, inventory } = resolveBattleAction(run.battle, s, action);
       return { dungeon: { ...run, battle }, inventory };
     }),
 
@@ -260,7 +257,7 @@ export const createDungeonSlice: StateCreator<
         if (room.type === 'elite') {
           // Elites drop bonus gold and guarantee a boon.
           eliteWin = true;
-          workingRun = { ...run, floorReward: mergeReward(run.floorReward, { gold: 40 + run.depth * 12 }) };
+          workingRun = { ...workingRun, floorReward: mergeReward(workingRun.floorReward, { gold: 40 + workingRun.depth * 12 }) };
         } else if (room.type === 'boss') {
           // A floor boss is the marquee payout — well above a plain combat room.
           wonBossId = b.bossId;
@@ -368,12 +365,7 @@ export const createDungeonSlice: StateCreator<
         materials: { ...s.materials },
         ownedWeapons: [...s.ownedWeapons],
         ownedGear: [...s.ownedGear],
-        earnings: {
-          ...baseEarnings,
-          xp: { ...baseEarnings.xp },
-          gold: { ...baseEarnings.gold },
-          count: { ...baseEarnings.count },
-        },
+        earnings: cloneEarnings(baseEarnings),
         dungeon: null,
         dungeonHistory: [summary, ...(s.dungeonHistory ?? [])].slice(0, 10),
       };

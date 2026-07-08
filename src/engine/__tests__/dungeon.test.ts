@@ -97,6 +97,22 @@ describe('merchantOffers economy band', () => {
       expect(d10[i].cost).toBeGreaterThan(d5[i].cost);
     }
   });
+
+  it('applies the Homestead haggle discount, rounding each price (10.5)', () => {
+    // base d1: heal 22, potion 29, boon 54 → ×0.85 → round → 19, 25, 46.
+    const d1 = merchantOffers(1, 0.15);
+    expect(d1[0].cost).toBe(19);
+    expect(d1[1].cost).toBe(25);
+    expect(d1[2].cost).toBe(46);
+  });
+
+  it('default discount (0) is byte-identical to the un-perked prices (10.5 regression guard)', () => {
+    for (const d of [1, 5, 10]) expect(merchantOffers(d, 0)).toEqual(merchantOffers(d));
+  });
+
+  it('floors a fully-discounted price at 1g (never free)', () => {
+    expect(merchantOffers(1, 1)[0].cost).toBe(1);
+  });
 });
 
 describe('dungeon lifecycle — store invariants', () => {

@@ -11,6 +11,7 @@ import { statCompletedWithin } from '@/engine/habits';
 import { toISODate } from '@/engine/date';
 import type { GameState } from '../shared';
 import { applyReward, checkLevelUp, energySpentPatch } from '../shared';
+import { townPerks } from '@/engine/town';
 
 export interface TrialsSlice {
   trialsClearedOn: Record<TrialId, string>;
@@ -52,26 +53,32 @@ export const createTrialsSlice: StateCreator<
   beginTrial: (trialId) => {
     const s = get();
     const today = toISODate();
-    // Daily-clear gate (skipped by repeatMinigames dev flag).
-    if (!s.settings.repeatMinigames && s.trialsClearedOn[trialId] === today) return { ok: false, reason: 'cleared' };
-    // Energy gate: 1 energy per trial (§6.1 — ties Trials to the habit→energy loop). Skipped by unlimitedEnergy.
-    if (!s.settings.unlimitedEnergy && s.character.energy < TRIAL_ENERGY_COST) return { ok: false, reason: 'energy' };
+    const clearedToday = !s.settings.repeatMinigames && s.trialsClearedOn[trialId] === today;
+    // Homestead Training Yard (practice perk): a trial already cleared today can be replayed for
+    // free — no energy, no reward (completeTrial's same-day early-return keeps it reward-safe). It
+    // was cleared today, so the daily-clear/energy/stat gates below are all bypassed for this path.
+    const practice = clearedToday && townPerks(s.town).trialPractice;
+    // Daily-clear gate (skipped by repeatMinigames dev flag; a Training Yard turns it into practice).
+    if (clearedToday && !practice) return { ok: false, reason: 'cleared' };
+    // Energy gate: 1 energy per trial (§6.1 — ties Trials to the habit→energy loop). Skipped by unlimitedEnergy / practice.
+    if (!practice && !s.settings.unlimitedEnergy && s.character.energy < TRIAL_ENERGY_COST) return { ok: false, reason: 'energy' };
     // Stat gate: must have completed a habit of the same stat within the last 7 days (§4.4 / §6.2).
-    // Bypassed by repeatMinigames (same dev flag that disables the daily clear gate).
+    // Bypassed by repeatMinigames (same dev flag that disables the daily clear gate) and by practice
+    // (the trial was already cleared today, so the recency gate already passed today).
     const def = getTrial(trialId);
-    if (!s.settings.repeatMinigames && !statCompletedWithin(s.habits, def.stat, today, 7)) return { ok: false, reason: 'stat' };
+    if (!practice && !s.settings.repeatMinigames && !statCompletedWithin(s.habits, def.stat, today, 7)) return { ok: false, reason: 'stat' };
     set((st) => {
       // MINI-11: advance the per-attempt nonce so a reopened deterministic trial redraws.
       // 6.7: charge 1 energy HERE (was in completeTrial) — mirrors beginMining's entry debit,
-      // so abandoning is no longer free (closes the reroll exploit).
-      if (st.settings.unlimitedEnergy) return { trialAttemptNonce: st.trialAttemptNonce + 1 };
+      // so abandoning is no longer free (closes the reroll exploit). A practice replay is free.
+      if (practice || st.settings.unlimitedEnergy) return { trialAttemptNonce: st.trialAttemptNonce + 1 };
       return {
         trialAttemptNonce: st.trialAttemptNonce + 1,
         character: { ...st.character, energy: st.character.energy - TRIAL_ENERGY_COST },
         ...energySpentPatch(st, TRIAL_ENERGY_COST),
       };
     });
-    return { ok: true };
+    return practice ? { ok: true, practice: true } : { ok: true };
   },
 
   markSpiritGroveSeen: (ids) => set((s) => ({

@@ -99,7 +99,7 @@ export function useTacticsAudio(
 
     // ── Secondary objective completed ─────────────────────────────────────
     const objNowComplete = tactics.objective?.complete ?? false;
-    if (!prevObjComplete.current && objNowComplete) sfx.play('victory');
+    if (!prevObjComplete.current && objNowComplete) sfx.play('tacticsObjective');
     prevObjComplete.current = objNowComplete;
 
     // ── Outcome ───────────────────────────────────────────────────────────

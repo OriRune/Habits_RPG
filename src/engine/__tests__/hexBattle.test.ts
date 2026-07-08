@@ -389,6 +389,26 @@ describe('enemy turn', () => {
   });
 });
 
+// --- Enrage move (MINI-36): permanently buffs the enemy's own attack -----------------------------
+describe('enrage move', () => {
+  it("permanently raises the enemy's attack and persists to the next turn", () => {
+    // Adjacent foe whose only moveset entry is enrage → pickMove always selects it.
+    const enemy = makeEnemy(1, { q: 1, r: 0 }, {
+      attack: 8,
+      moveset: [{ kind: 'enrage', weight: 1, bonus: 4, label: 'works itself into a frenzy', icon: '🔥' }],
+    });
+    const s0 = makeState({ enemies: [enemy] });
+    // HIGH rng avoids the dodge/blind gates so the enrage branch fires.
+    const s1 = endPlayerTurn(s0, HIGH);
+    expect(s1.enemies[0].attack).toBe(12); // 8 + bonus 4 (fall-through basic attack would leave it at 8)
+    expect(s1.log.some((l) => l.includes('Attack +4'))).toBe(true);
+    expect(s1.player.hp).toBe(100); // enrage is a buff, not a strike — the hero is untouched
+    // The buff is not per-turn: a second enrage stacks on top of the first.
+    const s2 = endPlayerTurn(s1, HIGH);
+    expect(s2.enemies[0].attack).toBe(16); // 12 + 4
+  });
+});
+
 // --- Charger lunge (MINI-09): a kited charger closes on the third turn ---------------------------
 describe('charger lunge anti-kite', () => {
   // Board wide enough to hold a distance-5 foe; the hero never moves (endPlayerTurn only).

@@ -20,16 +20,7 @@ import { mergeReward } from './dungeon';
 import { attackRoll } from './combat';
 import type { WeaponDef } from './weapons';
 import { FOREST_NODES, FOREST_BEASTS, FOREST_GUARDIAN_STAGES, SHRINE_EVENTS, type ForestNodeDef } from '@/content/forest';
-import {
-  BOONS,
-  boonMeleeMult,
-  boonDefenseBonus,
-  boonYieldMult,
-  boonMoveMult,
-  boonDashCdMult,
-  boonSightBonus,
-  rollBoonChoices,
-} from '@/content/boons';
+import { BOONS } from '@/content/boons';
 import { bandForStage, FOREST_BANDS } from './crawlBiomes';
 
 /** First stage of the deepest (open-ended) band — anchor for late-depth damage scaling. */
@@ -59,6 +50,13 @@ import {
   dashCooldown,
   moveInterval,
   boonConsolation,
+  boonMeleeMult,
+  boonDefenseBonus,
+  boonYieldMult,
+  boonMoveMult,
+  boonDashCdMult,
+  boonSightBonus,
+  rollBoonChoices,
   lateDepthDamageScale,
   crawlCastSpell,
   crawlTriggerRunes,
@@ -204,6 +202,9 @@ export interface ForestSnapshot {
   /** Active boon keys carried from the previous stage. Optional so callers that
    *  construct a snapshot literal without boons (e.g. beginForest) don't break. */
   activeBoons?: string[];
+  /** Homestead Watchtower sight bonus (0 or 1) snapshotted at run start. Optional so
+   *  callers without a town perk (or old saves) default to 0. See sightRadiusFor. */
+  sightBonus?: number;
 }
 
 export interface ForestState {
@@ -269,6 +270,9 @@ export interface ForestState {
   moveIntervalMs: number;
   /** Agility level snapshot — preserved across stages. */
   agLevel: number;
+  /** Homestead Watchtower sight bonus (0 or 1), snapshotted at run start and carried
+   *  across stages via forestSnapshot. Added by sightRadiusFor. */
+  sightBonus?: number;
 }
 
 /**
@@ -387,12 +391,12 @@ export function canAdvance(state: ForestState): boolean {
   return tileAt(state, state.player.r, state.player.c)?.kind === 'treeline';
 }
 
-/** Current sight radius — wider in clearings and expanded by the Lantern boon. */
+/** Current sight radius — wider in clearings, expanded by the Lantern boon and the Watchtower town perk. */
 export function sightRadiusFor(state: ForestState): number {
   const base = tileAt(state, state.player.r, state.player.c)?.kind === 'clearing'
     ? CLEARING_SIGHT_RADIUS
     : SIGHT_RADIUS;
-  return base + boonSightBonus(state.activeBoons);
+  return base + boonSightBonus(state.activeBoons) + (state.sightBonus ?? 0);
 }
 
 /** Circular sight test (≈ a disc so the lit area reads like a torch glow). */
@@ -889,6 +893,7 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
     // Phase 5: boons
     activeBoons,
     pendingBoonChoice: null,
+    sightBonus: snapshot.sightBonus,
   });
 }
 
@@ -911,6 +916,7 @@ export function forestSnapshot(state: ForestState): ForestSnapshot {
     chopPower: state.chopPower,
     agLevel: state.agLevel,
     activeBoons: state.activeBoons,
+    sightBonus: state.sightBonus,
   };
 }
 

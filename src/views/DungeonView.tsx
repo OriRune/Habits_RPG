@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Heart, Sparkles, Coins, Zap, Wind, ChevronsDown, DoorOpen } from 'lucide-react';
 import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
 import { useGameStore } from '@/store/useGameStore';
+import { selectDungeonMilestone } from '@/store/selectors';
 import { ROOM_META, DUNGEON_ENERGY_COST } from '@/engine/dungeon';
 import { getBiome } from '@/engine/biomes';
 import { getEncounter, checkChance, choiceAvailable, encounterDepthTier } from '@/engine/encounters';
@@ -31,14 +32,6 @@ import { ShrineRoom } from '@/components/dungeon/ShrineRoom';
 import { MerchantRoom } from '@/components/dungeon/MerchantRoom';
 import { RestRoom } from '@/components/dungeon/RestRoom';
 import { useDungeonAudio } from '@/hooks/useDungeonAudio';
-
-/** What the next depth milestone unlocks (gates mirror engine/dungeonMap weights). */
-function milestoneHint(deepest: number): string {
-  if (deepest < 5) return 'Reach Floor 5 to unlock Merchants.';
-  if (deepest < 8) return 'Reach Floor 8 to unlock Elite foes.';
-  if (deepest < 10) return 'Reach Floor 10 to unlock rare (Tier 3) relics.';
-  return 'All depths unlocked — chase a new record.';
-}
 
 function RunGauge({
   icon,
@@ -114,6 +107,7 @@ export function DungeonView() {
   const level = useGameStore((s) => s.character.level);
   const habitBonus = useGameStore((s) => s.character.habitBonus);
   const deepestFloor = useGameStore((s) => s.deepestFloor);
+  const nextMilestone = useGameStore(selectDungeonMilestone).nextMilestone;
   const showAdventureRitual = useGameStore((s) => s.settings.showAdventureRitual);
   const dungeonHistory = useGameStore((s) => s.dungeonHistory ?? []);
   const startDungeon = useGameStore((s) => s.startDungeon);
@@ -161,7 +155,11 @@ export function DungeonView() {
                 {deepestFloor > 0 ? `Floor ${deepestFloor}` : '—'}
               </span>
             </div>
-            <div className="mt-1 text-[11px] text-ink-muted">{milestoneHint(deepestFloor)}</div>
+            <div className="mt-1 text-[11px] text-ink-muted">
+              {nextMilestone
+                ? `Reach Floor ${nextMilestone.depth} — ${nextMilestone.label}.`
+                : 'All depths unlocked — chase a new record.'}
+            </div>
           </div>
 
           {dungeonHistory.length > 0 && (

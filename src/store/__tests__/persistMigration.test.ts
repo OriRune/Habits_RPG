@@ -18,6 +18,7 @@ import { emptyStatXP } from '@/engine/stats';
 import { statLevelsFromXp } from '@/engine/progression';
 import { emptyTrialsClearedOn, emptyBestTrialScore } from '@/engine/trials/trials';
 import { freshEarningsLedger } from '@/engine/balance';
+import { freshTown } from '@/engine/town';
 
 function getPersistFns() {
   // The polyfilled localStorage hydrates synchronously during createGameStore(),
@@ -196,6 +197,24 @@ describe('persist migrate (ARCH-08)', () => {
     expect(out.mineTombstone).toEqual(tombstone);
   });
 
+  it('v33-era save (pre-Homestead): town backfills to freshTown(); a populated town rides through', () => {
+    const { migrate } = getPersistFns();
+
+    // Pre-v34 envelope: no `town` key at all.
+    const out = migrate({ habits: [] }, 33) as GameState;
+    expect(out.town).toEqual(freshTown());
+
+    // A modern save's town must never be reset by re-migration (idempotency for v34).
+    const town = {
+      ...freshTown(),
+      deeds: 2,
+      laborBank: 55,
+      buildings: [{ id: 'b1', key: 'keep', r: 3, c: 3, tier: 2 }],
+    };
+    const out2 = migrate({ habits: [], town: JSON.parse(JSON.stringify(town)) }, 34) as GameState;
+    expect(out2.town).toEqual(town);
+  });
+
   it('is idempotent — running an already-migrated save through again changes nothing', () => {
     // migrate runs on EVERY version mismatch, so a double application must be
     // a no-op or veteran saves would drift on each bump.
@@ -361,6 +380,24 @@ describe('persist merge (ARCH-08)', () => {
     expect(run.tier).toBe(2);
     expect(run.hp).toBe(40);
     expect(run.minions[0].hp).toBe(5);
+  });
+
+  it('nested-default merges town so fields added in later versions backfill (trialsClearedOn idiom)', () => {
+    const { merge, store } = getPersistFns();
+    const current = store.getState();
+
+    // A persisted town missing later-added fields (simulated by deleting one):
+    const partialTown = JSON.parse(JSON.stringify({ ...freshTown(), deeds: 1, laborBank: 30 }));
+    delete partialTown.laborISO;
+
+    const out = merge({ town: partialTown }, current) as GameState;
+
+    expect(out.town.deeds).toBe(1); // persisted values win…
+    expect(out.town.laborBank).toBe(30);
+    expect(out.town.laborISO).toBe(freshTown().laborISO); // …missing fields backfill
+    // Absent town entirely → fresh.
+    const out2 = merge({}, current) as GameState;
+    expect(out2.town).toEqual(freshTown());
   });
 
   it('a live in-memory run is NOT rebased (rebase only applies to runs adopted from storage)', () => {
