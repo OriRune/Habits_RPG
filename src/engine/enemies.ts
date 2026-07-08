@@ -144,7 +144,8 @@ export const ENEMIES: Record<string, EnemyTemplate> = {
     flavor: 'A bramble given a cruel, grasping will.',
     hp: 32, attack: 6, defense: 2, ward: 2,
     attackSchool: 'physical', weakTo: ['WI'], resistTo: ['ST'],
-    archetype: 'construct', glyph: '🌿',
+    // 🌵 not 🌿 — the slow-terrain tile uses 🌿, and a unit must never share a terrain glyph.
+    archetype: 'construct', glyph: '🌵',
     moveset: [
       { kind: 'attack',  weight: 2, label: 'lashes with thorned vines', icon: '⚔️' },
       { kind: 'guard',   weight: 2, bonus: 4, label: 'hardens its bark into a shell', icon: '🛡️' },
@@ -194,7 +195,9 @@ export const ENEMIES: Record<string, EnemyTemplate> = {
     flavor: 'A squat guardian of the depths.',
     hp: 46, attack: 8, defense: 3, ward: 2,
     attackSchool: 'physical', weakTo: ['WI'], resistTo: ['ST', 'DX'],
-    archetype: 'construct', glyph: '🪨',
+    // 🗿 not 🪨 — blocked-terrain boulders use 🪨; a sentry indistinguishable from a wall
+    // was the single worst identity failure on the tactics board.
+    archetype: 'construct', glyph: '🗿',
     moveset: [
       { kind: 'attack', weight: 2, label: 'smashes with a stone fist', icon: '⚔️' },
       { kind: 'guard',  weight: 3, bonus: 5, label: 'fortifies its stone shell', icon: '🛡️' },

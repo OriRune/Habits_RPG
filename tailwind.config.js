@@ -25,6 +25,9 @@ export default {
         // Dark wood — app background / dark panels
         wood: {
           DEFAULT: 'rgb(var(--c-wood) / <alpha-value>)',
+          // 950 added for the Tactics overlay backdrop — bg-wood-950/* was silently
+          // transparent before this shade existed (the audit-U7 bleed-through root cause).
+          950: 'rgb(var(--c-wood-950) / <alpha-value>)',
           900: 'rgb(var(--c-wood-900) / <alpha-value>)',
           800: 'rgb(var(--c-wood-800) / <alpha-value>)',
           700: 'rgb(var(--c-wood-700) / <alpha-value>)',

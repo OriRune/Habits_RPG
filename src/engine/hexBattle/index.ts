@@ -68,6 +68,7 @@ export {
   computeTargetable,
   recomputeClientHighlights,
   computeEnemyThreat,
+  computeEnemyThreatCounts,
 } from './geometry';
 
 // --- combat: player actions and previews --------------------------------------------------------

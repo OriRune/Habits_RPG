@@ -11,6 +11,7 @@ import {
   type TacticsObjective,
   TERRAIN_ICONS,
   ARCHETYPE_INFO,
+  computeEnemyThreatCounts,
   previewPlayerAttack,
   previewSpell,
   tacticsReward,
@@ -65,14 +66,19 @@ const FLOATER_COLOR: Record<NonNullable<TacticalEffect['color']>, string> = {
   'status': '#c084fc',     // purple — status inflicted
 };
 
+/**
+ * Tile top-face color: hue says terrain, lightness says elevation. Height is the mode's core
+ * mechanic, so higher tiles read distinctly warmer/lighter — not just a deeper extrusion.
+ * The warm shift (R grows fastest) keeps high ground feeling like sunlit ground.
+ */
 function terrainRGB(t: Tile): [number, number, number] {
-  const lift = t.elevation * 12;
+  const z = t.elevation;
   switch (t.terrain) {
-    case 'blocked': return [60 + lift, 56 + lift, 64 + lift];
-    case 'cover':   return [96 + lift, 72 + lift, 44 + lift];
-    case 'slow':    return [52 + lift, 78 + lift, 48 + lift];
-    case 'hazard':  return [120 + lift, 48 + lift, 36 + lift];
-    default:        return [46 + lift, 58 + lift, 70 + lift];
+    case 'blocked': return [60 + z * 12, 56 + z * 11, 64 + z * 9];
+    case 'cover':   return [96 + z * 16, 72 + z * 14, 44 + z * 9];
+    case 'slow':    return [52 + z * 14, 78 + z * 16, 48 + z * 8];
+    case 'hazard':  return [120 + z * 14, 48 + z * 12, 36 + z * 8];
+    default:        return [48 + z * 19, 58 + z * 17, 70 + z * 10];
   }
 }
 const rgbStr = (c: [number, number, number]) => `rgb(${c[0]},${c[1]},${c[2]})`;
@@ -247,6 +253,13 @@ export function TacticsOverlay() {
   );
   const bounds = useMemo(() => isoBounds(radius, size, MAX_ELEVATION), [radius, size]);
 
+  // Per-tile threat counts for the graded danger tint (audit U4): a tile one kiter can poke
+  // reads differently from a tile three chargers converge on. Hook — stays above the early return.
+  const threatCounts = useMemo(
+    () => (tactics && showThreat ? computeEnemyThreatCounts(tactics) : {}),
+    [tactics, showThreat],
+  );
+
   // Hover preview for a targeted action. This hook MUST stay above the `!tactics` early return
   // (rules-of-hooks) — it re-derives the `locked` gate defensively since that's computed below.
   const hoverPreview = useMemo((): AttackPreview | null => {
@@ -271,7 +284,6 @@ export function TacticsOverlay() {
 
   const reachable = new Set(tactics.reachable.map(hexKey));
   const targetable = new Set(tactics.targetable.map(hexKey));
-  const threat = new Set(tactics.threatHexes.map(hexKey));
   const sel = tactics.selected;
   const isPlayerTurn = tactics.turn === 'player' && tactics.status === 'active';
   // Per-hero weapon and spell loadout (co-op heroes carry their own; fall back to state-level for solo).
@@ -440,7 +452,10 @@ export function TacticsOverlay() {
   const logLines = tactics.log.slice(-4);
 
   return (
-    <div className="fixed inset-0 z-40 flex flex-col bg-wood-950/95 backdrop-blur-sm">
+    // Solid backdrop (no translucency/blur): the board must sit in its own scene, not float
+    // over the ghost of the blurred entry-screen text (audit U7). z-50 matches every other
+    // run overlay (Mine/Forest/Arena) — at z-40 the app header/nav printed on top of the HUD.
+    <div className="fixed inset-0 z-50 flex flex-col bg-wood-950">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-gold-deep/40 px-4 py-2">
         <div className="flex items-center gap-2">
@@ -527,8 +542,12 @@ export function TacticsOverlay() {
       {/* Objective banner */}
       {tactics.objective && <ObjectiveBanner objective={tactics.objective} turnCount={tactics.turnCount} />}
 
-      {/* Board */}
-      <div ref={boardWrapRef} className="relative flex flex-1 items-center justify-center overflow-hidden">
+      {/* Board — warm radial vignette centres the eye on the battlefield */}
+      <div
+        ref={boardWrapRef}
+        className="relative flex flex-1 items-center justify-center overflow-hidden"
+        style={{ background: 'radial-gradient(ellipse 90% 75% at 50% 44%, #322618 0%, #221a10 55%, #120d07 100%)' }}
+      >
         <div className="relative" style={{ width: bounds.width, height: bounds.height }}>
           {/* Board SVG */}
           <svg width={bounds.width} height={bounds.height} className="absolute inset-0">
@@ -558,7 +577,7 @@ export function TacticsOverlay() {
               const highlight = reachable.has(key) ? 'reach' : targetable.has(key) ? 'target' : null;
               const isPlayerTile = key === playerKey;
               const isAllyTile = allyHeroes.some((p) => hexKey(p.hex) === key);
-              const isThreat = showThreat && threat.has(key) && !isPlayerTile && !isAllyTile;
+              const threatCount = showThreat && !isPlayerTile && !isAllyTile ? (threatCounts[key] ?? 0) : 0;
               const isHovered = hoveredHex && hexKey(hoveredHex) === key;
 
               const wall = (a: number, b: number, fill: string) => {
@@ -608,12 +627,13 @@ export function TacticsOverlay() {
                       style={{ pointerEvents: 'none' }}
                     />
                   )}
-                  {/* Threat zone overlay (danger zone tint) */}
-                  {isThreat && (
+                  {/* Threat zone overlay — tint graded by HOW MANY enemies can strike this tile,
+                      so the danger map ranks tiles instead of flooding uniform red (audit U4). */}
+                  {threatCount > 0 && (
                     <polygon
                       points={ptsAt(corners, t.x, t.y)}
-                      fill="rgba(239,68,68,0.18)"
-                      stroke="rgba(239,68,68,0.5)"
+                      fill={`rgba(239,68,68,${(0.08 + 0.09 * Math.min(threatCount, 3)).toFixed(2)})`}
+                      stroke={`rgba(239,68,68,${(0.25 + 0.15 * Math.min(threatCount, 3)).toFixed(2)})`}
                       strokeWidth={1}
                       style={{ pointerEvents: 'none' }}
                     />
@@ -628,9 +648,9 @@ export function TacticsOverlay() {
                       {TERRAIN_ICONS[tile.terrain]}
                     </text>
                   )}
-                  {/* Elevation badge for high ground (when targeting) — positioned above the sprite
-                      area (y pushed higher) so it doesn't overlap unit glyphs or HP bars. */}
-                  {tile.elevation > 0 && (highlight === 'target' || (sel?.kind === 'move' && reachable.has(key))) && (
+                  {/* Elevation badge for high ground — on targetable tiles, and in move mode only
+                      on the HOVERED tile (audit U9: a board-wide ▲ flood shouts over everything). */}
+                  {tile.elevation > 0 && (highlight === 'target' || (sel?.kind === 'move' && reachable.has(key) && isHovered)) && (
                     <text
                       x={t.x + size * 0.52} y={t.y - size * 0.62}
                       textAnchor="middle" dominantBaseline="central"
@@ -863,13 +883,22 @@ export function TacticsOverlay() {
       {tactics.status === 'active' && (
       <div className="border-t border-gold-deep/40 bg-wood-900/80 px-3 py-2">
         <div className="mx-auto flex max-w-2xl flex-wrap items-center justify-center gap-1.5">
-          <ActionButton active={sel?.kind === 'move'} disabled={locked || tactics.player.movesLeft <= 0} onClick={() => { setHoveredHex(null); tacticsSelect({ kind: 'move' }); }}>
+          <ActionButton
+            active={sel?.kind === 'move'}
+            disabled={locked || tactics.player.movesLeft <= 0}
+            title={tactics.player.movesLeft <= 0 ? 'No movement left this turn — it refills after the enemy phase' : undefined}
+            onClick={() => { setHoveredHex(null); tacticsSelect({ kind: 'move' }); }}
+          >
             <Footprints className="h-4 w-4" /> Move
           </ActionButton>
           <ActionButton
             active={sel?.kind === 'attack'}
             disabled={locked || tactics.player.hasActed}
-            title={tactics.player.sta < weapon.staminaCost ? `Exhausted — below ${weapon.staminaCost} stamina, this swing lands at half power` : undefined}
+            title={tactics.player.hasActed
+              ? 'Already acted this turn — one attack or spell per turn'
+              : tactics.player.sta < weapon.staminaCost
+                ? `Exhausted — below ${weapon.staminaCost} stamina, this swing lands at half power`
+                : undefined}
             onClick={() => { setHoveredHex(null); tacticsSelect({ kind: 'attack' }); }}
           >
             ⚔️ {attackLabel}
@@ -1003,7 +1032,8 @@ function UnitSprite({
   const tooltipText = archetypeBlurb ? `${name ?? ''}\n${archetypeBlurb}` : (name ?? undefined);
   return (
     <div
-      className={cn('absolute z-20 flex flex-col items-center', onClick ? 'cursor-pointer' : 'pointer-events-none')}
+      // hover:z-30 raises the pointed-at unit above overlapping neighbours (iso rows crowd).
+      className={cn('absolute z-20 flex flex-col items-center hover:z-30', onClick ? 'cursor-pointer' : 'pointer-events-none')}
       style={{ left: 0, top: 0, transform: `translate(${x}px, ${y}px) translate(-50%, -78%)`, transition: slideMs > 0 ? `transform ${slideMs}ms ease-out` : 'none' }}
       title={tooltipText}
       onClick={onClick}
@@ -1024,12 +1054,14 @@ function UnitSprite({
           ) : intent.attackIcon === '❄️' ? (
             <span className="text-blue-300">❄️</span>
           ) : null}
-          {archetypeBlurb && (
+          {(name || archetypeBlurb) && (
+            // Creature name, colored by archetype — the log speaks in names ("Wailing Wisp hits…"),
+            // so the board must too; the archetype lives in the ring color + tooltip (audit U3).
             <span
-              className="ml-0.5 font-display leading-none"
-              style={{ fontSize: Math.round(8 * scale), color: archetypeColor ?? '#aaa' }}
+              className="ml-0.5 truncate font-display leading-none"
+              style={{ fontSize: Math.round(8 * scale), color: archetypeColor ?? '#aaa', maxWidth: Math.round(64 * scale) }}
             >
-              {archetypeBlurb.split(' ')[0]}
+              {name ?? archetypeBlurb!.split(' ')[0]}
             </span>
           )}
         </div>
