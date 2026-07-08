@@ -620,7 +620,8 @@ export function TacticsOverlay() {
                 <g key={key}>
                   <polygon
                     points={ptsAt(corners, t.x, t.y)}
-                    fill="transparent"
+                    // NEVER fill="none" — it would kill hit-testing. Hover gets a faint wash.
+                    fill={isHovered ? 'rgba(255,255,255,0.08)' : 'transparent'}
                     stroke={stroke}
                     strokeWidth={isHovered ? 3.5 : highlight || isPlayerTile || isAllyTile ? 3 : 0}
                     style={{ cursor: highlight || firing.has(key) ? 'pointer' : 'default' }}
@@ -694,6 +695,7 @@ export function TacticsOverlay() {
               const corners = hexCorners(size);
               const done = tactics.objective.complete;
               const color = done ? '#22c55e' : '#fbbf24';
+              const inner = corners.map((p) => `${t.x + p.x * 0.55},${t.y + p.y * 0.55}`).join(' ');
               return (
                 <g key="beacon-marker" style={{ pointerEvents: 'none' }}>
                   <polygon
@@ -703,12 +705,9 @@ export function TacticsOverlay() {
                     strokeWidth={2}
                     opacity={0.85}
                   />
-                  <text
-                    x={t.x} y={t.y}
-                    textAnchor="middle" dominantBaseline="central"
-                    fontSize={size * 0.5}
-                    opacity={0.9}
-                  >◎</text>
+                  {/* pulsing inner ring — the "hold me" signal breathes instead of sitting as a glyph */}
+                  <polygon className="tx-beacon" points={inner} fill="none" stroke={color} strokeWidth={1.5} />
+                  <circle cx={t.x} cy={t.y} r={size * 0.14} fill={color} opacity={0.9} />
                 </g>
               );
             })()}
@@ -751,6 +750,7 @@ export function TacticsOverlay() {
                 cloakColor={cloakColor}
                 facing={u.facing}
                 hitId={hitIdFor(u.hex)}
+                idleDelay={((u.enemyId ?? 0) % 5) * 0.35}
                 onClick={u.enemyId !== undefined ? () => onTileClick(u.hex) : undefined}
                 onHover={u.enemyId !== undefined ? (over) => onTileHover(over ? u.hex : null) : undefined}
               />

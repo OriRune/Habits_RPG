@@ -436,11 +436,13 @@ function flipStyle(facing: 'left' | 'right'): CSSProperties {
  * One board creature. `hitId` remounts the inner group (key) so the tx-hit flash keyframe
  * restarts on every fresh damage floater. PNG art wins when present (SPRITE_REGISTRY seam).
  */
-export function CreatureToken({ templateId, sizePx, facing = 'right', hitId }: {
+export function CreatureToken({ templateId, sizePx, facing = 'right', hitId, idleDelay = 0 }: {
   templateId: string;
   sizePx: number;
   facing?: 'left' | 'right';
   hitId?: number;
+  /** Seconds of breathe-cycle offset so a crowd doesn't bob in lockstep. */
+  idleDelay?: number;
 }) {
   const png = resolveSpriteImage(`boss:${templateId}`);
   if (png) {
@@ -451,7 +453,7 @@ export function CreatureToken({ templateId, sizePx, facing = 'right', hitId }: {
   return (
     <svg viewBox="0 0 32 32" width={sizePx} height={sizePx} data-token={templateId} style={flipStyle(facing)} aria-hidden="true">
       <ellipse cx={16} cy={29} rx={9} ry={2.4} fill="rgba(0,0,0,0.35)" />
-      <g className="tx-breathe" style={{ transformBox: 'fill-box', transformOrigin: '50% 100%' }}>
+      <g className="tx-breathe" style={{ transformBox: 'fill-box', transformOrigin: '50% 100%', animationDelay: `${idleDelay}s` }}>
         <g
           key={hitId ?? 'idle'}
           className={hitId !== undefined ? 'tx-hit' : undefined}

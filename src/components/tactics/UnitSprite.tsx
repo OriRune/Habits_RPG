@@ -46,7 +46,7 @@ export function UnitSprite({
   x, y, glyph, hp, maxHp, statuses, friendly, name, scale = 1,
   slideMs = 200,
   intent, archetypeColor, archetypeBlurb, weakResist, onClick, onHover,
-  templateId, heroKind, cloakColor, classId, facing = 'right', hitId,
+  templateId, heroKind, cloakColor, classId, facing = 'right', hitId, idleDelay = 0,
 }: {
   x: number; y: number; glyph: string; hp: number; maxHp: number; statuses: UnitStatus[];
   friendly?: boolean; name?: string; scale?: number;
@@ -78,6 +78,8 @@ export function UnitSprite({
   facing?: 'left' | 'right';
   /** Id of the freshest damage floater on this unit; remounts the token art to restart tx-hit. */
   hitId?: number;
+  /** Seconds of breathe-cycle offset so a crowd doesn't bob in lockstep. */
+  idleDelay?: number;
 }) {
   const pct = Math.max(0, Math.min(100, (hp / maxHp) * 100));
   const tooltipText = archetypeBlurb ? `${name ?? ''}\n${archetypeBlurb}` : (name ?? undefined);
@@ -85,7 +87,7 @@ export function UnitSprite({
   const art = heroKind ? (
     <HeroToken variant={heroKind} classId={classId} cloakColor={cloakColor} sizePx={tokenSize} facing={facing} hitId={hitId} />
   ) : templateId && hasToken(templateId) ? (
-    <CreatureToken templateId={templateId} sizePx={tokenSize} facing={facing} hitId={hitId} />
+    <CreatureToken templateId={templateId} sizePx={tokenSize} facing={facing} hitId={hitId} idleDelay={idleDelay} />
   ) : (
     <span
       style={{
