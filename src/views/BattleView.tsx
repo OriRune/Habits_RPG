@@ -71,7 +71,7 @@ const CARDS: HubCard<BattleMode>[] = [
             'Move → click a cyan tile. Moving is free and does not use your action.',
             'Strike / Shoot → click Strike/Shoot, then click an amber-highlighted enemy.',
             'Spell → click a spell button, then click your target (support spells fire immediately).',
-            'Hold ⌖ → arm Overwatch: auto-fire at the first enemy that moves into range on their turn.',
+            'Hold ⌖ → arm Overwatch: auto-fire at the first enemy that moves into range — or breaks away from your melee reach — on their turn.',
             'End turn → pass to the enemy phase.',
             'Danger zone & Enemy intents toggles (top-left HUD) reveal threat tiles and planned moves.',
           ],

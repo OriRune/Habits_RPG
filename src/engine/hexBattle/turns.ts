@@ -2,16 +2,21 @@
 // DoT/hazard decay, objective evaluation and hero restore; checkOutcome decides win/loss and
 // finalises match-end objectives.
 import type { RNG } from '../combat';
-import { type Hex, hexEquals } from '../hex';
+import { type Hex, hexDistance, hexEquals, hexKey } from '../hex';
 import {
   type HexBattleState,
   type UnitStatus,
   HAZARD_DMG,
+  MP_REGEN_PER_TURN,
   STA_REGEN_PER_TURN,
+  WAVE_BATCH,
+  WAVE_EVERY_TURNS,
   clone,
   hasStatus,
   livingHeroes,
   moveTilesFor,
+  nearestHero,
+  occupiedKeys,
   tileAt,
 } from './state';
 import { computeEnemyThreat, recomputeHighlights } from './geometry';
@@ -104,7 +109,7 @@ export function endPlayerTurn(state: HexBattleState, rng: RNG = Math.random, her
     // A swift win inside the budget is finalised in checkOutcome when the match ends.
   }
 
-  // Restore ALL heroes: fresh movement, action, stamina regen, clear endedTurn.
+  // Restore ALL heroes: fresh movement, action, stamina + mana regen, clear endedTurn.
   const allHeroes = (s.players && s.players.length > 0) ? s.players : [s.player];
   for (const h of allHeroes) {
     h.movesLeft = moveTilesFor(h.ag);
@@ -112,6 +117,7 @@ export function endPlayerTurn(state: HexBattleState, rng: RNG = Math.random, her
     h.overwatch = false; // expire any unused stance
     h.endedTurn = false;
     h.sta = Math.min(h.maxSta, h.sta + STA_REGEN_PER_TURN);
+    h.mp = Math.min(h.maxMp, h.mp + MP_REGEN_PER_TURN);
     // Dev invincibility: "HP, mana, and stamina stay full" — literal top-up each turn.
     if (s.invincible) { h.hp = h.maxHp; h.mp = h.maxMp; h.sta = h.maxSta; }
     // Freeze bites heroes exactly as it bites enemies (enemyTurn skips a frozen enemy's act):
@@ -125,6 +131,16 @@ export function endPlayerTurn(state: HexBattleState, rng: RNG = Math.random, her
   }
 
   s.turnCount++;
+
+  // Reinforcement waves (audit D6): rosters above WAVE_CAP trickle in from the board's far
+  // edge every WAVE_EVERY_TURNS player turns — sustained pressure without the quadratic burst
+  // of 6-8 simultaneous foes against a one-action hero. An emptied board always pulls the next
+  // wave immediately so the match never idles on a foe-less field.
+  if (s.reinforcements && s.reinforcements.length > 0
+      && (s.enemies.length === 0 || s.turnCount % WAVE_EVERY_TURNS === 1)) {
+    spawnReinforcements(s);
+  }
+
   s.turn = 'player';
   s.selected = null;
   recomputeHighlights(s);
@@ -132,6 +148,35 @@ export function endPlayerTurn(state: HexBattleState, rng: RNG = Math.random, her
   s.threatHexes = computeEnemyThreat(s);
   s.intentPlan = planEnemyIntents(s);
   return s;
+}
+
+/** Move up to WAVE_BATCH queued units onto the board at the standable tiles farthest from the
+ *  heroes. Mutates `s` (caller holds the clone). */
+function spawnReinforcements(s: HexBattleState): void {
+  const queue = s.reinforcements ?? [];
+  const batch = queue.slice(0, WAVE_BATCH);
+  if (batch.length === 0) return;
+  const occupied = occupiedKeys(s);
+  // Candidates: standable, unoccupied tiles, farthest from the nearest hero first.
+  const candidates = Object.values(s.tiles)
+    .filter((t) => t.terrain !== 'blocked' && t.terrain !== 'hazard' && t.elevation <= 1 && !occupied.has(hexKey(t.hex)))
+    .sort((a, b) =>
+      hexDistance(b.hex, nearestHero(s, b.hex).hex) - hexDistance(a.hex, nearestHero(s, a.hex).hex));
+  const placed: typeof batch = [];
+  for (const unit of batch) {
+    const spot = candidates.find((t) =>
+      !placed.some((p) => hexEquals(p.hex, t.hex)) && !occupied.has(hexKey(t.hex)));
+    if (!spot) break; // board packed solid — try again next wave
+    unit.hex = { ...spot.hex };
+    unit.prevHex = { ...spot.hex };
+    placed.push(unit);
+    occupied.add(hexKey(spot.hex));
+  }
+  if (placed.length === 0) return;
+  s.enemies = [...s.enemies, ...placed];
+  s.reinforcements = queue.slice(placed.length);
+  const names = placed.map((u) => u.name).join(', ');
+  s.log.push(`Reinforcements arrive — ${names} join${placed.length === 1 ? 's' : ''} the fray!`);
 }
 
 function applyDoTAndDecay(
@@ -159,7 +204,8 @@ function applyDoTAndDecay(
 
 export function checkOutcome(s: HexBattleState): void {
   s.enemies = s.enemies.filter((e) => e.hp > 0);
-  if (s.enemies.length === 0) {
+  // Queued reinforcements still count as an enemy force — clearing the board mid-wave isn't a win.
+  if (s.enemies.length === 0 && (s.reinforcements?.length ?? 0) === 0) {
     s.status = 'won';
     // Finalise objectives that can only be evaluated at match end.
     if (s.objective && !s.objective.failed) {

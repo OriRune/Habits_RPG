@@ -3,7 +3,7 @@ import { Grid3x3, Zap, Mountain, Sparkles, Gift } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { useIsCoarsePointer } from '@/hooks/useIsCoarsePointer';
 import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
-import { TACTICS_ENERGY_COST, TACTICS_UNLOCK_LEVEL, TACTICS_GRANTED_SPELLS, STA_REGEN_PER_TURN, isTacticsLoadoutSpell, moveTilesFor, climbFor, type TacticsSize } from '@/engine/hexBattle';
+import { TACTICS_ENERGY_COST, TACTICS_UNLOCK_LEVEL, TACTICS_GRANTED_SPELLS, STA_REGEN_PER_TURN, MP_REGEN_PER_TURN, isTacticsLoadoutSpell, moveTilesFor, climbFor, type TacticsSize } from '@/engine/hexBattle';
 import { getSpell } from '@/engine/spells';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
@@ -36,8 +36,11 @@ export function TacticsView() {
 
   // Default the loadout to the first LOADOUT_CAP eligible spells.
   const [loadout, setLoadout] = useState<string[]>(() => eligibleSpells.slice(0, LOADOUT_CAP));
-  // Ephemeral difficulty-tier pick (like the loadout — NOT persisted). Defaults to the top tier.
-  const [tier, setTier] = useState<number>(level);
+  // Ephemeral difficulty-tier pick (like the loadout — NOT persisted). Defaults to one past the
+  // player's best (audit D7): climbing to max tier is a choice, not the landing spot — a fresh
+  // level-5 character defaulted into Tier 5 opened with back-to-back losses.
+  const [tier, setTier] = useState<number>(() =>
+    Math.min(level, Math.max(TACTICS_UNLOCK_LEVEL, deepestTacticsTier + 1)));
   const tierOptions = Array.from(
     { length: Math.max(0, level - TACTICS_UNLOCK_LEVEL + 1) },
     (_, i) => TACTICS_UNLOCK_LEVEL + i,
@@ -231,6 +234,12 @@ export function TacticsView() {
               <Zap className="h-3.5 w-3.5 text-amber-400" /> Stamina recovers
             </span>
             <span className="font-display font-bold text-amber-400">+{STA_REGEN_PER_TURN} / turn</span>
+          </div>
+          <div className="flex items-center justify-between text-ink-muted">
+            <span className="flex items-center gap-1">
+              <Sparkles className="h-3.5 w-3.5 text-blue-400" /> Mana recovers
+            </span>
+            <span className="font-display font-bold text-blue-400">+{MP_REGEN_PER_TURN} / turn</span>
           </div>
           <div className="flex items-center justify-between text-ink-muted">
             <span className="flex items-center gap-1">

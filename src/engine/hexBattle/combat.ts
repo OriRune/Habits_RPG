@@ -17,6 +17,7 @@ import {
   EFFECT_STAGGER_MS,
   HAZARD_DMG,
   applyUnitStatus,
+  bumpStatUsage,
   climbFor,
   clone,
   coverAt,
@@ -129,6 +130,7 @@ export function movePlayer(state: HexBattleState, to: Hex, heroId?: string): Hex
   }
   s.player.hex = { ...to };
   s.player.movesLeft -= dest.cost;
+  bumpStatUsage(s, 'AG'); // movement is the AG expression (audit D9)
   s.selected = { kind: 'move' };
   recomputeHighlights(s);
   return s;
@@ -144,6 +146,7 @@ export function movePlayer(state: HexBattleState, to: Hex, heroId?: string): Hex
  */
 export function resolvePlayerStrike(s: HexBattleState, hero: PlayerUnit, enemy: EnemyUnit, rng: RNG): void {
   const weapon = hero.weapon ?? s.weapon;
+  bumpStatUsage(s, weapon.attackStat); // a swing expresses the weapon's stat, hit or miss (audit D9)
   const pz = elevationAt(s, hero.hex);
   const dz = pz - elevationAt(s, enemy.hex);
   const ranged = !!weapon.ranged;
@@ -264,6 +267,9 @@ export function playerCastSpell(
   const heroWeapon = hero.weapon ?? s.weapon;
   hero.mp -= spell.mpCost;
   const schoolStat = SCHOOL_STAT[spell.school];
+  // Usage ledger (audit D9): positional casts express the stat that scales them (Blink→KN,
+  // Cleave→ST, Push→CH); everything else expresses its school stat (WI/KN/CH).
+  bumpStatUsage(s, spell.mechanic === 'blink' ? 'KN' : spell.mechanic === 'cleave' ? 'ST' : spell.mechanic === 'push' ? 'CH' : schoolStat);
   const push = effectPusher(s);
 
   // --- Tactics positional mechanics (handled before school branching) ---

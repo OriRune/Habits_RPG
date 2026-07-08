@@ -22,6 +22,7 @@ import {
   OCCLUSION_RISE,
   TACTICS_BOARD_RADIUS,
   TACTICS_GRANTED_SPELLS,
+  WAVE_CAP,
   clamp,
   moveTilesFor,
 } from './state';
@@ -113,16 +114,22 @@ export function generateSkirmish(
   );
   const enemyPool = Object.keys(ENEMIES);
 
+  // Waves (audit D6): field at most WAVE_CAP up front; the rest of the roster arrives as
+  // reinforcements every WAVE_EVERY_TURNS (see endPlayerTurn). Damage-per-turn against the
+  // one-action hero grows ~quadratically with simultaneous foes, so high tiers/big boards
+  // sustain pressure over time instead of bursting.
+  const fieldedCount = Math.min(enemyCount, WAVE_CAP);
+
   // Use the first hero's spawn as the BFS origin for connectivity/tile generation.
   const primarySpawn = heroSpawns[0];
 
-  // Retry generation until the board is connected and we can place every unit.
+  // Retry generation until the board is connected and we can place every fielded unit.
   let tiles: Record<string, Tile> = {};
   let enemySpawns: Hex[] = [];
   for (let attempt = 0; attempt < 12; attempt++) {
     tiles = genTiles(board, primarySpawn, rng, attempt >= 6 /* drop walls on late attempts */);
-    enemySpawns = pickEnemySpawns(tiles, board, primarySpawn, radius, enemyCount);
-    if (enemySpawns.length === enemyCount && spawnsConnected(tiles, primarySpawn, enemySpawns)) break;
+    enemySpawns = pickEnemySpawns(tiles, board, primarySpawn, radius, fieldedCount);
+    if (enemySpawns.length === fieldedCount && spawnsConnected(tiles, primarySpawn, enemySpawns)) break;
   }
   // Force all spawn tiles to be plain, standable floor.
   for (const h of [...heroSpawns, ...enemySpawns]) {
@@ -133,7 +140,7 @@ export function generateSkirmish(
 
   const scale = 1 + (tier - 1) * 0.07;
   let seq = 1;
-  const enemies: EnemyUnit[] = enemySpawns.map((hex) => {
+  const buildEnemy = (hex: Hex): EnemyUnit => {
     const tmpl = ENEMIES[enemyPool[Math.floor(rng() * enemyPool.length)]];
     const hp = Math.max(1, Math.round(tmpl.hp * scale));
     // Prefer the template's dedicated glyph; fall back to the first moveset icon so the
@@ -163,7 +170,14 @@ export function generateSkirmish(
       guardBonus: 0,
       turnsOutOfReach: 0,
     } satisfies EnemyUnit;
-  });
+  };
+  const enemies: EnemyUnit[] = enemySpawns.map(buildEnemy);
+  // Roster overflow waits off-board; endPlayerTurn places each wave at spawn time, so the
+  // origin hex here is a placeholder.
+  const reinforcements: EnemyUnit[] = Array.from(
+    { length: enemyCount - fieldedCount },
+    () => buildEnemy({ q: 0, r: 0 }),
+  );
 
   // Build player unit(s) — one per hero in the roster.
   const buildHeroUnit = (h: HeroOpts, spawnHex: Hex): PlayerUnit => {
@@ -207,11 +221,14 @@ export function generateSkirmish(
   const player = players[0];
 
   // --- Optional secondary objective (~65% of matches) -------------------------------------------
+  // Swift budgets count the WHOLE force (fielded + waves) so reinforcements don't turn the
+  // objective into an automatic miss.
   const objective: TacticsObjective | null = rng() < 0.65
-    ? rollObjective(tiles, board, primarySpawn, enemySpawns, enemies.length, radius, rng)
+    ? rollObjective(tiles, board, primarySpawn, enemySpawns, enemyCount, radius, rng)
     : null;
   const objectiveMsg = objective ? ` Bonus objective: ${objective.label}.` : '';
   const heroCountMsg = heroCount > 1 ? `${heroCount} heroes face ` : '';
+  const waveMsg = reinforcements.length > 0 ? ` More approach from the edges (${reinforcements.length} in reserve).` : '';
 
   // State-level knownSpells/weapon stay for backward compatibility (solo, persisted saves).
   // They are set from the first/active hero so the overlay still works before
@@ -226,13 +243,14 @@ export function generateSkirmish(
     players: heroCount > 1 ? players : undefined,
     activeHeroId: heroCount > 1 ? activeHeroId : undefined,
     enemies,
-    enemyForceMaxHp: enemies.reduce((sum, e) => sum + e.maxHp, 0),
+    reinforcements: reinforcements.length > 0 ? reinforcements : undefined,
+    enemyForceMaxHp: [...enemies, ...reinforcements].reduce((sum, e) => sum + e.maxHp, 0),
     turn: 'player',
     selected: null,
     reachable: [],
     targetable: [],
     effects: [],
-    log: [`A skirmish begins — ${heroCountMsg}${enemies.length} foe${enemies.length === 1 ? '' : 's'}.${objectiveMsg}`],
+    log: [`A skirmish begins — ${heroCountMsg}${enemies.length} foe${enemies.length === 1 ? '' : 's'}.${waveMsg}${objectiveMsg}`],
     status: 'active',
     tier,
     // Arena-only mechanics (runes, ring-of-fire, old teleport) aren't modelled on the tactics grid.

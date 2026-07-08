@@ -41,8 +41,25 @@ const EFFECT_DURATION_MS = 420;
 export const MOVE_ANIM_MS = 300;
 /** Stamina restored to the player at the start of each new turn after the enemy phase. */
 export const STA_REGEN_PER_TURN = 2;
+/** Mana restored to the player at the start of each new turn (audit D8) — keeps the always-granted
+ *  positional spells (Push 8 / Blink 5 / Cleave 7 MP) in reach of non-caster builds over a match
+ *  instead of being a one-or-two-cast luxury, without letting casters chain big spells freely. */
+export const MP_REGEN_PER_TURN = 1;
 /** Consecutive out-of-reach enemy turns before a chasing enemy (charger/flanker) lunges. */
 export const LUNGE_AFTER_TURNS = 2;
+/** Distance beyond which a holder abandons its dig-in scoring and lumbers toward the fight
+ *  (audit D3) — parked holders were risk-free kills for ranged builds and dead content otherwise. */
+export const HOLDER_LEASH = 4;
+/** Consecutive out-of-attack-reach turns before a kiter stops ring-keeping and closes in
+ *  (audit D4) — ends the "everyone holds its ground forever" stalemate. Kiters are patient
+ *  ranged units, so they press later than the chasers' 2-turn lunge. */
+export const KITER_PRESS_TURNS = 3;
+/** Enemies fielded at match start; the rest of the roster arrives as reinforcement waves
+ *  (audit D6) — count-scaling above this floods the one-action player quadratically. */
+export const WAVE_CAP = 5;
+/** A reinforcement wave (up to WAVE_BATCH units) arrives every this many player turns. */
+export const WAVE_EVERY_TURNS = 2;
+export const WAVE_BATCH = 2;
 /**
  * Positional spells that are always available in Tactics regardless of the player's
  * inventory. They form the core of the positioning system (FF Tactics pattern: baseline
@@ -318,6 +335,13 @@ export interface HexBattleState {
   /** Dev-settings invincibility (mirrors ArenaState.invincible): heroes take no attack/hazard/DoT
    *  damage and are topped up each turn. Set by beginTactics at match start; never set in co-op. */
   invincible?: boolean;
+  /** Roster overflow above WAVE_CAP, arriving as waves every WAVE_EVERY_TURNS (audit D6).
+   *  Counted in enemyForceMaxHp and in the win condition. Optional: legacy saves lack it. */
+  reinforcements?: EnemyUnit[];
+  /** Per-stat action counts for this match (audit D9): strikes → weapon stat, spells → school
+   *  stat, moves → AG, etc. commitTactics weights the XP trickle by this ledger so the mode
+   *  trains what the player actually expressed. Optional: legacy runs fall back to the flat split. */
+  statUsage?: Partial<Record<StatId, number>>;
   /** Full hero roster (1 in single-player, N in co-op). Populated by generateSkirmish.
    *  Engine functions fall back to [player] when this is absent for backward compat. */
   players?: PlayerUnit[];
@@ -385,6 +409,18 @@ export function lungePending(e: EnemyUnit): boolean {
   return isChaser(e) && (e.turnsOutOfReach ?? 0) >= LUNGE_AFTER_TURNS;
 }
 
+/** True when a kiter has been kept out of attack reach long enough to abandon ring-keeping and
+ *  close in (scored as a charger for that activation). Shared by enemyAct and the intent planner. */
+export function pressingKiter(e: EnemyUnit): boolean {
+  return e.aiArchetype === 'kiter' && (e.turnsOutOfReach ?? 0) >= KITER_PRESS_TURNS;
+}
+
+/** Copy-on-write bump of the match's stat-usage ledger (audit D9). `clone()` shares `statUsage`
+ *  by reference across snapshots, so mutation must always build a fresh object. */
+export function bumpStatUsage(s: HexBattleState, stat: StatId, n = 1): void {
+  s.statUsage = { ...(s.statUsage ?? {}), [stat]: (s.statUsage?.[stat] ?? 0) + n };
+}
+
 /** Movement budget for this enemy's next activation, including the one-turn lunge bonus. */
 export function moveBudgetFor(e: EnemyUnit): number {
   return lungePending(e) ? e.moveTiles * 2 + 1 : e.moveTiles;
@@ -434,6 +470,7 @@ export function clone(s: HexBattleState): HexBattleState {
     player,
     players,
     enemies: s.enemies.map((e) => ({ ...e, hex: { ...e.hex }, statuses: e.statuses.map((st) => ({ ...st })) })),
+    reinforcements: s.reinforcements?.map((e) => ({ ...e, hex: { ...e.hex }, statuses: e.statuses.map((st) => ({ ...st })) })),
     effects: [],
     reachable: [...s.reachable],
     targetable: [...s.targetable],

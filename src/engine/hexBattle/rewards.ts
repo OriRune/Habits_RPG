@@ -12,8 +12,11 @@ import { tacticsSizeBonus } from './generation';
  * survivors-only denominator (conservative; only affects a save mid-run from before this field).
  */
 export function tacticsDamageFraction(state: HexBattleState): number {
-  const standing = state.enemies.reduce((sum, e) => sum + Math.max(0, e.hp), 0);
-  const total = state.enemyForceMaxHp ?? state.enemies.reduce((sum, e) => sum + e.maxHp, 0);
+  // Queued reinforcements are part of the force: they count as standing HP so retreating before
+  // the waves land can't bank credit for foes that never took a scratch.
+  const force = [...state.enemies, ...(state.reinforcements ?? [])];
+  const standing = force.reduce((sum, e) => sum + Math.max(0, e.hp), 0);
+  const total = state.enemyForceMaxHp ?? force.reduce((sum, e) => sum + e.maxHp, 0);
   if (total <= 0) return 0;
   const dealt = total - standing;
   return Math.max(0, Math.min(1, dealt / total));
@@ -26,9 +29,11 @@ export function tacticsDamageFraction(state: HexBattleState): number {
  */
 export function tacticsReward(state: HexBattleState): Reward {
   // Base gold scales with tier AND board size — bigger boards spawn more foes (sizeBonus), so
-  // they must pay more (MINI-22). The objective ×1.6 below composes on top of this base.
+  // they must pay more (MINI-22). 0.25/size step (audit D6): at 0.15 a Large-board foe paid
+  // ~17g vs Small's ~32g at entry tiers — the bigger fight was the worst gold/energy in the
+  // mode. The objective ×1.6 below composes on top of this base.
   const sizeBonus = tacticsSizeBonus(state.radius);
-  const baseGold = Math.round(40 * (1 + state.tier * 0.15) * (1 + 0.15 * sizeBonus));
+  const baseGold = Math.round(40 * (1 + state.tier * 0.15) * (1 + 0.25 * sizeBonus));
 
   if (state.status !== 'won') {
     // Loss/retreat pays gold proportional to damage dealt (MINI-23) — no objective ×1.6 flourish,

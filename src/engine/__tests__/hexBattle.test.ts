@@ -19,6 +19,7 @@ import {
   endPlayerTurn,
   generateSkirmish,
   isTacticsLoadoutSpell,
+  tacticsDamageFraction,
   tacticsReward,
   TACTICS_SIZE_RADIUS,
   TACTICS_GRANTED_SPELLS,
@@ -640,6 +641,154 @@ describe('swift objective failure', () => {
   });
 });
 
+// --- Holder leash (audit D3): distant holders lumber toward the fight ----------------------------
+describe('holder leash', () => {
+  const wide = tilesFor(5);
+  it('a holder beyond the leash approaches; one inside it digs in', () => {
+    const far = makeState({
+      radius: 5, tiles: wide,
+      player: makePlayer({ q: -5, r: 0 }, { hp: 500, maxHp: 500 }),
+      enemies: [makeEnemy(1, { q: 3, r: 0 }, { aiArchetype: 'holder', moveTiles: 2 })], // dist 8
+    });
+    const s1 = endPlayerTurn(far, HIGH);
+    expect(hexDistance(s1.enemies[0].hex, s1.player.hex)).toBeLessThan(8); // lumbered closer
+    const near = makeState({
+      radius: 5, tiles: wide,
+      player: makePlayer({ q: -1, r: 0 }, { hp: 500, maxHp: 500 }),
+      enemies: [makeEnemy(1, { q: 2, r: 0 }, { aiArchetype: 'holder', moveTiles: 2 })], // dist 3 ≤ leash
+    });
+    const s2 = endPlayerTurn(near, HIGH);
+    expect(hexEquals(s2.enemies[0].hex, { q: 2, r: 0 })).toBe(true); // held its ground
+  });
+});
+
+// --- Kiter press (audit D4): a kiter kept out of reach stops idling ------------------------------
+describe('kiter press anti-stalemate', () => {
+  const wide = tilesFor(5);
+  it('tracks out-of-reach turns and closes in once the press threshold is reached', () => {
+    // Ranged kiter (range 3) pinned at distance 9 with zero movement would idle forever —
+    // out-of-reach turns must accumulate.
+    const pinned = makeState({
+      radius: 5, tiles: wide,
+      player: makePlayer({ q: -5, r: 0 }, { hp: 500, maxHp: 500 }),
+      enemies: [makeEnemy(1, { q: 4, r: 0 }, { aiArchetype: 'kiter', range: 3, moveTiles: 0 })],
+    });
+    const t1 = endPlayerTurn(pinned, HIGH);
+    expect(t1.enemies[0].turnsOutOfReach).toBe(1);
+    // Once primed (≥ KITER_PRESS_TURNS), the same kiter with movement scores like a charger
+    // and closes the distance instead of ring-keeping.
+    const primed = makeState({
+      radius: 5, tiles: wide,
+      player: makePlayer({ q: -5, r: 0 }, { hp: 500, maxHp: 500 }),
+      enemies: [makeEnemy(1, { q: 4, r: 0 }, { aiArchetype: 'kiter', range: 3, moveTiles: 3, turnsOutOfReach: 3 })],
+    });
+    const t2 = endPlayerTurn(primed, HIGH);
+    expect(hexDistance(t2.enemies[0].hex, t2.player.hex)).toBeLessThanOrEqual(6); // closed ≥3 of 9
+  });
+});
+
+// --- MP regen (audit D8) --------------------------------------------------------------------------
+describe('mana regeneration', () => {
+  it('restores +1 MP each turn, capped at max', () => {
+    const s0 = makeState({ player: makePlayer({ q: 0, r: 0 }, { mp: 10, maxMp: 30 }), enemies: [makeEnemy(1, { q: 3, r: 0 }, { moveTiles: 0 })] });
+    const s1 = endPlayerTurn(s0, HIGH);
+    expect(s1.player.mp).toBe(11);
+    const full = makeState({ player: makePlayer({ q: 0, r: 0 }, { mp: 30, maxMp: 30 }), enemies: [makeEnemy(1, { q: 3, r: 0 }, { moveTiles: 0 })] });
+    expect(endPlayerTurn(full, HIGH).player.mp).toBe(30);
+  });
+});
+
+// --- Reinforcement waves (audit D6) ---------------------------------------------------------------
+describe('reinforcement waves', () => {
+  it('generateSkirmish fields at most WAVE_CAP and queues the rest, all counted in the force total', () => {
+    const s = generateSkirmish(fighter(), 8, 10, ['sparks'], { enemyCount: 8, rng: seeded(3) });
+    expect(s.enemies.length).toBe(5); // WAVE_CAP
+    expect(s.reinforcements?.length).toBe(3);
+    const totalHp = [...s.enemies, ...(s.reinforcements ?? [])].reduce((sum, e) => sum + e.maxHp, 0);
+    expect(s.enemyForceMaxHp).toBe(totalHp);
+    expect(s.log[0]).toContain('More approach from the edges');
+  });
+
+  it('clearing the board with waves queued is NOT a win, and the next turn spawns the wave', () => {
+    const queued = [makeEnemy(9, { q: 0, r: 0 }), makeEnemy(10, { q: 0, r: 0 })];
+    const s0 = makeState({
+      enemies: [makeEnemy(1, { q: 1, r: 0 }, { hp: 1 })],
+      reinforcements: queued,
+    });
+    const s1 = playerAttack(s0, { q: 1, r: 0 }, HIGH); // kill the last fielded foe
+    expect(s1.status).toBe('active'); // waves pending — not a win
+    expect(s1.enemies.length).toBe(0);
+    const s2 = endPlayerTurn(s1, HIGH); // empty board pulls the wave immediately
+    expect(s2.enemies.length).toBe(2);
+    expect(s2.reinforcements?.length ?? 0).toBe(0);
+    expect(s2.log.some((l) => l.includes('Reinforcements arrive'))).toBe(true);
+    // Spawned units stand on real, distinct, unblocked tiles.
+    const k0 = hexKey(s2.enemies[0].hex);
+    const k1 = hexKey(s2.enemies[1].hex);
+    expect(k0).not.toBe(k1);
+    expect(s2.tiles[k0].terrain).not.toBe('blocked');
+  });
+
+  it('waves arrive on the cadence while foes remain fielded', () => {
+    const s0 = makeState({
+      enemies: [makeEnemy(1, { q: 4, r: 0 }, { moveTiles: 0, hp: 500, maxHp: 500 })],
+      reinforcements: [makeEnemy(9, { q: 0, r: 0 })],
+      turnCount: 2, // ends turn 2 → turnCount becomes 3 → 3 % WAVE_EVERY_TURNS(2) === 1 → wave
+      radius: 4, tiles: tilesFor(4),
+      player: makePlayer({ q: -4, r: 0 }, { hp: 500, maxHp: 500 }),
+    });
+    const s1 = endPlayerTurn(s0, HIGH);
+    expect(s1.enemies.length).toBe(2);
+  });
+
+  it('damage fraction counts queued reinforcements as standing HP', () => {
+    const s = makeState({
+      enemies: [makeEnemy(1, { q: 1, r: 0 }, { hp: 0, maxHp: 30 })], // slain (30 dealt)
+      reinforcements: [makeEnemy(9, { q: 0, r: 0 }, { hp: 30, maxHp: 30 })],
+      enemyForceMaxHp: 60,
+    });
+    expect(tacticsDamageFraction(s)).toBeCloseTo(0.5);
+  });
+});
+
+// --- Usage ledger (audit D9) -----------------------------------------------------------------------
+describe('stat usage ledger', () => {
+  it('moves, strikes, and casts record their stat expression', () => {
+    const s0 = makeState({ enemies: [makeEnemy(1, { q: 2, r: 0 })], knownSpells: ['sparks'] });
+    const moved = movePlayer(selectAction(s0, { kind: 'move' }), { q: 0, r: 1 });
+    expect(moved.statUsage?.AG).toBe(1);
+    const struck = playerAttack(makeState({ enemies: [makeEnemy(1, { q: 1, r: 0 })] }), { q: 1, r: 0 }, HIGH);
+    expect(struck.statUsage?.ST).toBe(1); // SWORD is ST
+    const cast = playerCastSpell(makeState({ enemies: [makeEnemy(1, { q: 1, r: 0 })], knownSpells: ['sparks'] }), 'sparks', { q: 1, r: 0 }, HIGH);
+    expect(cast.statUsage?.WI).toBe(1); // damage school
+  });
+
+  it('the ledger is copy-on-write — earlier snapshots are not mutated', () => {
+    const s0 = makeState({ enemies: [makeEnemy(1, { q: 2, r: 0 })] });
+    const s1 = movePlayer(selectAction(s0, { kind: 'move' }), { q: 0, r: 1 });
+    const s2 = movePlayer(s1, { q: 0, r: 2 });
+    expect(s1.statUsage?.AG).toBe(1);
+    expect(s2.statUsage?.AG).toBe(2);
+    expect(s0.statUsage).toBeUndefined();
+  });
+});
+
+// --- Melee overwatch attack of opportunity (audit D10) --------------------------------------------
+describe('overwatch attack of opportunity', () => {
+  it('a melee hero on overwatch strikes an adjacent enemy that breaks away', () => {
+    // Kiter adjacent to the hero wants distance (tooClose penalty) → it retreats → AoO fires.
+    const s0 = makeState({
+      player: makePlayer({ q: 0, r: 0 }, { overwatch: true, hasActed: true }),
+      enemies: [makeEnemy(1, { q: 1, r: 0 }, { aiArchetype: 'kiter', range: 3, moveTiles: 3, hp: 100, maxHp: 100 })],
+    });
+    const s1 = endPlayerTurn(s0, HIGH);
+    expect(hexDistance(s1.enemies[0].hex, s1.player.hex)).toBeGreaterThan(1); // it fled
+    expect(s1.enemies[0].hp).toBeLessThan(100); // and paid for it
+    expect(s1.log.some((l) => l.includes('breaks away'))).toBe(true);
+    expect(s1.player.overwatch).toBe(false); // one-shot stance expired
+  });
+});
+
 // --- Dev invincibility (audit B2): wired like ArenaState.invincible ------------------------------
 describe('dev invincibility', () => {
   it('heroes take no attack, hazard, or DoT damage and are topped up each turn', () => {
@@ -752,8 +901,9 @@ describe('tacticsReward', () => {
     const small = tacticsReward(makeState({ status: 'won', tier: 5, radius: 3 })).gold!;
     const large = tacticsReward(makeState({ status: 'won', tier: 5, radius: 6 })).gold!;
     expect(large).toBeGreaterThan(small);
-    // radius-6 sizeBonus = 4 → 40 * 1.75 * (1 + 0.15*4) = 70 * 1.6 = 112.
-    expect(large).toBe(112);
+    // radius-6 sizeBonus = 4 → 40 * 1.75 * (1 + 0.25*4) = 70 * 2 = 140 (audit D6: at the old
+    // 0.15 step a Large-board foe paid ~½ a Small-board foe — bigger fights were the worst pay).
+    expect(large).toBe(140);
   });
 
   it('BAL-10: a win awards the tier-scaled material bundle', () => {
