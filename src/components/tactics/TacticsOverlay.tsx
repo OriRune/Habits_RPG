@@ -4,13 +4,11 @@ import { useGameStore } from '@/store/useGameStore';
 import { useTacticsAudio } from '@/hooks/useTacticsAudio';
 import { useIsCoarsePointer } from '@/hooks/useIsCoarsePointer';
 import {
-  type Tile,
   type TacticalEffect,
   type UnitStatus,
   type EnemyIntent,
   type AIArchetype,
   type TacticsObjective,
-  TERRAIN_ICONS,
   ARCHETYPE_INFO,
   computeEnemyThreatCounts,
   previewPlayerAttack,
@@ -25,7 +23,8 @@ import { MATERIALS } from '@/content/materials';
 import { play as sfxPlay } from '@/lib/sfx';
 import { MAX_ELEVATION, SPELL_RANGE, STA_REGEN_PER_TURN, MP_REGEN_PER_TURN, MOVE_ANIM_MS, TACTICS_UNLOCK_LEVEL, climbFor, heightRangeBonus, hasLineOfSight, type HexBattleState } from '@/engine/hexBattle';
 import type { StatId } from '@/engine/stats';
-import { base, topCenter, hexCorners, isoBounds, colHeight, type Pt } from './iso';
+import { base, topCenter, hexCorners, isoBounds } from './iso';
+import { TacticsArtDefs, StaticTerrainLayer, ptsAt } from './terrainArt';
 import { Button } from '@/components/ui/Button';
 import { StreakBonusChip } from '@/components/character/StreakBonusChip';
 import { cn } from '@/lib/cn';
@@ -66,26 +65,6 @@ const FLOATER_COLOR: Record<NonNullable<TacticalEffect['color']>, string> = {
   'heal': '#34d399',       // green
   'status': '#c084fc',     // purple — status inflicted
 };
-
-/**
- * Tile top-face color: hue says terrain, lightness says elevation. Height is the mode's core
- * mechanic, so higher tiles read distinctly warmer/lighter — not just a deeper extrusion.
- * The warm shift (R grows fastest) keeps high ground feeling like sunlit ground.
- */
-function terrainRGB(t: Tile): [number, number, number] {
-  const z = t.elevation;
-  switch (t.terrain) {
-    case 'blocked': return [60 + z * 12, 56 + z * 11, 64 + z * 9];
-    case 'cover':   return [96 + z * 16, 72 + z * 14, 44 + z * 9];
-    case 'slow':    return [52 + z * 14, 78 + z * 16, 48 + z * 8];
-    case 'hazard':  return [120 + z * 14, 48 + z * 12, 36 + z * 8];
-    default:        return [48 + z * 19, 58 + z * 17, 70 + z * 10];
-  }
-}
-const rgbStr = (c: [number, number, number]) => `rgb(${c[0]},${c[1]},${c[2]})`;
-const darken = (c: [number, number, number], f: number): string =>
-  `rgb(${Math.round(c[0] * f)},${Math.round(c[1] * f)},${Math.round(c[2] * f)})`;
-const ptsAt = (corners: Pt[], cx: number, cy: number) => corners.map((p) => `${cx + p.x},${cy + p.y}`).join(' ');
 
 function Gauge({ icon, value, max, fill, note }: { icon: React.ReactNode; value: number; max: number; fill: string; note?: string }) {
   const pct = max > 0 ? Math.max(0, Math.min(100, Math.round((value / max) * 100))) : 0;
@@ -587,7 +566,10 @@ export function TacticsOverlay() {
         <div className="relative" style={{ width: bounds.width, height: bounds.height }}>
           {/* Board SVG */}
           <svg width={bounds.width} height={bounds.height} className="absolute inset-0">
-            {/* Intent movement lines (behind tiles) */}
+            <TacticsArtDefs />
+            {/* Static textured board — memoized; hover/selection re-renders never touch it. */}
+            <StaticTerrainLayer tiles={tactics.tiles} size={size} offsetX={bounds.offsetX} offsetY={bounds.offsetY} />
+            {/* Intent movement lines (behind the dynamic tile overlays) */}
             {showIntents && (tactics.intentPlan ?? []).map((intent) => {
               if (hexKey(intent.moveTo) === hexKey(tactics.enemies.find(e => e.id === intent.enemyId)?.hex ?? intent.moveTo)) return null;
               const enemy = tactics.enemies.find(e => e.id === intent.enemyId);
@@ -604,29 +586,25 @@ export function TacticsOverlay() {
               );
             })}
 
+            {/* Dynamic tile layer — one transparent hit polygon per tile (carries the a11y
+                surface + handlers) plus the cheap state overlays. All heavy art lives in
+                StaticTerrainLayer above. */}
             {tilesByDepth.map((tile) => {
               const t = top(tile.hex);
               const key = hexKey(tile.hex);
-              const rgb = terrainRGB(tile);
               const corners = hexCorners(size);
-              const E = tile.elevation * colHeight(size);
               const highlight = reachable.has(key) ? 'reach' : targetable.has(key) ? 'target' : null;
               const isPlayerTile = key === playerKey;
               const isAllyTile = allyHeroes.some((p) => hexKey(p.hex) === key);
               const threatCount = showThreat && !isPlayerTile && !isAllyTile ? (threatCounts[key] ?? 0) : 0;
               const isHovered = hoveredHex && hexKey(hoveredHex) === key;
-
-              const wall = (a: number, b: number, fill: string) => {
-                const pa = corners[a];
-                const pb = corners[b];
-                const pts = [
-                  `${t.x + pa.x},${t.y + pa.y}`,
-                  `${t.x + pb.x},${t.y + pb.y}`,
-                  `${t.x + pb.x},${t.y + pb.y + E}`,
-                  `${t.x + pa.x},${t.y + pa.y + E}`,
-                ].join(' ');
-                return <polygon key={`${a}-${b}`} points={pts} fill={fill} />;
-              };
+              const stroke =
+                isHovered ? 'rgba(255,255,255,0.9)'
+                : highlight === 'reach' ? 'rgba(56,189,248,0.95)'
+                : highlight === 'target' ? 'rgba(251,191,36,0.95)'
+                : isPlayerTile ? 'rgba(56,189,248,0.6)'
+                : isAllyTile ? 'rgba(52,211,153,0.6)'
+                : 'none';
 
               // Accessibility + testability surface (audit U10): tiles were anonymous polygons.
               const occupant = isPlayerTile ? 'you'
@@ -642,24 +620,11 @@ export function TacticsOverlay() {
 
               return (
                 <g key={key}>
-                  {E > 0 && (
-                    <>
-                      {wall(3, 4, darken(rgb, 0.55))}
-                      {wall(4, 5, darken(rgb, 0.42))}
-                      {wall(5, 0, darken(rgb, 0.72))}
-                    </>
-                  )}
                   <polygon
                     points={ptsAt(corners, t.x, t.y)}
-                    fill={rgbStr(rgb)}
-                    stroke={
-                      isHovered ? 'rgba(255,255,255,0.9)'
-                      : highlight === 'reach' ? 'rgba(56,189,248,0.95)'
-                      : highlight === 'target' ? 'rgba(251,191,36,0.95)'
-                      : isPlayerTile ? 'rgba(56,189,248,0.6)'
-                      : isAllyTile ? 'rgba(52,211,153,0.6)'
-                      : 'rgba(0,0,0,0.4)'}
-                    strokeWidth={isHovered ? 3.5 : highlight || isPlayerTile || isAllyTile ? 3 : 1}
+                    fill="transparent"
+                    stroke={stroke}
+                    strokeWidth={isHovered ? 3.5 : highlight || isPlayerTile || isAllyTile ? 3 : 0}
                     style={{ cursor: highlight || firing.has(key) ? 'pointer' : 'default' }}
                     data-hex={key}
                     role={highlight ? 'button' : undefined}
@@ -688,16 +653,6 @@ export function TacticsOverlay() {
                       strokeWidth={1}
                       style={{ pointerEvents: 'none' }}
                     />
-                  )}
-                  {TERRAIN_ICONS[tile.terrain] && (
-                    <text
-                      x={t.x} y={t.y}
-                      textAnchor="middle" dominantBaseline="central"
-                      fontSize={size * 0.7} opacity={0.85}
-                      style={{ pointerEvents: 'none' }}
-                    >
-                      {TERRAIN_ICONS[tile.terrain]}
-                    </text>
                   )}
                   {/* Elevation badge for high ground — on targetable tiles, and in move mode only
                       on the HOVERED tile (audit U9: a board-wide ▲ flood shouts over everything). */}
