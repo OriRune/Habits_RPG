@@ -72,6 +72,11 @@ describe('handleTacticsMessage', () => {
     it('non-host → ignore (guest does not resolve intents)', () => {
       expect(handleTacticsMessage(intent(GUEST), ctx({ isHost: false }))).toEqual({ kind: 'ignore' });
     });
+
+    it("spoofed heroId (≠ the sender's userId) → ignore (ownership)", () => {
+      // A guest may only drive its own hero — matters the moment sessions exceed one guest.
+      expect(handleTacticsMessage(intent('other-guest-id'), ctx({ userId: HOST, tacticsActive: true }))).toEqual({ kind: 'ignore' });
+    });
   });
 
   describe('bye', () => {

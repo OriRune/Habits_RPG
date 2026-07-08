@@ -192,6 +192,7 @@ export const createCoreSlice: StateCreator<
       deepestArenaTier: 0,
       tactics: null,
       deepestTacticsTier: 0,
+      tacticsSeenFoes: [],
       trialsClearedOn: emptyTrialsClearedOn(),
       bestTrialScore: emptyBestTrialScore(),
       trialAttemptNonce: 0,

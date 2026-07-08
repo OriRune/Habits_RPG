@@ -12,6 +12,7 @@ import {
   type HexBattleState,
   type PlayerUnit,
   EFFECT_STAGGER_MS,
+  HOLDER_LEASH,
   MAX_ELEVATION,
   MOVE_ANIM_MS,
   applyUnitStatus,
@@ -23,7 +24,10 @@ import {
   heightDamageMult,
   heightRangeBonus,
   livingHeroes,
+  lungePending,
+  moveBudgetFor,
   nearestHero,
+  pressingKiter,
   tileAt,
   weakenFactor,
 } from './state';
@@ -114,6 +118,13 @@ function scoreMoveTile(s: HexBattleState, enemy: EnemyUnit, candidate: Hex, arch
       return -Math.abs(dist - preferred) * 4 + elevGain * 3 + tooClose + coverBonus;
     }
     case 'holder': {
+      // Leash (audit D3): dig-in scoring is strictly anti-approach (moving k tiles nets −2k),
+      // which made distant holders inert HP piles — free kills for any ranged build. Beyond
+      // HOLDER_LEASH of the nearest hero the holder lumbers toward the fight like a slow
+      // charger, reverting to holding ground once inside the leash.
+      if (hexDistance(enemy.hex, nearestHero(s, enemy.hex).hex) > HOLDER_LEASH) {
+        return -dist * 2 + elevGain * 1 + coverBonus;
+      }
       const distFromSelf = hexDistance(candidate, enemy.hex);
       return -dist * 1 - distFromSelf * 3 + elevGain * 1;
     }
@@ -125,8 +136,10 @@ function scoreMoveTile(s: HexBattleState, enemy: EnemyUnit, candidate: Hex, arch
 }
 
 export function bestMoveFor(s: HexBattleState, enemy: EnemyUnit, moveTiles = enemy.moveTiles): Hex {
-  // Use the pre-baked archetype stored on the unit (avoids a redundant lookup).
-  const arch = enemy.aiArchetype;
+  // A kiter kept out of attack reach for KITER_PRESS_TURNS abandons ring-keeping and scores
+  // like a charger for this activation (audit D4) — the shared pressingKiter() gate keeps
+  // enemyAct and the intent planner telling the same story.
+  const arch = pressingKiter(enemy) ? 'charger' : enemy.aiArchetype;
   // Kiters always evaluate movement (they want optimal range, not just "any range").
   if (arch !== 'kiter' && enemyInRange(s, enemy)) return enemy.hex;
   const costs = reachableCosts(s, enemy.hex, moveTiles, enemy.climb);
@@ -160,11 +173,21 @@ function enemyTurn(s: HexBattleState, rng: RNG): void {
     if (s.status !== 'active') return;
 
     // Overwatch reactions: any living hero with overwatch armed fires once against the first
-    // enemy that ends its move within weapon reach. Stance clears after the shot.
+    // enemy that ends its move within weapon reach — OR, for melee weapons, the first enemy
+    // that breaks away from adjacency (attack of opportunity, audit D10: kiters/holders never
+    // step INTO a sword's reach, so melee overwatch otherwise punished nothing that matters).
     for (const hero of livingHeroes(s)) {
-      if (!hero.overwatch || !inAttackReachFor(s, hero, enemy.hex)) continue;
+      if (!hero.overwatch || enemy.hp <= 0) continue;
+      const heroWeapon = hero.weapon ?? s.weapon;
+      const fledMelee = !heroWeapon.ranged
+        && !!enemy.prevHex
+        && hexDistance(hero.hex, enemy.prevHex) === 1
+        && hexDistance(hero.hex, enemy.hex) > 1;
+      if (!inAttackReachFor(s, hero, enemy.hex) && !fledMelee) continue;
       const heroVerb = hero.name ? `${hero.name} snaps` : 'You snap';
-      s.log.push(`Overwatch! ${heroVerb} a reaction shot at ${enemy.name}.`);
+      s.log.push(fledMelee
+        ? `Overwatch! ${heroVerb} a parting strike as ${enemy.name} breaks away.`
+        : `Overwatch! ${heroVerb} a reaction shot at ${enemy.name}.`);
       resolvePlayerStrike(s, hero, enemy, rng);
       hero.overwatch = false;
       checkOutcome(s);
@@ -222,9 +245,11 @@ function enemyAct(s: HexBattleState, enemy: EnemyUnit, rng: RNG, push: ReturnTyp
   // out-paces even a max-AG player — 2×moveTiles alone merely *ties* the top move on a medium board)
   // and keeps lunging every turn until it connects. This turn only; moveTiles is never mutated. Breaks
   // the "player speed ≥ enemy speed forever" kiting invariant. Kiters/holders are unaffected.
-  const lunge = chasing && (enemy.turnsOutOfReach ?? 0) >= 2;
+  // lungePending/moveBudgetFor live in ./state and are shared with the threat/intent predictors,
+  // so the telegraph can never drift from what actually happens here.
+  const lunge = lungePending(enemy);
   if (lunge) s.log.push(`${enemy.name} lunges forward!`);
-  const bestHex = bestMoveFor(s, enemy, lunge ? enemy.moveTiles * 2 + 1 : enemy.moveTiles);
+  const bestHex = bestMoveFor(s, enemy, moveBudgetFor(enemy));
   if (!hexEquals(bestHex, enemy.hex)) {
     // Emit a 'move' effect before mutating hex — the overlay will hold the sprite at
     // prevHex until this effect fires, then slide it to bestHex (staggered per-enemy).
@@ -235,9 +260,10 @@ function enemyAct(s: HexBattleState, enemy: EnemyUnit, rng: RNG, push: ReturnTyp
   }
   const inRange = enemyInRange(s, enemy);
   if (inRange) enemyAttack(s, enemy, rng, push);
-  // Track reach: reset only when the chaser lands a strike; a whiffed lunge keeps the counter
-  // elevated so it presses every turn until it connects, rather than resetting to a 3-turn cadence.
-  if (chasing) enemy.turnsOutOfReach = inRange ? 0 : (enemy.turnsOutOfReach ?? 0) + 1;
+  // Track reach: reset only when the unit ends in range; a whiffed lunge keeps the counter
+  // elevated so it presses every turn until it connects. Kiters track it too (audit D4) —
+  // one kept beyond its own reach for KITER_PRESS_TURNS stops idling and closes in.
+  if (chasing || arch === 'kiter') enemy.turnsOutOfReach = inRange ? 0 : (enemy.turnsOutOfReach ?? 0) + 1;
 }
 
 function enemyAttack(s: HexBattleState, enemy: EnemyUnit, rng: RNG, push: ReturnType<typeof effectPusher>): void {
@@ -286,8 +312,11 @@ function enemyAttack(s: HexBattleState, enemy: EnemyUnit, rng: RNG, push: Return
     totalDealt += Math.round(dmg);
   }
 
-  target.hp -= totalDealt;
-  s.effects.push({ id: s.seq++, kind: 'floater', from: target.hex, to: target.hex, startedAtMs: EFFECT_STAGGER_MS + 60, durationMs: 900, label: `-${totalDealt}`, color: 'dmg-player' });
+  // Dev invincibility (set at match start): the attack still resolves and narrates, but no HP moves.
+  if (!s.invincible) {
+    target.hp -= totalDealt;
+    s.effects.push({ id: s.seq++, kind: 'floater', from: target.hex, to: target.hex, startedAtMs: EFFECT_STAGGER_MS + 60, durationMs: 900, label: `-${totalDealt}`, color: 'dmg-player' });
+  }
 
   const targetLabel = target.name ?? 'you';
   if (kind === 'drain') {
@@ -318,7 +347,10 @@ export function planEnemyIntents(state: HexBattleState): EnemyIntent[] {
       if (hasStatus(enemy, 'freeze')) {
         return { enemyId: enemy.id, moveTo: enemy.hex, willAttack: false, attackLabel: 'frozen in place', attackIcon: '❄️' };
       }
-      const moveTo = bestMoveFor(state, enemy);
+      // Predict with the same budget enemyAct will actually use — including the catch-up lunge.
+      // (An in-range chaser attacks in place instead of lunging, so don't telegraph one.)
+      const lunge = lungePending(enemy) && !enemyInRange(state, enemy);
+      const moveTo = bestMoveFor(state, enemy, moveBudgetFor(enemy));
       // Each enemy independently targets its nearest living hero.
       const target = nearestHero(state, moveTo);
       const ez = elevationAt(state, moveTo);
@@ -331,8 +363,9 @@ export function planEnemyIntents(state: HexBattleState): EnemyIntent[] {
         enemyId: enemy.id,
         moveTo,
         willAttack,
-        attackLabel: move?.label ?? 'attacks',
-        attackIcon: move?.icon ?? (enemy.range > 1 ? '🏹' : '⚔️'),
+        attackLabel: lunge ? 'lunges forward!' : (move?.label ?? 'attacks'),
+        attackIcon: lunge ? '💨' : (move?.icon ?? (enemy.range > 1 ? '🏹' : '⚔️')),
+        lunge,
       };
     });
 }

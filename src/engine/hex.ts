@@ -1,6 +1,7 @@
-// Flat-top hexagon geometry for the Arena minigame. Pure math, no state — fully unit-tested
-// in hex.test.ts. Uses axial coordinates (q, r); the orientation only matters when we convert
-// to pixels (axialToPixel) and when we label the six directions for the keyboard/D-pad.
+// Flat-top hexagon geometry for Hex Tactics (src/engine/hexBattle/). Pure math, no state — fully
+// unit-tested in hex.test.ts. Uses axial coordinates (q, r); the orientation only matters when we
+// convert to pixels (axialToPixel) and when we label the six directions.
+// (The Arena minigame migrated to the square grid in src/engine/grid.ts.)
 //
 // Flat-top layout (a true Up and Down neighbour, which keyboards like):
 //
@@ -137,14 +138,6 @@ export function axialToPixel(h: Hex, size: number): { x: number; y: number } {
     x: size * 1.5 * h.q,
     y: size * Math.sqrt(3) * (h.r + h.q / 2),
   };
-}
-
-/** Pixel bounding box of a flat-top board, so the overlay can size and centre it. */
-export function boardPixelSize(radius: number, size: number): { width: number; height: number } {
-  // Flat-top hex: width 2*size, height sqrt(3)*size. Columns step 1.5*size apart.
-  const width = size * 1.5 * (2 * radius) + size * 2;
-  const height = size * Math.sqrt(3) * (2 * radius) + size * Math.sqrt(3);
-  return { width, height };
 }
 
 /** Pick the direction whose vector best reduces the distance from `from` toward `to` (boss chase). */

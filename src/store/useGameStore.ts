@@ -176,7 +176,7 @@ export function createGameStore(bindGlobalFlush = false) {
     }),
     {
       name: 'habits-rpg-save',
-      version: 35,
+      version: 36,
       storage: debounced.storage,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
@@ -263,6 +263,9 @@ export function createGameStore(bindGlobalFlush = false) {
       // v35: Deep Mine daily first-descent bonus (3.8) — new top-level `mineDailyBonus`
       //      (`{date, floorsUsed} | null`) backfills to null on existing saves via merge — a
       //      simple nullable object, mineTombstone-idiom, no nested-default merge needed.
+      // v36: Tactics bestiary (entry-screen "How to play") — new top-level `tacticsSeenFoes`
+      //      (enemy templateIds the player has faced). Backfills to [] on existing saves via
+      //      the default merge — spiritGroveSeen/v32 idiom, no explicit merge line needed.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {

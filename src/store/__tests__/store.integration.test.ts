@@ -1473,8 +1473,8 @@ describe('deep mine', () => {
     expect(get().deepestMineFloor).toBe(2);
   });
 
-  it('persists at version 35', () => {
-    expect(useGameStore.persist.getOptions().version).toBe(35);
+  it('persists at version 36', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(36);
   });
 
   describe('3.8: daily first-descent bonus', () => {
@@ -2577,6 +2577,27 @@ describe('commitTactics material bundle + clone (BAL-10)', () => {
     // cloneMaterials:true → applyReward mutated a fresh object, not the prior snapshot.
     expect(get().materials).not.toBe(matsBefore);
     expect(matsBefore).toEqual({}); // prior snapshot untouched (proves no in-place aliasing)
+  });
+});
+
+describe('tacticsSeenFoes bestiary ledger', () => {
+  it('endTactics records every fielded templateId — dead foes and prior discoveries included', () => {
+    useGameStore.setState({
+      character: { ...get().character, level: 6 },
+      tacticsSeenFoes: ['goblin'],
+      // endTactics only needs enemies[].templateId beyond what commitTactics reads.
+      tactics: {
+        radius: 3, tier: 5, status: 'won', objective: null,
+        enemies: [
+          { templateId: 'skeleton', hp: 0 },   // slain foes still count as encountered
+          { templateId: 'dire_wolf', hp: 12 },
+          { templateId: 'goblin', hp: 0 },     // repeat encounters don't duplicate
+        ],
+      } as unknown as HexBattleState,
+    });
+    get().endTactics();
+    expect(get().tactics).toBeNull();
+    expect([...get().tacticsSeenFoes].sort()).toEqual(['dire_wolf', 'goblin', 'skeleton']);
   });
 });
 

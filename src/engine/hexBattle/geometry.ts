@@ -16,6 +16,7 @@ import {
   elevationAt,
   hasStatus,
   heightRangeBonus,
+  moveBudgetFor,
   occupiedKeys,
 } from './state';
 
@@ -157,24 +158,37 @@ export function recomputeClientHighlights(s: HexBattleState): void {
 }
 
 // --- Enemy threat zone (pure, used for the danger overlay) --------------------------------------
-export function computeEnemyThreat(state: HexBattleState): Hex[] {
-  const threatened = new Set<string>();
+/**
+ * Per-tile threat counts: how many living enemies could attack each hex on their next turn.
+ * The overlay grades the danger tint by this count — a tile one kiter can poke reads differently
+ * from a tile three chargers converge on ("everything is red" carries no information).
+ */
+export function computeEnemyThreatCounts(state: HexBattleState): Record<string, number> {
+  const counts: Record<string, number> = {};
   for (const enemy of state.enemies) {
     if (enemy.hp <= 0 || hasStatus(enemy, 'freeze')) continue;
-    const positions = [enemy.hex, ...computeReachable(state, enemy.hex, enemy.moveTiles, enemy.climb)];
+    // moveBudgetFor includes the catch-up lunge (2×move+1 once kept out of reach) — the danger
+    // overlay must never under-predict reach in exactly the kiting situation the lunge punishes.
+    const positions = [enemy.hex, ...computeReachable(state, enemy.hex, moveBudgetFor(enemy), enemy.climb)];
+    const mine = new Set<string>();
     for (const from of positions) {
       const fromZ = elevationAt(state, from);
       for (const tile of Object.values(state.tiles)) {
         if (tile.terrain === 'blocked') continue;
         const tKey = hexKey(tile.hex);
-        if (threatened.has(tKey)) continue;
+        if (mine.has(tKey)) continue;
         const dz = fromZ - tile.elevation;
         const effectiveRange = enemy.range <= 1 ? 1 : enemy.range + heightRangeBonus(dz);
         if (hexDistance(from, tile.hex) > effectiveRange) continue;
         if (enemy.range > 1 && !hasLineOfSight(state, from, tile.hex)) continue;
-        threatened.add(tKey);
+        mine.add(tKey);
       }
     }
+    for (const k of mine) counts[k] = (counts[k] ?? 0) + 1;
   }
-  return [...threatened].map((k) => state.tiles[k].hex);
+  return counts;
+}
+
+export function computeEnemyThreat(state: HexBattleState): Hex[] {
+  return Object.keys(computeEnemyThreatCounts(state)).map((k) => state.tiles[k].hex);
 }

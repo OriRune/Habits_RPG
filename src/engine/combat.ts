@@ -318,9 +318,18 @@ function pickEnemyMove(phase: BossPhase, bossMp: number, bossSta: number, rng: R
   return affordable[affordable.length - 1];
 }
 
+/** Damage-roll multipliers, exported so pre-commit previews (hexBattle) can mirror the exact
+ *  roll math — a preview that re-hardcodes these lies to the player the moment they're tuned. */
+export const DMG_VARIANCE_MIN = 0.85;
+export const DMG_VARIANCE_MAX = 1.15;
+export const WEAK_MULT = 1.25;
+export const RESIST_MULT = 0.6;
+/** Swing without enough stamina — half damage. */
+export const EXHAUSTED_MULT = 0.5;
+
 /** ±15% spread on a base magnitude. Exported so the real-time Arena rolls damage identically. */
 export function variance(base: number, rng: RNG): number {
-  return base * (0.85 + rng() * 0.3);
+  return base * (DMG_VARIANCE_MIN + rng() * (DMG_VARIANCE_MAX - DMG_VARIANCE_MIN));
 }
 
 /**
@@ -360,9 +369,9 @@ export function attackRoll(
   const weak = weakTo.includes(attackStat);
   const resist = resistTo.includes(attackStat);
   let dmg = variance(base, rng);
-  if (weak) dmg *= 1.25;
-  if (resist) dmg *= 0.6;
-  if (!full) dmg *= 0.5; // exhausted — weak swing
+  if (weak) dmg *= WEAK_MULT;
+  if (resist) dmg *= RESIST_MULT;
+  if (!full) dmg *= EXHAUSTED_MULT; // exhausted — weak swing
   const dealt = Math.max(1, Math.round(dmg) - defense);
   return { dealt, weak, resist };
 }
@@ -381,8 +390,8 @@ export function spellDamageRoll(
   const weak = weakTo.includes(schoolStat) || weakTo.includes('WI');
   const resist = resistTo.includes(schoolStat) || resistTo.includes('WI');
   let dmg = variance(base, rng);
-  if (weak) dmg *= 1.25;
-  if (resist) dmg *= 0.6;
+  if (weak) dmg *= WEAK_MULT;
+  if (resist) dmg *= RESIST_MULT;
   const dealt = Math.max(1, Math.round(dmg) - ward);
   return { dealt, weak, resist };
 }

@@ -12,6 +12,7 @@ import {
   playerCastSpell as tacticsCastFn,
   endPlayerTurn as tacticsEndTurnFn,
   holdOverwatch as tacticsHoldFn,
+  climbFor,
   TACTICS_ENERGY_COST,
   TACTICS_UNLOCK_LEVEL,
 } from '@/engine/hexBattle';
@@ -27,6 +28,8 @@ export type { TacticsSize, HeroOpts };
 export interface TacticsSlice {
   tactics: HexBattleState | null;
   deepestTacticsTier: number;
+  /** Enemy templateIds ever fielded against this player — gates the entry-screen bestiary. */
+  tacticsSeenFoes: string[];
 
   beginTactics: (loadout?: string[], chosenTier?: number) => void;
   tacticsSelect: (action: TacticsAction) => void;
@@ -48,6 +51,7 @@ export const createTacticsSlice: StateCreator<
 > = (set) => ({
   tactics: null,
   deepestTacticsTier: 0,
+  tacticsSeenFoes: [],
 
   beginTactics: (loadout, chosenTier) =>
     set((s) => {
@@ -60,6 +64,17 @@ export const createTacticsSlice: StateCreator<
         radius: TACTICS_SIZE_RADIUS[s.settings.tacticsSize],
         rng: Math.random,
       });
+      // Dev invincibility, arena-style: captured at match start (solo only — never in co-op,
+      // where the state broadcasts to other players).
+      if (s.settings.invincible) tactics.invincible = true;
+      // Habit→power visibility (audit §4.1): name the real-life habits behind this match's
+      // mobility, right where the player will read the opening log. Store-level on purpose —
+      // the engine knows stats, not habits.
+      const agHabits = s.habits.filter((h) => h.stat === 'AG').map((h) => h.name).slice(0, 2);
+      const trainedBy = agHabits.length > 0 ? ` (trained by ${agHabits.join(', ')})` : '';
+      tactics.log.push(
+        `Agility ${s.character.statLevels.AG}${trainedBy}: move ${tactics.player.movesLeft}, climb ${climbFor(s.character.statLevels.AG)}.`,
+      );
       return {
         character: {
           ...s.character,
@@ -108,7 +123,18 @@ export const createTacticsSlice: StateCreator<
       return tactics === s.tactics ? s : { tactics };
     }),
 
-  endTactics: () => set((s) => (s.tactics ? commitTactics(s, s.tactics) : s)),
+  endTactics: () =>
+    set((s) => {
+      if (!s.tactics) return s;
+      // Record every foe this match fielded (dead ones and reinforcement waves stay in the
+      // array), so the entry-screen bestiary can reveal creatures the player has actually met.
+      const seen = new Set(s.tacticsSeenFoes);
+      for (const e of s.tactics.enemies) seen.add(e.templateId);
+      return {
+        ...commitTactics(s, s.tactics),
+        ...(seen.size !== s.tacticsSeenFoes.length ? { tacticsSeenFoes: [...seen] } : {}),
+      };
+    }),
 
   coopApplyTactics: (incoming) =>
     set((cur) => ({

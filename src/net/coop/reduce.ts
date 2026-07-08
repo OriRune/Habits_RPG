@@ -634,6 +634,9 @@ export function handleTacticsMessage(msg: CoopMessage, ctx: TacticsMsgCtx): Tact
       if (!ctx.isHost) return { kind: 'ignore' };
       if (!ctx.tacticsActive) return { kind: 'ignore' };
       if (msg.heroId === ctx.userId) return { kind: 'ignore' };
+      // Ownership: a guest may only drive its OWN hero. Equivalent to the roster check at
+      // 2 players, but closes the spoofing hole the moment sessions grow beyond one guest.
+      if (msg.heroId !== msg.userId) return { kind: 'ignore' };
       return { kind: 'intent' };
 
     case 'bye':

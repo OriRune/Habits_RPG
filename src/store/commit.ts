@@ -765,21 +765,45 @@ export function commitArena(state: GameState, run: ArenaState): GameState {
 }
 
 /**
+ * The stat-XP split a finished Hex Tactics run will bank. Exported so the overlay's end-screen
+ * card shows exactly the numbers commitTactics is about to apply — one function, no drift.
+ *
+ * Usage-weighted (audit D9 / plan 6C): the engine counts each action's stat expression on
+ * `run.statUsage` (moves→AG, strikes→weapon stat, spells→school stat), and the trickle is
+ * split proportionally — a WI caster's win trains WI, not DX. Mirrors the Arena's weighting.
+ * Runs with no recorded usage (legacy saves, instant retreats) fall back to the historical
+ * AG-forward AG/DX/EN split.
+ */
+export function tacticsStatXp(run: HexBattleState): Partial<Record<StatId, number>> {
+  const won = run.status === 'won';
+  const budget = Math.round(
+    (MINIGAME_XP_BASE + MINIGAME_XP_PER_TIER * run.tier) * (won ? 1 : MINIGAME_XP_LOSS_FACTOR),
+  );
+  const usage = run.statUsage ?? {};
+  const totalUsage = (Object.values(usage) as number[]).reduce((sum, n) => sum + n, 0);
+  if (totalUsage > 0) {
+    const statXp: Partial<Record<StatId, number>> = {};
+    for (const [stat, count] of Object.entries(usage) as [StatId, number][]) {
+      if (count > 0) statXp[stat] = Math.max(1, Math.round((count / totalUsage) * budget));
+    }
+    return statXp;
+  }
+  // Fallback: flat AG-forward split (§5.4). Remainders go to AG then DX.
+  const each = Math.floor(budget / 3);
+  const rem = budget - each * 3; // 0, 1, or 2
+  return { AG: each + (rem > 0 ? 1 : 0), DX: each + (rem > 1 ? 1 : 0), EN: each };
+}
+
+/**
  * Bank a finished Hex Tactics skirmish and close it. A win pays scaled gold (tacticsReward) and
  * records the tier; either outcome earns an Agility-forward Agility/Dexterity/Endurance trickle —
  * Tactics is the mode that finally rewards mobility, so its XP leans on AG.
  */
 export function commitTactics(state: GameState, run: HexBattleState): GameState {
   const won = run.status === 'won';
-  const trickle = Math.round(
-    (MINIGAME_XP_BASE + MINIGAME_XP_PER_TIER * run.tier) * (won ? 1 : MINIGAME_XP_LOSS_FACTOR),
-  );
-  // Split trickle across three stats — AG-forward (§5.4). Remainders go to AG then DX.
-  const each = Math.floor(trickle / 3);
-  const rem = trickle - each * 3; // 0, 1, or 2
   return commitRun(state, {
     runField: 'tactics', reward: tacticsReward(run),
-    statXp: { AG: each + (rem > 0 ? 1 : 0), DX: each + (rem > 1 ? 1 : 0), EN: each },
+    statXp: tacticsStatXp(run),
     deepestField: 'deepestTacticsTier', deepestValue: run.tier, gateOnWin: won,
     // Tactics wins now award a material bundle (BAL-10) — clone so applyReward's in-place
     // `state.materials[key] += …` never aliases a shared snapshot object.

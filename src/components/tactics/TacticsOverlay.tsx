@@ -2,25 +2,31 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Heart, Zap, Sparkles, Footprints, LogOut, Skull, Trophy, ChevronRight, Shield, Eye, EyeOff, Coins } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { useTacticsAudio } from '@/hooks/useTacticsAudio';
+import { useIsCoarsePointer } from '@/hooks/useIsCoarsePointer';
 import {
-  type Tile,
   type TacticalEffect,
-  type UnitStatus,
   type EnemyIntent,
   type AIArchetype,
   type TacticsObjective,
-  TERRAIN_ICONS,
   ARCHETYPE_INFO,
+  computeEnemyThreatCounts,
   previewPlayerAttack,
   previewSpell,
   tacticsReward,
   type AttackPreview,
 } from '@/engine/hexBattle';
 import { hexKey, hexDistance, type Hex } from '@/engine/hex';
-import { getSpell, SCHOOL_STAT, type StatusKey } from '@/engine/spells';
-import { MAX_ELEVATION, SPELL_RANGE, STA_REGEN_PER_TURN, MOVE_ANIM_MS, climbFor, heightRangeBonus, hasLineOfSight } from '@/engine/hexBattle';
+import { getSpell, SCHOOL_STAT } from '@/engine/spells';
+import { tacticsStatXp } from '@/store/shared';
+import { selectTopStats } from '@/store/selectors';
+import { MATERIALS } from '@/content/materials';
+import { play as sfxPlay } from '@/lib/sfx';
+import { avatarCrest } from '@/lib/sprites';
+import { MAX_ELEVATION, SPELL_RANGE, STA_REGEN_PER_TURN, MP_REGEN_PER_TURN, MOVE_ANIM_MS, TACTICS_UNLOCK_LEVEL, climbFor, heightRangeBonus, hasLineOfSight, type HexBattleState } from '@/engine/hexBattle';
 import type { StatId } from '@/engine/stats';
-import { base, topCenter, hexCorners, isoBounds, colHeight, type Pt } from './iso';
+import { base, topCenter, hexCorners, isoBounds } from './iso';
+import { TacticsArtDefs, TileArt, ptsAt } from './terrainArt';
+import { UnitSprite, EffectSprite, SPELL_FX, STATUS_GLYPH } from './UnitSprite';
 import { Button } from '@/components/ui/Button';
 import { StreakBonusChip } from '@/components/character/StreakBonusChip';
 import { cn } from '@/lib/cn';
@@ -38,45 +44,6 @@ function fitSize(radius: number, availW: number, availH: number): number {
   return Math.max(14, Math.min(72, Math.floor(s)));
 }
 
-const STATUS_GLYPH: Record<StatusKey, string> = {
-  bless: '🛡️', burn: '🔥', weaken: '🔻', blind: '💫', freeze: '❄️', poison: '☠️',
-};
-
-const SPELL_FX: Record<string, { anim: string; glyph: string }> = {
-  sparks:  { anim: 'tactics-sparks',  glyph: '⚡' },
-  firebolt:{ anim: 'tactics-firebolt',glyph: '🔥' },
-  mend:    { anim: 'tactics-mend',    glyph: '✚' },
-  bless:   { anim: 'tactics-bless',   glyph: '✨' },
-  dazzle:  { anim: 'tactics-dazzle',  glyph: '💫' },
-  hex:     { anim: 'tactics-hex',     glyph: '🟣' },
-  // Tactics positional spells (always available)
-  push:    { anim: 'tactics-cast',    glyph: '💨' },
-  blink:   { anim: 'tactics-cast',    glyph: '🌀' },
-  cleave:  { anim: 'tactics-cast',    glyph: '⚡' },
-};
-
-const FLOATER_COLOR: Record<NonNullable<TacticalEffect['color']>, string> = {
-  'dmg-enemy': '#fbbf24',  // amber — damage dealt by player
-  'dmg-player': '#f87171', // red — damage taken
-  'heal': '#34d399',       // green
-  'status': '#c084fc',     // purple — status inflicted
-};
-
-function terrainRGB(t: Tile): [number, number, number] {
-  const lift = t.elevation * 12;
-  switch (t.terrain) {
-    case 'blocked': return [60 + lift, 56 + lift, 64 + lift];
-    case 'cover':   return [96 + lift, 72 + lift, 44 + lift];
-    case 'slow':    return [52 + lift, 78 + lift, 48 + lift];
-    case 'hazard':  return [120 + lift, 48 + lift, 36 + lift];
-    default:        return [46 + lift, 58 + lift, 70 + lift];
-  }
-}
-const rgbStr = (c: [number, number, number]) => `rgb(${c[0]},${c[1]},${c[2]})`;
-const darken = (c: [number, number, number], f: number): string =>
-  `rgb(${Math.round(c[0] * f)},${Math.round(c[1] * f)},${Math.round(c[2] * f)})`;
-const ptsAt = (corners: Pt[], cx: number, cy: number) => corners.map((p) => `${cx + p.x},${cy + p.y}`).join(' ');
-
 function Gauge({ icon, value, max, fill, note }: { icon: React.ReactNode; value: number; max: number; fill: string; note?: string }) {
   const pct = max > 0 ? Math.max(0, Math.min(100, Math.round((value / max) * 100))) : 0;
   return (
@@ -93,15 +60,50 @@ function Gauge({ icon, value, max, fill, note }: { icon: React.ReactNode; value:
   );
 }
 
-function StatusRow({ statuses }: { statuses: UnitStatus[] }) {
-  if (statuses.length === 0) return null;
+/** Full-width labelled vital bar for the lg+ side panel (the header Gauge stays for small screens). */
+function VitalBar({ icon, label, value, max, fill, note }: {
+  icon: React.ReactNode; label: string; value: number; max: number; fill: string; note?: string;
+}) {
+  const pct = max > 0 ? Math.max(0, Math.min(100, Math.round((value / max) * 100))) : 0;
   return (
-    <div className="pointer-events-none flex gap-0.5 text-[10px]" style={{ filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.8))' }}>
-      {statuses.map((st) => (
-        <span key={st.key} title={`${st.key} (${st.turns}t)`}>{STATUS_GLYPH[st.key]}</span>
-      ))}
+    <div>
+      <div className="flex items-center justify-between text-[11px] text-parchment-300">
+        <span className="flex items-center gap-1">{icon} {label}</span>
+        <span className="font-display tabular-nums">
+          {Math.max(0, Math.round(value))}/{Math.round(max)}
+          {note && <span className="ml-1 text-[9px] opacity-60">{note}</span>}
+        </span>
+      </div>
+      <div className="mt-0.5 h-2 w-full overflow-hidden rounded-full border border-gold-deep/40 bg-wood-900">
+        <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: fill }} />
+      </div>
     </div>
   );
+}
+
+/**
+ * One rule-based hint for the defeat card (audit §4.5) — turns a loss into a lesson, the
+ * growth-mindset frame the habit RPG wants. Checked most-specific first; always returns something.
+ */
+function defeatCoaching(run: HexBattleState): string {
+  const resists = run.log.filter((l) => l.includes('— resisted')).length;
+  if (resists >= 3) {
+    return 'Many of your hits were resisted — check the ⬆/⬇ arrows when aiming and switch damage types.';
+  }
+  const usage = run.statUsage ?? {};
+  const castStats: StatId[] = ['WI', 'KN', 'CH'];
+  const neverCast = castStats.every((st) => !(usage[st] && usage[st]! > 0));
+  if (neverCast) {
+    return 'You never cast a spell — Push, Blink, and Cleave are always in your kit, and mana now refills +1 each turn.';
+  }
+  const frozen = run.log.some((l) => l.includes('frozen solid'));
+  if (frozen) {
+    return 'Frost foes froze you out of whole turns — kill kiters and casters first, or keep a wall between you.';
+  }
+  if (run.tier > TACTICS_UNLOCK_LEVEL) {
+    return `Tier ${run.tier} punishes mistakes hard — Tier ${run.tier - 1} pays less but trains the same instincts.`;
+  }
+  return 'High ground adds damage and reach — fight downhill, and use cover when you must hold still.';
 }
 
 /** Compact preview tooltip shown in the action bar caption when hovering a target. */
@@ -118,9 +120,10 @@ function PreviewBadge({ preview }: { preview: AttackPreview }) {
   const lethal = preview.lethal ? ' 💀' : '';
   const guardNote = preview.guardBonus > 0 ? ` 🛡+${preview.guardBonus}` : '';
   const coverNote = preview.coverBonus > 0 ? ` cover-${preview.coverBonus}` : '';
+  const exhaustedNote = preview.exhausted ? ' 😮‍💨 exhausted ×½' : '';
   return (
-    <span className={cn('font-display text-xs', preview.lethal ? 'text-red-400' : preview.weak ? 'text-amber-300' : 'text-parchment-200')}>
-      {preview.min}–{preview.max} dmg{heightLabel}{guardNote}{coverNote}{tag}{lethal}
+    <span className={cn('font-display text-xs', preview.lethal ? 'text-red-400' : preview.exhausted ? 'text-orange-300' : preview.weak ? 'text-amber-300' : 'text-parchment-200')}>
+      {preview.min}–{preview.max} dmg{heightLabel}{guardNote}{coverNote}{tag}{exhaustedNote}{lethal}
     </span>
   );
 }
@@ -135,7 +138,12 @@ export function TacticsOverlay() {
   const tacticsHold = useGameStore((s) => s.tacticsHold);
   const endTactics = useGameStore((s) => s.endTactics);
   const habitBonus = useGameStore((s) => s.character.habitBonus);
+  const deepestTacticsTier = useGameStore((s) => s.deepestTacticsTier);
   const soundEnabled = useGameStore((s) => s.settings.soundEnabled);
+  // Class tint for the hero token's cloak — same recipe as the Hero sheet banner.
+  const classId = useGameStore((s) => s.character.classId);
+  const topStat = useGameStore(selectTopStats)[0];
+  const cloakColor = avatarCrest(classId, topStat).color;
 
   // Co-op: identify local player and session role
   const coopJoined = useCoopStore((s) => s.joined);
@@ -150,6 +158,10 @@ export function TacticsOverlay() {
 
   // Retreat needs confirmation to prevent misclicks during a winning match.
   const [confirmRetreat, setConfirmRetreat] = useState(false);
+
+  // Touch (audit U8): no hover exists, so the first tap on a target shows the damage preview
+  // and the second tap commits — mirrors the entry screen's stated touch contract.
+  const coarse = useIsCoarsePointer();
 
   // Warn the browser before navigating away mid-match so the player doesn't lose their run.
   useEffect(() => {
@@ -226,12 +238,53 @@ export function TacticsOverlay() {
   // Hovered hex for preview (set on tile mouse-enter when a targeted action is selected)
   const [hoveredHex, setHoveredHex] = useState<Hex | null>(null);
 
+  // Transient "out of range" toast for clicks on non-highlighted tiles while an action is armed.
+  const invalidClickSeq = useRef(0);
+  const [invalidClick, setInvalidClick] = useState<{ id: number; hex: Hex; text: string } | null>(null);
+  useEffect(() => {
+    if (!invalidClick) return;
+    const t = window.setTimeout(() => setInvalidClick((cur) => (cur?.id === invalidClick.id ? null : cur)), 900);
+    return () => clearTimeout(t);
+  }, [invalidClick]);
+
   const radius = tactics?.radius ?? 3;
   const size = useMemo(
     () => (vp.w > 0 && vp.h > 0 ? fitSize(radius, vp.w - 16, vp.h - 16) : sizeFor(radius)),
     [radius, vp.w, vp.h],
   );
   const bounds = useMemo(() => isoBounds(radius, size, MAX_ELEVATION), [radius, size]);
+  // Stable corner array so the per-tile TileArt memo can bail on identity (a fresh array per
+  // render would force all ~127 tiles to re-render on every hover).
+  const corners = useMemo(() => hexCorners(size), [size]);
+
+  // Side-panel battle log (lg+ screens) — keep it pinned to the newest entry.
+  const logPanelRef = useRef<HTMLDivElement>(null);
+  const logLength = tactics?.log.length ?? 0;
+  useEffect(() => {
+    const el = logPanelRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [logLength]);
+
+  // Per-tile threat counts for the graded danger tint (audit U4): a tile one kiter can poke
+  // reads differently from a tile three chargers converge on. Hook — stays above the early return.
+  const threatCounts = useMemo(
+    () => (tactics && showThreat ? computeEnemyThreatCounts(tactics) : {}),
+    [tactics, showThreat],
+  );
+
+  // Hover preview for a targeted action. This hook MUST stay above the `!tactics` early return
+  // (rules-of-hooks) — it re-derives the `locked` gate defensively since that's computed below.
+  const hoverPreview = useMemo((): AttackPreview | null => {
+    if (!tactics || !hoveredHex) return null;
+    const playerTurn = tactics.turn === 'player' && tactics.status === 'active';
+    const waiting = isCoopSession && playerTurn && (tactics.player.endedTurn ?? false);
+    if (animating || !playerTurn || waiting) return null;
+    const action = tactics.selected;
+    if (action?.kind === 'attack') return previewPlayerAttack(tactics, hoveredHex);
+    if (action?.kind === 'spell') return previewSpell(tactics, action.spellKey, hoveredHex);
+    return null;
+  }, [hoveredHex, tactics, animating, isCoopSession]);
+
   if (!tactics) return null;
 
   const elevationOf = (h: Hex) => tactics.tiles[hexKey(h)]?.elevation ?? 0;
@@ -243,7 +296,6 @@ export function TacticsOverlay() {
 
   const reachable = new Set(tactics.reachable.map(hexKey));
   const targetable = new Set(tactics.targetable.map(hexKey));
-  const threat = new Set(tactics.threatHexes.map(hexKey));
   const sel = tactics.selected;
   const isPlayerTurn = tactics.turn === 'player' && tactics.status === 'active';
   // Per-hero weapon and spell loadout (co-op heroes carry their own; fall back to state-level for solo).
@@ -274,17 +326,23 @@ export function TacticsOverlay() {
     return set;
   })();
 
-  // Compute hover preview when hovering a targetable tile
-  const hoverPreview = useMemo((): AttackPreview | null => {
-    if (!hoveredHex || !sel || locked) return null;
-    if (sel.kind === 'attack') return previewPlayerAttack(tactics, hoveredHex);
-    if (sel.kind === 'spell') return previewSpell(tactics, sel.spellKey, hoveredHex);
-    return null;
-  }, [hoveredHex, sel, tactics, locked]);
+  /** A click landed on a tile the armed action can't use — say so instead of silently ignoring it. */
+  function flagInvalidClick(h: Hex) {
+    if (!sel) return;
+    const text = sel.kind === 'move' ? 'Out of reach' : 'Out of range';
+    setInvalidClick({ id: ++invalidClickSeq.current, hex: h, text });
+    sfxPlay('libraryWrong');
+  }
 
   function onTileClick(h: Hex) {
     if (locked) return;
     const key = hexKey(h);
+    // Tap-to-confirm on touch: an attack/spell tap on a fresh target previews first.
+    if (coarse && (sel?.kind === 'attack' || sel?.kind === 'spell') && targetable.has(key)
+        && (!hoveredHex || hexKey(hoveredHex) !== key)) {
+      setHoveredHex(h);
+      return;
+    }
     if (isCoopGuest && coopSend) {
       const heroId = tactics?.player.id ?? userId;
       if (sel?.kind === 'move' && reachable.has(key))
@@ -293,10 +351,12 @@ export function TacticsOverlay() {
         coopSend({ type: 'tactics-intent', userId, heroId, action: 'attack', to: h });
       else if (sel?.kind === 'spell' && targetable.has(key))
         coopSend({ type: 'tactics-intent', userId, heroId, action: 'cast', spellKey: sel.spellKey, to: h });
+      else flagInvalidClick(h);
     } else {
       if (sel?.kind === 'move' && reachable.has(key)) tacticsMove(h);
       else if (sel?.kind === 'attack' && targetable.has(key)) tacticsAttack(h);
       else if (sel?.kind === 'spell' && targetable.has(key)) tacticsCast(sel.spellKey, h);
+      else flagInvalidClick(h);
     }
   }
 
@@ -363,6 +423,25 @@ export function TacticsOverlay() {
   const allyHeroes = isCoopSession ? (tactics.players ?? []).filter((p) => p.id !== tactics.player.id) : [];
   const allyName = allyHeroes[0]?.name ?? 'Ally';
 
+  // Facing (view-derived; the engine has no notion of it): units look toward their nearest foe.
+  // Tokens are authored facing right, so a target left of the unit mirrors the art.
+  const livingEnemies = tactics.enemies.filter((e) => e.hp > 0);
+  const livingEnemyHexes = livingEnemies.map((e) => e.hex);
+  const livingHeroHexes = [tactics.player, ...allyHeroes].filter((h) => h.hp > 0).map((h) => h.hex);
+  const faceToward = (from: Hex, targets: Hex[]): 'left' | 'right' => {
+    let best: Hex | null = null;
+    let bd = Infinity;
+    for (const t of targets) {
+      const d = hexDistance(from, t);
+      if (d < bd) { bd = d; best = t; }
+    }
+    return best && top(best).x < top(from).x ? 'left' : 'right';
+  };
+
+  // Freshest damage floater per unit — remounts the token art so the hit flash restarts.
+  const hitIdFor = (hex: Hex): number | undefined =>
+    live.find((fx) => fx.kind === 'floater' && (fx.color === 'dmg-enemy' || fx.color === 'dmg-player') && hexKey(fx.to) === hexKey(hex))?.id;
+
   const unitsByDepth = [
     {
       key: 'player', hex: tactics.player.hex, displayHex: tactics.player.hex, glyph: '🧝',
@@ -372,6 +451,9 @@ export function TacticsOverlay() {
       aiArchetype: undefined as AIArchetype | undefined,
       weakTo: [] as StatId[], resistTo: [] as StatId[],
       slideMs: 200,
+      templateId: undefined as string | undefined,
+      heroKind: 'player' as 'player' | 'ally' | undefined,
+      facing: faceToward(tactics.player.hex, livingEnemyHexes),
     },
     ...allyHeroes.map((p) => ({
       key: `ally-${p.id ?? 'ally'}`,
@@ -383,6 +465,9 @@ export function TacticsOverlay() {
       aiArchetype: undefined as AIArchetype | undefined,
       weakTo: [] as StatId[], resistTo: [] as StatId[],
       slideMs: 200,
+      templateId: undefined as string | undefined,
+      heroKind: 'ally' as 'player' | 'ally' | undefined,
+      facing: faceToward(p.hex, livingEnemyHexes),
     })),
     ...tactics.enemies.map((e) => {
       // hasPendingMove: a 'move' effect exists for this enemy and hasn't fired yet.
@@ -402,6 +487,9 @@ export function TacticsOverlay() {
         aiArchetype: e.aiArchetype,
         weakTo: e.weakTo, resistTo: e.resistTo,
         slideMs: hasPendingMove ? 0 : hasJustMoved ? MOVE_ANIM_MS : 200,
+        templateId: e.templateId as string | undefined,
+        heroKind: undefined as 'player' | 'ally' | undefined,
+        facing: faceToward(e.hex, livingHeroHexes),
       };
     }),
   ].sort((a, b) => groundY(a.hex) - groundY(b.hex));
@@ -410,7 +498,10 @@ export function TacticsOverlay() {
   const logLines = tactics.log.slice(-4);
 
   return (
-    <div className="fixed inset-0 z-40 flex flex-col bg-wood-950/95 backdrop-blur-sm">
+    // Solid backdrop (no translucency/blur): the board must sit in its own scene, not float
+    // over the ghost of the blurred entry-screen text (audit U7). z-50 matches every other
+    // run overlay (Mine/Forest/Arena) — at z-40 the app header/nav printed on top of the HUD.
+    <div className="fixed inset-0 z-50 flex flex-col bg-wood-950">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-gold-deep/40 px-4 py-2">
         <div className="flex items-center gap-2">
@@ -475,14 +566,15 @@ export function TacticsOverlay() {
             ))}
           </div>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+        {/* Compact vitals — small screens only; the lg+ side panel carries the full-size bars. */}
+        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 lg:hidden">
           {tactics.player.overwatch && (
             <span className="flex items-center gap-1 rounded border border-sky-500/50 bg-sky-900/30 px-2 py-0.5 font-display text-[10px] text-sky-300" title="Overwatch active — reaction shot fires on the first enemy that steps into range">
               ⌖ Watching
             </span>
           )}
           <Gauge icon={<Heart className="h-3.5 w-3.5 text-red-400" />} value={tactics.player.hp} max={tactics.player.maxHp} fill="#ef4444" />
-          <Gauge icon={<Sparkles className="h-3.5 w-3.5 text-blue-400" />} value={tactics.player.mp} max={tactics.player.maxMp} fill="#3b82f6" />
+          <Gauge icon={<Sparkles className="h-3.5 w-3.5 text-blue-400" />} value={tactics.player.mp} max={tactics.player.maxMp} fill="#3b82f6" note={`+${MP_REGEN_PER_TURN}/t`} />
           <Gauge icon={<Zap className="h-3.5 w-3.5 text-amber-400" />} value={tactics.player.sta} max={tactics.player.maxSta} fill="#f59e0b" note={`+${STA_REGEN_PER_TURN}/t`} />
         </div>
       </div>
@@ -497,12 +589,173 @@ export function TacticsOverlay() {
       {/* Objective banner */}
       {tactics.objective && <ObjectiveBanner objective={tactics.objective} turnCount={tactics.turnCount} />}
 
-      {/* Board */}
-      <div ref={boardWrapRef} className="relative flex flex-1 items-center justify-center overflow-hidden">
+      {/* Board row — side panels (lg+) flank the battlefield so wide screens spend their
+          gutters on information: full-size vitals + foes roster left, the battle log right. */}
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
+        {/* Left panel — your vitals and the enemy roster */}
+        <aside className="hidden w-56 shrink-0 flex-col gap-3 overflow-y-auto border-r border-gold-deep/40 bg-wood-900/70 p-3 lg:flex">
+          <div className="space-y-2 rounded-md border border-gold-deep/30 bg-wood-950/50 p-2.5">
+            <div className="font-display text-[10px] font-bold uppercase tracking-wider text-parchment-300/60">
+              {isCoopSession ? (tactics.player.name ?? 'You') : 'Your hero'}
+            </div>
+            <VitalBar icon={<Heart className="h-3.5 w-3.5 text-red-400" />} label="Health" value={tactics.player.hp} max={tactics.player.maxHp} fill="#ef4444" />
+            <VitalBar icon={<Sparkles className="h-3.5 w-3.5 text-blue-400" />} label="Mana" value={tactics.player.mp} max={tactics.player.maxMp} fill="#3b82f6" note={`+${MP_REGEN_PER_TURN}/turn`} />
+            <VitalBar icon={<Zap className="h-3.5 w-3.5 text-amber-400" />} label="Stamina" value={tactics.player.sta} max={tactics.player.maxSta} fill="#f59e0b" note={`+${STA_REGEN_PER_TURN}/turn`} />
+            <div className="flex items-center justify-between text-[11px] text-parchment-300">
+              <span className="flex items-center gap-1"><Footprints className="h-3 w-3 text-stat-AG" /> Moves left</span>
+              <span className="font-display font-bold text-stat-AG">{isPlayerTurn ? tactics.player.movesLeft : '—'}</span>
+            </div>
+            {tactics.player.overwatch && (
+              <div className="rounded border border-sky-500/50 bg-sky-900/30 px-1.5 py-0.5 text-center font-display text-[10px] text-sky-300">
+                ⌖ Overwatch armed
+              </div>
+            )}
+            {tactics.player.statuses.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {tactics.player.statuses.map((st) => (
+                  <span key={st.key} className="rounded border border-gold-deep/30 bg-wood-900/60 px-1 py-0.5 text-[10px] text-parchment-300" title={st.key}>
+                    {STATUS_GLYPH[st.key]} {st.key} · {st.turns}t
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2 rounded-md border border-gold-deep/30 bg-wood-950/50 p-2.5">
+            <div className="font-display text-[10px] font-bold uppercase tracking-wider text-parchment-300/60">
+              Foes — {livingEnemies.length} left
+            </div>
+            {livingEnemies.map((e) => {
+              const info = ARCHETYPE_INFO[e.aiArchetype];
+              const intent = intentByEnemyId.get(e.id);
+              return (
+                <div
+                  key={e.id}
+                  className="space-y-0.5"
+                  title={`${e.name} — ${info.label}: ${info.blurb}`}
+                  onMouseEnter={() => onTileHover(e.hex)}
+                  onMouseLeave={() => onTileHover(null)}
+                >
+                  <div className="flex items-center gap-1.5 text-[11px] text-parchment-200">
+                    <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: info.color }} />
+                    <span className="truncate font-display">{e.name}</span>
+                    {showIntents && intent?.willAttack && (
+                      <span className="ml-auto shrink-0 text-[10px]" title={intent.attackLabel}>
+                        {intent.attackIcon === '💨' ? '⚔️' : intent.attackIcon}
+                      </span>
+                    )}
+                  </div>
+                  <div className="h-1 w-full overflow-hidden rounded-full border border-black/50 bg-black/60">
+                    <div className="h-full" style={{ width: `${Math.max(0, Math.min(100, (e.hp / e.maxHp) * 100))}%`, backgroundColor: '#ef4444' }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </aside>
+
+        {/* Board — warm radial vignette centres the eye on the battlefield */}
+        <div
+          ref={boardWrapRef}
+          className="relative flex min-w-0 flex-1 items-center justify-center overflow-hidden"
+          style={{ background: 'radial-gradient(ellipse 90% 75% at 50% 44%, #322618 0%, #221a10 55%, #120d07 100%)' }}
+        >
         <div className="relative" style={{ width: bounds.width, height: bounds.height }}>
           {/* Board SVG */}
           <svg width={bounds.width} height={bounds.height} className="absolute inset-0">
-            {/* Intent movement lines (behind tiles) */}
+            <TacticsArtDefs />
+            {/* Tile pass — one depth-sorted loop interleaving each tile's static art (memoized
+                TileArt; hover re-renders bail out on it) with that tile's dynamic overlay: the
+                transparent hit polygon (a11y surface + handlers) and the cheap state tints.
+                Interleaving matters: a raised column's walls must occlude the threat/firing
+                tints of tiles behind it, or the red hexes float detached over the terrain. */}
+            <g transform={`translate(${bounds.offsetX},${bounds.offsetY})`}>
+            {tilesByDepth.map((tile) => {
+              const t = topCenter(tile.hex, size, tile.elevation);
+              const key = hexKey(tile.hex);
+              const highlight = reachable.has(key) ? 'reach' : targetable.has(key) ? 'target' : null;
+              const isPlayerTile = key === playerKey;
+              const isAllyTile = allyHeroes.some((p) => hexKey(p.hex) === key);
+              const threatCount = showThreat && !isPlayerTile && !isAllyTile ? (threatCounts[key] ?? 0) : 0;
+              const isHovered = hoveredHex && hexKey(hoveredHex) === key;
+              const stroke =
+                isHovered ? 'rgba(255,255,255,0.9)'
+                : highlight === 'reach' ? 'rgba(56,189,248,0.95)'
+                : highlight === 'target' ? 'rgba(251,191,36,0.95)'
+                : isPlayerTile ? 'rgba(56,189,248,0.6)'
+                : isAllyTile ? 'rgba(52,211,153,0.6)'
+                : 'none';
+
+              // Accessibility + testability surface (audit U10): tiles were anonymous polygons.
+              const occupant = isPlayerTile ? 'you'
+                : tactics.enemies.find((e) => e.hp > 0 && hexKey(e.hex) === key)?.name
+                ?? (isAllyTile ? 'ally' : null);
+              const tileLabel = [
+                `${tile.terrain} tile ${key}`,
+                tile.elevation > 0 ? `elevation ${tile.elevation}` : null,
+                occupant ? `${occupant} here` : null,
+                highlight === 'reach' ? 'reachable' : highlight === 'target' ? 'targetable' : null,
+                threatCount > 0 ? `threatened by ${threatCount}` : null,
+              ].filter(Boolean).join(', ');
+
+              return (
+                <g key={key}>
+                  <TileArt tile={tile} size={size} corners={corners} />
+                  <polygon
+                    points={ptsAt(corners, t.x, t.y)}
+                    // NEVER fill="none" — it would kill hit-testing. Hover gets a faint wash.
+                    fill={isHovered ? 'rgba(255,255,255,0.08)' : 'transparent'}
+                    stroke={stroke}
+                    strokeWidth={isHovered ? 3.5 : highlight || isPlayerTile || isAllyTile ? 3 : 0}
+                    style={{ cursor: highlight || firing.has(key) ? 'pointer' : 'default' }}
+                    data-hex={key}
+                    role={highlight ? 'button' : undefined}
+                    aria-label={tileLabel}
+                    onClick={() => onTileClick(tile.hex)}
+                    onMouseEnter={() => onTileHover(tile.hex)}
+                    onMouseLeave={() => onTileHover(null)}
+                  />
+                  {/* Projectile reach overlay */}
+                  {firing.has(key) && (
+                    <polygon
+                      points={ptsAt(corners, t.x, t.y)}
+                      fill="rgba(251,146,60,0.32)"
+                      stroke="rgba(251,146,60,0.7)"
+                      strokeWidth={1}
+                      style={{ pointerEvents: 'none' }}
+                    />
+                  )}
+                  {/* Threat zone overlay — tint graded by HOW MANY enemies can strike this tile,
+                      so the danger map ranks tiles instead of flooding uniform red (audit U4). */}
+                  {threatCount > 0 && (
+                    <polygon
+                      points={ptsAt(corners, t.x, t.y)}
+                      fill={`rgba(239,68,68,${(0.08 + 0.09 * Math.min(threatCount, 3)).toFixed(2)})`}
+                      stroke={`rgba(239,68,68,${(0.25 + 0.15 * Math.min(threatCount, 3)).toFixed(2)})`}
+                      strokeWidth={1}
+                      style={{ pointerEvents: 'none' }}
+                    />
+                  )}
+                  {/* Elevation badge for high ground — on targetable tiles, and in move mode only
+                      on the HOVERED tile (audit U9: a board-wide ▲ flood shouts over everything). */}
+                  {tile.elevation > 0 && (highlight === 'target' || (sel?.kind === 'move' && reachable.has(key) && isHovered)) && (
+                    <text
+                      x={t.x + size * 0.52} y={t.y - size * 0.62}
+                      textAnchor="middle" dominantBaseline="central"
+                      fontSize={size * 0.38} fill="rgba(250,204,21,0.95)"
+                      stroke="rgba(0,0,0,0.7)" strokeWidth={size * 0.06} paintOrder="stroke"
+                      style={{ pointerEvents: 'none', fontWeight: 'bold' }}
+                    >
+                      {'▲'.repeat(tile.elevation)}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+            </g>
+
+            {/* Intent movement lines — above the tile pass so raised terrain never hides a
+                telegraphed path the player is meant to read. */}
             {showIntents && (tactics.intentPlan ?? []).map((intent) => {
               if (hexKey(intent.moveTo) === hexKey(tactics.enemies.find(e => e.id === intent.enemyId)?.hex ?? intent.moveTo)) return null;
               const enemy = tactics.enemies.find(e => e.id === intent.enemyId);
@@ -519,106 +772,9 @@ export function TacticsOverlay() {
               );
             })}
 
-            {tilesByDepth.map((tile) => {
-              const t = top(tile.hex);
-              const key = hexKey(tile.hex);
-              const rgb = terrainRGB(tile);
-              const corners = hexCorners(size);
-              const E = tile.elevation * colHeight(size);
-              const highlight = reachable.has(key) ? 'reach' : targetable.has(key) ? 'target' : null;
-              const isPlayerTile = key === playerKey;
-              const isAllyTile = allyHeroes.some((p) => hexKey(p.hex) === key);
-              const isThreat = showThreat && threat.has(key) && !isPlayerTile && !isAllyTile;
-              const isHovered = hoveredHex && hexKey(hoveredHex) === key;
-
-              const wall = (a: number, b: number, fill: string) => {
-                const pa = corners[a];
-                const pb = corners[b];
-                const pts = [
-                  `${t.x + pa.x},${t.y + pa.y}`,
-                  `${t.x + pb.x},${t.y + pb.y}`,
-                  `${t.x + pb.x},${t.y + pb.y + E}`,
-                  `${t.x + pa.x},${t.y + pa.y + E}`,
-                ].join(' ');
-                return <polygon key={`${a}-${b}`} points={pts} fill={fill} />;
-              };
-
-              return (
-                <g key={key}>
-                  {E > 0 && (
-                    <>
-                      {wall(3, 4, darken(rgb, 0.55))}
-                      {wall(4, 5, darken(rgb, 0.42))}
-                      {wall(5, 0, darken(rgb, 0.72))}
-                    </>
-                  )}
-                  <polygon
-                    points={ptsAt(corners, t.x, t.y)}
-                    fill={rgbStr(rgb)}
-                    stroke={
-                      isHovered ? 'rgba(255,255,255,0.9)'
-                      : highlight === 'reach' ? 'rgba(56,189,248,0.95)'
-                      : highlight === 'target' ? 'rgba(251,191,36,0.95)'
-                      : isPlayerTile ? 'rgba(56,189,248,0.6)'
-                      : isAllyTile ? 'rgba(52,211,153,0.6)'
-                      : 'rgba(0,0,0,0.4)'}
-                    strokeWidth={isHovered ? 3.5 : highlight || isPlayerTile || isAllyTile ? 3 : 1}
-                    style={{ cursor: highlight || firing.has(key) ? 'pointer' : 'default' }}
-                    onClick={() => onTileClick(tile.hex)}
-                    onMouseEnter={() => onTileHover(tile.hex)}
-                    onMouseLeave={() => onTileHover(null)}
-                  />
-                  {/* Projectile reach overlay */}
-                  {firing.has(key) && (
-                    <polygon
-                      points={ptsAt(corners, t.x, t.y)}
-                      fill="rgba(251,146,60,0.32)"
-                      stroke="rgba(251,146,60,0.7)"
-                      strokeWidth={1}
-                      style={{ pointerEvents: 'none' }}
-                    />
-                  )}
-                  {/* Threat zone overlay (danger zone tint) */}
-                  {isThreat && (
-                    <polygon
-                      points={ptsAt(corners, t.x, t.y)}
-                      fill="rgba(239,68,68,0.18)"
-                      stroke="rgba(239,68,68,0.5)"
-                      strokeWidth={1}
-                      style={{ pointerEvents: 'none' }}
-                    />
-                  )}
-                  {TERRAIN_ICONS[tile.terrain] && (
-                    <text
-                      x={t.x} y={t.y}
-                      textAnchor="middle" dominantBaseline="central"
-                      fontSize={size * 0.7} opacity={0.85}
-                      style={{ pointerEvents: 'none' }}
-                    >
-                      {TERRAIN_ICONS[tile.terrain]}
-                    </text>
-                  )}
-                  {/* Elevation badge for high ground (when targeting) — positioned above the sprite
-                      area (y pushed higher) so it doesn't overlap unit glyphs or HP bars. */}
-                  {tile.elevation > 0 && (highlight === 'target' || (sel?.kind === 'move' && reachable.has(key))) && (
-                    <text
-                      x={t.x + size * 0.52} y={t.y - size * 0.62}
-                      textAnchor="middle" dominantBaseline="central"
-                      fontSize={size * 0.38} fill="rgba(250,204,21,0.95)"
-                      stroke="rgba(0,0,0,0.7)" strokeWidth={size * 0.06} paintOrder="stroke"
-                      style={{ pointerEvents: 'none', fontWeight: 'bold' }}
-                    >
-                      {'▲'.repeat(tile.elevation)}
-                    </text>
-                  )}
-                </g>
-              );
-            })}
-
             {/* Archetype rings — colored hex outlines on enemy tiles (helps read behavior at a glance) */}
             {tactics.enemies.filter((e) => e.hp > 0).map((e) => {
               const t = top(e.hex);
-              const corners = hexCorners(size);
               const info = ARCHETYPE_INFO[e.aiArchetype];
               return (
                 <polygon
@@ -637,9 +793,9 @@ export function TacticsOverlay() {
             {tactics.objective?.kind === 'beacon' && tactics.objective.beaconHex && (() => {
               const bHex = tactics.objective.beaconHex;
               const t = top(bHex);
-              const corners = hexCorners(size);
               const done = tactics.objective.complete;
               const color = done ? '#22c55e' : '#fbbf24';
+              const inner = corners.map((p) => `${t.x + p.x * 0.55},${t.y + p.y * 0.55}`).join(' ');
               return (
                 <g key="beacon-marker" style={{ pointerEvents: 'none' }}>
                   <polygon
@@ -649,12 +805,9 @@ export function TacticsOverlay() {
                     strokeWidth={2}
                     opacity={0.85}
                   />
-                  <text
-                    x={t.x} y={t.y}
-                    textAnchor="middle" dominantBaseline="central"
-                    fontSize={size * 0.5}
-                    opacity={0.9}
-                  >◎</text>
+                  {/* pulsing inner ring — the "hold me" signal breathes instead of sitting as a glyph */}
+                  <polygon className="tx-beacon" points={inner} fill="none" stroke={color} strokeWidth={1.5} />
+                  <circle cx={t.x} cy={t.y} r={size * 0.14} fill={color} opacity={0.9} />
                 </g>
               );
             })()}
@@ -691,7 +844,15 @@ export function TacticsOverlay() {
                 archetypeColor={archetypeColor}
                 archetypeBlurb={archetypeBlurb}
                 weakResist={weakResist}
+                templateId={u.templateId}
+                heroKind={u.heroKind}
+                classId={classId}
+                cloakColor={cloakColor}
+                facing={u.facing}
+                hitId={hitIdFor(u.hex)}
+                idleDelay={((u.enemyId ?? 0) % 5) * 0.35}
                 onClick={u.enemyId !== undefined ? () => onTileClick(u.hex) : undefined}
+                onHover={u.enemyId !== undefined ? (over) => onTileHover(over ? u.hex : null) : undefined}
               />
             );
           })}
@@ -700,46 +861,185 @@ export function TacticsOverlay() {
           {live.map((fx) => (
             <EffectSprite key={fx.id} fx={fx} from={top(fx.from)} to={top(fx.to)} />
           ))}
+
+          {/* Damage preview at the point of aim — the bottom-bar strip stays as a fallback,
+              but the decision is made looking at the target, so the numbers live there too. */}
+          {hoverPreview && hoveredHex && (sel?.kind === 'attack' || sel?.kind === 'spell') && (() => {
+            const p = top(hoveredHex);
+            return (
+              <div
+                className="pointer-events-none absolute z-40 whitespace-nowrap rounded-md border border-gold-deep/60 bg-wood-950/90 px-2 py-1 shadow-lg"
+                style={{ left: p.x, top: Math.max(28, p.y - size * 1.15), transform: 'translate(-50%, -100%)' }}
+              >
+                <PreviewBadge preview={hoverPreview} />
+              </div>
+            );
+          })()}
+
+          {/* Out-of-range toast for invalid clicks while an action is armed */}
+          {invalidClick && (() => {
+            const p = top(invalidClick.hex);
+            return (
+              <div
+                key={invalidClick.id}
+                className="pointer-events-none absolute z-40 whitespace-nowrap rounded-md border border-ember-deep/60 bg-wood-950/90 px-2 py-0.5 font-display text-[11px] text-ember-bright shadow-lg"
+                style={{ left: p.x, top: p.y - size * 0.9, transform: 'translate(-50%, -100%)', animation: 'tactics-floater 900ms ease-out forwards' }}
+              >
+                {invalidClick.text}
+              </div>
+            );
+          })()}
+        </div>
         </div>
 
-        {/* Outcome banner */}
-        {tactics.status !== 'active' && (
-          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-wood-950/80">
-            {tactics.status === 'won' ? (
-              <>
-                <Trophy className="h-10 w-10 text-gold-bright" />
-                <div className="font-display text-xl font-bold text-gold-bright">Victory!</div>
-              </>
-            ) : (
-              <>
-                <Skull className="h-10 w-10 text-ember-bright" />
-                <div className="font-display text-xl font-bold text-ember-bright">Defeated</div>
-              </>
-            )}
-            {(() => {
-              const goldOut = Math.round((tacticsReward(tactics).gold ?? 0) * habitBonus);
-              return goldOut > 0 ? (
-                <span className="flex items-center gap-1 text-xs text-gold-bright">
-                  <Coins className="h-3.5 w-3.5" /> {goldOut}
-                </span>
-              ) : null;
-            })()}
-            <StreakBonusChip className="text-[11px]" />
-            <Button onClick={endTactics} className="px-6 py-2">
-              {tactics.status === 'won' ? 'Claim reward' : 'Leave'}
-            </Button>
+        {/* Right panel — the battle log at a readable size (the bottom strip keeps only the
+            last few lines; the full story lives here on wide screens). */}
+        <aside className="hidden w-64 shrink-0 flex-col border-l border-gold-deep/40 bg-wood-900/70 lg:flex">
+          <div className="border-b border-gold-deep/30 px-3 py-2 font-display text-[10px] font-bold uppercase tracking-wider text-parchment-300/60">
+            Battle log
           </div>
-        )}
+          <div ref={logPanelRef} className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-3">
+            {tactics.log.slice(-60).map((line, i, arr) => (
+              <div
+                key={`${logLength - arr.length + i}`}
+                className={cn(
+                  'text-[11px] leading-snug',
+                  i === arr.length - 1 ? 'text-parchment-200' : 'text-parchment-300/60',
+                )}
+              >
+                {line}
+              </div>
+            ))}
+          </div>
+        </aside>
+
+        {/* Outcome card — the payoff moment: gold, materials, XP, objective recap, tier record.
+            Displayed numbers come from the SAME functions commitTactics banks (no drift). */}
+        {tactics.status !== 'active' && (() => {
+          const won = tactics.status === 'won';
+          const reward = tacticsReward(tactics);
+          const goldOut = Math.round((reward.gold ?? 0) * habitBonus);
+          const xp = tacticsStatXp(tactics);
+          const newRecord = won && tactics.tier > deepestTacticsTier;
+          const obj = tactics.objective;
+          const statColor: Record<string, string> = { AG: 'text-stat-AG', DX: 'text-stat-DX', EN: 'text-stat-EN' };
+          return (
+            <div className="absolute inset-0 z-30 flex items-center justify-center bg-wood-950/85 p-4">
+              <div className="w-full max-w-sm space-y-3 rounded-lg border border-gold-deep/50 bg-wood-900/95 p-5 text-center shadow-2xl">
+                <div className="flex flex-col items-center gap-1.5">
+                  {won ? <Trophy className="h-10 w-10 text-gold-bright" /> : <Skull className="h-10 w-10 text-ember-bright" />}
+                  <div className={cn('font-display text-xl font-bold', won ? 'text-gold-bright' : 'text-ember-bright')}>
+                    {won ? 'Victory!' : 'Defeated'}
+                  </div>
+                  <div className="font-display text-[11px] uppercase tracking-wider text-parchment-300/60">
+                    Tier {tactics.tier} · turn {tactics.turnCount}
+                  </div>
+                  {newRecord && (
+                    <div className="rounded-full border border-gold-deep/60 bg-gold-deep/20 px-2.5 py-0.5 font-display text-[11px] font-bold text-gold-bright">
+                      🏅 New record — Tier {tactics.tier}!
+                    </div>
+                  )}
+                </div>
+
+                {obj && (
+                  <div
+                    className={cn(
+                      'rounded-md border px-2 py-1 font-display text-[11px]',
+                      obj.complete
+                        ? 'border-green-700/50 bg-green-900/20 text-green-300'
+                        : 'border-red-700/40 bg-red-900/15 text-red-400/90',
+                    )}
+                  >
+                    {obj.complete ? '✓' : '✗'} {obj.label}
+                    {obj.complete ? ' — +60% gold · potion' : won ? ' — missed' : ' — voided'}
+                  </div>
+                )}
+
+                <div className="space-y-1.5 rounded-md border border-gold-deep/30 bg-wood-950/50 p-3 text-left">
+                  {goldOut > 0 && (
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="flex items-center gap-1.5 text-parchment-300"><Coins className="h-3.5 w-3.5 text-gold-bright" /> Gold{!won && ' (damage dealt)'}</span>
+                      <span className="font-display font-bold text-gold-bright">+{goldOut}</span>
+                    </div>
+                  )}
+                  {Object.entries(reward.materials ?? {}).map(([key, qty]) => (
+                    <div key={key} className="flex items-center justify-between text-xs">
+                      <span className="flex items-center gap-1.5 text-parchment-300">
+                        <span
+                          className="flex h-3.5 w-3.5 items-center justify-center rounded-sm font-display text-[9px] font-bold text-white"
+                          style={{ backgroundColor: MATERIALS[key]?.color ?? '#666' }}
+                        >
+                          {MATERIALS[key]?.glyph ?? '?'}
+                        </span>
+                        {MATERIALS[key]?.name ?? key}
+                      </span>
+                      <span className="font-display font-bold text-parchment-200">×{qty}</span>
+                    </div>
+                  ))}
+                  {(reward.items ?? []).map((item) => (
+                    <div key={item} className="flex items-center justify-between text-xs">
+                      <span className="flex items-center gap-1.5 text-parchment-300">🧪 Healing Potion</span>
+                      <span className="font-display font-bold text-parchment-200">×1</span>
+                    </div>
+                  ))}
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-parchment-300">Training XP{!won && ' (half)'}</span>
+                    <span className="font-display font-bold">
+                      {Object.entries(xp).map(([stat, amt], i) => (
+                        <span key={stat}>
+                          {i > 0 && <span className="text-parchment-300/40"> · </span>}
+                          <span className={statColor[stat] ?? 'text-parchment-200'}>{stat} +{amt}</span>
+                        </span>
+                      ))}
+                    </span>
+                  </div>
+                </div>
+
+                <StreakBonusChip className="text-[11px]" />
+                {!won && (
+                  <div className="rounded-md border border-gold-deep/25 bg-wood-950/60 px-2.5 py-1.5 text-left text-[11px] leading-snug text-parchment-300/85">
+                    💡 {defeatCoaching(tactics)}
+                  </div>
+                )}
+                {!won && (
+                  <div className="text-[11px] text-parchment-300/70">
+                    Every skirmish trains you — the XP above is already earned.
+                  </div>
+                )}
+                <Button onClick={endTactics} className="w-full py-2">
+                  {won ? 'Claim reward' : 'Leave'}
+                </Button>
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
-      {/* Action bar */}
+      {/* Action bar — removed entirely once the match ends so nothing stays interactive
+          (or misleadingly armed) beneath the outcome card. */}
+      {tactics.status === 'active' && (
       <div className="border-t border-gold-deep/40 bg-wood-900/80 px-3 py-2">
         <div className="mx-auto flex max-w-2xl flex-wrap items-center justify-center gap-1.5">
-          <ActionButton active={sel?.kind === 'move'} disabled={locked || tactics.player.movesLeft <= 0} onClick={() => { setHoveredHex(null); tacticsSelect({ kind: 'move' }); }}>
+          <ActionButton
+            active={sel?.kind === 'move'}
+            disabled={locked || tactics.player.movesLeft <= 0}
+            title={tactics.player.movesLeft <= 0 ? 'No movement left this turn — it refills after the enemy phase' : undefined}
+            onClick={() => { setHoveredHex(null); tacticsSelect({ kind: 'move' }); }}
+          >
             <Footprints className="h-4 w-4" /> Move
           </ActionButton>
-          <ActionButton active={sel?.kind === 'attack'} disabled={locked || tactics.player.hasActed} onClick={() => { setHoveredHex(null); tacticsSelect({ kind: 'attack' }); }}>
+          <ActionButton
+            active={sel?.kind === 'attack'}
+            disabled={locked || tactics.player.hasActed}
+            title={tactics.player.hasActed
+              ? 'Already acted this turn — one attack or spell per turn'
+              : tactics.player.sta < weapon.staminaCost
+                ? `Exhausted — below ${weapon.staminaCost} stamina, this swing lands at half power`
+                : undefined}
+            onClick={() => { setHoveredHex(null); tacticsSelect({ kind: 'attack' }); }}
+          >
             ⚔️ {attackLabel}
+            {tactics.player.sta < weapon.staminaCost && <span className="text-orange-300">×½</span>}
           </ActionButton>
           {knownSpells.map((key) => {
             const spell = getSpell(key);
@@ -805,7 +1105,7 @@ export function TacticsOverlay() {
               Move up to {tactics.player.movesLeft} more tile{tactics.player.movesLeft === 1 ? '' : 's'} · climb {climbFor(tactics.player.ag)} —
               <span className="text-parchment-300/80"> set by your Agility ({tactics.player.ag})</span>
             </div>
-          ) : sel?.kind === 'attack' && tactics.weapon.ranged ? (
+          ) : sel?.kind === 'attack' && weapon.ranged ? (
             <div className="truncate text-center text-[11px] text-orange-300/90">
               Orange tiles show your shot's reach — hover an enemy to preview damage.
             </div>
@@ -818,8 +1118,8 @@ export function TacticsOverlay() {
               Click an enemy — they'll be hurled away. Bonus damage if they hit a wall or hazard.
             </div>
           ) : (
-            /* Mini log: last 4 lines, newest at the bottom */
-            <div className="flex flex-col gap-0.5">
+            /* Mini log: last 4 lines, newest at the bottom — lg+ reads the side panel instead */
+            <div className="flex flex-col gap-0.5 lg:hidden">
               {logLines.map((line, i) => (
                 <div
                   key={i}
@@ -835,163 +1135,7 @@ export function TacticsOverlay() {
           )}
         </div>
       </div>
-    </div>
-  );
-}
-
-function UnitSprite({
-  x, y, glyph, hp, maxHp, statuses, friendly, name, scale = 1,
-  slideMs = 200,
-  intent, archetypeColor, archetypeBlurb, weakResist, onClick,
-}: {
-  x: number; y: number; glyph: string; hp: number; maxHp: number; statuses: UnitStatus[];
-  friendly?: boolean; name?: string; scale?: number;
-  /**
-   * CSS transition duration for the position transform (ms).
-   * 0 = instant snap (used when holding a unit at prevHex before its stagger fires).
-   * MOVE_ANIM_MS = smooth slide after stagger timer fires.
-   */
-  slideMs?: number;
-  intent?: EnemyIntent;
-  /** Archetype ring color (hex string); absent for the player. */
-  archetypeColor?: string;
-  /** Short archetype label + blurb shown in the intent badge tooltip. */
-  archetypeBlurb?: string;
-  /** Whether the current player action hits a weakness (⬆) or resistance (⬇) of this enemy. */
-  weakResist?: 'weak' | 'resist' | null;
-  onClick?: () => void;
-}) {
-  const pct = Math.max(0, Math.min(100, (hp / maxHp) * 100));
-  const tooltipText = archetypeBlurb ? `${name ?? ''}\n${archetypeBlurb}` : (name ?? undefined);
-  return (
-    <div
-      className={cn('absolute z-20 flex flex-col items-center', onClick ? 'cursor-pointer' : 'pointer-events-none')}
-      style={{ left: 0, top: 0, transform: `translate(${x}px, ${y}px) translate(-50%, -78%)`, transition: slideMs > 0 ? `transform ${slideMs}ms ease-out` : 'none' }}
-      title={tooltipText}
-      onClick={onClick}
-    >
-      {/* Intent badge — shows planned action icon + archetype name (Phase C) */}
-      {intent && !friendly && (
-        <div
-          className="pointer-events-none flex items-center gap-0.5 rounded-sm bg-wood-950/70 px-0.5 text-[9px]"
-          title={archetypeBlurb ? `${archetypeBlurb}\n${intent.attackLabel}` : intent.attackLabel}
-        >
-          {intent.willAttack ? (
-            <span style={{ fontSize: Math.round(10 * scale) }}>{intent.attackIcon}</span>
-          ) : intent.attackIcon === '❄️' ? (
-            <span className="text-blue-300">❄️</span>
-          ) : null}
-          {archetypeBlurb && (
-            <span
-              className="ml-0.5 font-display leading-none"
-              style={{ fontSize: Math.round(8 * scale), color: archetypeColor ?? '#aaa' }}
-            >
-              {archetypeBlurb.split(' ')[0]}
-            </span>
-          )}
-        </div>
       )}
-      <StatusRow statuses={statuses} />
-      <div className="h-1 overflow-hidden rounded-full border border-black/50 bg-black/60" style={{ width: Math.round(26 * scale) }}>
-        <div className="h-full" style={{ width: `${pct}%`, backgroundColor: friendly ? '#34d399' : '#ef4444' }} />
-      </div>
-      {/* Unit glyph — with subtle archetype glow and weak/resist indicator */}
-      <div className="relative flex items-center justify-center">
-        <span
-          style={{
-            fontSize: Math.round(26 * scale),
-            lineHeight: 1,
-            filter: archetypeColor
-              ? `drop-shadow(0 0 ${Math.round(5 * scale)}px ${archetypeColor}88) drop-shadow(0 2px 2px rgba(0,0,0,0.7))`
-              : 'drop-shadow(0 2px 2px rgba(0,0,0,0.7))',
-            animation: !friendly ? 'tactics-idle-pulse 2.8s ease-in-out infinite' : undefined,
-          }}
-        >
-          {glyph}
-        </span>
-        {/* Weak/resist affinity indicator — shown when the player's selected action has an affinity */}
-        {weakResist && (
-          <span
-            className="absolute -right-1 -bottom-0.5 leading-none"
-            style={{
-              fontSize: Math.round(10 * scale),
-              color: weakResist === 'weak' ? '#4ade80' : '#f87171',
-              filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.8))',
-            }}
-            title={weakResist === 'weak' ? 'Weak to this attack (+damage)' : 'Resists this attack (-damage)'}
-          >
-            {weakResist === 'weak' ? '⬆' : '⬇'}
-          </span>
-        )}
-      </div>
-      {/* Name tag — visible label for co-op heroes so each player knows who is who */}
-      {friendly && name && (
-        <div
-          className="pointer-events-none rounded bg-wood-950/75 px-1 py-px text-center font-display leading-tight"
-          style={{ fontSize: Math.round(7 * scale), color: '#c9b57a', whiteSpace: 'nowrap', maxWidth: Math.round(54 * scale) }}
-        >
-          {name}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function EffectSprite({ fx, from, to }: { fx: TacticalEffect; from: { x: number; y: number }; to: { x: number; y: number } }) {
-  if (fx.kind === 'floater') {
-    const color = fx.color ? FLOATER_COLOR[fx.color] : '#fbbf24';
-    return (
-      <div
-        className="pointer-events-none absolute z-40 select-none font-display font-bold"
-        style={{
-          left: to.x,
-          top: to.y,
-          color,
-          fontSize: 15,
-          textShadow: '0 1px 3px rgba(0,0,0,0.9)',
-          animation: `tactics-floater ${fx.durationMs}ms ease-out forwards`,
-        }}
-      >
-        {fx.label}
-      </div>
-    );
-  }
-  if (fx.kind === 'arrow') {
-    const dx = to.x - from.x;
-    const dy = to.y - from.y;
-    const rot = (Math.atan2(dy, dx) * 180) / Math.PI;
-    return (
-      <div
-        className="pointer-events-none absolute z-30 text-lg"
-        style={{
-          left: from.x, top: from.y,
-          ['--dx' as string]: `${dx}px`, ['--dy' as string]: `${dy}px`, ['--rot' as string]: `${rot}deg`,
-          transform: 'translate(-50%, -50%)',
-          animation: `tactics-arrow ${fx.durationMs}ms linear forwards`,
-        }}
-      >
-        ➶
-      </div>
-    );
-  }
-  if (fx.kind === 'melee') {
-    return (
-      <div
-        className="pointer-events-none absolute z-30 text-2xl"
-        style={{ left: to.x, top: to.y, transform: 'translate(-50%, -50%)', animation: `tactics-melee ${fx.durationMs}ms ease-out forwards` }}
-      >
-        💥
-      </div>
-    );
-  }
-  const key = fx.kind.slice('spell:'.length);
-  const conf = SPELL_FX[key] ?? { anim: 'tactics-cast', glyph: '✨' };
-  return (
-    <div
-      className="pointer-events-none absolute z-30 text-2xl"
-      style={{ left: to.x, top: to.y, transform: 'translate(-50%, -50%)', animation: `${conf.anim} ${fx.durationMs}ms ease-out forwards` }}
-    >
-      {conf.glyph}
     </div>
   );
 }

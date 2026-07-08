@@ -21,6 +21,7 @@
   --c-ink-light: 138 115 80; /* #8a7350 */
 
   --c-wood: 36 23 16; /* #241710 */
+  --c-wood-950: 12 7 4; /* #0c0704 — near-black scene backdrop (tactics overlay) */
   --c-wood-900: 20 12 6; /* #140c06 */
   --c-wood-800: 26 15 9; /* #1a0f09 */
   --c-wood-700: 36 23 16; /* #241710 */
@@ -396,6 +397,53 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   [style*='tactics-'] { animation-duration: 1ms !important; }
+}
+
+/* ── Tactics living board (tx-*) — idle life for the graphics overhaul ─────────
+   Applied as CLASSES (unlike the inline tactics-* effect animations above), so they
+   need their own reduced-motion guard below. Infinite animations are capped by design:
+   tokens (≤18), grass tufts on slow tiles, hazard glows, one beacon — plain floor is static. */
+
+/* Token idle breathe — grounded scale from the feet, replaces the opacity idle-pulse. */
+@keyframes tx-breathe {
+  0%, 100% { transform: scaleY(1); }
+  50%      { transform: scaleY(1.035); }
+}
+.tx-breathe { animation: tx-breathe 2.6s ease-in-out infinite; }
+
+/* Grass sway on slow tiles. */
+@keyframes tx-sway {
+  from { transform: rotate(-2.5deg); }
+  to   { transform: rotate(2.5deg); }
+}
+.tx-sway { animation: tx-sway 3.6s ease-in-out infinite alternate; }
+
+/* Hazard ember flicker. */
+@keyframes tx-flicker {
+  0%, 100% { opacity: 0.62; transform: scale(1); }
+  40%      { opacity: 1;    transform: scale(1.06); }
+  70%      { opacity: 0.8;  transform: scale(0.98); }
+}
+.tx-flicker { animation: tx-flicker 1.8s ease-in-out infinite; }
+
+/* Beacon objective ring pulse. */
+@keyframes tx-beacon {
+  0%   { opacity: 0.9; transform: scale(1); }
+  70%  { opacity: 0;   transform: scale(1.22); }
+  100% { opacity: 0;   transform: scale(1.22); }
+}
+.tx-beacon { animation: tx-beacon 2.2s ease-out infinite; transform-box: fill-box; transform-origin: 50% 50%; }
+
+/* Token hit flash — mirrors crawler-hit; restarted by remounting the art group. */
+@keyframes tx-hit {
+  0%   { filter: brightness(2.6) drop-shadow(0 0 6px rgba(239, 68, 68, 0.95)); }
+  100% { filter: none; }
+}
+.tx-hit { animation: tx-hit 240ms ease-out forwards; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tx-breathe, .tx-sway, .tx-flicker, .tx-beacon, .tx-hit { animation: none !important; }
+  svg[data-token], img[data-token] { transition: none !important; }
 }
 
 /* ── Phase 6 — Crawler visual juice ────────────────────────────────────────── */

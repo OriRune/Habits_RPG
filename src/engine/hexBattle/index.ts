@@ -45,8 +45,19 @@ export {
   EFFECT_STAGGER_MS,
   MOVE_ANIM_MS,
   STA_REGEN_PER_TURN,
+  MP_REGEN_PER_TURN,
+  LUNGE_AFTER_TURNS,
+  HOLDER_LEASH,
+  KITER_PRESS_TURNS,
+  WAVE_CAP,
+  WAVE_EVERY_TURNS,
+  WAVE_BATCH,
   TACTICS_GRANTED_SPELLS,
   isTacticsLoadoutSpell,
+  isChaser,
+  lungePending,
+  pressingKiter,
+  moveBudgetFor,
   moveTilesFor,
   climbFor,
   heightDamageMult,
@@ -64,6 +75,7 @@ export {
   computeTargetable,
   recomputeClientHighlights,
   computeEnemyThreat,
+  computeEnemyThreatCounts,
 } from './geometry';
 
 // --- combat: player actions and previews --------------------------------------------------------

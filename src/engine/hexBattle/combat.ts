@@ -2,9 +2,12 @@
 // shared strike resolver and the push mechanic. These mutate a cloned HexBattleState and hand off to
 // the turn/outcome plumbing in ./turns.
 import type { RNG } from '../combat';
-import { attackRoll, spellDamageRoll, spellHealAmount, illusionBoost } from '../combat';
+import {
+  attackRoll, spellDamageRoll, spellHealAmount, illusionBoost,
+  DMG_VARIANCE_MIN, DMG_VARIANCE_MAX, WEAK_MULT, RESIST_MULT, EXHAUSTED_MULT,
+} from '../combat';
 import { getSpell, SCHOOL_STAT } from '../spells';
-import { type Hex, hexDistance, hexEquals, hexKey } from '../hex';
+import { type Hex, DIR_VECTORS, hexDistance, hexEquals, hexKey } from '../hex';
 import {
   type AttackPreview,
   type EnemyUnit,
@@ -14,13 +17,16 @@ import {
   EFFECT_STAGGER_MS,
   HAZARD_DMG,
   applyUnitStatus,
+  bumpStatUsage,
   climbFor,
   clone,
   coverAt,
   effectPusher,
   elevationAt,
   enemyAt,
+  hasStatus,
   heightDamageMult,
+  livingHeroes,
   tileAt,
   weakenFactor,
 } from './state';
@@ -46,13 +52,17 @@ export function previewPlayerAttack(state: HexBattleState, target: Hex): AttackP
   const base = basePower + weapon.bonus;
   const weak = enemy.weakTo.includes(weapon.attackStat);
   const resist = enemy.resistTo.includes(weapon.attackStat);
-  const weakMult = weak ? 1.25 : resist ? 0.6 : 1;
-  const minDmg = Math.max(1, Math.round(base * 0.85 * weakMult) - mitigation);
+  const weakMult = weak ? WEAK_MULT : resist ? RESIST_MULT : 1;
+  // Mirror attackRoll exactly: an under-stamina swing lands at half power. A preview that omits
+  // this can flag LETHAL on a hit that won't kill — precisely when the player is resource-starved.
+  const exhausted = p.sta < weapon.staminaCost;
+  const staMult = exhausted ? EXHAUSTED_MULT : 1;
+  const minDmg = Math.max(1, Math.round(base * DMG_VARIANCE_MIN * weakMult * staMult) - mitigation);
   return {
     min: minDmg,
-    max: Math.max(1, Math.round(base * 1.15 * weakMult) - mitigation),
+    max: Math.max(1, Math.round(base * DMG_VARIANCE_MAX * weakMult * staMult) - mitigation),
     dz, heightMult: hMult, mitigation, coverBonus, guardBonus: enemy.guardBonus,
-    lethal: minDmg >= enemy.hp, weak, resist,
+    lethal: minDmg >= enemy.hp, weak, resist, exhausted,
   };
 }
 
@@ -83,13 +93,13 @@ export function previewSpell(state: HexBattleState, key: string, target: Hex | n
   const schoolStat = SCHOOL_STAT[spell.school];
   const weak = enemy.weakTo.includes(schoolStat) || enemy.weakTo.includes('WI');
   const resist = enemy.resistTo.includes(schoolStat) || enemy.resistTo.includes('WI');
-  const weakMult = weak ? 1.25 : resist ? 0.6 : 1;
+  const weakMult = weak ? WEAK_MULT : resist ? RESIST_MULT : 1;
   const coverBonus = coverAt(state, enemy.hex);
   const mit = enemy.ward + coverBonus;
-  const minDmg = Math.max(1, Math.round(base * 0.85 * weakMult) - mit);
+  const minDmg = Math.max(1, Math.round(base * DMG_VARIANCE_MIN * weakMult) - mit);
   return {
     min: minDmg,
-    max: Math.max(1, Math.round(base * 1.15 * weakMult) - mit),
+    max: Math.max(1, Math.round(base * DMG_VARIANCE_MAX * weakMult) - mit),
     dz, heightMult: hMult, mitigation: mit, coverBonus, guardBonus: 0,
     lethal: minDmg >= enemy.hp, weak, resist,
   };
@@ -120,6 +130,7 @@ export function movePlayer(state: HexBattleState, to: Hex, heroId?: string): Hex
   }
   s.player.hex = { ...to };
   s.player.movesLeft -= dest.cost;
+  bumpStatUsage(s, 'AG'); // movement is the AG expression (audit D9)
   s.selected = { kind: 'move' };
   recomputeHighlights(s);
   return s;
@@ -135,12 +146,25 @@ export function movePlayer(state: HexBattleState, to: Hex, heroId?: string): Hex
  */
 export function resolvePlayerStrike(s: HexBattleState, hero: PlayerUnit, enemy: EnemyUnit, rng: RNG): void {
   const weapon = hero.weapon ?? s.weapon;
+  bumpStatUsage(s, weapon.attackStat); // a swing expresses the weapon's stat, hit or miss (audit D9)
   const pz = elevationAt(s, hero.hex);
   const dz = pz - elevationAt(s, enemy.hex);
   const ranged = !!weapon.ranged;
   const rawPower = (ranged ? hero.rangedPower : hero.meleePower) * heightDamageMult(dz) * weakenFactor(hero);
   const full = hero.sta >= weapon.staminaCost;
   hero.sta = Math.max(0, hero.sta - weapon.staminaCost);
+  // Blind bites the player exactly as it bites enemies (ai.ts enemyAttack): 40% whiff. The swing
+  // still costs stamina — you committed to it. Without this, 5 of 16 enemy templates spend move
+  // weight on an inflict that does nothing, and the ❄️/💫 badge on the hero would be a lie.
+  if (hasStatus(hero, 'blind') && rng() < 0.4) {
+    const push = effectPusher(s);
+    push(ranged ? 'arrow' : 'melee', hero.hex, enemy.hex);
+    s.effects.push({ id: s.seq++, kind: 'floater', from: enemy.hex, to: enemy.hex, startedAtMs: EFFECT_STAGGER_MS + 60, durationMs: 900, label: 'MISS', color: 'status' });
+    const missName = hero.name ?? 'You';
+    const missVerb = hero.name ? 'is blinded and misses' : 'are blinded and miss';
+    s.log.push(`${missName} ${missVerb} ${enemy.name}!`);
+    return;
+  }
   const { dealt, weak, resist } = attackRoll(
     rawPower,
     weapon.bonus,
@@ -243,6 +267,9 @@ export function playerCastSpell(
   const heroWeapon = hero.weapon ?? s.weapon;
   hero.mp -= spell.mpCost;
   const schoolStat = SCHOOL_STAT[spell.school];
+  // Usage ledger (audit D9): positional casts express the stat that scales them (Blink→KN,
+  // Cleave→ST, Push→CH); everything else expresses its school stat (WI/KN/CH).
+  bumpStatUsage(s, spell.mechanic === 'blink' ? 'KN' : spell.mechanic === 'cleave' ? 'ST' : spell.mechanic === 'push' ? 'CH' : schoolStat);
   const push = effectPusher(s);
 
   // --- Tactics positional mechanics (handled before school branching) ---
@@ -358,17 +385,19 @@ function finishPlayerAction(s: HexBattleState): void {
 
 // --- Push helpers -------------------------------------------------------------------------------
 
-const HEX_DIRS: Hex[] = [
-  { q: 1, r: 0 }, { q: 1, r: -1 }, { q: 0, r: -1 },
-  { q: -1, r: 0 }, { q: -1, r: 1 }, { q: 0, r: 1 },
+// The six axial direction vectors from hex.ts, ordered to preserve this module's historical
+// tie-breaking in computePushDir (dot-product ties resolve to the earlier entry).
+const PUSH_DIRS: Hex[] = [
+  DIR_VECTORS.downRight, DIR_VECTORS.upRight, DIR_VECTORS.up,
+  DIR_VECTORS.upLeft, DIR_VECTORS.downLeft, DIR_VECTORS.down,
 ];
 
 function computePushDir(from: Hex, to: Hex): Hex {
   const dq = to.q - from.q;
   const dr = to.r - from.r;
-  let best = HEX_DIRS[0];
+  let best = PUSH_DIRS[0];
   let bestDot = -Infinity;
-  for (const d of HEX_DIRS) {
+  for (const d of PUSH_DIRS) {
     const dot = dq * d.q + dr * d.r;
     if (dot > bestDot) { bestDot = dot; best = d; }
   }
@@ -387,7 +416,10 @@ function applyPush(s: HexBattleState, enemy: EnemyUnit, dir: Hex, tiles: number)
       s.log.push(`${enemy.name} crashes into a wall for ${dmg}!`);
       break;
     }
+    // Any living unit blocks the flight path — enemies AND heroes. Without the hero check a
+    // co-op Force Push through an ally stacks the foe onto the ally's hex, corrupting occupancy.
     if (s.enemies.some((e) => e.id !== enemy.id && e.hp > 0 && hexEquals(e.hex, next))) break;
+    if (livingHeroes(s).some((h) => hexEquals(h.hex, next))) break;
     cur = next;
     if (tile.terrain === 'hazard') break; // stop in the hazard (takes bonus damage after)
   }
