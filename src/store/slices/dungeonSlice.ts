@@ -1,31 +1,34 @@
 import type { StateCreator } from 'zustand';
 import { type CombatStats, emptyCombatStats, combatXpForWin, dungeonCombatStatXp } from '@/engine/combatStats';
-import { type CombatAction, playerAction } from '@/engine/combat';
+import { type CombatAction } from '@/engine/combat';
 import { getWeapon } from '@/engine/weapons';
 import { getRelic, rollBoons, rollCurse } from '@/engine/relics';
 import type { StatId } from '@/engine/stats';
-import { mergeReward, DUNGEON_ENERGY_COST } from '@/engine/dungeon';
+import { mergeReward, DUNGEON_ENERGY_COST, combatRoomGold, bossRoomGold } from '@/engine/dungeon';
 import { generateFloorMap } from '@/engine/dungeonMap';
 import { type DungeonRun } from '@/engine/dungeonTypes';
 import { biomeForDepth } from '@/engine/biomes';
-import { getEncounter, chooseEncounter, checkChance } from '@/engine/encounters';
+import { getEncounter, chooseEncounter, checkChance, encounterDepthTier } from '@/engine/encounters';
 import { DUNGEON_UNLOCK_LEVEL } from '@/engine/progression';
 import { toISODate } from '@/engine/date';
 import type { GameState, DungeonRunSummary } from '../shared';
 import {
-  gearBonuses,
+  runStatBonuses,
   fighterFor,
-  topUpFighter,
+  resolveBattleAction,
+  cloneEarnings,
   applyReward,
   grantStatXp,
+  enterRoom,
+  energySpentPatch,
+} from '../shared';
+import {
   boonMaxTier,
   offerBoon,
   resolveCurrentNode,
   currentRoom,
-  enterRoom,
   finishRun,
-  energySpentPatch,
-} from '../shared';
+} from '@/engine/dungeonRun';
 import { freshEarningsLedger } from '@/engine/balance';
 
 const FLOOR_LOSS_KEEP = 0.25;
@@ -137,9 +140,10 @@ export const createDungeonSlice: StateCreator<
         def,
         choiceIndex,
         s.character.statLevels,
-        gearBonuses(s).statBonuses,
+        runStatBonuses(s), // MINI-27: gear + relics + runBuff, so "+X WI this run" relics help checks
         Math.random,
         gateCtx,
+        run.depth, // MINI-28: deep checks stiffen and pay more
       );
       const inv = s.settings.invincible;
       const hp = inv ? run.maxHp : Math.max(0, Math.min(run.maxHp, run.hp + step.hpDelta));
@@ -148,7 +152,9 @@ export const createDungeonSlice: StateCreator<
       const floorReward = mergeReward(run.floorReward, step.reward);
 
       // Passing a stat check exercises that stat — award habit XP toward the character level.
-      const xpGrant = checkedStat && encState.lastOutcome === 'success' ? 10 : 0;
+      // MINI-28: deeper checks are harder, so they grant more XP (+2 per depth tier).
+      const xpGrant =
+        checkedStat && encState.lastOutcome === 'success' ? 10 + encounterDepthTier(run.depth) * 2 : 0;
       const statXpPatch = xpGrant ? grantStatXp(s, { [checkedStat!]: xpGrant }) : null;
 
       if (hp <= 0) {
@@ -184,13 +190,7 @@ export const createDungeonSlice: StateCreator<
     set((s) => {
       const run = s.dungeon;
       if (!run || !run.battle || run.battle.status !== 'active') return s;
-      let battle = playerAction(run.battle, fighterFor(s, run.battle.buffs), action);
-      if (s.settings.invincible) battle = topUpFighter(battle);
-
-      const inventory = { ...s.inventory };
-      if (action.kind === 'item' && (inventory[action.itemKey] ?? 0) > 0) {
-        inventory[action.itemKey] -= 1;
-      }
+      const { battle, inventory } = resolveBattleAction(run.battle, s, action);
       return { dungeon: { ...run, battle }, inventory };
     }),
 
@@ -210,15 +210,24 @@ export const createDungeonSlice: StateCreator<
 
       let workingRun = run;
       let eliteWin = false;
+      let wonBossId: string | null = null;
 
       if (room.type === 'combat' || room.type === 'boss' || room.type === 'elite') {
         const b = run.battle;
         if (!b || b.status === 'active') return s; // can't leave mid-fight
         if (b.status === 'fled') {
-          // Escaped alive — a clean retreat keeps everything gathered so far.
-          return { dungeon: finishRun(run, false, b.playerHp, 1) };
+          // Escaped alive — but a retreat leaves some of the floor's loot behind.
+          return { dungeon: finishRun(run, false, b.playerHp, 0.6) };
         }
         if (b.status === 'lost') {
+          if (room.type === 'boss') {
+            // Count the loss so the retry earns anti-frustration HP relief (via enterRoom → lossesBefore).
+            const key = b.bossId;
+            return {
+              dungeon: finishRun(run, false, 0, FLOOR_LOSS_KEEP),
+              dungeonBossLosses: { ...s.dungeonBossLosses, [key]: (s.dungeonBossLosses[key] ?? 0) + 1 },
+            };
+          }
           return { dungeon: finishRun(run, false, 0, FLOOR_LOSS_KEEP) };
         }
         // Won: carry HP/MP/Sta forward and train a combat stat (caster → Ward, else Defense).
@@ -232,7 +241,9 @@ export const createDungeonSlice: StateCreator<
             hp = Math.min(run.maxHp, hp + Math.round(run.maxHp * def.trigger.healPct));
           }
         }
-        const xp = combatXpForWin(b.bossMaxHp);
+        // hpDefeated sums every phase of a multi-phase boss; bossMaxHp is only the last form.
+        const totalHp = b.hpDefeated ?? b.bossMaxHp;
+        const xp = combatXpForWin(totalHp);
         combatStats =
           b.attackSchool === 'magic'
             ? { ...s.combatStats, wardXp: s.combatStats.wardXp + xp }
@@ -240,19 +251,26 @@ export const createDungeonSlice: StateCreator<
         // Also award habit stat XP toward the character level: the attack stat you fight with,
         // plus HP for enduring the fight.
         const atkStat = getWeapon(s.equippedWeapon).attackStat;
-        const { atkShare, hpShare } = dungeonCombatStatXp(b.bossMaxHp);
+        const { atkShare, hpShare } = dungeonCombatStatXp(totalHp);
         statXpPatch = grantStatXp(s, { [atkStat]: atkShare, HP: hpShare });
         workingRun = { ...workingRun, earnedXp: (workingRun.earnedXp ?? 0) + atkShare + hpShare };
         if (room.type === 'elite') {
           // Elites drop bonus gold and guarantee a boon.
           eliteWin = true;
-          workingRun = { ...run, floorReward: mergeReward(run.floorReward, { gold: 40 + run.depth * 12 }) };
+          workingRun = { ...workingRun, floorReward: mergeReward(workingRun.floorReward, { gold: 40 + workingRun.depth * 12 }) };
+        } else if (room.type === 'boss') {
+          // A floor boss is the marquee payout — well above a plain combat room.
+          wonBossId = b.bossId;
+          workingRun = { ...workingRun, floorReward: mergeReward(workingRun.floorReward, { gold: bossRoomGold(run.depth) }) };
+        } else {
+          // Plain combat wins pay depth-scaled gold (≈ half a treasure room).
+          workingRun = { ...workingRun, floorReward: mergeReward(workingRun.floorReward, { gold: combatRoomGold(run.depth) }) };
         }
         // Accumulate per-run battle statistics (using pre-heal hp so damageTaken reflects raw loss).
         workingRun = {
           ...workingRun,
           damageTaken: (workingRun.damageTaken ?? 0) + Math.max(0, run.hp - b.playerHp),
-          damageDealt: (workingRun.damageDealt ?? 0) + b.bossMaxHp,
+          damageDealt: (workingRun.damageDealt ?? 0) + totalHp,
         };
       } else if (room.type === 'encounter') {
         if (!run.encounter || !run.encounter.done) return s; // encounter not finished
@@ -265,6 +283,8 @@ export const createDungeonSlice: StateCreator<
         dungeon: next,
         ...(combatStats ? { combatStats } : {}),
         ...(statXpPatch ?? {}),
+        // Beating the boss clears its loss tally so a fresh future attempt starts at full difficulty.
+        ...(wonBossId ? { dungeonBossLosses: { ...s.dungeonBossLosses, [wonBossId]: 0 } } : {}),
       };
     }),
 
@@ -281,6 +301,8 @@ export const createDungeonSlice: StateCreator<
       const run = s.dungeon;
       if (!run || run.status !== 'active' || !run.atCheckpoint) return s;
       const depth = run.depth + 1;
+      // Descending past floor 3 costs 1 energy (charge what's available — never block a mid-run player).
+      const chargeEnergy = depth > 3 && !s.settings.unlimitedEnergy;
       const deepestFloor = Math.max(s.deepestFloor, depth);
       const biome = biomeForDepth(depth);
       const map = generateFloorMap(depth, biome, Math.random, { deepest: s.deepestFloor });
@@ -308,7 +330,16 @@ export const createDungeonSlice: StateCreator<
         // Press On: keep your wounds, take a boon instead.
         offerBoon(next, boonMaxTier(depth, deepestFloor));
       }
-      return { dungeon: next, deepestFloor };
+      return {
+        dungeon: next,
+        deepestFloor,
+        ...(chargeEnergy
+          ? {
+              character: { ...s.character, energy: Math.max(0, s.character.energy - 1) },
+              ...energySpentPatch(s, 1),
+            }
+          : {}),
+      };
     }),
 
   collectDungeon: () =>
@@ -334,12 +365,7 @@ export const createDungeonSlice: StateCreator<
         materials: { ...s.materials },
         ownedWeapons: [...s.ownedWeapons],
         ownedGear: [...s.ownedGear],
-        earnings: {
-          ...baseEarnings,
-          xp: { ...baseEarnings.xp },
-          gold: { ...baseEarnings.gold },
-          count: { ...baseEarnings.count },
-        },
+        earnings: cloneEarnings(baseEarnings),
         dungeon: null,
         dungeonHistory: [summary, ...(s.dungeonHistory ?? [])].slice(0, 10),
       };
@@ -378,8 +404,11 @@ export const createDungeonSlice: StateCreator<
       let shrineSucceeded = false;
 
       if (choice === 'pray') {
-        // A check of your best spiritual stat: success blesses you, failure curses you.
-        const power = Math.max(s.character.statLevels.WI, s.character.statLevels.CH);
+        // A Wisdom check: success blesses you, failure curses you. (BAL-07: was max(WI,CH),
+        // which made CH a strictly-redundant second copy of the stronger WI — CH's payoff now
+        // lives in illusion scaling, Tactics push, and its own encounter checks instead.)
+        // MINI-27: relic/gear/runBuff WI now count, so shrine_stone's "+WI this run" actually helps.
+        const power = s.character.statLevels.WI + (runStatBonuses(s).WI ?? 0);
         if (Math.random() < checkChance(power, 6)) {
           offerBoon(next, boonMaxTier(next.depth, s.deepestFloor));
           shrineSucceeded = true;

@@ -1,33 +1,64 @@
 # The Forge — Crafting Minigame Development Plan
 
+> **Revision 2 (2026-07-07).** Redesigned after a full review against the 2026-07 audit
+> (`docs/audit-2026-07/`), `docs/habits-rpg-improvement-plan3.md`, and current source.
+> Headline changes vs revision 1: Phase B is now a **heat economy** with light/heavy strikes
+> and re-stoking (was a pure timing test); tier stat scaling uses **guaranteed-distinct
+> integers** (naive rounding collapsed tiers on small items); the upgrade rule is fixed so
+> **Crude is actually storable**; and two economy features were added — a **Re-forge** gold
+> sink (plan3's deferred ≥500g repeatable sink) and a **Fuel & Flux** slot consuming BAL-16's
+> dead-end materials. Stale file refs corrected per plan3 item 8.1.
+>
+> **Revision 2.1 (2026-07-07, plan3 8.1 re-verification).** ARCH-10's store split moved the
+> combat seams: `gearFor`/`fighterFor` now live in **`src/store/commit.ts`** (shared.ts only
+> re-exports it). Seam refs updated throughout: gearFor `commit.ts:78`, the bare `getWeapon`
+> inside fighterFor `commit.ts:136`. Also corrected: `mining`/`chopping` power are **GearDef**
+> (tool-slot) fields, not WeaponDef; two bypass seams documented (mine/forest tool-power reads,
+> PaperDoll's raw display aggregation).
+
 ## 1. Context & Goal
 
-Crafting is the only core activity in HabitsRPG with **no interactivity and no stat tie**. Today `craft(recipeKey)` (`src/store/slices/economySlice.ts:123`) is a single deterministic click: validate `canCraft`, subtract materials + optional gold, drop a fixed-stat item into `ownedGear`/`ownedWeapons`. Every other minigame is an interactive, `score01`-scored loop.
+Crafting is the only core activity in HabitsRPG with **no interactivity and no stat tie**. Today `craft(recipeKey)` (`src/store/slices/economySlice.ts:161`) is a single deterministic click: validate `canCraft`, subtract materials + optional gold, drop a fixed-stat item into `ownedGear`/`ownedWeapons`. Every other minigame is an interactive, `score01`-scored loop.
 
 **The Forge** turns crafting into a two-phase hammering minigame whose performance sets the **quality tier** of the produced item, scaling its stats. It fills the clearest content gap and gives **DX** ("Precision, craft, accuracy") and **ST** ("Power, force") a meaningful role in crafting — without touching the proven economy/recipe plumbing more than necessary.
+
+### Why the Forge exists (economy mandate)
+
+Per plan3's strategic direction, *"the Forge exists to serve the economy (BAL-03/-05/-16/-17), not to add content for its own sake."* Concretely it must:
+
+- Be the crafting **experience** for the three late-tier band recipes shipped in plan3 item 4.4 (`mithril_pickaxe`, `obsidian_plate`, `resin_trinket` — `src/content/recipes.ts:98-118`), which already consume obsidian / frost_quartz / amber_resin.
+- Provide the **repeatable, scaling gold sink** deferred at the end of plan3 Phase 4 ("always something to want ≥500g") — delivered here as **Re-forge** (§5).
+- Give more of BAL-16's dead-end materials a sink — delivered here as **Fuel & Flux** (§6): wood, stone, gemstone. (Pelt and game_meat stay explicitly out of scope — they are hunting materials for future cooking content, not smithing.)
+- Stay a **sink, not a faucet**: the Forge grants **no gold and no XP** (avoids re-creating BAL-01/BAL-04). Its habit-loop coupling is indirect but real — every input (materials, gold) was earned through energy-gated modes, and energy comes only from habit completion.
+
+**Sequencing (plan3):** Phase 9 (mobile) ships **before** Phase 8 (the Forge). Apply plan3 item 8.1's corrections (already folded into this revision) before building.
 
 ### Locked design decisions
 
 | Decision | Choice |
 |---|---|
 | Risk model | **Crude tier, no loss** — materials/gold are never wasted; a poor run yields a sub-baseline *Crude* item. |
-| Mechanic depth | **Two-phase**: stoke heat (bellows) → strike (timed hammer) while heat decays. |
-| Stat influence | **DX + ST** — DX widens the strike sweet-zone; ST powers each strike (fewer strikes needed). |
-| Quality spread | **Crude ×0.85 / Normal ×1.0 / Fine ×1.15 / Masterwork ×1.3** (4 bands: 1 penalty + 3 positive). |
-| Gating | None beyond the existing material + gold cost (no energy/daily gate). |
+| Mechanic depth | **Two-phase with a heat economy**: stoke (bellows) → strike (hammer), where heat is a spendable resource — light strikes, chargeable heavy strikes, mid-phase re-stoking with metal fatigue. |
+| Stat influence | **DX + ST** — DX widens the strike sweet-zone and heat band; ST powers each strike (fewer strikes needed). |
+| Quality spread | **Crude / Normal / Fine / Masterwork** via `scaleTierStat` — multiplier-based (×0.85 / ×1.0 / ×1.15 / ×1.3) with guaranteed-distinct integer floors (§2). |
+| Gating | None beyond material + gold cost (no energy/daily gate) — acceptable *only because the Forge is a pure sink*. |
 
-### Open questions (defaults apply if not answered before M3)
+### Resolved design questions (2026-07-07, with owner)
 
-1. **Re-forge after Crude?** Can a Crude item be immediately re-forged, or must you gather materials to craft again from scratch? *(Default: it's made; gather materials and craft again to upgrade.)*
-2. **Target craft duration?** How long should one craft take end-to-end? *(Default: ~10–12 s — a few seconds stoking + ~5 strikes.)*
-3. **Best-tier badge on recipe row?** Show current best tier per recipe in the Forge list so players can chase upgrades? *(Default: yes, added in M4.)*
-4. **Exempt recipes?** Any recipes that should skip the minigame and craft instantly? *(Default: all gear/weapon recipes use the Forge.)*
+1. **Phase B depth** → charged strikes + re-stoke inside the two-phase skeleton (not pure timing, not a single-loop rework).
+2. **Re-forge** → yes: owned items can be re-forged at a gold-heavy, material-light cost (§5).
+3. **Fuel & Flux** → yes: optional consumable boosts using dead-end materials, built as milestone M5.
+4. **Crude on first craft** → real: a bad first craft genuinely stores Crude (upgrade rule fixed to allow it, §2).
+5. Target craft duration → **~15–20 s** (was 10–12 s; re-stoking extends runs).
+6. Best-tier badge on recipe rows → yes (M4).
+7. Exempt recipes → all gear/weapon recipes use the Forge; item-kind recipes (none exist today) skip it.
 
 ---
 
 ## 2. Quality Model
 
 ### Storage
+
 Owned items are deduped string keys with fixed stats, so quality is stored **per item key** in two new persisted maps, applied at the aggregation seam rather than at the item definition level.
 
 ```
@@ -53,55 +84,174 @@ EconomySlice additions:
 - `0.40–0.75` → Fine
 - `≥ 0.75` → Masterwork
 
-*(Exact cutoffs finalized in M5 based on balance playtesting.)*
+The 0.40/0.75 cutoffs deliberately match `scoreToStars` (`src/engine/trials/trials.ts`) — the codebase's canonical "OK / good / great" thresholds. *(Exact cutoffs re-checked in M6 playtesting.)*
 
-### Upgrade rule
-`quality[key] = Math.max(prev ?? NORMAL, tier)` — re-crafting can only **improve** a stored tier, never downgrade it.
+### Stat scaling: guaranteed-distinct integers
 
-### What the multiplier scales
-- Gear: `defense`, `ward`, each value in `statBonuses` (round to nearest int).
+**Problem found in review:** naive `Math.round(base × mult)` collapses tiers on small items. Craftable stats run as low as 3–4 (`sage_ring` +3 WI, `leather_vest` def 4 — `src/content/gear.ts`); on a +3 trinket, Crude (2.55), Normal (3), and Fine (3.45) all round to 3. A "Fine" badge with Crude-identical stats violates the audit's **reward honesty** pillar (BAL-08/MINI-08 class of bug: UI advertises scaling that doesn't exist).
+
+**Fix:** every scaled stat goes through one helper that rounds, then enforces per-tier integer floors so **every tier is visibly different on every item**:
+
+```ts
+/** Scale one item stat by tier, guaranteeing visibly distinct integers per tier. */
+export function scaleTierStat(base: number, tier: CraftTier): number {
+  if (base <= 0) return base;                 // zero/absent stats stay untouched
+  const raw = Math.round(base * CRAFT_TIERS[tier].mult);
+  switch (tier) {
+    case CRUDE:      return Math.min(raw, Math.max(1, base - 1)); // always worse (min 1)
+    case NORMAL:     return base;                                  // exact baseline
+    case FINE:       return Math.max(raw, base + 1);               // always at least +1
+    case MASTERWORK: return Math.max(raw, base + 2);               // always at least +2 (and > Fine)
+  }
+}
+```
+
+On big items the multiplier dominates (obsidian_plate def 12 → Crude 10 / Fine 14 / Masterwork 16); on small items the floors take over (sage_ring +3 WI → 2 / 3 / 4 / 5). Monotonicity Crude < Normal < Fine < Masterwork holds for every base ≥ 1 (property-tested in M6 across all craftables).
+
+**What gets scaled:**
+- Gear: `defense`, `ward`, each value in `statBonuses`.
 - Weapons: `bonus`.
-- **Not** scaled: `xpBonus`, `mining`/`chopping` power, `attackStat`, `staminaCost`, `ranged`, `range`. These are categorical/functional properties that quality shouldn't alter.
+- **Not** scaled: gear `xpBonus` and `mining`/`chopping` power (GearDef tool-slot fields — *not* WeaponDef, as revision 2 misstated); weapon `attackStat`, `staminaCost`, `ranged`, `range`. These are categorical/functional properties that quality shouldn't alter.
+- **Bypass seam (intentional):** `miningSlice.ts:116` / `forestSlice.ts:112` read tool power via a direct `getGear(toolKey)` — they never touch `gearFor`. Since tool power is explicitly unscaled, these reads stay untouched; do not "fix" them to route through the scaled path.
+
+### Upgrade rule (fixed)
+
+```ts
+const newTier = prev === undefined ? tier : Math.max(prev, tier);
+```
+
+> **Revision-1 bug:** `Math.max(prev ?? NORMAL, tier)` made Crude unstorable — a first craft
+> scoring Crude was silently promoted to Normal, so the locked risk model was unreachable.
+> The absent-key default to Normal applies only at **read** time (shop/loot items); at
+> **write** time the first craft stores its earned tier, Crude included.
+
+Re-crafting can only **improve** a stored tier, never downgrade it. A run that scores at or below the current tier changes nothing (the cost is still spent — see §5 for the cheaper targeted path).
 
 ---
 
-## 3. Minigame Mechanic (Two-Phase)
+## 3. Minigame Mechanic (Two-Phase, Heat Economy)
+
+Design intent: the audit's recurring minigame failure is *skill-optional* play (MINI-10 mash, MINI-11 abandon-retry), and the best-liked modes (Rooftop Chase, the crawlers) all layer **resource decisions on execution**. Phase B therefore treats heat as a spendable resource with three competing verbs — light strike, heavy strike, re-stoke — instead of a bare tap-timing test.
 
 ### Phase A — Stoke the fire (heat)
 
 A vertical heat bar fills while the player **holds** the bellows control. A highlighted "sweet band" sits high on the bar. When the player **releases/commits**, `heat01 ∈ [0,1]` is computed as proximity to the band centre.
 
 - DX widens the sweet band slightly (higher DX = more room for error).
-- Once committed, the Phase B strike meter opens. Heat then **decays in real time** throughout Phase B — let it run out and progress locks.
+- Once committed, Phase B opens with heat = the committed bar level. Heat then **decays in real time** throughout Phase B — let it hit zero and the forging ends.
 
-### Phase B — Strike (hammer)
+### Phase B — Strike (hammer + bellows)
 
-An oscillating needle sweeps a horizontal bar left↔right. A moving sweet-zone slides across the bar. The player taps/presses to swing the hammer; each tap scores `strikeAccuracy ∈ [0,1]` based on needle position relative to the zone.
+An oscillating needle sweeps a horizontal bar left↔right; a moving sweet-zone slides across the bar. Heat decays passively the whole phase. The player juggles three verbs:
 
-Each accurate strike advances a **forge-progress** meter:
+| Verb | Input | Effect |
+|---|---|---|
+| **Light strike** | tap hammer (release before `CHARGE_TIME_S`) | `progress += strikeAccuracy × strikePower(ST)` |
+| **Heavy strike** | hold hammer ≥ `CHARGE_TIME_S`, then release | `progress += strikeAccuracy × strikePower(ST) × CHARGE_MULT` (×1.9), but the sweet-zone **shrinks up to 25% while charging**, and heat keeps draining during the hold |
+| **Re-stoke** | hold bellows | heat regains at the rise rate; **can't strike while stoking**; forge-progress slowly cools (`PROGRESS_COOL_RATE`); each re-stoke session applies **metal fatigue** — max heat drops by `RESTOKE_FATIGUE` (15%), so ~3 re-stokes is the practical ceiling |
+
+This mirrors proven mechanics: the heavy strike is the mine's charged swing translated to the anvil (`CHARGE_SWING_COUNT`/`CHARGE_DAMAGE_MULT = 2.25`, `src/engine/crawl.ts:303-306` — hold costs time and demands precision, but honestly out-performs mashing), and re-stoke-with-fatigue is the recover-verb-with-diminishing-returns pattern from Rooftop Chase's lead economy.
+
+**Moment-to-moment decisions:** strike light and safe? risk a heavy while the zone shrinks? spend runway re-stoking (and bleed progress) to buy more strikes? The optimal line depends on remaining heat, current accuracy, and ST — there is no zero-skill dominant strategy: spam is punished by the accuracy blend (below), pure heavies by the shrunken zone, and infinite stoking by fatigue + progress cooling.
+
+- **DX** widens the sweet-zone (and Phase A band).
+- **ST** increases `strikePower` (high-ST characters need fewer good strikes).
+- Phase ends when progress reaches 1.0 **or** heat hits zero.
+
+### Scoring
+
+Each strike records `{ acc, weight }` where `weight` is its progress multiplier (1 for light, `CHARGE_MULT` for heavy). Mean accuracy is contribution-weighted:
+
 ```
-progress += strikeAccuracy × strikePower(stLevel)
+meanAcc  = Σ(acc·w) / Σw
+strike01 = √(progressFilled × meanAcc)      // spam can't max it: needs fill AND accuracy
+score01  = clamp(0.35 × heat01 + 0.65 × strike01, 0, 1)
 ```
 
-- **DX** widens the sweet-zone.
-- **ST** increases `strikePower` (so high-ST characters need fewer good strikes to fill the meter).
-- Phase ends when either progress reaches 1.0 **or** heat runs out.
+→ tier lookup → item quality stored. A perfect Phase A is worth 0.35, so Masterwork (≥0.75) is unreachable with a botched stoke — heat always matters.
 
-`strike01` blends progress fill and mean strike accuracy, so accuracy-spamming without precision can't fully max the score.
+### Constants (starting values, tuned in M6)
 
-### Final score
-
+```ts
+export const HEAT_RISE_RATE   = 0.25;  // Phase A fill + Phase B re-stoke, per second
+export const HEAT_FALL_RATE   = 0.35;  // Phase A bar drop when released, per second
+export const HEAT_DECAY_RATE  = 0.125; // Phase B passive drain (8 s runway at full heat)
+export const HEAT_BAND_START  = 0.62;
+export const HEAT_BAND_WIDTH_BASE = 0.16;  // widened by DX
+export const NEEDLE_PERIOD_S  = 2.0;
+export const SWEET_HALF_BASE  = 0.10;  // widened by DX
+export const CHARGE_TIME_S    = 0.9;   // hammer hold to prime a heavy strike
+export const CHARGE_MULT      = 1.9;   // heavy strike progress multiplier
+export const CHARGE_ZONE_SHRINK = 0.75; // sweet-zone half-width factor at full charge
+export const RESTOKE_FATIGUE  = 0.15;  // max-heat loss per re-stoke session
+export const PROGRESS_COOL_RATE = 0.04; // progress drain per second while stoking
 ```
-score01 = clamp(0.35 × heat01 + 0.65 × strike01, 0, 1)
+
+**Stat scaling formulas** (same shape as revision 1):
+
+```ts
+heatBandWidth(dx)  = min(0.40, 0.16 + dx * 0.008)
+strikeSweetHalf(dx) = min(0.35, 0.10 + dx * 0.006)
+strikePower(st)     = min(0.40, 0.20 * (1 + st * 0.015))
 ```
 
-→ tier lookup → item quality stored.
+**Tuning anchor:** stats hard-cap at **25** (`STAT_CAP`, `src/engine/progression.ts:22`), so the real ranges are band width 0.16→0.36, sweet half 0.10→0.25, strikePower 0.20→0.275 — the `min()` ceilings above are unreachable and exist only as safety rails. A focused build reaches DX or ST ~12–16 by character level 5 and caps ~25 by level 15–20; tune M6 difficulty against stat levels **1 / 8 / 16 / 25**, not against the ceilings. This matches the codebase idiom: stats widen tolerances/add power, always capped, never trivializing (Armory Break `ST_ZONE_WIDEN_PER_LEVEL`, Lockpicking DX tolerance, Last Stand HP window).
 
-*(Constants are starting values; tuned in M5.)*
+**Sanity math:** at ST 0, a perfect light strike fills 0.20 → 5 perfect lights (or ~3 heavies) fill the meter inside the 8 s base runway; at ST 25 a heavy fills ~0.52. With 3 re-stokes total runway is ~15–20 s.
+
+### Controls
+
+- **Keyboard:** tap `Space` = light strike; hold+release `Space` = heavy; hold `Shift` (or `B`) = bellows. Phase A: hold/release `Space`.
+- **Pointer (mobile):** two on-screen buttons — **hammer** (tap = light, hold = charge) and **bellows** (hold). Phase A: hold/release anywhere on the bar panel.
+- Both phases fully playable with either input alone (bellows key optional in a no-re-stoke run).
 
 ---
 
-## 4. Milestones
+## 4. Legibility (audit pillar)
+
+*"Legibility is the cheapest reward buff"* (plan3 strategic direction; HABIT-09/BAL-07/MINI-12). The Forge must show players that their habit-trained stats are doing something:
+
+- ForgeMinigame header shows live stat chips with **real numbers**: `DX 14 → +11% wider zones`, `ST 12 → +18% strike power` (computed from the formulas above, not hand-written copy).
+- The sweet-zone/band are rendered at their actual DX-scaled width, so improvement is visible run-over-run.
+- Result panel shows the score breakdown (heat / strikes) alongside the tier, so a near-miss on Masterwork reads as "stoke better", not RNG.
+
+---
+
+## 5. Re-forge (repeatable gold sink)
+
+**Problem:** improving an owned item's quality otherwise costs the full recipe every attempt (obsidian_plate: 3 obsidian + 2 frost_quartz + 2 iron bars + 130g — many deep-mine runs), even when the new run scores lower and changes nothing. Meanwhile plan3 Phase 4 explicitly deferred a *"repeatable ≥500g gold sink"* and named re-forging the best fit (BAL-05).
+
+**Design:** any **owned, crafted** gear/weapon below Masterwork gets a **Re-forge** action in ForgeSection:
+
+- **Cost:** `max(100, 2 × (recipe.gold ?? 0))` gold **+ 1 × the recipe's anchor material**.
+  - Anchor = new optional `RecipeDef.reforgeAnchor` (a `MaterialKey`), defaulting to the recipe's first-listed material. Set explicitly for the band recipes: obsidian_plate → `obsidian`, mithril_pickaxe → `obsidian`, resin_trinket → `amber_resin`.
+  - Examples: obsidian_plate re-forge = **260g + 1 obsidian**; iron_mace = **100g + 1 iron_bar**.
+- Plays the identical minigame; the **upgrade-only rule applies** — a worse run spends the cost and changes nothing. Chasing Masterwork on a big item therefore sinks 500g+ across attempts for a mid-skill player, exactly the deferred target.
+- **Pricing rules:** must respect BAL-15/4.10 (**no decoy premiums** — re-forge is honestly cheaper in materials than a full re-craft, and the gold premium is the sink, stated plainly in the UI), and must not undercut the 4.4 band recipes' material demand (hence the anchor material, which keeps deep runs relevant).
+- Store action: `reforge(recipeKey, score01, boosts?)` in `economySlice` — validates ownership + cost, consumes, applies the same tier-max write as `craft`.
+
+Full re-craft (complete recipe cost) remains available and is the only path for items you don't own yet.
+
+---
+
+## 6. Fuel & Flux (dead-end material sink)
+
+Optional pre-run panel shown before Phase A (skippable — "Just forge"):
+
+| Slot | Cost | Effect (one run) | Source of material |
+|---|---|---|---|
+| **Fuel: Seasoned Wood** | 2 wood | heat decay ×0.7 (longer runway) | forest chopping (`src/engine/forest.ts:1091`) |
+| **Fuel: Firebrick** | 2 stone | re-stoke fatigue 0.15 → 0.08 (more recoveries) | mine rubble (`src/engine/mining.ts:1023`) |
+| **Flux: Gemstone** | 1 gemstone | both sweet zones ×1.25 wider | mine floor 10+ node, dungeon encounters |
+
+- One fuel + one flux max per run; the two fuels are mutually exclusive.
+- **Consumed only when the run reaches the result screen** — cancelling mid-forge refunds everything, consistent with the cancel rule in §8. Consumption happens atomically inside `craft`/`reforge` (boosts are passed as an argument, e.g. `craft(key, score01, { fuel: 'wood', flux: true })`), so there is no separate spend step to desync.
+- Serves BAL-16: wood, stone, and gemstone currently have **no sink anywhere**. Pelt/game_meat remain out of scope (future cooking/hunting content — note this in the panel copy? No: just leave them untouched, no UI mention).
+- Effects are **run-quality helpers, not tier purchases**: they widen margins but a zero-skill run still scores Crude. Flux is deliberately the rare one — it's the "I'm going for Masterwork on obsidian_plate" spend.
+
+---
+
+## 7. Milestones
 
 Build in strict order. Do not start the next milestone until the previous one's tests pass and a manual smoke-check looks correct.
 
@@ -114,377 +264,295 @@ Build in strict order. Do not start the next milestone until the previous one's 
 #### Changes
 
 **`src/engine/crafting.ts`** — add tier types and helpers:
+
 ```ts
 export type CraftTier = 0 | 1 | 2 | 3;
-export const CRUDE    = 0;
-export const NORMAL   = 1;
-export const FINE     = 2;
-export const MASTERWORK = 3;
+export const CRUDE = 0; export const NORMAL = 1;
+export const FINE = 2;  export const MASTERWORK = 3;
 
-export interface CraftTierDef {
-  name: string;
-  mult: number;   // stat multiplier
-  color: string;  // hex, for UI tinting
-  glyph: string;  // emoji, for badges
-}
+export interface CraftTierDef { name: string; mult: number; color: string; glyph: string }
 
 export const CRAFT_TIERS: Record<CraftTier, CraftTierDef> = {
-  0: { name: 'Crude',       mult: 0.85, color: '#8b6914', glyph: '🟤' },
-  1: { name: 'Normal',      mult: 1.00, color: '#c9a227', glyph: '⬜' },
-  2: { name: 'Fine',        mult: 1.15, color: '#7dd3fc', glyph: '🔵' },
-  3: { name: 'Masterwork',  mult: 1.30, color: '#a78bfa', glyph: '💜' },
+  0: { name: 'Crude',      mult: 0.85, color: '#8b6914', glyph: '🟤' },
+  1: { name: 'Normal',     mult: 1.00, color: '#c9a227', glyph: '⬜' },
+  2: { name: 'Fine',       mult: 1.15, color: '#7dd3fc', glyph: '🔵' },
+  3: { name: 'Masterwork', mult: 1.30, color: '#a78bfa', glyph: '💜' },
 };
 
-export function tierMultiplier(tier: number): number {
-  return CRAFT_TIERS[(tier as CraftTier) ?? NORMAL]?.mult ?? 1.0;
-}
-
-export function scoreToTier(score01: number): CraftTier {
-  if (score01 >= 0.75) return MASTERWORK;
-  if (score01 >= 0.40) return FINE;
-  if (score01 >= 0.20) return NORMAL;
-  return CRUDE;
-}
-
-export function tierLabel(tier: number): string {
-  return CRAFT_TIERS[(tier as CraftTier)]?.name ?? 'Normal';
-}
+export function scaleTierStat(base: number, tier: CraftTier): number { /* §2 */ }
+export function scoreToTier(score01: number): CraftTier { /* §2 cutoffs */ }
+export function tierLabel(tier: number): string { /* name ?? 'Normal' */ }
 ```
 
 **`src/store/slices/economySlice.ts`**:
-- Add `gearQuality: Record<string, number>` and `weaponQuality: Record<string, number>` to the `EconomySlice` type and `initialEconomyState`, both defaulting to `{}`.
-- Change `craft(recipeKey)` to `craft(recipeKey: string, score01?: number)`. After the existing material/gold consumption, compute `tier = scoreToTier(score01 ?? 1.0)` and for gear/weapon results:
+- Add `gearQuality: Record<string, number>` and `weaponQuality: Record<string, number>` to the slice type and initial state, both `{}`.
+- Change `craft(recipeKey)` (`economySlice.ts:161`) to `craft(recipeKey: string, score01?: number)`. After the existing consumption, compute `tier = score01 === undefined ? NORMAL : scoreToTier(score01)` *(rev-2.1 fix: the earlier `scoreToTier(score01 ?? 1.0)` stored Masterwork on scoreless crafts, contradicting the "no score ⇒ Normal" test below)*; for gear/weapon results write with the **fixed upgrade rule**:
   ```ts
-  const prev = kind === 'gear' ? s.gearQuality[key] : s.weaponQuality[key];
-  const newTier = Math.max(prev ?? NORMAL, tier);
-  next[kind === 'gear' ? 'gearQuality' : 'weaponQuality'] = {
-    ...(kind === 'gear' ? s.gearQuality : s.weaponQuality),
-    [key]: newTier,
-  };
+  const prev = /* gearQuality or weaponQuality */[key];
+  const newTier = prev === undefined ? tier : Math.max(prev, tier);
   ```
-  Item-kind results ignore tier.
+  Item-kind results ignore tier. *(Re-forge and boosts arrive in M5 — keep M1 minimal.)*
 
-**`src/store/shared.ts`** — apply quality at the two combat seams:
+**`src/store/commit.ts`** *(rev-2.1 correction: was shared.ts before the ARCH-10 split; shared.ts now just re-exports commit.ts)* — apply quality at the two combat seams:
 
-1. `gearFor` (line 527) — after resolving each equipped `GearDef`, produce a quality-scaled copy:
-   ```ts
-   const tier = state.gearQuality[key] ?? NORMAL;
-   const m = tierMultiplier(tier);
-   // return a new GearDef with defense/ward/statBonuses scaled by m
-   ```
-   All other fields (`xpBonus`, `mining`, `chopping`, etc.) are copied as-is.
+1. `gearFor` (`commit.ts:78`) — after resolving each equipped `GearDef`, return a quality-scaled copy: `defense`/`ward`/`statBonuses` values through `scaleTierStat(v, gearQuality[key] ?? NORMAL)`; all other fields copied as-is. `aggregateGear` (`src/engine/gear.ts:53`) stays untouched — it sums whatever `gearFor` hands it. (`habitsSlice.ts:178` also consumes `gearFor` for `gearXpMultiplier` — safe, it reads only the unscaled `xpBonus`.)
+2. Add `equippedWeaponDef(state): WeaponDef` — `{ ...w, bonus: scaleTierStat(w.bonus, weaponQuality[state.equippedWeapon] ?? NORMAL) }` — and replace the bare `getWeapon(state.equippedWeapon)` at **`commit.ts:136`** (inside `fighterFor`).
 
-2. Add `equippedWeaponDef(state: GameState): WeaponDef`:
-   ```ts
-   const w = getWeapon(state.equippedWeapon);
-   const m = tierMultiplier(state.weaponQuality[state.equippedWeapon] ?? NORMAL);
-   return { ...w, bonus: Math.round(w.bonus * m) };
-   ```
-   Replace the bare `getWeapon(state.equippedWeapon)` in `fighterFor` (line 556) with `equippedWeaponDef(state)`.
-
-3. Audit crawler snapshots: `miningSlice.ts` and `forestSlice.ts` build a snapshot at run-start that includes the weapon. Replace bare `getWeapon(...)` there with `equippedWeaponDef(s)` so quality is baked into the run snapshot. *(Note: `dungeonSlice.ts:221` only reads `attackStat` — leave it untouched.)*
+> **Correction (plan3 8.1 / MINI-41, re-verified 2026-07-07):** revision 1 claimed `miningSlice`/`forestSlice` build
+> run snapshots with bare `getWeapon` calls — they don't; both route through `fighterFor`.
+> **`commit.ts:136` is the single combat weapon seam.** At build time, `grep getWeapon src/store src/hooks`
+> to confirm nothing else resolves the equipped weapon for combat. (`dungeonSlice.ts:258` reads
+> only `attackStat`, which is unscaled — leave it untouched. The remaining `getWeapon` calls in
+> `src/components`/`src/views` are display-only; M4 handles their tier display.)
 
 **`src/store/useGameStore.ts`**:
-- Bump `persist` `version` by 1.
-- Add `gearQuality: {}` and `weaponQuality: {}` to the `merge` defaults object (these are persistent progress fields — do NOT add them to the transient null-list used for run state).
+- Bump `persist` `version` **32 → 33** (`useGameStore.ts:176`) with a `// v33:` comment following the version-history convention there.
+- *(rev-2.1 correction)* No explicit `merge`/`migrate` line is needed: per the v31 (`trialAttemptNonce`) / v32 (`spiritGroveSeen`) precedent, a new top-level Record field defaults from the slice's initial state (`{}`) via the merge spread on old saves. Declare `gearQuality: {}` / `weaponQuality: {}` in economySlice's initial state (mirroring `ownedGear`) and that is sufficient.
 
 #### Tests for M1
 
-- `tierMultiplier(CRUDE)` = 0.85, `tierMultiplier(NORMAL)` = 1.0, etc.
-- `scoreToTier` boundaries: 0.0→Crude, 0.20→Normal, 0.40→Fine, 0.75→Masterwork.
-- `equippedWeaponDef` returns a weapon with scaled `bonus`; `attackStat`/`staminaCost` unchanged.
-- Quality-scaled `gearFor` produces correct `defense`/`ward`/`statBonuses` at each tier; `xpBonus` unchanged.
-- `craft(recipeKey, 0.9)` stores `weaponQuality[key] = MASTERWORK`; re-craft at score 0.5 leaves it as MASTERWORK.
-- `craft(recipeKey)` (no score) ⇒ stores NORMAL (×1.0 = identical to today).
-- Absent key in `gearQuality` ⇒ `aggregateGear` returns the same numbers as before M1.
+- `scaleTierStat` per-tier values on representative bases (12, 6, 4, 3, 1) — including the small-base floors (base 3 → 2/3/4/5) and `base 1` Crude staying ≥ 1.
+- **Distinctness property:** for every craftable gear/weapon stat in `src/content/`, the four tiers produce strictly increasing values.
+- `scoreToTier` boundaries at exactly 0.20 / 0.40 / 0.75.
+- **First craft at score 0.1 stores CRUDE** (the revision-1 regression); re-craft at 0.9 upgrades to MASTERWORK; re-craft at 0.5 leaves MASTERWORK.
+- `craft(recipeKey)` with no score ⇒ stores NORMAL (identical to today).
+- `equippedWeaponDef` scales `bonus` only; absent key ⇒ unchanged weapon.
+- Quality-scaled `gearFor` → correct `defense`/`ward`/`statBonuses`; `xpBonus`/`mining` untouched; absent keys ⇒ `aggregateGear` output byte-identical to pre-M1.
 - `npm run test` and `npm run typecheck` fully green.
 
 #### M1 ship state
 
-One-click craft still works (via `craft(recipeKey)` with no `score01`), always yields Normal. Nothing is visibly different to the player. All existing balance tests pass unchanged.
+One-click craft still works (no `score01` ⇒ Normal). Nothing visibly different. All existing balance tests pass unchanged.
 
 ---
 
-### M2 — Forge engine (pure functions & tests)
+### M2 — Forge engine (pure reducer & tests)
 
-**Goal:** the complete mathematical engine for the two-phase mechanic, fully tested, with no React or store imports.
+**Goal:** the complete mechanic as a pure, framework-free engine, fully tested.
 
 #### New file: `src/engine/crafting/forge.ts`
 
-Structure mirrors `src/engine/trials/armoryBreak.ts`.
+Because Phase B now carries real state (heat, fatigue, charging, stoking, progress), the engine is a **pure reducer** in the style of `lastStand.ts`/`rooftopChase.ts` (`stepX(state, input, dt)`), with accuracy helpers in the style of `armoryBreak.ts`:
 
 ```ts
-// ── Constants (all exported so UI can read them) ────────────────────────────
-
-/** Number of strikes in Phase B. */
-export const FORGE_BASE_STRIKES = 5;
-
-/** Seconds Phase B lasts at maximum heat. */
-export const HEAT_DURATION_S = 8;
-
-/** Heat rise/fall rate per second (fraction of full bar). */
-export const HEAT_RISE_RATE  = 0.25;   // fills in ~4 s of holding
-export const HEAT_FALL_RATE  = 0.35;   // drops faster than it rises
-
-/** Heat band occupies [HEAT_BAND_START, HEAT_BAND_END] of the bar (0–1). */
-export const HEAT_BAND_START = 0.62;
-export const HEAT_BAND_WIDTH_BASE = 0.16;  // widened by DX
-
-/** Needle oscillation period in seconds. */
-export const NEEDLE_PERIOD_S = 2.0;
-
-/** Base sweet-zone half-width (fraction of bar). */
-export const SWEET_HALF_BASE = 0.10;   // widened by DX
-
-// ── Phase A helpers ─────────────────────────────────────────────────────────
-
-/** Width of the target heat band (wider with higher DX). */
-export function heatBandWidth(dxLevel: number): number {
-  return Math.min(0.40, HEAT_BAND_WIDTH_BASE + dxLevel * 0.008);
+export interface ForgeRunState {
+  phase: 'stoke' | 'strike' | 'done';
+  heatBar: number;                 // Phase A fill
+  heat01: number;                  // committed Phase A accuracy
+  heat: number; heatMax: number;   // Phase B resource + fatigue ceiling
+  restokes: number;
+  charging: boolean; chargeT: number;
+  stoking: boolean;
+  needlePos: number; needleDir: 1 | -1;
+  zoneCentre: number; zoneDir: 1 | -1;
+  progress: number;
+  strikes: { acc: number; weight: number }[];
 }
 
-/** Accuracy of the Phase A commit (0–1); 1.0 at band centre, 0 outside. */
-export function heatAccuracy(heatBar: number, dxLevel: number): number {
-  const centre = HEAT_BAND_START + heatBandWidth(dxLevel) / 2;
-  const halfW  = heatBandWidth(dxLevel) / 2;
-  const dist   = Math.abs(heatBar - centre);
-  if (dist > halfW) return 0;
-  return 1 - dist / halfW;
-}
+export interface ForgeInput { hammerHeld: boolean; bellowsHeld: boolean }
+export interface ForgeMods  { decayMult: number; fatigue: number; zoneMult: number } // fuel/flux, defaults 1/0.15/1
 
-// ── Phase B helpers ─────────────────────────────────────────────────────────
-
-/** Half-width of the strike sweet-zone (wider with higher DX). */
-export function strikeSweetHalf(dxLevel: number): number {
-  return Math.min(0.35, SWEET_HALF_BASE + dxLevel * 0.006);
-}
-
-/**
- * Accuracy of a single strike (0–1).
- * needlePos and zoneCentre are both in [0,1] (fraction of the bar).
- */
-export function strikeAccuracy(needlePos: number, zoneCentre: number, dxLevel: number): number {
-  const half = strikeSweetHalf(dxLevel);
-  const dist = Math.abs(needlePos - zoneCentre);
-  if (dist > half) return 0;
-  return 1 - dist / half;
-}
-
-/**
- * Contribution of a single strike to the progress meter [0,1].
- * Higher ST = more power per strike (fewer strikes needed to fill).
- */
-export function strikePower(stLevel: number): number {
-  // Base: fills ~1/5 of the meter per perfect strike (needs 5 perfect hits).
-  // ST bonus: +1.5% per level, so ST 20 ≈ 30% bonus (needs ~3.8 perfect hits).
-  return Math.min(0.40, 0.20 * (1 + stLevel * 0.015));
-}
-
-// ── Final score ──────────────────────────────────────────────────────────────
-
-export interface ForgeResult {
-  heat01: number;        // Phase A accuracy
-  strikeAccuracies: number[];
-  progressFilled: number;  // forge-progress bar fraction [0,1]
-}
-
-/**
- * Compute a normalized score01 from a completed forge run.
- * Blends heat accuracy, mean strike accuracy, and progress fill.
- * Low-accuracy spam can't max the score — both mean accuracy and progress matter.
- */
-export function forgeScore(result: ForgeResult): number {
-  const { heat01, strikeAccuracies, progressFilled } = result;
-  const meanAcc = strikeAccuracies.length === 0
-    ? 0
-    : strikeAccuracies.reduce((a, b) => a + b, 0) / strikeAccuracies.length;
-  // strike01 is the geometric blend that penalizes spam (must have both fill AND accuracy)
-  const strike01 = Math.sqrt(progressFilled * meanAcc);
-  return Math.max(0, Math.min(1, 0.35 * heat01 + 0.65 * strike01));
-}
+export function initForge(dx: number, st: number, mods?: Partial<ForgeMods>): ForgeRunState;
+export function stepForge(s: ForgeRunState, input: ForgeInput, dtSec: number,
+                          dx: number, st: number, mods: ForgeMods): ForgeRunState;
+export function commitStoke(s: ForgeRunState, dx: number): ForgeRunState;   // Phase A release
+export function forgeScore(s: ForgeRunState): number;                        // §3 blend
+// plus the pure helpers: heatBandWidth, heatAccuracy, strikeSweetHalf,
+// strikeAccuracy, strikePower — formulas in §3
 ```
+
+Reducer responsibilities: needle/zone oscillation, passive heat decay (× fuel `decayMult`), charge accumulation + zone shrink while charging, strike resolution on hammer release (light vs heavy by `chargeT`), re-stoke sessions (rise, progress cooling, fatigue on session start), and end conditions (progress ≥ 1 or heat ≤ 0 → `phase: 'done'`).
+
+Constants from §3 all exported so the UI renders bands/zones at true size. No RNG, no React, no store imports — the Forge is single-player and synchronous, so no `runRng` plumbing and no co-op concerns.
 
 #### New file: `src/engine/crafting/__tests__/forge.test.ts`
 
 Cover:
-- `heatAccuracy`: band centre → 1.0; outside band → 0; DX widens band (wider band = same commit position scores higher).
-- `strikeAccuracy`: zone centre → 1.0; edge → 0; outside → 0; DX widens (same position scores higher with more DX).
-- `strikePower`: monotonically increasing with ST; at ST=0 ≈ 0.20; never exceeds 0.40.
-- `forgeScore`: perfect heat + perfect strikes at max DX/ST → score01 ≥ 0.75 (Masterwork); all zeros → score01 = 0 → Crude; heat matters (same strikes, better heat → better score); spam (many low-accuracy strikes that fill progress but low mean accuracy) → penalized vs fewer accurate strikes.
-- `scoreToTier` boundary tests at exactly 0.20, 0.40, 0.75.
+- Helper formulas: band/zone widening with DX (monotone, correct at DX 0 and 25); `strikePower` at ST 0 = 0.20, ST 25 ≈ 0.275.
+- `heatAccuracy`/`strikeAccuracy`: centre → 1.0, edge → 0, outside → 0.
+- Reducer: light strike advances progress by `acc × strikePower`; heavy = ×`CHARGE_MULT` and requires `chargeT ≥ CHARGE_TIME_S`; zone half-width shrinks toward ×`CHARGE_ZONE_SHRINK` while charging; heat decays during charge.
+- Re-stoke: heat rises while stoking, progress cools at `PROGRESS_COOL_RATE`, `heatMax` drops `RESTOKE_FATIGUE` per session (not per frame), strikes impossible while stoking.
+- End conditions: progress ≥ 1 ends phase; heat ≤ 0 ends phase (including **mid-charge** — charge is lost, no strike fires).
+- `forgeScore`: all-perfect → ≥ 0.75; all-zero → Crude band; weighted `meanAcc` (one accurate heavy outweighs one sloppy light); spam (fill via many low-acc strikes) scores below fewer accurate strikes; heat01 = 0 caps score at 0.65 (Masterwork unreachable).
+- Fuel/flux mods: `decayMult` slows drain; `fatigue` override; `zoneMult` widens both zones.
 
 ---
 
 ### M3 — Forge minigame UI wired to craft
 
-**Goal:** clicking "Craft" opens the interactive two-phase Forge modal; on completion the item is written to the store with its earned tier.
+**Goal:** clicking "Craft" opens the interactive Forge modal; on completion the item is written to the store with its earned tier.
 
 #### New file: `src/components/inventory/ForgeMinigame.tsx`
 
-A full-screen modal (same fixed-inset z-50 pattern as other overlays). Structure:
+A full-screen modal (fixed-inset z-50, like other overlays). **Primary template: `src/components/trials/ArmoryBreak.tsx`** — it already demonstrates every hard part: rAF loop reading refs (never state) per frame, state mirrored into refs so callbacks avoid stale closures, `setPointerCapture` + Space keydown/keyup with `e.repeat` guard, and hold-release scoring.
 
 ```
 ForgeMinigame
-├── Phase A panel (shown while phaseA)
-│   ├── Recipe name + material cost reminder
-│   ├── Heat bar (rAF, vertical, fills on hold)
-│   │   └── Sweet band highlight (position + width from heatBandWidth(DX))
-│   ├── "Hold to stoke — release to lock heat" instruction
-│   └── Touch/keyboard: pointerdown/up or Space
-│
-├── Phase B panel (shown while phaseB)
-│   ├── Animated heat decay bar (dims as heat drops)
-│   ├── Needle bar + moving sweet-zone (rAF)
-│   ├── Forge-progress bar (fills with good strikes)
-│   ├── Strike count badge
-│   └── Touch/keyboard: tap / Space / any key
-│
-└── Result panel (shown on complete)
-    ├── Item crest (Sprite)
-    ├── Tier badge (name + glyph + color from CRAFT_TIERS)
-    ├── Flavour line ("The metal rang true." / "A crude attempt.")
-    └── "Continue" button → calls craft(recipeKey, score01), onClose()
+├── Header: recipe name, cost reminder, stat chips (§4: "DX 14 → +11% wider zones")
+├── Phase A panel — heat bar (vertical, fills on hold) + DX-scaled sweet band
+│     "Hold to stoke — release to lock heat"
+├── Phase B panel
+│   ├── Heat gauge with fatigue ceiling marker (dims as heat drops)
+│   ├── Needle bar + moving sweet-zone (shrinks visibly while charging)
+│   ├── Forge-progress bar + strike count badge
+│   └── Buttons: [🔨 hammer — tap/hold] [💨 bellows — hold]   (+ Space / Shift keys)
+└── Result panel — item crest (Sprite), tier badge (name+glyph+colour), score
+      breakdown (heat / strikes), flavour line, "Continue" → craft(recipeKey,
+      score01), onClose()
 ```
 
 Implementation notes:
-- A single `useRef` rAF loop drives both phases; it reads a phase-ref (not state) to decide what to update.
-- `heatBar` and `needlePos`/`zoneCentre` are refs written directly to `style.width`/`style.left` (same pattern as the charge-bar in `MineRunOverlay` to avoid 60fps React re-renders).
-- `strikeAccuracies`, `progressFilled`, and `heat01` accumulate in refs; only written to React state once at phase-transition/completion.
-- Reads `useGameStore(s => s.character.statLevels)` for DX and ST at mount; snapshot into refs so the loop doesn't subscribe on every frame.
-- **Touch controls**: `pointerdown`/`pointerup` for Phase A hold; `pointerdown` for Phase B strike.
-- Parchment/gold styling: `Panel tone="parchment"`, `text-ink`, `border-gold-deep`, `Hammer` icon from lucide-react.
-- Imports `heatAccuracy`, `strikeAccuracy`, `strikePower`, `forgeScore`, `scoreToTier`, `CRAFT_TIERS` from `@/engine/crafting/forge`.
-- `prefers-reduced-motion`: detect via `window.matchMedia`; if set, slow the needle oscillation and widen both bands by ×1.5.
-
-Props: `{ recipeKey: string; onClose: () => void }`.
+- One `useRef` rAF loop calls `stepForge` with dt and writes `heat`/`needlePos`/`zoneCentre`/`progress` **directly to DOM styles** (the `MineRunOverlay.tsx:161-177` charge-bar discipline — no 60 fps React re-renders). React state changes only at phase transitions.
+- **Release-instant projection:** apply the `projectReleasePower` pattern (`src/engine/trials/armoryBreak.ts:33`) to hammer releases — project needle position forward from the last rAF frame to the true pointer-up timestamp so strike accuracy doesn't quantize to frame boundaries. (This feel detail is why Armory Break's releases feel fair; don't skip it.)
+- Read `useGameStore(s => s.character.statLevels)` once at mount; snapshot DX/ST into refs.
+- Consider parameterizing `src/components/trials/MashMeter.tsx` (vertical bar + sweet-zone overlay + needle, with locked-state colours) for the Phase A heat bar rather than forking it.
+- Styling: `Panel tone="parchment"`, `text-ink`, `border-gold-deep`, `Hammer` icon (lucide-react, already imported in ForgeSection).
+- `prefers-reduced-motion`: detect via `window.matchMedia` (idiom: `useSmoothCamera.ts:143`); if set, slow the needle ×1.5 and widen both bands ×1.5. (Note: this is the first *gameplay-affecting* reduced-motion accommodation in the codebase — existing handling is visual-only. Deliberate: the Forge is unavoidable core-loop content, unlike optional trials.)
+- Props: `{ recipeKey: string; mode?: 'craft' | 'reforge'; onClose: () => void }` (mode used from M5).
 
 #### Modified: `src/components/inventory/ForgeSection.tsx`
 
-Add local `const [forgeTarget, setForgeTarget] = useState<string | null>(null)`. Change the "Craft" button `onClick` from `() => craft(recipe.key)` to `() => setForgeTarget(recipe.key)`. Below the list, render:
-```tsx
-{forgeTarget && (
-  <ForgeMinigame recipeKey={forgeTarget} onClose={() => setForgeTarget(null)} />
-)}
-```
-
-Item-kind recipe results (none today, but the type supports them): these may still call `craft(key)` directly and skip the minigame — add a guard checking `recipe.result.kind !== 'item'`.
+- `const [forgeTarget, setForgeTarget] = useState<string | null>(null)`; the Craft button opens the modal instead of calling `craft` directly. Guard: recipes with `result.kind === 'item'` (none today) still call `craft(key)` directly and skip the minigame.
+- Render `<ForgeMinigame recipeKey={forgeTarget} onClose={...} />` when set.
 
 #### Manual verification for M3
 
-`npm run dev` → Crafting tab → stockpile materials (dev settings: unlimitedGold) → click Craft on e.g. "Iron Mace":
-1. Forge modal opens.
-2. Phase A: hold bellows bar, watch it fill; release in the band → Phase B opens.
-3. Phase B: tap strikes; watch forge-progress fill; heat decays.
-4. Result panel shows tier (deliberately aim for all 4 outcomes across test runs).
-5. Close → item appears in inventory tab with its tier label (M4 adds this, but the store writes it now).
+`npm run dev` → Crafting tab (dev settings: unlimitedGold) → Craft "Iron Mace":
+1. Modal opens; stat chips show real DX/ST numbers.
+2. Phase A hold/release in band → Phase B opens at committed heat.
+3. Phase B: light taps land; hold produces a visibly shrinking zone then a heavy hit; bellows re-stoke raises heat, drains progress, lowers the ceiling marker.
+4. Let heat run out mid-run → run ends and scores what was banked.
+5. Deliberately hit all four tiers across runs; store writes the tier (visible in M4).
 
 ---
 
 ### M4 — Tier display & visual feedback
 
-**Goal:** quality is now visible everywhere items appear.
+**Goal:** quality is visible everywhere items appear.
 
-#### UI locations to update
+1. **`ForgeSection.tsx`** recipe rows: best-crafted tier chip (`Fine 🔵` / `Masterwork 💜`) when `gearQuality[key]`/`weaponQuality[key]` exists — this is also the "should I re-forge?" signal.
+2. **`src/components/inventory/GearSection.tsx`**: owned gear/weapon cards get a tier-prefixed name ("Fine Leather Vest") tinted `CRAFT_TIERS[tier].color`; stat text shows the scaled values (already flowing from `gearFor` — display-only work). Add `tierPrefix(name, tier)` helper here (plain name when tier absent or Normal).
+3. **`src/components/character/PaperDoll.tsx`** *(correct path — revision 1 said `inventory/`)*: tier badge on equipped slots. **Rev-2.1 note:** PaperDoll computes its displayed totals with raw `getGear`/`getWeapon` + its own `aggregateGear` call (`PaperDoll.tsx:64-72`) — it bypasses `gearFor`. M4 must route its numbers through the quality-scaled helpers (or scale in place) so the displayed stats match what `fighterFor` actually fields; a tier badge alone would leave the shown numbers wrong for non-Normal items. Same check applies to `BattleScene.tsx:494` and `WeaponsSection.tsx:22` weapon displays.
+4. **ForgeMinigame result panel** (built in M3): confirm tier name + glyph + colour + score breakdown are prominent.
 
-1. **`src/components/inventory/ForgeSection.tsx`** recipe rows: after item name add the best-crafted tier badge if `gearQuality[key]` or `weaponQuality[key]` is set (and > 0). Show as a small colored chip: `Fine 🔵` / `Masterwork 💜`.
-
-2. **`src/components/inventory/GearSection.tsx`**: on each owned gear card, prefix the name with the tier (e.g. "Fine Leather Vest") and color it by `CRAFT_TIERS[tier].color`. Show `gearBonusText` with the scaled stat numbers (already computed by `aggregateGear` — no extra work, display from the equipped/owned gear's derived values).
-
-3. **Weapon list** (wherever ownedWeapons are displayed — check `GearSection` or a weapons panel): same prefix + tint pattern.
-
-4. **`src/components/inventory/PaperDoll.tsx`** / equip panel: show tier badge on the equipped item slot.
-
-5. **ForgeMinigame result panel** (already in M3 result screen): confirm tier name, glyph, and colour are shown prominently.
-
-#### Helper function
-
-Add `tierPrefix(name: string, tier: number | undefined): string` next to `gearBonusText` in `GearSection.tsx` — returns the prefixed name if tier exists and ≠ Normal, otherwise plain name. Coloring is done with inline style or a small wrapper using `CRAFT_TIERS[tier].color`.
+Never colour-only: tier is always name + glyph + colour (matches the trials' a11y idiom).
 
 ---
 
-### M5 — Balance, polish & accessibility
+### M5 — Re-forge & Fuel/Flux (economy features)
+
+**Goal:** ship §5 and §6 on top of the working minigame.
+
+#### Changes
+
+- **`src/content/recipes.ts`**: optional `reforgeAnchor?: MaterialKey` on `RecipeDef`; set for the three band recipes (§5).
+- **`src/store/slices/economySlice.ts`**:
+  - `reforge(recipeKey, score01, boosts?)` — requires the item owned and below MASTERWORK; cost `max(100, 2 × (recipe.gold ?? 0))` gold + 1 anchor material (`unlimitedGold` bypasses gold as usual); consumes; writes tier via the same upgrade rule.
+  - Extend `craft(recipeKey, score01?, boosts?)` — `boosts: { fuel?: 'wood' | 'stone'; flux?: boolean }`; validate + consume fuel/flux materials atomically in the same write that consumes the recipe.
+- **`ForgeMinigame.tsx`**: pre-run Fuel & Flux panel (skippable); pass resulting `ForgeMods` to `initForge`; `mode: 'reforge'` variant shows the re-forge cost and current tier → target.
+- **`ForgeSection.tsx`**: owned, non-Masterwork recipes show a **Re-forge** button with explicit cost copy ("260g + 1 Obsidian — quality can only improve").
+
+#### Tests for M5
+
+- `reforge`: happy path upgrades tier; below-cost rejected; already-Masterwork rejected; worse score spends cost but keeps tier; unowned item rejected.
+- Boost consumption: fuel/flux subtracted exactly once, only on commit; insufficient materials disables the slot (UI) and is rejected (action guard).
+- Mods reach the reducer: wood run drains slower; stone run fatigues less; gemstone run has wider zones (assert via engine, not pixels).
+- Anchor default = first-listed material when `reforgeAnchor` absent.
+
+---
+
+### M6 — Balance, polish & accessibility
 
 **Goal:** the minigame feels good at all stat levels, looks polished, and is accessible.
 
 #### Balance tuning
 
-- Playtest at DX 0, 5, 10, 20; ST 0, 5, 10, 20 — verify all four tiers are reachable.
-- Adjust `HEAT_BAND_WIDTH_BASE`, `SWEET_HALF_BASE`, `HEAT_DURATION_S`, `strikePower` scaling to:
-  - Low DX/ST (new player): Crude and Normal reachable; Fine requires some effort.
-  - Mid DX/ST: Normal feels effortless; Fine is comfortable; Masterwork is achievable.
-  - High DX/ST: Masterwork is consistent with good play.
-- Update `FORGE_BASE_STRIKES` if needed (target ~5 for a Normal-stat player to fill the meter, 3–4 for high ST).
-- Cross-check `engine/__tests__/balance.test.ts` (if it tests weapon/gear values, Normal-tier must still match the pre-M1 baseline).
-- Tune tier cutoffs (`scoreToTier` boundaries) if playtest data suggests.
+- Playtest the DX × ST grid at **1 / 8 / 16 / 25** (the real stat range — see §3 tuning anchor):
+  - Low stats (new player): Normal reliable, Fine takes effort, Masterwork possible on a great run with flux.
+  - Mid stats: Fine comfortable, Masterwork achievable with good play.
+  - Capped stats: Masterwork consistent with good play — but never AFK (Crude must remain the honest outcome of not playing).
+- Verify the three-verb economy holds: charging must honestly out-score light-spam at equal skill (cf. the mine's `CHARGE_DAMAGE_MULT` retune, `crawl.ts:305` — it was DPS-negative at 1.75 and had to go to 2.25; watch for the same trap with `CHARGE_MULT`), and a 3-re-stoke marathon must not beat a clean 2-stoke run.
+- Re-forge pricing: confirm a mid-skill Masterwork chase on obsidian_plate sinks ≥ 500g cumulative without feeling like a decoy (BAL-15).
+- Cross-check `engine/__tests__/balance.test.ts` — Normal tier must still match the pre-M1 baseline everywhere.
+- Revisit `scoreToTier` cutoffs and all §3 constants against playtest data.
 
-#### Visual polish
+#### Visual & audio polish
 
-- Screen-shake on strike (reuse `shakeOffset` from `crawl.ts` + a local shake-state ref).
-- Spark VFX on Masterwork/Fine reveal (CSS animation or a brief canvas overlay — keep it small).
-- Anvil/flame scene via `getScene`/`resolveSceneImage` placeholder (adds to `scenes.ts`; real PNG can be swapped later via the art seam).
-- SFX hooks (same pattern as other overlays: fire-and-forget Audio objects; no-op if audio blocked).
+- Screen-shake on strikes: reuse `shakeOffset` (`src/engine/crawl.ts:515`) with a local shake ref — heavy strikes shake harder; **zero shake under reduced motion** (idiom: `useSmoothCamera.ts:203`).
+- Spark burst on Fine/Masterwork reveal (CSS animation; keep it small). Hit-flash via a CSS class toggled directly on the element (`crawler-hit-flash` pattern, `useCrawlRunFx.ts`).
+- **SFX: 4 new cues in the existing synth engine `src/lib/sfx.ts` — no new audio system.** Add to the `SfxCue` union + `_CUES` map, templated from the armory set (`sfx.ts:667-690`): `forgeStoke` (rising sawtooth+noise while held, from `armoryCharge`), `forgeStrikeGood` / `forgeStrikeMiss` (from `armoryLockCrack`/`armoryLockMiss`), `forgeComplete` (from `armoryFinish`). Optional: `setDroneIntensity` tied to remaining heat for late-run tension.
+- Anvil/flame scene via `getScene`/`resolveSceneImage` placeholder (`src/lib/scenes.ts`, new `forge:anvil` key; real PNG swappable later via the art seam).
 
 #### Accessibility
 
-- `prefers-reduced-motion`: already detected in M3; in M5 expand to also slow heat decay by 50%, giving more time to react.
-- Minimum band widths regardless of DX: ensure even DX=0 has enough room to hit Normal with reasonable effort (≥0.12 half-width on the strike sweet-zone).
-- Clear Crude-result messaging: flavour text distinguishes Crude from Normal so players don't think the game is broken ("The tempering went poorly — a rough but serviceable piece.").
-- All controls work with keyboard (Space for both phases), pointer (mobile tap/hold), and have no colour-only indicators (tiers distinguished by name + glyph + colour).
+- Reduced motion (extends M3): also slow heat decay 50%.
+- Minimum widths regardless of DX: strike sweet-zone half-width never below 0.10 effective after all modifiers; even DX 1 must reach Normal with modest effort.
+- Crude flavour text clearly distinguishes outcome from bug: *"The tempering went poorly — a rough but serviceable piece."*
+- All verbs work via keyboard (Space + Shift), pointer (two buttons), no colour-only indicators.
 
 ---
 
-## 5. Critical Files
-
-| File | Change |
-|---|---|
-| `src/engine/crafting.ts` | Add tier types/helpers: `CraftTier`, `CRAFT_TIERS`, `scoreToTier`, `tierMultiplier`, `tierLabel` |
-| `src/engine/crafting/forge.ts` | **New** — pure two-phase mechanic: constants + scoring functions |
-| `src/engine/crafting/__tests__/forge.test.ts` | **New** — full test suite for forge.ts |
-| `src/store/slices/economySlice.ts` | `gearQuality`/`weaponQuality` state; `craft(key, score01?)` extended |
-| `src/store/shared.ts` | Quality scaling in `gearFor`; new `equippedWeaponDef`; fix crawler snapshots |
-| `src/store/useGameStore.ts` | Persist version bump; merge defaults |
-| `src/components/inventory/ForgeSection.tsx` | "Craft" → open `<ForgeMinigame>`; tier badge on recipe rows |
-| `src/components/inventory/ForgeMinigame.tsx` | **New** — two-phase modal UI |
-| `src/components/inventory/GearSection.tsx` | Tier prefix + tint on owned gear |
-| `src/components/inventory/PaperDoll.tsx` | Tier badge on equipped slots |
-| `src/lib/scenes.ts` | New `forge:anvil` scene key (M5 art seam) |
-
----
-
-## 6. Reuse (do not reinvent)
-
-| Existing asset | Where to reuse it |
-|---|---|
-| `canCraft` / `getRecipe` + consumption loop | Unchanged in `economySlice.ts`; just extend the action |
-| `armoryAccuracy` / `armoryScore` shape | Template for `forge.ts` accuracy functions |
-| `scoreToStars` 0.40/0.75 thresholds (`trials.ts:109`) | Tier cutoff basis |
-| `aggregateGear` (`gear.ts:53`) | Unchanged; quality is applied in `gearFor` before aggregation |
-| `shakeOffset` (`crawl.ts`) | Screen-shake on hammer strikes (M5) |
-| `Panel`, `Button`, `Sprite` components | ForgeMinigame layout |
-| `Hammer` icon from lucide-react | Already imported in ForgeSection |
-| `useSmoothCamera` rAF pattern | Template for ForgeMinigame's rAF loop (write to DOM refs directly) |
-
----
-
-## 7. Edge Cases & Decisions
+## 8. Edge Cases & Decisions
 
 | Case | Behaviour |
 |---|---|
-| Existing saves | Absent quality entry ⇒ Normal ⇒ identical stats. Zero migration. |
+| Existing saves | Absent quality entry ⇒ Normal ⇒ identical stats. Zero migration (persist bump 32→33; initial-state defaults suffice, no merge/migrate lines — v31/v32 precedent). |
 | Shop / loot items | No quality entry ⇒ Normal (×1.0) everywhere. |
-| Re-craft an already-upgraded item | `Math.max(existing, newTier)` — upgrade only, never downgrade. Materials are always consumed. |
-| Crude result | Materials/gold spent, item is Crude. Player must craft again (spending more materials) to try for better. |
-| Consumable (item-kind) recipes | Skip the minigame entirely; call `craft(key)` directly; quality maps untouched. |
-| `unlimitedGold` dev setting | Bypasses gold cost as before; minigame still plays; skill still determines tier. |
-| `unlimitedEnergy` dev setting | N/A — Forge has no energy cost. |
-| `repeatMinigames` dev setting | N/A — Forge has no daily gate. |
-| Phase B heat runs to zero | Phase B ends immediately; progress so far locks and the result is scored. Player can't get more strikes. |
-| Player closes the modal mid-forge | `onClose()` without calling `craft` — no materials consumed, no item produced. The forge is cancellable before the result screen. |
-| Concurrent equip during a forge run | Crafting is fully synchronous/sync-to-render; no race condition with equipping. |
+| First craft scores Crude | **Stored as Crude** (bug fixed — see §2). Item works, stats ×0.85 with the −1 floor. |
+| Re-craft / re-forge an upgraded item | `max(existing, newTier)` — upgrade only, never downgrade. Cost always spent. |
+| Player closes the modal mid-forge | `onClose()` without `craft`/`reforge` — nothing consumed (recipe, gold, fuel, flux). Cancellable until the result screen's Continue. |
+| Heat hits zero mid-charge | Run ends; the primed heavy is lost (no strike fires); banked progress is scored. |
+| Re-stoke below current heat band | Allowed — stoking is a Phase B resource action, not re-scored; `heat01` stays the Phase A commit. |
+| Consumable (item-kind) recipes | Skip the minigame; `craft(key)` directly; quality maps untouched. |
+| `unlimitedGold` dev setting | Bypasses gold (craft + re-forge); materials and skill still gate tier. |
+| `unlimitedEnergy` / `repeatMinigames` dev settings | N/A — no energy cost, no daily gate. |
+| Fuel/flux with insufficient materials | Slot disabled in UI; action guard rejects (no partial consumption). |
+| Concurrent equip during a forge run | Crafting is fully synchronous; no race with equipping. |
+| Co-op / multiplayer | None — single-player, no `runRng`, no broadcasts. |
 
 ---
 
-## 8. Verification Checklist
+## 9. Critical Files
+
+| File | Change |
+|---|---|
+| `src/engine/crafting.ts` | Tier types/helpers: `CraftTier`, `CRAFT_TIERS`, `scoreToTier`, **`scaleTierStat`**, `tierLabel` |
+| `src/engine/crafting/forge.ts` | **New** — pure reducer (`initForge`/`stepForge`/`commitStoke`/`forgeScore`) + helpers + constants |
+| `src/engine/crafting/__tests__/forge.test.ts` | **New** — full engine test suite |
+| `src/store/slices/economySlice.ts` | `gearQuality`/`weaponQuality`; `craft(key, score01?, boosts?)`; **`reforge`** (M5) |
+| `src/store/commit.ts` | Quality scaling in `gearFor` (:78); `equippedWeaponDef` replacing `getWeapon` at **:136** (single combat weapon seam). *(rev-2.1: was listed as shared.ts — ARCH-10 moved these)* |
+| `src/store/useGameStore.ts` | Persist version **32→33**; merge defaults |
+| `src/content/recipes.ts` | Optional `reforgeAnchor` field (M5) |
+| `src/components/inventory/ForgeMinigame.tsx` | **New** — two-phase modal (template: `ArmoryBreak.tsx`) |
+| `src/components/inventory/ForgeSection.tsx` | Craft → modal; tier chips; Re-forge button (M5) |
+| `src/components/inventory/GearSection.tsx` | Tier prefix + tint on owned items |
+| `src/components/character/PaperDoll.tsx` | Tier badge on equipped slots *(corrected path)* |
+| `src/lib/sfx.ts` | 4 new cues templated from the armory set (M6) |
+| `src/lib/scenes.ts` | New `forge:anvil` scene key (M6 art seam) |
+
+---
+
+## 10. Reuse (do not reinvent)
+
+| Existing asset | Where to reuse it |
+|---|---|
+| `canCraft` / `getRecipe` + consumption loop (`economySlice.ts:161`) | Unchanged; extend the action |
+| **`ArmoryBreak.tsx`** — rAF/ref discipline, pointer capture, Space handling, hold-release | Primary UI template for ForgeMinigame |
+| **`projectReleasePower`** (`armoryBreak.ts:33`) | Release-instant projection for strike accuracy |
+| `lastStand.ts` / `rooftopChase.ts` reducer shape | Template for `stepForge` |
+| `armoryAccuracy` triangular-falloff shape | `heatAccuracy` / `strikeAccuracy` |
+| `scoreToStars` 0.40/0.75 thresholds (`trials.ts`) | Tier cutoff basis |
+| `MashMeter.tsx` (bar + sweet-zone + needle) | Parameterize for the Phase A heat bar |
+| `aggregateGear` (`gear.ts:53`) | Unchanged; quality applied upstream in `gearFor` |
+| Mine charged swing (`crawl.ts:303-306`, mult 2.25 after retune) | Heavy-strike risk/reward model + its balance lesson |
+| `shakeOffset` (`crawl.ts:515`) + reduced-motion zeroing (`useSmoothCamera.ts:203`) | Strike screen-shake |
+| `src/lib/sfx.ts` synth engine + armory cues (:667-690) | The 4 forge cues; optional heat-drone via `setDroneIntensity` |
+| `MineRunOverlay.tsx:161-177` charge-bar-to-ref pattern | All per-frame DOM writes |
+| `Panel`, `Button`, `Sprite`, `Hammer` icon | Layout |
+
+---
+
+## 11. Verification Checklist
 
 At each milestone:
 - [ ] `npm run typecheck` — no type errors.
@@ -492,12 +560,14 @@ At each milestone:
 - [ ] New milestone-specific unit tests pass.
 
 End-to-end (after M3+):
-- [ ] Open `npm run dev` → Crafting tab → click Craft on an affordable recipe → Forge modal opens.
-- [ ] Phase A: hold and release; heat bar animates; commit inside band → Phase B opens.
-- [ ] Phase B: tap strikes; needle animates; sweet-zone moves; progress bar fills; heat decays.
-- [ ] Deliberately bad play → Crude result shown. Deliberately good play → Masterwork.
-- [ ] Close modal → item in inventory shows tier label (M4).
-- [ ] Equip item → paper-doll/combat stats reflect the quality multiplier.
-- [ ] Load an old save → all gear/weapons display as Normal, stats unchanged vs before The Forge.
-- [ ] Re-craft a Fine item with a poor run → tier stays Fine (upgrade-only rule).
-- [ ] `prefers-reduced-motion` active → needle/band slower; still fully playable.
+- [ ] Craft an affordable recipe → modal opens; stat chips show real DX/ST-derived numbers.
+- [ ] Phase A hold/release; commit inside band → Phase B opens at committed heat.
+- [ ] Phase B: light taps, a charged heavy (zone visibly shrinks), a re-stoke (heat up, progress bleeds, ceiling marker drops).
+- [ ] Deliberately bad play → **Crude stored and displayed** (not silently Normal). Good play → Masterwork.
+- [ ] Item shows tier prefix/badge in inventory, recipe row, and paper doll (M4).
+- [ ] Equip → combat stats reflect `scaleTierStat`; on a +3 trinket all four tiers show **different** integers.
+- [ ] Old save loads → everything Normal, stats identical to pre-Forge.
+- [ ] Re-forge (M5): cheaper cost shown honestly; worse run keeps tier; Masterwork item offers no re-forge.
+- [ ] Fuel/flux (M5): consumed only on Continue; cancel refunds; effects observable in-run.
+- [ ] `prefers-reduced-motion` → slower needle/decay, wider bands; fully playable.
+- [ ] `grep -r "getWeapon" src/store src/hooks` → only the `equippedWeaponDef` seam (`commit.ts`) resolves the equipped weapon for combat (`dungeonSlice.ts:258` reads `attackStat` only — allowed).

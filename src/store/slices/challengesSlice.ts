@@ -6,6 +6,7 @@ import {
   CHALLENGE_TEMPLATES,
   resolveChallenge,
   suggestReward,
+  clampReward,
   rivalGoal,
 } from '@/engine/challenges';
 import { weeklyRotation } from '@/engine/weekly';
@@ -19,6 +20,7 @@ import {
   applyWeeklyRollover,
   applyReward,
   checkLevelUp,
+  cloneEarnings,
 } from '../shared';
 import { freshEarningsLedger } from '@/engine/balance';
 
@@ -77,12 +79,7 @@ export const createChallengesSlice: StateCreator<
         character: { ...s.character, statXp: { ...s.character.statXp } },
         inventory: { ...s.inventory },
         materials: { ...s.materials },
-        earnings: {
-          ...baseEarnings,
-          xp: { ...baseEarnings.xp },
-          gold: { ...baseEarnings.gold },
-          count: { ...baseEarnings.count },
-        },
+        earnings: cloneEarnings(baseEarnings),
         challenges: s.challenges.map((x, i) =>
           i === index ? { ...x, status: 'claimed' as const } : x,
         ),
@@ -106,7 +103,9 @@ export const createChallengesSlice: StateCreator<
         tag: draft.tag,
         goal,
         durationDays,
-        reward: rewardOverride ?? suggestReward(base),
+        // Clamp any hand-edited override to the auto-balanced bounds so a custom challenge
+        // can't mint arbitrary XP/gold off one completion (HABIT-01).
+        reward: rewardOverride ? clampReward(rewardOverride) : suggestReward(base),
         custom: true,
       };
       return { customChallenges: [...s.customChallenges, def] };

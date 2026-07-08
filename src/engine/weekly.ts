@@ -3,7 +3,7 @@
 import type { StatId } from './stats';
 import { STAT_IDS } from './stats';
 import { type Habit, isCompletedOn, isScheduledOn, effectiveStatus } from './habits';
-import { habitHealth, accountHealth } from './habitHealth';
+import { habitHealth, accountHealth, type HabitWarning, type HabitActionCode } from './habitHealth';
 import { addDays, weekKey } from './date';
 import type { Mood } from './mood';
 import { type ChallengeDef, type ActiveChallenge, CHALLENGE_TEMPLATES } from './challenges';
@@ -23,8 +23,12 @@ export interface WeeklyReport {
   mostImproved: { habitName: string; delta: number } | null;
   /** Most-missed habit: scheduled-but-missed days in the closing week. */
   mostMissed: { habitName: string; missed: number } | null;
+  /** How the week's focus habits went: completed vs scheduled days. */
+  focusResults: { habitName: string; completed: number; scheduled: number }[];
   /** One concrete suggested adjustment from habitHealth / accountHealth, or null. */
   suggestedAdjustment: string | null;
+  /** Structured action behind the suggestedAdjustment, or null when account-level (no single habit). */
+  healthAction: { habitId: string; action: HabitActionCode } | null;
 }
 
 /** The 7 ISO dates of the week starting at `weekStart`. */
@@ -122,19 +126,41 @@ export function buildWeeklyReport(
     }
   }
 
+  // Focus habits: how the week's chosen focus habits actually went (completed vs scheduled).
+  const focusResults: WeeklyReport['focusResults'] = [];
+  for (const h of habits) {
+    if (!h.focus) continue;
+    let scheduled = 0;
+    let completed = 0;
+    for (const iso of dates) {
+      if (isScheduledOn(h, iso) && effectiveStatus(h, iso) === 'active') scheduled++;
+      if (isCompletedOn(h, iso)) completed++;
+    }
+    focusResults.push({ habitName: h.name, completed, scheduled });
+  }
+
   // Suggested adjustment: mostMissed habit first, then any active habit, then account-level.
-  let suggestedAdjustment: string | null = null;
+  // Carry the winning warning's structured first action so the report can render a button.
+  let winningWarning: HabitWarning | null = null;
   if (bestMissedHabit) {
     const w = habitHealth(bestMissedHabit, weekEnd);
-    if (w.length > 0) suggestedAdjustment = w[0].message;
+    if (w.length > 0) winningWarning = w[0];
   }
-  if (!suggestedAdjustment) {
+  if (!winningWarning) {
     for (const h of habits) {
       const w = habitHealth(h, weekEnd);
-      if (w.length > 0) { suggestedAdjustment = w[0].message; break; }
+      if (w.length > 0) { winningWarning = w[0]; break; }
     }
   }
-  if (!suggestedAdjustment) {
+  let suggestedAdjustment: string | null = null;
+  let healthAction: WeeklyReport['healthAction'] = null;
+  if (winningWarning) {
+    suggestedAdjustment = winningWarning.message;
+    if (winningWarning.suggestedActions.length > 0) {
+      healthAction = { habitId: winningWarning.habitId, action: winningWarning.suggestedActions[0] };
+    }
+  } else {
+    // Account-level fallback: no single habit, so no actionable button.
     const aw = accountHealth(habits, weekEnd);
     if (aw.length > 0) suggestedAdjustment = aw[0].message;
   }
@@ -150,7 +176,9 @@ export function buildWeeklyReport(
     mood,
     mostImproved,
     mostMissed,
+    focusResults,
     suggestedAdjustment,
+    healthAction,
   };
 }
 

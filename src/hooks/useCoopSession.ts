@@ -16,6 +16,7 @@ import {
 import {
   COOP_BROADCAST_MS,
   COOP_PLAYER_TIMEOUT_MS,
+  PAUSED_HOST_TIMEOUT_MS,
   coopChannelName,
   type CoopMessage,
   type TileSnapshot,
@@ -108,6 +109,11 @@ export function useCoopSession(): void {
       config: { broadcast: { self: false } },
     });
 
+    // MP-21: track whether the host has flagged itself paused (tab hidden). While
+    // paused its sim/broadcast throttles, so guests must not evict it as stale.
+    const hostId = coopSession?.host_id ?? null;
+    let hostPaused = false;
+
     channel.on('broadcast', { event: 'msg' }, ({ payload }) => {
       const msg = payload as CoopMessage;
       if (msg.type === 'player') {
@@ -147,6 +153,8 @@ export function useCoopSession(): void {
         });
       } else if (msg.type === 'world') {
         if (!isHost) {
+          // MP-21: reconcile the host's paused flag (absent ⇒ not paused).
+          hostPaused = msg.hostPaused ?? false;
           if (game === 'forest') useGameStore.getState().coopApplyForestWorld(msg);
           else useGameStore.getState().coopApplyWorld(msg);
         }
@@ -170,7 +178,6 @@ export function useCoopSession(): void {
     const send = (msg: CoopMessage) => {
       void channel.send({ type: 'broadcast', event: 'msg', payload: msg });
     };
-    useCoopStore.setState({ send });
 
     // Host-only: send the current floor's divergence from a pristine regen to a peer
     // that requested it (just (re)joined), so they don't miss the party's earlier digs (MP-25).
@@ -189,31 +196,49 @@ export function useCoopSession(): void {
       }
     };
 
-    // Subscribe last, so `send` exists when a guest fires its snapshot request on join.
+    // MP-29(a): only publish `send` and start the broadcast interval once the
+    // channel is actually SUBSCRIBED — doing it earlier silently drops the first
+    // ~1s of slices (mirrors useTacticsCoopSession).
+    let interval: ReturnType<typeof setInterval> | undefined;
     channel.subscribe((status) => {
-      if (status === 'SUBSCRIBED' && !isHost) {
-        send({ type: 'snapshot-request', userId } satisfies SnapshotRequest);
-      }
+      if (status !== 'SUBSCRIBED') return;
+      // Supabase re-fires SUBSCRIBED after a realtime reconnect (see
+      // useTacticsCoopSession) — clear any prior interval so we don't stack
+      // duplicate 10Hz senders.
+      if (interval) clearInterval(interval);
+      useCoopStore.setState({ send });
+      // Guest: request the party's changed-tiles backfill now that we can send.
+      if (!isHost) send({ type: 'snapshot-request', userId } satisfies SnapshotRequest);
+
+      interval = setInterval(() => {
+        const st = useGameStore.getState();
+        const run = game === 'forest' ? st.forest : st.mining;
+        if (!run) return;
+
+        send(buildPlayerSlice(run, { userId, username }));
+        // MP-21: stamp our hidden state so guests keep us in the roster while alt-tabbed.
+        if (isHost) send(buildWorldSlice(run, document.hidden));
+
+        // Drop players we haven't heard from in a while (disconnect / left).
+        // MP-21: a paused (backgrounded) host gets a longer — but still bounded —
+        // eviction window, so a closed/dropped tab is reaped within ~2 min.
+        useCoopStore.setState((cst) => {
+          const { roster, timedOut } = pruneStalePlayers(
+            cst.remotePlayers,
+            performance.now(),
+            COOP_PLAYER_TIMEOUT_MS,
+            hostPaused && hostId
+              ? { isExempt: (uid) => uid === hostId, timeoutMs: PAUSED_HOST_TIMEOUT_MS }
+              : undefined,
+          );
+          timedOut.forEach((name) => pushCoopNotice(`${name} left the ${coopGameName(game)}`));
+          return timedOut.length > 0 ? { remotePlayers: roster } : cst;
+        });
+      }, COOP_BROADCAST_MS);
     });
 
-    const interval = setInterval(() => {
-      const st = useGameStore.getState();
-      const run = game === 'forest' ? st.forest : st.mining;
-      if (!run) return;
-
-      send(buildPlayerSlice(run, { userId, username }));
-      if (isHost) send(buildWorldSlice(run));
-
-      // Drop players we haven't heard from in a while (disconnect / left).
-      useCoopStore.setState((cst) => {
-        const { roster, timedOut } = pruneStalePlayers(cst.remotePlayers, performance.now(), COOP_PLAYER_TIMEOUT_MS);
-        timedOut.forEach((name) => pushCoopNotice(`${name} left the ${coopGameName(game)}`));
-        return timedOut.length > 0 ? { remotePlayers: roster } : cst;
-      });
-    }, COOP_BROADCAST_MS);
-
     return () => {
-      clearInterval(interval);
+      if (interval) clearInterval(interval);
       useCoopStore.setState({ send: null, remotePlayers: {} });
       void sb.removeChannel(channel);
     };

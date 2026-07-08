@@ -306,7 +306,7 @@ describe('mine strike (charged)', () => {
     expect(tile.durability).toBe(4); // 5 - 1
   });
 
-  it('charged strike reduces rock durability by ceil(1 * 1.75) = 2', () => {
+  it('charged strike reduces rock durability by ceil(1 * CHARGE_DAMAGE_MULT) = 3', () => {
     const state = makeMineState({
       tiles: (() => {
         const t = makeMineState().tiles;
@@ -317,7 +317,7 @@ describe('mine strike (charged)', () => {
     const after = strike(state, rng, 0, true);
     const tile = after.tiles[3][4] as MineTile & { durability: number };
     expect(tile.kind).toBe('rock');
-    expect(tile.durability).toBe(3); // 5 - ceil(1.75)=2
+    expect(tile.durability).toBe(2); // 5 - ceil(1 * 2.25)=3 (MINI-17 bump from 1.75)
   });
 
   it('charged hit on a monster applies frozenUntilMs = nowMs + STAGGER_MS', () => {
@@ -465,7 +465,7 @@ describe('forest act (charged)', () => {
     const treeCharged = afterCharged.tiles[3][4] as ForestTile & { durability?: number };
 
     // Normal: effectiveChop = chopPower(1) + stBonus(0) = 1 → dur 9
-    // Charged: effectiveChop = ceil(1 * 1.75) = 2 → dur 8
+    // Charged: effectiveChop = ceil(1 * 2.25) = 3 → dur 7
     const durNormal = treeNormal.durability ?? 0;
     const durCharged = treeCharged.durability ?? 0;
     expect(durCharged).toBeLessThan(durNormal);
@@ -502,7 +502,9 @@ describe('forest act (charged)', () => {
     expect(hpCharged).toBeLessThan(hpNormal);
   });
 
-  it('CHARGE_DAMAGE_MULT is > 1 (sanity)', () => {
-    expect(CHARGE_DAMAGE_MULT).toBeGreaterThan(1);
+  it('CHARGE_DAMAGE_MULT honestly out-trades mashing (MINI-17: ≥ 2.25)', () => {
+    // A charge costs CHARGE_SWING_COUNT (2) swing-intervals of hold; to beat mashing 1.0×/interval
+    // its multiplier must clear the interval count, i.e. ≥ 2.25 (not the old DPS-negative 1.75).
+    expect(CHARGE_DAMAGE_MULT).toBeGreaterThanOrEqual(2.25);
   });
 });

@@ -1,11 +1,12 @@
 import type { StateCreator } from 'zustand';
 import type { BattleState, CombatAction } from '@/engine/combat';
-import { createBattle, playerAction } from '@/engine/combat';
+import { createBattle } from '@/engine/combat';
 import { bossForLevel } from '@/engine/bosses';
 import type { GameState } from '../shared';
 import {
   fighterFor,
-  topUpFighter,
+  resolveBattleAction,
+  cloneEarnings,
   applyReward,
   applyLevelUp,
   checkLevelUp,
@@ -39,14 +40,7 @@ export const createBattleSlice: StateCreator<
   battleAction: (action) =>
     set((s) => {
       if (!s.battle || s.battle.status !== 'active') return s;
-      let battle = playerAction(s.battle, fighterFor(s, s.battle.buffs), action);
-      if (s.settings.invincible) battle = topUpFighter(battle);
-
-      const inventory = { ...s.inventory };
-      if (action.kind === 'item' && (inventory[action.itemKey] ?? 0) > 0) {
-        inventory[action.itemKey] -= 1;
-      }
-      return { battle, inventory };
+      return resolveBattleAction(s.battle, s, action);
     }),
 
   dismissBattle: () =>
@@ -62,12 +56,7 @@ export const createBattleSlice: StateCreator<
           character: { ...s.character, statXp: { ...s.character.statXp } },
           inventory: { ...s.inventory },
           materials: { ...s.materials },
-          earnings: {
-            ...baseEarnings,
-            xp: { ...baseEarnings.xp },
-            gold: { ...baseEarnings.gold },
-            count: { ...baseEarnings.count },
-          },
+          earnings: cloneEarnings(baseEarnings),
           codex: [...s.codex],
           battle: null,
           pendingLevelUp: null,

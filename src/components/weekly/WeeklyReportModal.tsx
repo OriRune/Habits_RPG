@@ -1,30 +1,67 @@
+import { useState } from 'react';
 import { useGameStore } from '@/store/useGameStore';
 import { getStat, type StatId } from '@/engine/stats';
 import { MOOD_META } from '@/engine/mood';
 import { addDays, parseISODate } from '@/engine/date';
+import { buildEnergySummary } from '@/engine/balance';
+import type { HabitActionCode } from '@/engine/habitHealth';
+import { selectBalanceReport } from '@/store/selectors';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { SceneArt } from '@/components/ui/SceneArt';
-import { AlertTriangle, Lightbulb, TrendingUp, Zap } from 'lucide-react';
+import { AlertTriangle, Lightbulb, Star, TrendingUp, Zap } from 'lucide-react';
 import type { WeeklyReport } from '@/engine/weekly';
 
 function fmt(iso: string): string {
   return parseISODate(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
+/** Action-button labels — mirrors HabitCard's insights map. */
+const ACTION_LABELS: Record<HabitActionCode, string> = {
+  lower_target: 'Lower target',
+  change_frequency: 'Change frequency',
+  change_difficulty: 'Change difficulty',
+  edit: 'Edit habit',
+  suspend: 'Suspend',
+  retire: 'Retire',
+  mark_focus: 'Mark as focus',
+};
+
 /** End-of-week recap (brief §2). Auto-pops on the first app open of a new week. */
-export function WeeklyReportModal({ onPlanWeek }: { onPlanWeek?: () => void } = {}) {
+export function WeeklyReportModal({
+  onPlanWeek,
+  onReviewHabit,
+}: { onPlanWeek?: () => void; onReviewHabit?: () => void } = {}) {
   const report = useGameStore((s) => s.pendingReport) as WeeklyReport | null;
   const dismiss = useGameStore((s) => s.dismissWeeklyReport);
+  const setHabitFocus = useGameStore((s) => s.setHabitFocus);
+  const habitXpShare = useGameStore((s) => selectBalanceReport(s).habitXpShare);
+  const energyLog = useGameStore((s) => s.energyLog);
+  const [focusMarked, setFocusMarked] = useState(false);
   if (!report) return null;
 
   const mood = MOOD_META[report.mood];
+  const focusResults = report.focusResults ?? [];
+  // Energy net for the *closed* week — anchor on its last day so we read the right week bucket.
+  const weekNet = buildEnergySummary(energyLog ?? {}, addDays(report.weekKey, 6)).weekNet;
   const statRows = (Object.entries(report.xpByStat) as [StatId, number][])
     .filter(([, v]) => v > 0)
     .sort((a, b) => b[1] - a[1]);
 
   function handleBeginNewWeek() {
     onPlanWeek?.();
+    dismiss();
+  }
+
+  // mark_focus is a genuine one-tap store action, applied in place. Every other code needs the
+  // date-picker / edit form on the Habits tab, so we close the report and navigate there.
+  function handleHealthAction(habitId: string, action: HabitActionCode) {
+    if (action === 'mark_focus') {
+      setHabitFocus(habitId, true);
+      setFocusMarked(true);
+      return;
+    }
+    onReviewHabit?.();
     dismiss();
   }
 
@@ -36,6 +73,26 @@ export function WeeklyReportModal({ onPlanWeek }: { onPlanWeek?: () => void } = 
         size="md"
         className="mb-4"
       />
+
+      {/* Focus habits — how the week's chosen focus went (first content block). */}
+      {focusResults.length > 0 && (
+        <div className="mb-4">
+          <div className="mb-1 font-display text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
+            Focus habits
+          </div>
+          <div className="space-y-1.5">
+            {focusResults.map((f) => (
+              <div key={f.habitName} className="flex items-center gap-2 text-sm">
+                <Star className="h-3.5 w-3.5 shrink-0 fill-gold-bright text-gold-bright" />
+                <span className="min-w-0 flex-1 truncate text-ink">{f.habitName}</span>
+                <span className="shrink-0 text-ink-muted">
+                  {f.scheduled > 0 ? `${f.completed}/${f.scheduled} days` : `${f.completed} logged`}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {report.completions === 0 ? (
         <p className="mb-4 text-sm text-ink-muted">
@@ -107,15 +164,37 @@ export function WeeklyReportModal({ onPlanWeek }: { onPlanWeek?: () => void } = 
             Energy from habit completions this week.
           </p>
 
-          {/* Suggested adjustment */}
+          {/* Suggested adjustment + one wired action button (focus) */}
           {report.suggestedAdjustment && (
             <div className="mb-4 flex items-start gap-2 rounded-md border border-gold-deep/30 bg-parchment-100/60 p-2.5 text-sm text-ink">
               <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-gold-deep" />
-              <span>{report.suggestedAdjustment}</span>
+              <div className="min-w-0 space-y-2">
+                <span>{report.suggestedAdjustment}</span>
+                {report.healthAction && (
+                  <div>
+                    <Button
+                      variant="secondary"
+                      disabled={report.healthAction.action === 'mark_focus' && focusMarked}
+                      onClick={() => handleHealthAction(report.healthAction!.habitId, report.healthAction!.action)}
+                      className="px-2.5 py-1 text-xs"
+                    >
+                      {report.healthAction.action === 'mark_focus' && focusMarked
+                        ? '✓ Marked as focus'
+                        : ACTION_LABELS[report.healthAction.action]}
+                    </Button>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </>
       )}
+
+      {/* Identity balance tiles (dev-only per-source tables stay in BalanceReportModal). */}
+      <div className="mb-4 grid grid-cols-2 gap-2">
+        <Stat label="Habit XP share" value={`${habitXpShare}%`} />
+        <Stat label="Energy net" value={weekNet >= 0 ? `+${weekNet}` : `${weekNet}`} />
+      </div>
 
       <div className="mb-4 flex items-center gap-2 rounded-md border border-gold-deep/30 bg-parchment-100/60 p-2.5 text-sm text-ink">
         <span className="text-lg">{mood.emoji}</span>
@@ -131,7 +210,7 @@ export function WeeklyReportModal({ onPlanWeek }: { onPlanWeek?: () => void } = 
   );
 }
 
-function Stat({ label, value }: { label: string; value: number }) {
+function Stat({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="rounded-md border border-gold-deep/30 bg-parchment-100/60 p-2 text-center">
       <div className="font-display text-xl font-bold text-ink">{value}</div>

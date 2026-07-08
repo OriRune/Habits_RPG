@@ -5,8 +5,8 @@
 // ============================================================================
 
 import { describe, it, expect } from 'vitest';
+import { BOONS } from '@/content/boons';
 import {
-  BOONS,
   rollBoonChoices,
   boonMeleeMult,
   boonDefenseBonus,
@@ -15,7 +15,7 @@ import {
   boonDashCdMult,
   boonSightBonus,
   boonChargeReduce,
-} from '@/content/boons';
+} from '@/engine/crawl';
 import {
   generateMine,
   tryMove as mineTryMove,
@@ -157,8 +157,8 @@ describe('BOONS table', () => {
     }
   });
 
-  it('lantern is forest-only', () => {
-    expect(BOONS['lantern']?.game).toBe('forest');
+  it('lantern is offered in both crawlers (MINI-31: mine fog needs counterplay too)', () => {
+    expect(BOONS['lantern']?.game).toBe('both');
   });
 
   it('vein_sense is mine-only', () => {
@@ -283,11 +283,10 @@ describe('rollBoonChoices', () => {
     expect(new Set(choices).size).toBe(choices.length);
   });
 
-  it('never offers a forest-only boon (lantern, forager) to the mine', () => {
+  it('never offers a forest-only boon (forager) to the mine', () => {
     for (let seed = 0; seed < 50; seed++) {
       const choices = rollBoonChoices('mine', [], rngFrom(seed));
-      expect(choices).not.toContain('lantern');
-      expect(choices).not.toContain('forager');
+      expect(choices).not.toContain('forager'); // lantern is now game:'both' (MINI-31), so allowed
     }
   });
 

@@ -13,12 +13,25 @@ export const SWEET_ZONE_END = SWEET_ZONE_START + SWEET_ZONE_WIDTH; // 0.80
 /**
  * Compute hit accuracy from a release position (0..1).
  * Peak accuracy (1.0) at zone centre; falls to 0 at both edges; 0 outside the zone.
+ * The zone always starts at SWEET_ZONE_START; `zoneWidth` sets its span so the ST
+ * stat (which widens per-lock zones) is scored against the SAME width the meter
+ * draws. Defaults to SWEET_ZONE_WIDTH for callers that use the standard zone.
  */
-export function armoryAccuracy(releasePos: number): number {
+export function armoryAccuracy(releasePos: number, zoneWidth: number = SWEET_ZONE_WIDTH): number {
+  const zoneEnd = SWEET_ZONE_START + zoneWidth;
   if (releasePos < SWEET_ZONE_START) return 0;
-  if (releasePos > SWEET_ZONE_END) return 0;
-  const centre = SWEET_ZONE_START + SWEET_ZONE_WIDTH / 2;
-  return 1 - Math.abs(releasePos - centre) / (SWEET_ZONE_WIDTH / 2);
+  if (releasePos > zoneEnd) return 0;
+  const centre = SWEET_ZONE_START + zoneWidth / 2;
+  return 1 - Math.abs(releasePos - centre) / (zoneWidth / 2);
+}
+
+/**
+ * Project the mash-meter power forward from the last animation frame to the true
+ * release instant, so a well-timed release isn't quantized down to the previous
+ * frame's value. While held, power rises at `riseSpeed` per second. (MINI-40c)
+ */
+export function projectReleasePower(power: number, riseSpeed: number, dtSeconds: number): number {
+  return Math.max(0, Math.min(1, power + riseSpeed * Math.max(0, dtSeconds)));
 }
 
 /** Score for the trial: mean accuracy across all lock swings. */

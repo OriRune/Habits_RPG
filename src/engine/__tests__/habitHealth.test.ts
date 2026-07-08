@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { habitHealth, accountHealth, recoveryState } from '../habitHealth';
+import {
+  habitHealth,
+  accountHealth,
+  recoveryState,
+  missedRecentScheduledDay,
+} from '../habitHealth';
 import { type Habit } from '../habits';
 import { addDays } from '../date';
 
@@ -56,6 +61,48 @@ describe('habitHealth — guards', () => {
   it('returns [] for a suspended habit', () => {
     const h = makeHabit({ status: 'suspended', suspendUntilISO: '2026-07-01' });
     expect(habitHealth(h, TODAY)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// missedRecentScheduledDay — daily-reminder offer cue
+// ---------------------------------------------------------------------------
+
+describe('missedRecentScheduledDay', () => {
+  it('true when a daily habit went unlogged yesterday', () => {
+    // Logged through yesterday, then drop yesterday's entry to force a real miss.
+    const h = makeHabit({ log: buildLog(addDays(TODAY, -1), 10) });
+    delete h.log[addDays(TODAY, -1)];
+    expect(missedRecentScheduledDay([h], TODAY)).toBe(true);
+  });
+
+  it('false when every recent scheduled day was logged', () => {
+    const h = makeHabit({ log: buildLog(addDays(TODAY, -1), 10) });
+    expect(missedRecentScheduledDay([h], TODAY)).toBe(false);
+  });
+
+  it("ignores today's own (still-in-progress) missing entry", () => {
+    // Logged through yesterday, nothing today — today doesn't count as a miss.
+    const h = makeHabit({ log: buildLog(addDays(TODAY, -1), 10) });
+    expect(missedRecentScheduledDay([h], TODAY)).toBe(false);
+  });
+
+  it('false for a brand-new habit with no scheduled history yet', () => {
+    const h = makeHabit({ createdISO: TODAY, log: {} });
+    expect(missedRecentScheduledDay([h], TODAY)).toBe(false);
+  });
+
+  it('ignores as_needed and times_per_week habits', () => {
+    const asNeeded = makeHabit({ frequency: 'as_needed', log: {} });
+    const weekly = makeHabit({ frequency: 'times_per_week', log: {} });
+    expect(missedRecentScheduledDay([asNeeded, weekly], TODAY)).toBe(false);
+  });
+
+  it('does not count a frozen (streak-freeze) day as a miss', () => {
+    const h = makeHabit({ log: buildLog(addDays(TODAY, -1), 10) });
+    // Replace yesterday's normal entry with a freeze entry — still "logged".
+    h.log[addDays(TODAY, -1)] = { xp: 0, frozen: true };
+    expect(missedRecentScheduledDay([h], TODAY)).toBe(false);
   });
 });
 

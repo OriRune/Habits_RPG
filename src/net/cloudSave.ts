@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import { supabase } from './supabaseClient';
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from './env';
 import { useAuthStore } from './auth';
-import { useGameStore, type GameState } from '@/store/useGameStore';
+import { useGameStore, flushPersistedSave, cancelPersistedSave, type GameState } from '@/store/useGameStore';
 import { useToastStore } from '@/store/useToastStore';
 import { selectLevelProgress, selectTopStats, selectTotalXp, selectHabitScore, isHabitDoneToday } from '@/store/selectors';
 import type { SharedHabit } from './party';
@@ -117,6 +118,9 @@ export function wipeLocalSave(): void {
   // persist middleware immediately rewrites localStorage with the fresh state.)
   if (getSaveOwner() === null) return;
   useGameStore.getState().resetGame();
+  // resetGame schedules a trailing-debounced write of the fresh state (ARCH-07);
+  // cancel it so the removeItem below stays final and the wiped key is not re-created.
+  cancelPersistedSave();
   localStorage.removeItem(STORAGE_KEY);
   clearSaveOwner();
   clearLastSyncedVersion();
@@ -147,6 +151,9 @@ function currentUserId(): string | null {
 
 /** Read the localStorage persist envelope and strip transient run objects. */
 function durableEnvelope(): PersistEnvelope | null {
+  // The persist write is trailing-debounced (ARCH-07); flush any queued write first
+  // so the cloud push never ships a stale (up to ~1.2 s old) envelope.
+  flushPersistedSave();
   const raw = localStorage.getItem(STORAGE_KEY);
   if (!raw) return null;
   let env: PersistEnvelope;
@@ -268,6 +275,10 @@ export async function pullCloudSave(): Promise<void> {
     // apply — the rehydrate below re-marks dirty — and tell the player after.
     const rolledBack = isDirty() && getLastSyncedVersion() !== null && durableEnvelope() !== null;
     lastPulledVersion = cloudVersion;
+    // Drop any queued debounced persist write before we overwrite the envelope with
+    // the cloud blob (ARCH-07) — otherwise a late-firing stale write could clobber
+    // the freshly-pulled save that rehydrate() is about to read.
+    cancelPersistedSave();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data.state));
     await useGameStore.persist.rehydrate();
     // Local now mirrors cloud@cloudVersion (the rehydrate itself marked dirty; undo that).
@@ -450,6 +461,8 @@ export async function resolveSaveConflict(choice: 'keep-local' | 'keep-cloud'): 
 
   lastPulledVersion = stash.cloudVersion;
   if (choice === 'keep-cloud') {
+    // See the pull path: cancel the debounced write before overwriting the envelope.
+    cancelPersistedSave();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(stash.cloudEnvelope));
     await useGameStore.persist.rehydrate();
     setLastSyncedVersion(stash.cloudVersion);
@@ -481,6 +494,113 @@ function schedulePush(): void {
   }, DEBOUNCE_MS);
 }
 
+/**
+ * Foreground re-pull (item 9.4). On `visibilitychange→visible` a resumed phone
+ * would otherwise keep showing stale state — `pullCloudSave` runs only at
+ * startup/sign-in and on a push CAS conflict, so a backgrounded PWA stays stale
+ * until its next push happens to lose the CAS race. Pull the latest cloud row
+ * when the app returns to the foreground, but ONLY when local is clean:
+ *  - `isDirty()` → skip. Pulling with unsynced local edits would take the
+ *    dirty-but-cloud-moved rollback branch inside `pullCloudSave` and surface the
+ *    "another device rolled you back" toast for a routine wake (e.g. a habit
+ *    ticked offline). That rollback notice must stay reserved for a genuine
+ *    multi-device conflict detected by the background push path, not fire just
+ *    because the screen woke up. The unsynced edits reach the cloud via the next
+ *    debounced/interval push instead.
+ *  - a pending first-sign-in conflict → skip (a pull mid-dialog would silently
+ *    resolve MP-06 before the player chose), mirroring startAutoSync's guard.
+ * `pullCloudSave` itself already no-ops with no session and during an active run.
+ */
+export function foregroundRepull(): void {
+  if (!supabase) return;
+  if (isDirty()) return;
+  if (useSaveConflictStore.getState().conflict) return;
+  void pullCloudSave();
+}
+
+/**
+ * Durable log-and-lock flush (item 9.5). The `visibilitychange→hidden` flush is
+ * the last chance to save a habit logged right before the phone locks, but a
+ * plain `await supabase.from('saves').update(...)` is an ordinary fetch a frozen
+ * or killed tab can abort mid-flight. This sends the same CAS-guarded `saves`
+ * write as `doPushCloudSave`'s update arm, but via a raw `fetch(..., {
+ * keepalive: true })` so the browser guarantees delivery even after the tab is
+ * discarded. Notes:
+ *  - `navigator.sendBeacon` can't set an `Authorization` header, and the `saves`
+ *    RLS requires `auth.uid() = user_id`, so beacon can't authenticate — keepalive
+ *    fetch is the only viable durable path.
+ *  - Chromium caps a keepalive request body at ~64 KiB. A large save would be
+ *    rejected outright, so oversized envelopes and the no-known-version /
+ *    no-token cases fall back to the ordinary (non-keepalive) `pushCloudSave` —
+ *    best-effort, same as before this item.
+ *  - Markers (`lastPulledVersion`/synced-version/dirty) are advanced only when the
+ *    write's response confirms it landed (`select=version` returns our row). If the
+ *    tab is killed before the response arrives the keepalive request still reaches
+ *    the server, but our markers stay put; the next sync's CAS re-pull reconciles
+ *    (state is identical, so no data is lost — at worst one spurious rollback toast).
+ *  - Skips the best-effort `profiles`/`member_habits` piggyback writes to keep the
+ *    keepalive payload small and focused on the durable save.
+ * Exported so the visibility handler (and tests) can invoke it directly without a
+ * DOM `visibilitychange` dispatch.
+ */
+export function flushOnHide(): void {
+  if (!supabase) return;
+  const uid = currentUserId();
+  if (!uid) return;
+  if (!isDirty()) return; // nothing unsynced to flush
+  // No known CAS baseline (never pulled this session) → can't build the compare-and-swap
+  // guard; fall back to the ordinary insert/update path. Rare on hide (a session has
+  // almost always pulled first).
+  if (lastPulledVersion === null) {
+    void pushCloudSave();
+    return;
+  }
+  const token = useAuthStore.getState().session?.access_token;
+  if (!token || !SUPABASE_URL) {
+    void pushCloudSave();
+    return;
+  }
+  const env = durableEnvelope();
+  if (!env) return;
+
+  const base = lastPulledVersion;
+  const next = base + 1;
+  const body = JSON.stringify({ state: env, version: next, updated_at: new Date().toISOString() });
+  const bytes = typeof Blob !== 'undefined' ? new Blob([body]).size : body.length;
+  if (bytes > 60_000) {
+    // Over the keepalive cap — the browser would reject it. Best-effort ordinary push.
+    void pushCloudSave();
+    return;
+  }
+
+  const genAtRead = dirtyGen;
+  // CAS guard replicated in the query string: only overwrite the row we last saw.
+  const url =
+    `${SUPABASE_URL}/rest/v1/saves` +
+    `?user_id=eq.${uid}&version=eq.${base}&select=version`;
+  void fetch(url, {
+    method: 'PATCH',
+    keepalive: true,
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Prefer: 'return=representation',
+    },
+    body,
+  })
+    .then(async (res) => {
+      if (!res.ok) return;
+      const rows = (await res.json()) as Array<{ version: number }>;
+      if (rows.length === 0) return; // CAS conflict — another device won; leave dirty for next pull
+      lastPulledVersion = next;
+      setLastSyncedVersion(next);
+      if (getSaveOwner() === null) setSaveOwner(uid);
+      if (dirtyGen === genAtRead) clearDirty();
+    })
+    .catch(() => {});
+}
+
 /** Begin debounced background sync. Call after a successful pull on login. */
 export function startAutoSync(): void {
   if (!supabase || unsubscribeStore) return;
@@ -495,10 +615,12 @@ export function startAutoSync(): void {
   intervalId = setInterval(() => void pushCloudSave(), DEBOUNCE_MS * 3);
 
   // Flush when the tab is backgrounded/closed (more reliable than beforeunload).
+  // The hidden flush uses a keepalive write (flushOnHide, item 9.5) so a habit
+  // logged right before the screen locks survives the tab being frozen/killed.
   // No DOM under the Vitest 'node' environment — skip the visibility flush there.
   if (typeof document !== 'undefined') {
     visibilityHandler = () => {
-      if (document.visibilityState === 'hidden') void pushCloudSave();
+      if (document.visibilityState === 'hidden') flushOnHide();
     };
     document.addEventListener('visibilitychange', visibilityHandler);
   }

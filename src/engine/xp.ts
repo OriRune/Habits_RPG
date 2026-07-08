@@ -24,6 +24,19 @@ export const UNCAPPED_RATIO_CAP = 10;
 /** Recovery bonus multiplier when a missed habit is completed the next day (brief Section 14). */
 export const RECOVERY_BONUS = 1.1;
 
+/**
+ * Per-level habit-XP growth (BAL-01). Habit XP scales `base × (1 + LEVEL_XP_SLOPE×(L−1))`
+ * so it keeps pace with the trial/dungeon XP curves (which grow with level) — restoring the
+ * "habits are the primary path" pillar that inverted at ~L3 when habit XP was flat, and
+ * flattening the mid-game habit-only pacing slog. 0.15 matches the trial slope at ~4 habits/day.
+ */
+export const LEVEL_XP_SLOPE = 0.15;
+
+/** Level multiplier applied to habit base XP. Level defaults to 1 (→ 1.0, i.e. today's numbers). */
+export function levelXpMultiplier(level: number): number {
+  return 1 + LEVEL_XP_SLOPE * (Math.max(1, level) - 1);
+}
+
 export function baseXp(difficulty: Difficulty): number {
   return BASE_XP[difficulty];
 }
@@ -49,6 +62,8 @@ export interface XpInput {
   recovery?: boolean;
   /** Quantity only: remove the 150% completion cap so XP scales linearly with amount. */
   uncapped?: boolean;
+  /** Character level — scales base XP by `levelXpMultiplier` (BAL-01). Defaults to 1 (no scaling). */
+  level?: number;
 }
 
 /** Gold awarded on completion by difficulty (§5.3 — keeps habits-only players in the economy). */
@@ -66,6 +81,7 @@ export function habitGold(difficulty: Difficulty): number {
  * Brief examples:
  *   normal, 10/20 pages  -> 20 * 0.5  = 10
  *   normal, 40/20 pages  -> 20 * 1.5  = 30 (capped)
+ *   normal, binary, L10  -> 20 * 2.35 = 47 (level scaling, BAL-01)
  */
 export function computeXp(input: XpInput): number {
   const base = baseXp(input.difficulty);
@@ -74,5 +90,6 @@ export function computeXp(input: XpInput): number {
       ? completionRatio(input.actual ?? 0, input.target ?? 0, input.uncapped)
       : 1;
   const recovery = input.recovery ? RECOVERY_BONUS : 1;
-  return Math.round(base * ratio * recovery);
+  const level = levelXpMultiplier(input.level ?? 1);
+  return Math.round(base * ratio * recovery * level);
 }

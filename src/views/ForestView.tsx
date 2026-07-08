@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Trees, Zap, Wind, Shield } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
+import { useIsCoarsePointer } from '@/hooks/useIsCoarsePointer';
 import { FOREST_ENERGY_COST } from '@/engine/forest';
 import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
 import { Panel } from '@/components/ui/Panel';
@@ -35,6 +36,8 @@ export function ForestView() {
   const ag = useGameStore((s) => s.character.statLevels.AG);
   const en = useGameStore((s) => s.character.statLevels.EN);
   const showAdventureRitual = useGameStore((s) => s.settings.showAdventureRitual);
+
+  const coarse = useIsCoarsePointer();
 
   const canEnter = energy >= FOREST_ENERGY_COST;
 
@@ -109,10 +112,14 @@ export function ForestView() {
 
         <Button
           onClick={() => canEnter && showAdventureRitual ? setShowRitual(true) : beginForest()}
-          disabled={!canEnter}
+          disabled={!canEnter || coarse}
           className="w-full py-2.5"
         >
-          {canEnter ? 'Enter the Forest' : `Need ${FOREST_ENERGY_COST} energy (complete habits)`}
+          {coarse
+            ? 'Best played on desktop'
+            : canEnter
+              ? 'Enter the Forest'
+              : `Need ${FOREST_ENERGY_COST} energy (complete habits)`}
         </Button>
         {showRitual && (
           <AdventureRitualModal

@@ -19,8 +19,9 @@ const mocks = vi.hoisted(() => {
   // In Vitest 2.x vi.fn takes a single function-type generic.
   /** Configurable response for saves SELECT … .maybeSingle() */
   const maybySingleImpl = vi.fn<() => Promise<{ data: unknown; error: unknown }>>();
-  /** Configurable response for saves INSERT */
-  const insertImpl = vi.fn<() => Promise<{ data: unknown; error: unknown }>>();
+  /** Configurable response for saves INSERT (receives the insert payload so tests
+   *  can assert the pushed envelope). */
+  const insertImpl = vi.fn<(payload?: unknown) => Promise<{ data: unknown; error: unknown }>>();
   /** Configurable response for saves UPDATE … .select('version') */
   const updateSelectImpl = vi.fn<() => Promise<{ data: unknown; error: unknown }>>();
   /** Spy capturing the last eq() arg on the CAS update (so we can assert the guard value). */
@@ -45,7 +46,7 @@ vi.mock('@/net/supabaseClient', () => {
         maybeSingle: () => mocks.maybySingleImpl(),
       }),
     }),
-    insert: (_payload: unknown) => mocks.insertImpl(),
+    insert: (payload: unknown) => mocks.insertImpl(payload),
     update: (_payload: unknown) => ({
       eq: (_col: string, _val: unknown) => ({
         eq: (col: string, val: unknown) => {
@@ -74,6 +75,15 @@ vi.mock('@/net/supabaseClient', () => {
   };
 });
 
+// The real env module reads `import.meta.env.VITE_SUPABASE_*`, which is unset in the
+// test bundle (both ''), so flushOnHide's raw keepalive REST write (9.5) would always
+// hit the empty-URL fallback. Give it concrete values so the keepalive path is testable.
+vi.mock('@/net/env', () => ({
+  SUPABASE_URL: 'https://test.supabase.co',
+  SUPABASE_ANON_KEY: 'anon-key',
+  isBackendConfigured: () => true,
+}));
+
 // ─── 3. Now import the modules under test (after mocks are registered) ────────
 
 import {
@@ -84,9 +94,11 @@ import {
   wipeLocalSave,
   resolveSaveConflict,
   useSaveConflictStore,
+  foregroundRepull,
+  flushOnHide,
 } from '../cloudSave';
 import { useAuthStore } from '../auth';
-import { useGameStore } from '@/store/useGameStore';
+import { useGameStore, cancelPersistedSave } from '@/store/useGameStore';
 import { useToastStore } from '@/store/useToastStore';
 
 // ─── 4. Helpers ───────────────────────────────────────────────────────────────
@@ -154,13 +166,21 @@ describe('cloudSave', () => {
 
     // Stub out rehydrate so pullCloudSave doesn't try to rehydrate the store
     vi.spyOn(useGameStore.persist, 'rehydrate').mockResolvedValue(undefined);
+
+    // The persist write is now trailing-debounced (ARCH-07); the setState above
+    // queued one. Drop it so durableEnvelope()'s flush can't later overwrite the
+    // STORAGE_KEY envelope this beforeEach set up directly.
+    cancelPersistedSave();
   });
 
   // ─── durableEnvelope ─────────────────────────────────────────────────────
 
   describe('durableEnvelope (via pushCloudSave)', () => {
     it('nulls all TRANSIENT_KEYS in the inserted state', async () => {
-      // Put a save that contains every transient key
+      // TRANSIENT_KEYS enumerated from cloudSave.ts — every live run object durableEnvelope() nulls.
+      const TRANSIENT_KEYS = ['battle', 'dungeon', 'mining', 'forest', 'arena', 'tactics'] as const;
+
+      // Put a save that contains every transient key as a non-null object.
       const envelope = makeEnvelope({
         mining: { floor: 3 },
         forest: { stage: 2 },
@@ -171,28 +191,27 @@ describe('cloudSave', () => {
       });
       localStorage.setItem(STORAGE_KEY, envelope);
 
-      // Test indirectly: push should succeed without error.
-      // The durableEnvelope() call strips transient keys from the in-memory copy before
-      // insert; it never modifies localStorage itself, so we verify localStorage separately.
       mocks.insertImpl.mockResolvedValueOnce({ data: null, error: null });
 
       await pushCloudSave();
 
-      // The push succeeded → now capture the payload by observing what select returns
-      // after a re-pull. The actual stripe is tested below via the env content check.
+      // Capture the payload actually handed to insert — durableEnvelope() strips
+      // transients from the in-memory copy before this call. The row's `state`
+      // column holds the full persist envelope ({ state, version }), so the game
+      // state lives at payload.state.state.
+      expect(mocks.insertImpl).toHaveBeenCalledTimes(1);
+      const payload = mocks.insertImpl.mock.calls[0][0] as {
+        state: { state: Record<string, unknown> };
+      };
+      for (const k of TRANSIENT_KEYS) {
+        expect(payload.state.state[k]).toBeNull();
+      }
+      // Durable fields survive.
+      expect(payload.state.state['character']).toBeTruthy();
 
-      // Parse the envelope that would be pushed: reconstruct durableEnvelope logic.
-      const raw = localStorage.getItem(STORAGE_KEY);
-      expect(raw).toBeTruthy();
-      const parsed = JSON.parse(raw!) as { state: Record<string, unknown>; version: number };
-      // After insert, localStorage was NOT modified by cloudSave (it only reads it).
-      // But we CAN verify that the envelope the module READS has transients if present.
-      // What we actually want: call the module's internal durableEnvelope indirectly.
-      // The simplest assertion: localStorage still has the transient keys (cloudSave
-      // only reads them, it doesn't overwrite localStorage). The purge happens in-memory
-      // before the insert payload. We test behavior via a pullCloudSave round-trip below.
-      // For now just confirm the push completed without throwing.
-      expect(parsed.state['mining']).toEqual({ floor: 3 }); // localStorage unchanged
+      // localStorage itself is only read, never rewritten by the push.
+      const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY)!) as { state: Record<string, unknown> };
+      expect(parsed.state['mining']).toEqual({ floor: 3 });
     });
 
     it('strips TRANSIENT_KEYS: if pull adopts remote save, transients are absent on push', async () => {
@@ -1007,6 +1026,129 @@ describe('cloudSave', () => {
       await expect(pushCloudSave()).resolves.toBe(true);
       expect(mocks.insertImpl).not.toHaveBeenCalled();
       expect(mocks.updateSelectImpl).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── Foreground re-pull (item 9.4) ───────────────────────────────────────
+  // pullCloudSave's select() → maybeSingle() (mocks.maybySingleImpl) is the first
+  // await in the function, so it fires synchronously when foregroundRepull does not
+  // short-circuit — asserting on its call count tells us whether the pull ran.
+
+  describe('foreground re-pull (9.4)', () => {
+    it('pulls when local is clean', async () => {
+      mocks.maybySingleImpl.mockResolvedValue({ data: null, error: null });
+      // No cloud row → the pull imports local via an insert; stub it so the
+      // (unawaited) background pull resolves instead of leaving a rejection.
+      mocks.insertImpl.mockResolvedValue({ data: null, error: null });
+      // beforeEach cleared DIRTY_KEY, so local is clean here.
+      foregroundRepull();
+      expect(mocks.maybySingleImpl).toHaveBeenCalledTimes(1);
+      await new Promise((r) => setTimeout(r, 0)); // let the background pull settle
+    });
+
+    it('skips the pull when local is dirty (never rolls back unsynced edits on a wake)', () => {
+      localStorage.setItem(DIRTY_KEY, '1');
+      mocks.maybySingleImpl.mockResolvedValue({ data: null, error: null });
+      foregroundRepull();
+      expect(mocks.maybySingleImpl).not.toHaveBeenCalled();
+    });
+
+    it('skips the pull while a first-sign-in conflict is pending', () => {
+      useSaveConflictStore.setState({
+        conflict: {
+          local: { level: 1, habitCount: 0, lastActiveISO: null },
+          cloud: { level: 2, habitCount: 0, lastActiveISO: null },
+        },
+      });
+      mocks.maybySingleImpl.mockResolvedValue({ data: null, error: null });
+      foregroundRepull();
+      expect(mocks.maybySingleImpl).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── Durable log-and-lock flush (item 9.5) ───────────────────────────────
+
+  describe('durable log-and-lock flush (9.5)', () => {
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+
+    /** Seed the module-private lastPulledVersion to 1 via a first-write insert push. */
+    async function seedVersion1() {
+      mocks.insertImpl.mockResolvedValueOnce({ data: null, error: null });
+      await pushCloudSave(); // lastPulledVersion: null → 1; clears dirty; stamps owner
+    }
+
+    /** Sign in with an access token so the keepalive REST write can authenticate. */
+    function signInWithToken() {
+      useAuthStore.setState({
+        status: 'signedIn',
+        session: { user: { id: 'uid-test' }, access_token: 'test-token' } as Session,
+        username: 'Tester',
+      });
+    }
+
+    it('sends a CAS-guarded keepalive PATCH with the auth headers when dirty', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => [{ version: 2 }] });
+      vi.stubGlobal('fetch', fetchMock);
+      signInWithToken();
+      await seedVersion1();
+      localStorage.setItem(DIRTY_KEY, '1'); // a fresh edit made after the last sync
+
+      flushOnHide();
+
+      // fetch fires synchronously (before the response await), so we can assert now.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toContain('/rest/v1/saves');
+      expect(url).toContain('user_id=eq.uid-test');
+      expect(url).toContain('version=eq.1'); // CAS guard = last-pulled version
+      expect(url).toContain('select=version');
+      expect(opts.method).toBe('PATCH');
+      expect(opts.keepalive).toBe(true);
+      const headers = opts.headers as Record<string, string>;
+      expect(headers.apikey).toBe('anon-key');
+      expect(headers.Authorization).toBe('Bearer test-token');
+      expect(headers.Prefer).toBe('return=representation');
+      const bodyObj = JSON.parse(opts.body as string) as { version: number; state: unknown };
+      expect(bodyObj.version).toBe(2); // next = base + 1
+      expect(bodyObj.state).toBeTruthy();
+
+      // On a confirming response the markers advance and dirty clears.
+      await tick();
+      expect(localStorage.getItem(SYNCED_VERSION_KEY)).toBe('2');
+      expect(localStorage.getItem(DIRTY_KEY)).toBeNull();
+
+      vi.unstubAllGlobals();
+    });
+
+    it('does nothing when local is clean (no unsynced edits)', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => [{ version: 2 }] });
+      vi.stubGlobal('fetch', fetchMock);
+      signInWithToken();
+      await seedVersion1(); // this clears the dirty flag
+
+      flushOnHide();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      vi.unstubAllGlobals();
+    });
+
+    it('falls back to the ordinary push for an oversized (>64 KiB) save', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => [{ version: 2 }] });
+      vi.stubGlobal('fetch', fetchMock);
+      signInWithToken();
+      await seedVersion1();
+      // A save whose serialized envelope blows past the ~64 KiB keepalive cap.
+      localStorage.setItem(STORAGE_KEY, makeEnvelope({ blob: 'x'.repeat(80_000) }));
+      localStorage.setItem(DIRTY_KEY, '1');
+      mocks.updateSelectImpl.mockResolvedValue({ data: [{ version: 2 }], error: null });
+
+      flushOnHide();
+
+      // No keepalive write; the CAS update path (updateSelectImpl) carries it instead.
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(mocks.updateSelectImpl).toHaveBeenCalled();
+      await tick();
+      vi.unstubAllGlobals();
     });
   });
 });

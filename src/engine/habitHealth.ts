@@ -30,6 +30,8 @@ export type HabitActionCode =
   | 'edit';
 
 export interface HabitWarning {
+  /** The habit this warning is about — lets consumers wire an action button to it. */
+  habitId: string;
   code: HabitWarningCode;
   message: string;
   suggestedActions: HabitActionCode[];
@@ -108,6 +110,7 @@ export function habitHealth(habit: Habit, today: string): HabitWarning[] {
   // Repeated misses
   if (missedCount >= MISS_THRESHOLD) {
     warnings.push({
+      habitId: habit.id,
       code: 'repeated_misses',
       message: `"${habit.name}" was missed ${missedCount} times in the last 4 weeks. It may need to be easier or less frequent.`,
       suggestedActions: ['change_frequency', 'change_difficulty', 'suspend', 'mark_focus'],
@@ -117,6 +120,7 @@ export function habitHealth(habit: Habit, today: string): HabitWarning[] {
   // Target too high (many partials)
   if (habit.type === 'quantity' && partialCount >= PARTIAL_THRESHOLD) {
     warnings.push({
+      habitId: habit.id,
       code: 'target_too_high',
       message: `"${habit.name}" is often partially completed — the target may be too high.`,
       suggestedActions: ['lower_target'],
@@ -126,6 +130,7 @@ export function habitHealth(habit: Habit, today: string): HabitWarning[] {
   // Always easy (zero misses, many scheduled)
   if (scheduledCount >= ALWAYS_DONE_MIN && missedCount === 0) {
     warnings.push({
+      habitId: habit.id,
       code: 'always_completed',
       message: `"${habit.name}" has been completed every time — great streak! Consider raising the difficulty for more XP.`,
       suggestedActions: ['change_difficulty'],
@@ -143,6 +148,7 @@ export function habitHealth(habit: Habit, today: string): HabitWarning[] {
     const weekendRate = weekendDone / weekendScheduled;
     if (weekdayRate >= 0.8 && weekendRate <= 0.4) {
       warnings.push({
+        habitId: habit.id,
         code: 'weekday_weekend_gap',
         message: `"${habit.name}" is consistent on weekdays but missed most weekends. Consider a weekday-only schedule.`,
         suggestedActions: ['change_frequency', 'edit'],
@@ -166,6 +172,7 @@ function checkUnused(habit: Habit, today: string): HabitWarning[] {
   if (!hasRecent && habit.createdISO <= cutoff) {
     return [
       {
+        habitId: habit.id,
         code: 'unused_weeks',
         message: `"${habit.name}" hasn't been logged in over ${UNUSED_WEEKS} weeks. Consider suspending or retiring it.`,
         suggestedActions: ['suspend', 'retire'],
@@ -215,6 +222,37 @@ export function accountHealth(habits: Habit[], today: string): AccountWarning[] 
   }
 
   return warnings;
+}
+
+// ---------------------------------------------------------------------------
+// Missed-day cue (drives the one-time "enable daily reminder" dashboard card)
+// ---------------------------------------------------------------------------
+
+/** How many days back (ending yesterday — today is still in progress) to scan for a missed scheduled day. */
+const MISSED_LOOKBACK_DAYS = 3;
+
+/**
+ * True if any active, day-scheduled habit had a scheduled day in the recent
+ * window that went unlogged (and unfrozen). Used to offer the daily reminder
+ * after a real miss without nagging brand-new or on-track players. `as_needed`
+ * and `times_per_week` habits have no fixed scheduled day, so they never count.
+ */
+export function missedRecentScheduledDay(habits: Habit[], today: string): boolean {
+  for (const h of habits) {
+    if (h.frequency === 'as_needed' || h.frequency === 'times_per_week') continue;
+    for (let d = 1; d <= MISSED_LOOKBACK_DAYS; d++) {
+      const day = addDays(today, -d);
+      if (day < h.createdISO) continue;
+      if (
+        isScheduledOn(h, day) &&
+        effectiveStatus(h, day) === 'active' &&
+        !isCompletedOn(h, day)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------

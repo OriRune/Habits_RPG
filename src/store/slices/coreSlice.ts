@@ -19,9 +19,10 @@ import {
   freshCharacter,
   freshSettings,
   fighterFor,
-  MAX_ENERGY,
+  maxEnergyFor,
 } from '../shared';
 import { freshEarningsLedger } from '@/engine/balance';
+import { freshTown } from '@/engine/town';
 
 export interface CoreSlice {
   character: Character;
@@ -29,13 +30,16 @@ export interface CoreSlice {
   pendingLevelUp: number | null;
   pendingClassChoice: PendingClassChoice | null;
   bossLosses: Record<number, number>;
+  dungeonBossLosses: Record<string, number>;
   lastActiveISO: string;
   created: boolean;
   hasSeenWelcome: boolean;
+  reminderCardDismissed: boolean;
   earnings: import('@/engine/balance').EarningsLedger;
   energyLog: Record<string, import('@/engine/balance').EnergyLogEntry>;
 
   dismissWelcome: () => void;
+  dismissReminderCard: () => void;
   createCharacter: (input: {
     name: string;
     allocations: Partial<Record<StatId, number>>;
@@ -65,13 +69,16 @@ export const createCoreSlice: StateCreator<
   pendingLevelUp: null,
   pendingClassChoice: null,
   bossLosses: {},
+  dungeonBossLosses: {},
   lastActiveISO: toISODate(),
   created: false,
   hasSeenWelcome: false,
+  reminderCardDismissed: false,
   earnings: freshEarningsLedger(),
   energyLog: {},
 
   dismissWelcome: () => set(() => ({ hasSeenWelcome: true })),
+  dismissReminderCard: () => set(() => ({ reminderCardDismissed: true })),
 
   createCharacter: ({ name, allocations, weaponKey, spellKey }) =>
     set((s) => {
@@ -119,6 +126,8 @@ export const createCoreSlice: StateCreator<
           level,
           statXp,
           statXpAtLastLevel: { ...statXp },
+          statXpTrickle: emptyStatXP(),
+          statXpTrickleAtLastLevel: emptyStatXP(),
           statLevels,
         },
         pendingLevelUp: null,
@@ -141,7 +150,7 @@ export const createCoreSlice: StateCreator<
     set((s) => ({ character: { ...s.character, classId: null } })),
 
   devFillEnergy: () =>
-    set((s) => ({ character: { ...s.character, energy: MAX_ENERGY } })),
+    set((s) => ({ character: { ...s.character, energy: maxEnergyFor(s) } })),
 
   devAddGold: (amount) =>
     set((s) => ({
@@ -185,9 +194,12 @@ export const createCoreSlice: StateCreator<
       deepestTacticsTier: 0,
       trialsClearedOn: emptyTrialsClearedOn(),
       bestTrialScore: emptyBestTrialScore(),
+      trialAttemptNonce: 0,
+      spiritGroveSeen: [],
       pendingLevelUp: null,
       pendingClassChoice: null,
       bossLosses: {},
+      dungeonBossLosses: {},
       deepestFloor: 0,
       dungeonHistory: [],
       completionLog: {},
@@ -195,9 +207,13 @@ export const createCoreSlice: StateCreator<
       settings: freshSettings(),
       created: false,
       hasSeenWelcome: false,
+      reminderCardDismissed: false,
       earnings: freshEarningsLedger(),
       energyLog: {},
       mineTombstone: null,
       claimedPartyQuests: [],
+      gearQuality: {},
+      weaponQuality: {},
+      town: freshTown(),
     })),
 });

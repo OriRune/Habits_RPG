@@ -131,7 +131,10 @@ describe('previewNextGains', () => {
     const statXpAtLastLevel = emptyStatXP();
     const statXp = { ...emptyStatXP(), ST: 200, EN: 80 };
     const statLevels = emptyStatLevels();
-    const character = { statXp, statXpAtLastLevel, statLevels, classId: null };
+    const character = {
+      statXp, statXpAtLastLevel, statLevels, classId: null,
+      statXpTrickle: emptyStatXP(), statXpTrickleAtLastLevel: emptyStatXP(),
+    };
     const preview = previewNextGains(character);
     // ST trained most heavily -> should get at least 2 points
     expect(preview.ST).toBeGreaterThanOrEqual(2);
@@ -144,6 +147,8 @@ describe('previewNextGains', () => {
     const character = {
       statXp,
       statXpAtLastLevel: emptyStatXP(),
+      statXpTrickle: emptyStatXP(),
+      statXpTrickleAtLastLevel: emptyStatXP(),
       statLevels: emptyStatLevels(),
       classId: null,
     };
@@ -157,10 +162,46 @@ describe('previewNextGains', () => {
     // ST is maxed; EN also has effort → overflow should land on EN rather than ST.
     const statLevels = { ...emptyStatLevels(), ST: STAT_CAP };
     const statXp = { ...emptyStatXP(), ST: 5000, EN: 500 };
-    const character = { statXp, statXpAtLastLevel: emptyStatXP(), statLevels, classId: null };
+    const character = {
+      statXp, statXpAtLastLevel: emptyStatXP(), statLevels, classId: null,
+      statXpTrickle: emptyStatXP(), statXpTrickleAtLastLevel: emptyStatXP(),
+    };
     const preview = previewNextGains(character);
     expect(preview.ST).toBe(0); // capped, no gain
     expect(sum(preview)).toBe(POINTS_PER_LEVEL); // all points still distributed
     expect(preview.EN).toBeGreaterThan(0); // overflow went to the next-best trained stat
+  });
+});
+
+describe('minigame-trickle allocation discount (BAL-09)', () => {
+  it('weights trickle XP at 50%, flipping the point race toward habit-sourced effort', () => {
+    // DX earned a BIGGER raw delta than AG, but all of DX's was passive minigame trickle while
+    // AG's was habit effort. After the 50% trickle discount (DX 400→200 < AG 300), AG should win
+    // the majority of points — the opposite of what the raw deltas alone would give (old behavior).
+    const character = {
+      statXp: { ...emptyStatXP(), AG: 300, DX: 400 },
+      statXpAtLastLevel: emptyStatXP(),
+      statXpTrickle: { ...emptyStatXP(), DX: 400 },
+      statXpTrickleAtLastLevel: emptyStatXP(),
+      statLevels: emptyStatLevels(),
+      classId: null,
+    };
+    const preview = previewNextGains(character);
+    expect(preview.AG).toBeGreaterThan(preview.DX);
+    expect(sum(preview)).toBe(POINTS_PER_LEVEL);
+  });
+
+  it('leaves habit-only deltas unaffected — no trickle means full weight', () => {
+    const character = {
+      statXp: { ...emptyStatXP(), ST: 300, EN: 100 },
+      statXpAtLastLevel: emptyStatXP(),
+      statXpTrickle: emptyStatXP(),
+      statXpTrickleAtLastLevel: emptyStatXP(),
+      statLevels: emptyStatLevels(),
+      classId: null,
+    };
+    const preview = previewNextGains(character);
+    expect(preview.ST).toBeGreaterThan(preview.EN); // unchanged from pre-BAL-09 behavior
+    expect(sum(preview)).toBe(POINTS_PER_LEVEL);
   });
 });

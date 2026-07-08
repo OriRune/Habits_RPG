@@ -1,12 +1,13 @@
 // Central game store (Zustand + localStorage persistence).
 // Holds all persisted state and orchestrates the pure engine modules.
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, type PersistStorage, type StorageValue } from 'zustand/middleware';
 
 import { emptyStatXP } from '@/engine/stats';
 import { rebaseMineRun } from '@/engine/mining';
 import { rebaseForestRun } from '@/engine/forest';
 import { rebaseArenaRun } from '@/engine/arena';
+import { freshTown } from '@/engine/town';
 import type { Habit } from '@/engine/habits';
 import { statLevelsFromXp } from '@/engine/progression';
 import { ITEMS } from '@/engine/items';
@@ -46,13 +47,116 @@ import { createTacticsSlice } from './slices/tacticsSlice';
 import { createMiningSlice } from './slices/miningSlice';
 import { createForestSlice } from './slices/forestSlice';
 import { createDungeonSlice } from './slices/dungeonSlice';
+import { createTownSlice } from './slices/townSlice';
+
+// ---- Debounced persist storage (ARCH-07) ------------------------------------
+// The default persist path JSON.stringifies the ENTIRE save and writes localStorage
+// on every accepted store mutation — 8–20×/sec during minigame runs, and the cost
+// grows with save age (habit logs, energyLog, live tile grids). We wrap the write in
+// a trailing-debounce so the full serialize+write happens at most once per window.
+// Run objects still persist (refresh-resume is intentional — see merge); we only
+// coalesce the writes, we do NOT partialize them out.
+//
+// Data-safety contract — a debounce that drops its final write on tab-close would be
+// a Phase-1-class save-loss regression. Two guarantees close that gap:
+//   1. flush() runs on `pagehide` and `visibilitychange`→hidden, so the last write
+//      always lands before the page goes away (the reliable pair; `beforeunload` is
+//      intentionally skipped — it is unreliable on mobile).
+//   2. cloudSave reads/writes the localStorage envelope directly (durableEnvelope,
+//      pullCloudSave). It calls `flushPersistedSave()` before reading so it never
+//      ships a stale envelope, and `cancelPersistedSave()` before it overwrites the
+//      envelope with a cloud blob + rehydrate, so a queued stale write can't clobber
+//      the freshly-pulled save.
+const PERSIST_DEBOUNCE_MS = 1200;
+
+type DebouncedStorage = {
+  storage: PersistStorage<GameState>;
+  flush: () => void;
+  cancel: () => void;
+};
+
+function createDebouncedStorage(delayMs: number): DebouncedStorage {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let pending: { name: string; value: StorageValue<GameState> } | null = null;
+
+  const flush = () => {
+    if (timer !== null) { clearTimeout(timer); timer = null; }
+    if (!pending) return;
+    const { name, value } = pending;
+    pending = null;
+    try {
+      localStorage.setItem(name, JSON.stringify(value));
+    } catch {
+      // Storage full / unavailable (private mode) — best effort, same as the default adapter.
+    }
+  };
+
+  const cancel = () => {
+    if (timer !== null) { clearTimeout(timer); timer = null; }
+    pending = null;
+  };
+
+  const storage: PersistStorage<GameState> = {
+    // Always read straight from localStorage — never a buffered `pending`. The only
+    // readers are store init (nothing pending) and cloudSave's post-write rehydrate,
+    // which has just written the authoritative envelope to localStorage and cancelled
+    // any pending write; both want exactly what is in storage.
+    getItem: (name) => {
+      const raw = localStorage.getItem(name);
+      if (raw === null) return null;
+      try {
+        return JSON.parse(raw) as StorageValue<GameState>;
+      } catch {
+        return null;
+      }
+    },
+    setItem: (name, value) => {
+      pending = { name, value };
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(flush, delayMs);
+    },
+    removeItem: (name) => {
+      if (pending?.name === name) cancel();
+      try { localStorage.removeItem(name); } catch { /* ignore */ }
+    },
+  };
+
+  return { storage, flush, cancel };
+}
+
+// Bound to the live singleton store in createGameStore(true). cloudSave imports these
+// to keep the localStorage envelope authoritative across the debounce (see contract above).
+let boundFlush: () => void = () => {};
+let boundCancel: () => void = () => {};
+/** Force the trailing-debounced save to localStorage now (e.g. before a cloud read). */
+export function flushPersistedSave(): void { boundFlush(); }
+/** Drop any queued debounced write WITHOUT flushing (before an authoritative envelope overwrite). */
+export function cancelPersistedSave(): void { boundCancel(); }
 
 /**
  * Builds a standalone store instance identical in shape to `useGameStore`.
  * Used by `useGameStore` itself, and by tests that need a pristine reference
  * state (e.g. asserting `resetGame()` deep-equals a freshly created store).
+ *
+ * `bindGlobalFlush` is set ONLY for the live singleton: it wires that instance's
+ * debounced-write flush/cancel to the module-level `flushPersistedSave`/
+ * `cancelPersistedSave` exports and registers the tab-close flush listeners. Test
+ * instances stay isolated (their own debounce, no global side effects).
  */
-export function createGameStore() {
+export function createGameStore(bindGlobalFlush = false) {
+  const debounced = createDebouncedStorage(PERSIST_DEBOUNCE_MS);
+  if (bindGlobalFlush) {
+    boundFlush = debounced.flush;
+    boundCancel = debounced.cancel;
+    if (typeof window !== 'undefined') {
+      window.addEventListener('pagehide', debounced.flush);
+    }
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') debounced.flush();
+      });
+    }
+  }
   return create<GameState>()(
   persist(
     (set, get, api) => ({
@@ -68,10 +172,12 @@ export function createGameStore() {
       ...createMiningSlice(set, get, api),
       ...createForestSlice(set, get, api),
       ...createDungeonSlice(set, get, api),
+      ...createTownSlice(set, get, api),
     }),
     {
       name: 'habits-rpg-save',
-      version: 27,
+      version: 34,
+      storage: debounced.storage,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
       // v4: material set revamp — remap old material keys to the new ones so accrued
@@ -127,6 +233,33 @@ export function createGameStore() {
       // v26: First-run welcome card — new `hasSeenWelcome` boolean (false on fresh saves, stamped
       //      true on existing saves so veterans are never shown the card).
       // v27: Mine tombstone — new `mineTombstone` field (null on existing saves; set on death).
+      // v28: Daily-reminder offer card — new `reminderCardDismissed` boolean (false on existing
+      //      saves via merge, so veterans see the card once after a missed day if reminders are off).
+      // v29: Economy-integrity markers — new optional Habit fields `lastEnergyGrantISO` and
+      //      `lastMilestoneGrant` gate the once-per-day energy/milestone grants (HABIT-04/16 + the
+      //      3.4 milestone claw-back). Absent on existing habits → treated as "not yet granted", so
+      //      the first post-upgrade completion behaves exactly as before; no backfill needed.
+      // v30: Minigame-trickle allocation ledger (BAL-09) — new Character fields `statXpTrickle` and
+      //      `statXpTrickleAtLastLevel` let level-ups discount passive minigame XP when distributing
+      //      stat points. Both backfill to zero on existing saves, so all accrued XP counts as
+      //      full-weight until the next post-upgrade minigame run — no retroactive penalty. Leveling
+      //      pace (driven by total statXp) is unchanged.
+      // v31: Trial retry integrity (MINI-11) — new top-level `trialAttemptNonce` (monotonic
+      //      counter XOR'd into the daily seed of the deterministic trials so abandon+reopen
+      //      draws a fresh challenge). Backfills to 0 on existing saves via merge; a scalar,
+      //      so the default `...p` merge carries it — no explicit merge line needed.
+      // v32: Spirit Grove recall bias (MINI-16) — new top-level `spiritGroveSeen` (round ids the
+      //      player has been shown; drafts bias toward unseen). Backfills to [] on existing saves;
+      //      an array carried by the default merge, so no explicit merge line needed.
+      // v33: Forge quality tiers (Phase 8, M1) — new top-level `gearQuality`/`weaponQuality`
+      //      records (item key → CraftTier 0-3; absent key reads as Normal, so every existing
+      //      item keeps its exact stats). Both backfill to {} via the default merge from the
+      //      slice initial state — no explicit merge/migrate lines needed (v31/v32 precedent).
+      // v34: The Homestead (Phase 10, M1) — new top-level `town` (`freshTown()` on existing
+      //      saves via explicit migrate + nested-default merge, trialsClearedOn idiom, because
+      //      TownState is a growing object whose later-version fields must backfill). The
+      //      optional Habit field `lastLaborGrantISO` (M2) is absent ⇒ not yet granted — v29
+      //      idiom, no backfill. NOT added to cloudSave TRANSIENT_KEYS: town rides the blob.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {
@@ -152,9 +285,12 @@ export function createGameStore() {
               ...p.character,
               statLevels: p.character.statLevels ?? statLevelsFromXp(p.character.statXp ?? emptyStatXP()),
               statXpAtLastLevel: p.character.statXpAtLastLevel ?? { ...(p.character.statXp ?? emptyStatXP()) },
+              // v30: zero-init the trickle sub-ledger — past XP counts full-weight (no retroactive penalty).
+              statXpTrickle: p.character.statXpTrickle ?? emptyStatXP(),
+              statXpTrickleAtLastLevel: p.character.statXpTrickleAtLastLevel ?? emptyStatXP(),
             }
           : p.character;
-        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, arena: null, tactics: null, created: true, hasSeenWelcome: true, trialsClearedOn: p.trialsClearedOn ?? emptyTrialsClearedOn(), bestTrialScore: p.bestTrialScore ?? emptyBestTrialScore(), dungeonHistory: p.dungeonHistory ?? [], claimedPartyQuests: p.claimedPartyQuests ?? [], earnings: p.earnings ?? freshEarningsLedger(), energyLog: p.energyLog ?? {}, mineTombstone: p.mineTombstone ?? null } as GameState;
+        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, arena: null, tactics: null, created: true, hasSeenWelcome: true, trialsClearedOn: p.trialsClearedOn ?? emptyTrialsClearedOn(), bestTrialScore: p.bestTrialScore ?? emptyBestTrialScore(), dungeonHistory: p.dungeonHistory ?? [], claimedPartyQuests: p.claimedPartyQuests ?? [], earnings: p.earnings ?? freshEarningsLedger(), energyLog: p.energyLog ?? {}, mineTombstone: p.mineTombstone ?? null, reminderCardDismissed: p.reminderCardDismissed ?? false, trialAttemptNonce: p.trialAttemptNonce ?? 0, spiritGroveSeen: p.spiritGroveSeen ?? [], town: p.town ?? freshTown() } as GameState;
       },
       // Deep-merge the nested `character`/`settings` objects so fields added in later versions
       // (e.g. statLevels) always fall back to their defaults instead of being dropped by the
@@ -181,6 +317,7 @@ export function createGameStore() {
           settings: { ...current.settings, ...(p.settings ?? {}) },
           trialsClearedOn: { ...emptyTrialsClearedOn(), ...(p.trialsClearedOn ?? {}) },
           bestTrialScore: { ...emptyBestTrialScore(), ...(p.bestTrialScore ?? {}) },
+          town: { ...freshTown(), ...(p.town ?? {}) },
         };
       },
     },
@@ -188,7 +325,7 @@ export function createGameStore() {
   );
 }
 
-export const useGameStore = createGameStore();
+export const useGameStore = createGameStore(true);
 
 /** Convenience export for the shop view. */
 export const SHOP_ITEMS = Object.values(ITEMS).filter((i) => i.price !== undefined);

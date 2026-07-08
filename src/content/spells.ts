@@ -107,7 +107,7 @@ export const SPELLS: Record<string, SpellDef> = {
     mpCost: 8,
     power: 0,
     mechanic: 'push',
-    description: 'Hurl an enemy 2 tiles away. They take bonus damage if they crash into a wall or land on a hazard (Charisma).',
+    description: 'Hurl an enemy 2+ tiles away (farther with Charisma). They take bonus damage if they crash into a wall or land on a hazard.',
   },
   blink: {
     key: 'blink',
@@ -116,7 +116,7 @@ export const SPELLS: Record<string, SpellDef> = {
     mpCost: 5,
     power: 0,
     mechanic: 'blink',
-    description: 'Teleport to any open tile within 2 squares, ignoring terrain height (Knowledge). Consumes your remaining movement.',
+    description: 'Teleport to any open tile within 2+ squares (farther with Knowledge), ignoring terrain height. Consumes your remaining movement.',
   },
   cleave: {
     key: 'cleave',

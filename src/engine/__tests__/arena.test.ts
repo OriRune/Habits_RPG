@@ -16,9 +16,11 @@ import {
   type ArenaState,
   type Minion,
 } from '../arena';
+import { arenaMoveIntervalFor } from '@/hooks/useArenaLoop';
 import { getSpell } from '../spells';
 import type { Fighter, Combatant } from '../combat';
 import type { BossDef } from '../bosses';
+import { genericBossReward } from '../bosses';
 import type { WeaponDef } from '../weapons';
 
 const SWORD: WeaponDef = {
@@ -170,6 +172,50 @@ describe('arena telegraphs (dodging)', () => {
   });
 });
 
+describe('arena charge telegraph (gap-closer)', () => {
+  // Boss far to the north, player at centre; a straight lane drawn between them.
+  function withCharge(): ArenaState {
+    const s = freshRun();
+    s.player.pos = { x:0, y:0 };
+    s.bossPos = { x:0, y:-4 };
+    s.telegraphs.push({
+      id: 1, kind: 'charge',
+      tiles: [ {x:0,y:-3}, {x:0,y:-2}, {x:0,y:-1}, {x:0,y:0}, {x:0,y:1}, {x:0,y:2}, {x:0,y:3}, {x:0,y:4} ],
+      startedAtMs: 0, firesAtMs: 100, raw: 20, school: 'physical',
+    });
+    return s;
+  }
+
+  it('dashes the boss down the lane and connects when the player holds ground', () => {
+    const s = withCharge();
+    const after = arenaTick(s, 150, HALF);
+    expect(after.bossPos).toEqual({ x:0, y:-1 }); // closed the gap, stops adjacent to the player
+    expect(after.hp).toBe(80); // 20 raw, defense 0 → charge connected
+    expect(after.telegraphs).toHaveLength(0);
+  });
+
+  it('overruns harmlessly when the player steps off the lane', () => {
+    const s = withCharge();
+    s.player.pos = { x:2, y:0 }; // stepped clear of the charge lane during the windup
+    const after = arenaTick(s, 150, HALF);
+    expect(after.bossPos).toEqual({ x:0, y:4 }); // still repositions — dashes past to the lane's end
+    expect(after.bossPos).not.toEqual({ x:0, y:-4 }); // gap closed even on a whiff
+    expect(after.hp).toBe(100); // never became adjacent → no damage
+    expect(after.telegraphs).toHaveLength(0);
+  });
+
+  it('chooseKind biases toward a charge only when the player is far', () => {
+    // Reach chooseKind through a live boss tick: freeze movement, arm the AI, force a far gap.
+    const s = freshRun();
+    s.player.pos = { x:0, y:4 };
+    s.bossPos = { x:0, y:-4 }; // distance 8 — squarely in the kite zone
+    s.bossNextActionMs = 0;
+    const after = arenaTick(s, 1, () => 0.1); // roll 0.1 < 0.4 → charge branch
+    expect(after.telegraphs).toHaveLength(1);
+    expect(after.telegraphs[0].kind).toBe('charge');
+  });
+});
+
 describe('arena outcomes', () => {
   it('advances phases, then declares victory on the final phase', () => {
     const twoPhase = boss({ phases: [
@@ -206,7 +252,8 @@ describe('arena rewards', () => {
   it('pays the full reward (with items) on a win', () => {
     const s = freshRun();
     s.status = 'won';
-    expect(arenaReward(s)).toEqual({ gold: 100, items: ['healing_potion'] });
+    // Generic curve at tier 5: 40 + 8*5 = 80 gold, no item (5 % 3 !== 0).
+    expect(arenaReward(s)).toEqual({ gold: 80, items: [] });
   });
 
   it('keeps half the earned share on death (no items)', () => {
@@ -214,14 +261,39 @@ describe('arena rewards', () => {
     s.status = 'ended';
     s.bossHp = 25; // removed half the 50-HP bar
     expect(damageProgress(s)).toBeCloseTo(0.5);
-    expect(arenaReward(s)).toEqual({ gold: 25 }); // floor(100 * 0.5 * 0.5)
+    expect(arenaReward(s)).toEqual({ gold: 20 }); // floor(80 * 0.5 * 0.5)
   });
 
   it('keeps the full earned share on a voluntary retreat', () => {
     const s = freshRun();
     s.status = 'banking';
     s.bossHp = 25;
-    expect(arenaReward(s)).toEqual({ gold: 50 }); // floor(100 * 0.5 * 1)
+    expect(arenaReward(s)).toEqual({ gold: 40 }); // floor(80 * 0.5 * 1)
+  });
+
+  it('pays the generic curve — never the named-boss table — at a named tier', () => {
+    // A named boss's own rich reward table (500g + named items) must NOT be
+    // farmable through repeatable Arena runs. Arena ignores boss.rewards.
+    const named = boss({ rewards: { gold: 500, items: ['recovery_elixir', 'healing_potion'] } });
+    const s = createArena(fighter(), named, {
+      knownSpells: [],
+      inventory: {},
+      tier: 20,
+      startMs: 0,
+    });
+    s.status = 'won';
+    // Generic curve at tier 20: 40 + 8*20 = 200 gold, no item (20 % 3 !== 0).
+    expect(arenaReward(s)).toEqual({ gold: 200, items: [] });
+  });
+});
+
+describe('genericBossReward', () => {
+  it('pays 40 + 8*tier gold and drops a potion only on tiers divisible by 3', () => {
+    expect(genericBossReward(1)).toEqual({ gold: 48, items: [] });
+    expect(genericBossReward(3)).toEqual({ gold: 64, items: ['healing_potion'] });
+    expect(genericBossReward(5)).toEqual({ gold: 80, items: [] });
+    expect(genericBossReward(20)).toEqual({ gold: 200, items: [] });
+    expect(genericBossReward(30)).toEqual({ gold: 280, items: ['healing_potion'] });
   });
 });
 
@@ -461,6 +533,118 @@ describe('ring of fire spell', () => {
   });
 });
 
+describe('MINI-07/26/37a arena spell integrity', () => {
+  // MINI-07 — ice_rune must not stunlock a boss forever. One freeze lands, then the boss is
+  // immune to re-freeze for FREEZE_IMMUNITY_MS past the thaw, so 1.8 MP/s regen can't sustain
+  // a permanent lock. A rune stepped onto during immunity still chips but cannot re-lock.
+  const iceRun = () => {
+    const s = freshRun();
+    s.knownSpells = ['ice_rune'];
+    s.mp = 999;
+    s.player.pos = { x: 0, y: 0 };
+    s.player.facing = 'up';
+    return s;
+  };
+
+  it('MINI-07: a second ice_rune within the immunity window cannot re-freeze the boss', () => {
+    const s = iceRun();
+    const c1 = arenaCast(s, 'ice_rune', 1000, HALF, { target: { x: 0, y: -1 } });
+    c1.bossPos = { x: 0, y: -1 };
+    const st1 = arenaTick(c1, 1100, HALF);
+    const frozenUntil1 = st1.bossFrozenUntilMs;
+    expect(frozenUntil1).toBeGreaterThan(1100); // first freeze landed
+    expect(st1.bossFreezeImmuneUntilMs).toBeGreaterThan(frozenUntil1); // immunity outlasts the thaw
+    // Second ice_rune during immunity — it fires (rune consumed) but must not re-lock the boss.
+    st1.player.pos = { x: 0, y: 0 };
+    st1.mp = 999;
+    const c2 = arenaCast(st1, 'ice_rune', 2000, HALF, { target: { x: 0, y: -1 } });
+    c2.bossPos = { x: 0, y: -1 };
+    const st2 = arenaTick(c2, 2100, HALF);
+    expect(st2.runes).toHaveLength(0); // the rune did trigger…
+    expect(st2.bossFrozenUntilMs).toBe(frozenUntil1); // …but the freeze window is unchanged
+  });
+
+  it('MINI-07: once the immunity window passes, ice_rune can freeze the boss again', () => {
+    const s = iceRun();
+    const c1 = arenaCast(s, 'ice_rune', 1000, HALF, { target: { x: 0, y: -1 } });
+    c1.bossPos = { x: 0, y: -1 };
+    const st1 = arenaTick(c1, 1100, HALF);
+    const immuneUntil = st1.bossFreezeImmuneUntilMs;
+    const t = immuneUntil + 1000; // well past expiry
+    st1.player.pos = { x: 0, y: 0 };
+    st1.mp = 999;
+    const c2 = arenaCast(st1, 'ice_rune', t - 100, HALF, { target: { x: 0, y: -1 } });
+    c2.bossPos = { x: 0, y: -1 };
+    const st2 = arenaTick(c2, t, HALF);
+    expect(st2.bossFrozenUntilMs).toBeGreaterThan(t); // re-froze
+    expect(st2.bossFrozenUntilMs).toBeGreaterThan(immuneUntil);
+  });
+
+  // MINI-26 — runes and ring_of_fire must respect the boss ward like direct spells do.
+  it('MINI-26: fire_rune damage on the boss is reduced by the ward', () => {
+    const fireRuneDrop = (wardVal: number) => {
+      const s = freshRun(fighter(), boss({ ward: wardVal }));
+      s.knownSpells = ['fire_rune'];
+      s.mp = 999;
+      s.player.pos = { x: 0, y: 0 };
+      s.player.facing = 'up';
+      const cast = arenaCast(s, 'fire_rune', 1000, HALF, { target: { x: 0, y: -1 } });
+      const hp0 = cast.bossHp;
+      cast.bossPos = { x: 0, y: -1 };
+      const st = arenaTick(cast, 1100, HALF);
+      return hp0 - st.bossHp;
+    };
+    const plain = fireRuneDrop(0);
+    const warded = fireRuneDrop(4);
+    expect(plain).toBeGreaterThan(4); // not clamped to the floor
+    expect(plain - warded).toBe(4); // the ward subtracts exactly
+  });
+
+  it('MINI-26: ring of fire damage on the boss is reduced by the ward', () => {
+    const ringDrop = (wardVal: number) => {
+      const s = freshRun(fighter(), boss({ ward: wardVal }));
+      s.knownSpells = ['ring_of_fire'];
+      s.mp = 999;
+      s.player.pos = { x: 0, y: 0 };
+      s.bossPos = { x: 1, y: 0 }; // adjacent
+      const cast = arenaCast(s, 'ring_of_fire', 1000, HALF);
+      const hp0 = cast.bossHp;
+      const after = arenaTick(cast, 1700, HALF); // one ring tick past the hit CD
+      return hp0 - after.bossHp;
+    };
+    const plain = ringDrop(0);
+    const warded = ringDrop(4);
+    expect(plain).toBeGreaterThan(4);
+    expect(plain - warded).toBe(4);
+  });
+
+  // MINI-37a — a ranged bolt rolls affinity at impact by target kind. A minion never inherits
+  // the boss's weak/resist (it has no affinity fields of its own); the boss still does.
+  it('MINI-37a: a bolt applies the boss DX affinity only to the boss, never to a minion', () => {
+    const fireBolt = (target: 'boss' | 'minion') => {
+      const s = freshRun(fighter(), boss({ weakTo: ['DX'] }));
+      s.player.pos = { x: 0, y: 0 };
+      s.player.facing = 'up';
+      s.sta = 10; // full swing (no exhaustion halving)
+      if (target === 'boss') {
+        s.bossPos = { x: 0, y: -1 };
+        const fired = arenaRanged(s, 1000, HALF, 'up');
+        const hp0 = fired.bossHp;
+        const after = arenaTick(fired, 3000, HALF);
+        return hp0 - after.bossHp;
+      }
+      s.bossPos = { x: 0, y: 2 }; // boss behind the player, out of the bolt's path
+      const m = minionAt(s, { x: 0, y: -1 }, 30);
+      m.nextMoveMs = Infinity;
+      const fired = arenaRanged(s, 1000, HALF, 'up');
+      const after = arenaTick(fired, 3000, HALF);
+      return 30 - after.minions.find((x) => x.id === m.id)!.hp;
+    };
+    expect(fireBolt('minion')).toBe(8); // rangedPower 8, variance 1.0, NO affinity
+    expect(fireBolt('boss')).toBe(10); // 8 × 1.25 DX-weakness — boss only
+  });
+});
+
 describe('teleport spell', () => {
   it('moves the player to an open cell 3-5 cells away', () => {
     const s = freshRun();
@@ -493,13 +677,36 @@ describe('arena setup & speed rolls', () => {
     expect(arenaSpeedFactor('normal', 10)).toBe(1);
     expect(arenaSpeedFactor('fast', 10)).toBe(1.2);
     expect(arenaSpeedFactor('auto', ARENA_UNLOCK_LEVEL)).toBeCloseTo(0.85); // floor at unlock
-    expect(arenaSpeedFactor('auto', 50)).toBe(1.2); // capped high
+    // Ramp keeps climbing past the old 1.2 cap — L23 hits 1.2, L43 hits the new 1.6 ceiling.
+    expect(arenaSpeedFactor('auto', 23)).toBeCloseTo(1.2);
+    expect(arenaSpeedFactor('auto', 43)).toBeCloseTo(1.6);
+    expect(arenaSpeedFactor('auto', 43)).toBeGreaterThan(1.2);
+    expect(arenaSpeedFactor('auto', 60)).toBe(1.6); // capped at the new high ceiling
   });
 
   it('higher speed shortens the boss/summon clock', () => {
     const slow = createArena(fighter(), boss(), { knownSpells: [], inventory: {}, tier: 5, startMs: 0, radius: 5, speed: 1 });
     const fast = createArena(fighter(), boss(), { knownSpells: [], inventory: {}, tier: 5, startMs: 0, radius: 5, speed: 2 });
     expect(fast.nextSummonMs).toBeLessThan(slow.nextSummonMs);
+
+    // A late-arena boss ramped past the old cap moves faster still: at speed 1.6 the summon
+    // clock is shorter than at the former 1.2 ceiling.
+    const capped = createArena(fighter(), boss(), { knownSpells: [], inventory: {}, tier: 5, startMs: 0, radius: 5, speed: 1.2 });
+    const ramped = createArena(fighter(), boss(), { knownSpells: [], inventory: {}, tier: 5, startMs: 0, radius: 5, speed: arenaSpeedFactor('auto', 43) });
+    expect(ramped.nextSummonMs).toBeLessThan(capped.nextSummonMs);
+  });
+});
+
+describe('BAL-23: Agility quickens the Arena step', () => {
+  it('tapers the move interval from 150ms to a 90ms floor at AG 20', () => {
+    expect(arenaMoveIntervalFor(0)).toBe(150); // no AG = the old flat cadence
+    expect(arenaMoveIntervalFor(10)).toBe(120);
+    expect(arenaMoveIntervalFor(20)).toBe(90); // floor reached
+    expect(arenaMoveIntervalFor(30)).toBe(90); // never dips below the floor
+  });
+
+  it('a higher-AG fighter genuinely out-steps a sluggish one', () => {
+    expect(arenaMoveIntervalFor(15)).toBeLessThan(arenaMoveIntervalFor(5));
   });
 });
 
@@ -511,7 +718,7 @@ describe('usage-based stat tracking', () => {
     s.player.pos = { x: 0, y: -ARENA_RADIUS + 1 };
     const hit = arenaMelee(s, 1000, HALF);
     expect(hit.statUsage.ST).toBe(1);
-    expect(hit.statUsage.EN).toBe(1);
+    expect(hit.statUsage.EN).toBe(0.25);
     expect(hit.statUsage.DX).toBeUndefined();
   });
 
@@ -522,7 +729,7 @@ describe('usage-based stat tracking', () => {
     s.player.facing = 'up';
     const fired = arenaRanged(s, 1000, HALF);
     expect(fired.statUsage.DX).toBe(1);
-    expect(fired.statUsage.EN).toBe(1);
+    expect(fired.statUsage.EN).toBe(0.25);
     expect(fired.statUsage.ST).toBeUndefined();
   });
 
@@ -568,7 +775,7 @@ describe('usage-based stat tracking', () => {
     a1.player.pos = { x: 0, y: -ARENA_RADIUS + 1 };
     const a2 = arenaMelee(a1, 2000, HALF);
     expect(a2.statUsage.ST).toBe(2);
-    expect(a2.statUsage.EN).toBe(2);
+    expect(a2.statUsage.EN).toBe(0.5);
   });
 });
 

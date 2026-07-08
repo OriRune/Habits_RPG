@@ -1,8 +1,10 @@
 // Account-level summary for the Chronicle — consistency score, 12-week trend.
 import { type Habit } from '@/engine/habits';
-import { consistencyScore, consistencyTrend } from '@/engine/tracking';
+import { consistencyScore } from '@/engine/tracking';
 import { effectiveStatus } from '@/engine/habits';
 import { toISODate } from '@/engine/date';
+import { useGameStore } from '@/store/useGameStore';
+import { selectConsistencyTrend } from '@/store/selectors';
 import { Panel } from '@/components/ui/Panel';
 import { SectionTitle } from '@/components/ui/Divider';
 
@@ -20,7 +22,7 @@ export function AccountSummary({ habits }: { habits: Habit[] }) {
   const today = toISODate();
   const activeCount = habits.filter((h) => effectiveStatus(h, today) === 'active').length;
   const score = consistencyScore(habits, today);
-  const trend = consistencyTrend(habits, today);
+  const trend = useGameStore(selectConsistencyTrend);
 
   return (
     <Panel tone="parchment" className="p-4">

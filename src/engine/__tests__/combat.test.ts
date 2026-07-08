@@ -3,11 +3,12 @@ import {
   deriveCombatant,
   createBattle,
   playerAction,
+  illusionBoost,
   type Fighter,
   type RNG,
 } from '../combat';
 import { emptyStatLevels } from '../progression';
-import { emptyCombatStats } from '../combatStats';
+import { emptyCombatStats, combatXpForWin, dungeonCombatStatXp } from '../combatStats';
 import { getWeapon, STARTER_WEAPON } from '../weapons';
 import { bossForLevel } from '../bosses';
 
@@ -224,10 +225,78 @@ describe('defense mitigation', () => {
   it('higher Defense means less physical damage taken', () => {
     const squishy = fighter(emptyStatLevels(), { defenseXp: 0, wardXp: 0 });
     const armored = fighter(emptyStatLevels(), { defenseXp: 900, wardXp: 0 }); // mitigation 30
-    const a = playerAction(createBattle(squishy, bossForLevel(7)), squishy, { kind: 'attack' }, fixed(0.5));
-    const b = playerAction(createBattle(armored, bossForLevel(7)), armored, { kind: 'attack' }, fixed(0.5));
+    // Pass a fixed rng to createBattle so BOTH foes telegraph the same opening move — otherwise the
+    // intent is picked from global Math.random and the two battles can retaliate with different
+    // moves (one guard = 0 dmg), making the comparison flaky depending on prior Math.random calls.
+    const a = playerAction(createBattle(squishy, bossForLevel(7), {}, fixed(0.5)), squishy, { kind: 'attack' }, fixed(0.5));
+    const b = playerAction(createBattle(armored, bossForLevel(7), {}, fixed(0.5)), armored, { kind: 'attack' }, fixed(0.5));
     const dmgToSquishy = a.playerMaxHp - a.playerHp;
     const dmgToArmored = b.playerMaxHp - b.playerHp;
     expect(dmgToArmored).toBeLessThan(dmgToSquishy);
+  });
+});
+
+// MINI-39: the foe's affinity is hidden until the player lands a hit that reveals it.
+describe('affinity reveal', () => {
+  it('a tagged (weak) hit flips affinityRevealed; a neutral hit leaves it hidden', () => {
+    const lv = emptyStatLevels();
+    lv.ST = 10;
+    const f = fighter(lv);
+
+    const weakFoe = createBattle(f, bossForLevel(7), {}, fixed(0.5));
+    weakFoe.weakTo = [f.weapon.attackStat]; // force our weapon's stat to be a weakness
+    weakFoe.resistTo = [];
+    expect(weakFoe.affinityRevealed).toBeFalsy(); // hidden before any hit
+    const afterWeak = playerAction(weakFoe, f, { kind: 'attack' }, fixed(0.5));
+    expect(afterWeak.affinityRevealed).toBe(true);
+
+    const neutralFoe = createBattle(f, bossForLevel(7), {}, fixed(0.5));
+    neutralFoe.weakTo = [];
+    neutralFoe.resistTo = [];
+    const afterNeutral = playerAction(neutralFoe, f, { kind: 'attack' }, fixed(0.5));
+    expect(afterNeutral.affinityRevealed).toBeFalsy(); // a plain hit reveals nothing
+  });
+});
+
+// BAL-07: Charisma's illusion payoff. The shared illusionBoost helper backs all three casters
+// (combat / arena / hexBattle), so testing it here covers the formula everywhere.
+describe('illusionBoost (BAL-07 CH scaling)', () => {
+  it('CH 0 leaves an illusion status untouched', () => {
+    const weaken = { key: 'weaken' as const, turns: 3, magnitude: 0.4 };
+    const out = illusionBoost(weaken, 0);
+    expect(out.turns).toBe(3);
+    expect(out.magnitude).toBeCloseTo(0.4, 5);
+  });
+
+  it('lengthens duration by floor(CH/4) — doubled from the old floor(CH/8)', () => {
+    // CH 24: old bonus floor(24/8)=3 → new floor(24/4)=6. Most CH points now move the needle.
+    expect(illusionBoost({ key: 'blind' as const, turns: 2, magnitude: 1 }, 24).turns).toBe(2 + 6);
+    expect(illusionBoost({ key: 'blind' as const, turns: 2, magnitude: 1 }, 8).turns).toBe(2 + 2);
+  });
+
+  it('deepens weaken magnitude by floor(CH/6)·0.05, staying a sane 0–1 fraction', () => {
+    // base 0.4 + floor(24/6)=4 · 0.05 = 0.6 — a flat +floor(CH/6) would have given a broken 4.4.
+    expect(illusionBoost({ key: 'weaken' as const, turns: 3, magnitude: 0.4 }, 24).magnitude).toBeCloseTo(0.6, 5);
+    expect(illusionBoost({ key: 'weaken' as const, turns: 3, magnitude: 0.4 }, 12).magnitude).toBeCloseTo(0.5, 5);
+  });
+});
+
+// ARCH-25c: pin the combat-stat reward formulas (combatStats.ts). These pure fns feed
+// dungeonSlice's win rewards; a coefficient drift here would silently rebalance the mode.
+describe('combat-stat reward formulas (ARCH-25c)', () => {
+  it('combatXpForWin scales as 12 + round(enemyMaxHp / 6)', () => {
+    expect(combatXpForWin(0)).toBe(12);
+    expect(combatXpForWin(60)).toBe(22);   // 12 + 10
+    expect(combatXpForWin(100)).toBe(29);  // 12 + round(16.67)
+  });
+
+  it('dungeonCombatStatXp = 8 + round(hp/10), split 60/40 attack/HP', () => {
+    const a = dungeonCombatStatXp(100); // total 8 + 10 = 18
+    expect(a).toEqual({ total: 18, atkShare: 11, hpShare: 7 }); // round(18·0.6)=11
+    const b = dungeonCombatStatXp(0);   // total 8
+    expect(b).toEqual({ total: 8, atkShare: 5, hpShare: 3 });   // round(8·0.6)=5
+    // the split always reconstitutes total (no rounding leak)
+    expect(a.atkShare + a.hpShare).toBe(a.total);
+    expect(b.atkShare + b.hpShare).toBe(b.total);
   });
 });

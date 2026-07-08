@@ -44,6 +44,40 @@ describe('encounter definitions', () => {
     }
     expect(broken).toEqual([]);
   });
+
+  // ARCH-17: the encounter graph must be internally consistent — a dangling transition
+  // target would strand a run on an undefined node. Assert every start/go/goSuccess/goFail
+  // resolves to a real node, and that stat checks always define BOTH branches.
+  it('every transition target resolves and stat-checks define both branches', () => {
+    const broken: string[] = [];
+    let transitionsChecked = 0;
+    for (const [key, def] of Object.entries(ENCOUNTERS)) {
+      // (1) the start node must exist
+      if (!def.nodes[def.start]) broken.push(`${key}: start node "${def.start}" missing`);
+      for (const [nodeId, node] of Object.entries(def.nodes)) {
+        for (const choice of node.choices ?? []) {
+          // (2) every transition target must resolve to a node in this encounter
+          for (const field of ['go', 'goSuccess', 'goFail'] as const) {
+            const target = choice[field];
+            if (target === undefined) continue;
+            transitionsChecked++;
+            if (!def.nodes[target]) {
+              broken.push(`${key}.${nodeId}: choice "${choice.label}" ${field} → "${target}" (no such node)`);
+            }
+          }
+          // (3) a stat check needs BOTH success and fail branches (goSuccess ⇔ goFail)
+          const hasSuccess = choice.goSuccess !== undefined;
+          const hasFail = choice.goFail !== undefined;
+          if (hasSuccess !== hasFail) {
+            broken.push(`${key}.${nodeId}: choice "${choice.label}" has goSuccess XOR goFail (a stat check needs both)`);
+          }
+        }
+      }
+    }
+    expect(broken).toEqual([]);
+    // Non-vacuity guard: the catalog is richly branched — make sure we actually walked it.
+    expect(transitionsChecked).toBeGreaterThan(50);
+  });
 });
 
 // ── Relic content integrity ──────────────────────────────────────────────────

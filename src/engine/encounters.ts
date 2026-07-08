@@ -131,6 +131,13 @@ export function checkChance(power: number, threshold: number): number {
   return Math.min(0.95, Math.max(0.15, 0.3 + (power - threshold) * 0.07));
 }
 
+/** MINI-28: how much a stat check stiffens per dungeon depth, so deep encounters don't
+ *  saturate at the 95% ceiling as gear/relics/stats grow. One extra difficulty point every
+ *  3 floors. Shared by the engine roll and the UI odds preview so they never disagree. */
+export function encounterDepthTier(depth: number): number {
+  return Math.floor(Math.max(0, depth) / 3);
+}
+
 function isTerminal(def: EncounterDef, nodeId: string): boolean {
   const node = def.nodes[nodeId];
   return !node || !node.choices || node.choices.length === 0;
@@ -164,6 +171,7 @@ export function chooseEncounter(
   bonuses: Partial<Record<StatId, number>> = {},
   rng: RNG = Math.random,
   gateCtx?: ChoiceGateCtx,
+  depth = 0,
 ): { state: EncounterRunState; step: EncounterStep } {
   const node = def.nodes[state.nodeId];
   const choice = node?.choices?.[choiceIndex];
@@ -190,7 +198,7 @@ export function chooseEncounter(
 
   if (choice.stat) {
     const power = statPower(statLevels, [choice.stat]) + (bonuses[choice.stat] ?? 0);
-    const success = rng() < checkChance(power, choice.difficulty ?? 5);
+    const success = rng() < checkChance(power, (choice.difficulty ?? 5) + encounterDepthTier(depth));
     outcome = success ? 'success' : 'fail';
     nextId = (success ? choice.goSuccess : choice.goFail) ?? state.nodeId;
     text = (success ? choice.successText : choice.failText) ?? null;
@@ -207,6 +215,10 @@ export function chooseEncounter(
       if (choice.curseOnFail) grantCurse = true;
     }
   }
+
+  // MINI-28: encounter gold keeps pace with depth (treasure rooms already scale, these didn't) —
+  // +15% per difficulty tier, on the same floor(depth/3) cadence as the stiffening checks.
+  if (reward.gold) reward.gold = Math.round(reward.gold * (1 + encounterDepthTier(depth) * 0.15));
 
   const lastDeltas =
     hpDelta !== 0 || staDelta !== 0 || mpDelta !== 0

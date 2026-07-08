@@ -13,28 +13,45 @@ import {
   validateSpiritGroveRounds,
   clueVisible,
 } from '@/engine/trials/spiritGrove';
+import { seededRng, dailySeed } from '@/engine/trials/ancientLibrary';
+import { toISODate } from '@/engine/date';
 import { useGameStore } from '@/store/useGameStore';
 
 const ROUND_TRANSITION_MS = 700;
 
 interface SpiritGroveProps {
   onFinish: (score01: number) => void;
+  /** MINI-11: per-attempt nonce seeds the round draft so reopening can't redraw-scum for an easy set. */
+  attemptNonce: number;
 }
 
 if (import.meta.env.DEV) {
   validateSpiritGroveRounds(SPIRIT_GROVE_ROUNDS);
 }
 
-export function SpiritGrove({ onFinish }: SpiritGroveProps) {
+export function SpiritGrove({ onFinish, attemptNonce }: SpiritGroveProps) {
   // WI gates clue visibility; best score triggers mastery mode (harder draft).
   const wi   = useGameStore((s) => s.character.statLevels.WI ?? 0);
   const best = useGameStore((s) => s.bestTrialScore['spirit_grove'] ?? 0);
+  // MINI-16: bias the draft toward rounds the player hasn't seen yet.
+  const spiritGroveSeen = useGameStore((s) => s.spiritGroveSeen);
+  const markSpiritGroveSeen = useGameStore((s) => s.markSpiritGroveSeen);
 
   const prepared = useMemo(
-    () => prepareRounds(SPIRIT_GROVE_ROUNDS, Math.random, { harder: best >= 1 }),
-    // Re-draft only when mastery mode changes (best crosses 0→1), not on every re-render.
+    // MINI-11: draft off the daily seed XOR the per-attempt nonce instead of raw Math.random, so
+    // the round set is deterministic within an attempt (matches Library's mechanism, and is
+    // testable). NOTE: this does NOT by itself close reroll-for-a-known-draw — the nonce advances
+    // on every Begin, so reopening still yields a fresh set. That residual is inherent to free
+    // abandonment (MINI-11's named root cause) and would need a cost on abandon to close; left out
+    // of this seed-scoped item. The difficulty mix is fixed (1E/2M/2H) so there's no strictly
+    // easier set to fish for, only a familiar-questions one.
+    // `spiritGroveSeen` is intentionally NOT a dep: the draft must stay stable within an attempt,
+    // and seen only changes on completion (which unmounts this component via the result stage), so
+    // the mount-time value is correct.
+    () => prepareRounds(SPIRIT_GROVE_ROUNDS, seededRng(dailySeed(toISODate()) ^ attemptNonce), { harder: best >= 1, seen: new Set(spiritGroveSeen) }),
+    // Re-draft only when mastery mode changes (best crosses 0→1) or a new attempt begins.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [best >= 1],
+    [best >= 1, attemptNonce],
   );
 
   const [roundIndex, setRoundIndex] = useState(0);
@@ -81,6 +98,8 @@ export function SpiritGrove({ onFinish }: SpiritGroveProps) {
       advanceFnRef.current = null;
       if (isFinal) {
         setDone(true);
+        // MINI-16: mark every drafted round seen on completion only (not per-round, not on abandon).
+        markSpiritGroveSeen(prepared.map((p) => p.round.id));
         onFinish(spiritGroveScore(newCorrect, prepared.length));
       } else {
         setRoundIndex((prev) => prev + 1);

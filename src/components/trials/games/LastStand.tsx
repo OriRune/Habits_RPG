@@ -9,6 +9,8 @@ import {
   lastStandScore,
   reactionSpeed,
   reactionRating,
+  resolveBlockGate,
+  blockWindowForWave,
   seededRng,
   STARTING_HP,
   DAMAGE_PER_HIT,
@@ -22,6 +24,8 @@ import {
 
 interface LastStandProps {
   onFinish: (score01: number) => void;
+  /** HP stat level — widens the per-wave block window (more reaction time). */
+  hpLevel: number;
 }
 
 const DIR_LABELS: Record<Direction, string> = { left: '← Left', center: '▲ Center', right: '→ Right' };
@@ -34,7 +38,7 @@ type RatingMap = Record<Direction, ReactionRating | null>;
 const EMPTY_FEEDBACK: FeedbackMap = { left: null, center: null, right: null };
 const EMPTY_RATING: RatingMap = { left: null, center: null, right: null };
 
-export function LastStand({ onFinish }: LastStandProps) {
+export function LastStand({ onFinish, hpLevel }: LastStandProps) {
   const [phase, setPhase] = useState<Phase>('countdown');
   const [countdown, setCountdown] = useState(3);
 
@@ -55,6 +59,9 @@ export function LastStand({ onFinish }: LastStandProps) {
   const elapsedRef = useRef(0);
   const startMs = useRef<number | null>(null);
   const rafRef = useRef<number | null>(null);
+  // MINI-10: elapsed-ms deadline before which all block input is locked out (0 = open).
+  // Set by a whiff so blind mashing can't catch every lane at spawn.
+  const lockoutUntilRef = useRef(0);
 
   // Collect pending timers so they can be cleared on unmount.
   const pendingTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -84,12 +91,12 @@ export function LastStand({ onFinish }: LastStandProps) {
     (finalAttacks: Attack[], died: boolean) => {
       const blockSpeeds = finalAttacks
         .filter((a) => a.result === 'blocked' && a.blockedAtMs != null)
-        .map((a) => reactionSpeed(a.landMs, a.blockedAtMs!));
+        .map((a) => reactionSpeed(a.landMs, a.blockedAtMs!, blockWindowForWave(a.wave, hpLevel)));
       const resolved = finalAttacks.filter((a) => a.result !== null).length;
       sfxPlay(died ? 'defeat' : 'win');
       onFinish(lastStandScore(blockSpeeds, resolved));
     },
-    [onFinish],
+    [onFinish, hpLevel],
   );
 
   // ── Countdown: 3 → 2 → 1 → start ─────────────────────────────────────────────
@@ -180,28 +187,38 @@ export function LastStand({ onFinish }: LastStandProps) {
       const target = attacksCopy.current
         .filter((a) => {
           if (a.result !== null || a.dir !== dir) return false;
-          return el >= a.landMs - SPAWN_AHEAD_MS && el <= a.landMs + BLOCK_GRACE_MS;
+          // Narrowed per-wave accept window (widened by HP). A block earlier than
+          // landMs − win no longer counts, so blind mashing whiffs and trips the
+          // MINI-10 lockout instead of catching every lane at spawn.
+          const win = blockWindowForWave(a.wave, hpLevel);
+          return el >= a.landMs - win && el <= a.landMs + BLOCK_GRACE_MS;
         })
         .sort((a, b) => a.landMs - b.landMs)[0];
-      if (!target) return;
+      // MINI-10 anti-mash gate: a whiff locks all lanes briefly, so mashing can't
+      // catch every attack at spawn. A rejected attempt (locked out, or a whiff)
+      // does nothing further.
+      const gate = resolveBlockGate(lockoutUntilRef.current, el, !!target);
+      lockoutUntilRef.current = gate.lockoutUntil;
+      if (!gate.accept || !target) return; // !target is implied by !accept — narrows the type
       const next = attacksCopy.current.map((a) =>
         a.id === target.id ? { ...a, result: 'blocked' as const, blockedAtMs: el } : a,
       );
       setAttacks(next);
       attacksCopy.current = next;
       triggerFeedback(dir, 'blocked');
-      // Flash the reaction rating for this block.
-      const speed = reactionSpeed(target.landMs, el);
+      // Flash the reaction rating for this block — scored against the same window.
+      const speed = reactionSpeed(target.landMs, el, blockWindowForWave(target.wave, hpLevel));
       const rating = reactionRating(speed);
       setRatingFeedback(prev => ({ ...prev, [dir]: rating }));
       scheduleTimeout(() => setRatingFeedback(prev => ({ ...prev, [dir]: null })), 600);
       sfxPlay('lastStandBlock');
     },
-    [triggerFeedback],
+    [triggerFeedback, hpLevel],
   );
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (e.repeat) return; // MINI-10: ignore OS autorepeat from a held key (cf. ArmoryBreak)
       if (e.code === 'ArrowLeft' || e.code === 'KeyA') { e.preventDefault(); block('left'); }
       if (e.code === 'Space' || e.code === 'KeyS') { e.preventDefault(); block('center'); }
       if (e.code === 'ArrowRight' || e.code === 'KeyD') { e.preventDefault(); block('right'); }
@@ -218,11 +235,13 @@ export function LastStand({ onFinish }: LastStandProps) {
   );
 
   // Directions whose block window is currently open — used to highlight buttons.
+  // Uses the same narrowed per-wave window as block() so the glow never lies.
   const activeDirections = new Set<Direction>(
     attacks
       .filter((a) => {
         if (a.result !== null) return false;
-        return elapsed >= a.landMs - SPAWN_AHEAD_MS && elapsed <= a.landMs + BLOCK_GRACE_MS;
+        const win = blockWindowForWave(a.wave, hpLevel);
+        return elapsed >= a.landMs - win && elapsed <= a.landMs + BLOCK_GRACE_MS;
       })
       .map((a) => a.dir),
   );

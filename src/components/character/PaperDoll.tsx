@@ -4,6 +4,8 @@ import { useGameStore } from '@/store/useGameStore';
 import { getWeapon } from '@/engine/weapons';
 import { getGear, aggregateGear, type GearSlot } from '@/engine/gear';
 import { getStat, type StatId } from '@/engine/stats';
+import { CRAFT_TIERS, NORMAL, asCraftTier, scaleGearDef, scaleWeaponDef, type CraftTier } from '@/engine/crafting';
+import { tierPrefix } from '@/components/inventory/GearSection';
 import { Sprite } from '@/components/ui/Sprite';
 import { weaponCrest, gearCrest } from '@/lib/sprites';
 import { CharacterSilhouette } from './CharacterSilhouette';
@@ -23,19 +25,32 @@ function Slot({
   spriteKey,
   look,
   name,
+  tier,
   onClick,
 }: {
   label: string;
   spriteKey?: string;
   look?: { glyph: string; color: string };
   name?: string;
+  /** Quality tier of the equipped item; a badge shows for non-Normal tiers. */
+  tier?: CraftTier;
   onClick: () => void;
 }) {
   return (
     <button
       onClick={onClick}
-      className="flex w-20 flex-col items-center gap-1 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-1.5 text-center transition-colors hover:border-gold-deep/70 hover:bg-parchment-300/50"
+      className="relative flex w-20 flex-col items-center gap-1 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-1.5 text-center transition-colors hover:border-gold-deep/70 hover:bg-parchment-300/50"
     >
+      {tier !== undefined && tier !== NORMAL && (
+        <span
+          className="absolute right-1 top-1 text-[12px] leading-none"
+          style={{ color: CRAFT_TIERS[tier].color }}
+          title={CRAFT_TIERS[tier].name}
+          aria-label={CRAFT_TIERS[tier].name}
+        >
+          {CRAFT_TIERS[tier].glyph}
+        </span>
+      )}
       {look && spriteKey ? (
         <Sprite spriteKey={spriteKey} look={look} size="md" />
       ) : (
@@ -55,6 +70,8 @@ export function PaperDoll() {
   const equipment = useGameStore((s) => s.equipment);
   const ownedWeapons = useGameStore((s) => s.ownedWeapons);
   const ownedGear = useGameStore((s) => s.ownedGear);
+  const gearQuality = useGameStore((s) => s.gearQuality);
+  const weaponQuality = useGameStore((s) => s.weaponQuality);
   const equipWeapon = useGameStore((s) => s.equipWeapon);
   const equipGear = useGameStore((s) => s.equipGear);
   const unequipGear = useGameStore((s) => s.unequipGear);
@@ -62,9 +79,18 @@ export function PaperDoll() {
   const [picking, setPicking] = useState<SlotKey | null>(null);
 
   const weapon = getWeapon(equippedWeapon);
+  const weaponTier = asCraftTier(weaponQuality[equippedWeapon]);
 
   // Aggregated bonuses across the equipped gear (weapon excluded — its bonus is its Attack).
-  const agg = aggregateGear(GEAR_SLOTS.map((sl) => (equipment[sl] ? getGear(equipment[sl]!) : undefined)));
+  // Scale each def by its quality tier so the shown totals match what combat (fighterFor) fields.
+  const agg = aggregateGear(
+    GEAR_SLOTS.map((sl) => {
+      const k = equipment[sl];
+      if (!k) return undefined;
+      const def = getGear(k);
+      return def ? scaleGearDef(def, asCraftTier(gearQuality[k])) : undefined;
+    }),
+  );
   const bonusParts: string[] = [];
   for (const [s, n] of Object.entries(agg.statBonuses)) bonusParts.push(`+${n} ${getStat(s as StatId).short}`);
   if (agg.defense) bonusParts.push(`+${agg.defense} Def`);
@@ -77,14 +103,17 @@ export function PaperDoll() {
   const spareGear = ownedGear.filter((k) => !equippedGearKeys.includes(k));
 
   const gearSlot = (sl: GearSlot) => {
-    const def = equipment[sl] ? getGear(equipment[sl]!) : undefined;
+    const key = equipment[sl];
+    const def = key ? getGear(key) : undefined;
+    const tier = key ? asCraftTier(gearQuality[key]) : undefined;
     return (
       <Slot
         key={sl}
         label={SLOT_LABEL[sl]}
         spriteKey={def ? `gear:${def.key}` : undefined}
         look={def ? gearCrest(def.name, def.slot) : undefined}
-        name={def?.name}
+        name={def ? tierPrefix(def.name, gearQuality[key!]) : undefined}
+        tier={tier}
         onClick={() => setPicking(sl)}
       />
     );
@@ -99,7 +128,8 @@ export function PaperDoll() {
             label={SLOT_LABEL.weapon}
             spriteKey={`weapon:${equippedWeapon}`}
             look={weaponCrest(weapon.name, weapon.attackStat)}
-            name={weapon.name}
+            name={tierPrefix(weapon.name, weaponQuality[equippedWeapon])}
+            tier={weaponTier}
             onClick={() => setPicking('weapon')}
           />
         </div>
@@ -123,7 +153,7 @@ export function PaperDoll() {
             {spareWeapons.map((k) => {
               const w = getWeapon(k);
               return (
-                <button key={`w:${k}`} onClick={() => equipWeapon(k)} title={`Equip ${w.name}`}>
+                <button key={`w:${k}`} onClick={() => equipWeapon(k)} title={`Equip ${tierPrefix(w.name, weaponQuality[k])}`}>
                   <Sprite spriteKey={`weapon:${k}`} look={weaponCrest(w.name, w.attackStat)} size="md" />
                 </button>
               );
@@ -132,7 +162,7 @@ export function PaperDoll() {
               const g = getGear(k);
               if (!g) return null;
               return (
-                <button key={`g:${k}`} onClick={() => equipGear(k)} title={`Equip ${g.name} (${g.slot})`}>
+                <button key={`g:${k}`} onClick={() => equipGear(k)} title={`Equip ${tierPrefix(g.name, gearQuality[k])} (${g.slot})`}>
                   <Sprite spriteKey={`gear:${k}`} look={gearCrest(g.name, g.slot)} size="md" />
                 </button>
               );
@@ -149,6 +179,8 @@ export function PaperDoll() {
           equipment={equipment}
           ownedWeapons={ownedWeapons}
           ownedGear={ownedGear}
+          gearQuality={gearQuality}
+          weaponQuality={weaponQuality}
           onEquipWeapon={(k) => {
             equipWeapon(k);
             setPicking(null);
@@ -174,6 +206,8 @@ function EquipPicker({
   equipment,
   ownedWeapons,
   ownedGear,
+  gearQuality,
+  weaponQuality,
   onEquipWeapon,
   onEquipGear,
   onUnequip,
@@ -184,6 +218,8 @@ function EquipPicker({
   equipment: Record<GearSlot, string | null>;
   ownedWeapons: string[];
   ownedGear: string[];
+  gearQuality: Record<string, number>;
+  weaponQuality: Record<string, number>;
   onEquipWeapon: (key: string) => void;
   onEquipGear: (key: string) => void;
   onUnequip: (slot: GearSlot) => void;
@@ -222,12 +258,16 @@ function EquipPicker({
           {options.map((k) => {
             const w = isWeapon ? getWeapon(k) : undefined;
             const g = isWeapon ? undefined : getGear(k);
-            const name = w?.name ?? g?.name ?? k;
+            // Scale the shown stats + prefix the name by quality tier (matches combat/inventory).
+            const tier = asCraftTier(isWeapon ? weaponQuality[k] : gearQuality[k]);
+            const wScaled = w ? scaleWeaponDef(w, tier) : undefined;
+            const gScaled = g ? scaleGearDef(g, tier) : undefined;
+            const name = tierPrefix(w?.name ?? g?.name ?? k, isWeapon ? weaponQuality[k] : gearQuality[k]);
             const look = w ? weaponCrest(w.name, w.attackStat) : g ? gearCrest(g.name, g.slot) : undefined;
-            const detail = w
-              ? `${w.attackStat === 'DX' ? 'Dexterity' : 'Strength'} · +${w.bonus} Attack`
-              : g
-                ? gearDetail(g)
+            const detail = wScaled
+              ? `${wScaled.attackStat === 'DX' ? 'Dexterity' : 'Strength'} · +${wScaled.bonus} Attack`
+              : gScaled
+                ? gearDetail(gScaled)
                 : '';
             const equipped = k === equippedKey;
             return (
@@ -243,7 +283,12 @@ function EquipPicker({
               >
                 {look && <Sprite spriteKey={`${isWeapon ? 'weapon' : 'gear'}:${k}`} look={look} size="md" />}
                 <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-semibold text-ink">{name}</span>
+                  <span
+                    className="block text-sm font-semibold text-ink"
+                    style={tier !== NORMAL ? { color: CRAFT_TIERS[tier].color } : undefined}
+                  >
+                    {name}
+                  </span>
                   <span className="block text-[11px] text-ink-muted">{detail}</span>
                 </span>
                 {equipped && <span className="text-[10px] font-bold uppercase text-gold-deep">Equipped</span>}

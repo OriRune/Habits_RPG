@@ -6,6 +6,7 @@ import { useGameStore } from '@/store/useGameStore';
 import {
   createParty,
   createPartyQuest,
+  expireStaleQuests,
   getActiveQuest,
   getClaimableQuests,
   getLeaderboard,
@@ -67,6 +68,9 @@ export async function reloadParty(): Promise<void> {
     usePartyStore.setState({ ...INITIAL, loading: false });
     return;
   }
+  // Lazily retire any past-deadline quest before reading it, so a lapsed quest
+  // reads as null (no active quest) rather than a stale 'active' row (MP-18).
+  await expireStaleQuests(party.id);
   const [members, messages, quest] = await Promise.all([
     getMembers(party.id),
     getMessages(party.id),
@@ -132,6 +136,7 @@ function deriveActivity(): string {
   if (s.mining) return 'In the Mine';
   if (s.forest) return 'In the Forest';
   if (s.arena) return 'In the Arena';
+  if (s.tactics) return 'In Hex Tactics';
   if (s.battle) return 'In battle';
   return 'Online';
 }

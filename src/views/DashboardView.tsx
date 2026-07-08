@@ -23,9 +23,11 @@ import {
   selectEnergySummary,
 } from '@/store/selectors';
 import { isCompletedOn, effectiveStatus } from '@/engine/habits';
+import { missedRecentScheduledDay } from '@/engine/habitHealth';
 import { toISODate, parseISODate, addDays, daysBetween, BACKDATE_WINDOW_DAYS } from '@/engine/date';
 import { type ActiveChallenge, isExpired } from '@/engine/challenges';
 import { WelcomeCard } from '@/components/onboarding/WelcomeCard';
+import { ReminderCard } from '@/components/onboarding/ReminderCard';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { HabitCard } from '@/components/habits/HabitCard';
 import { HabitForm } from '@/components/habits/HabitForm';
@@ -55,6 +57,8 @@ export function DashboardView({
   const startBattle = useGameStore((s) => s.startBattle);
   const created = useGameStore((s) => s.created);
   const hasSeenWelcome = useGameStore((s) => s.hasSeenWelcome);
+  const dailyReminderEnabled = useGameStore((s) => s.settings.dailyReminderEnabled);
+  const reminderCardDismissed = useGameStore((s) => s.reminderCardDismissed);
   const summary = useGameStore(selectDailySummary);
   const recovery = useGameStore(selectRecoveryState);
   const accountWarnings = useGameStore(selectAccountHealth);
@@ -79,6 +83,15 @@ export function DashboardView({
   const pendingFocus = active.filter((h) => !isCompletedOn(h, viewDate) && h.focus);
   const pendingOther = active.filter((h) => !isCompletedOn(h, viewDate) && !h.focus);
   const done = active.filter((h) => isCompletedOn(h, viewDate));
+
+  // Offer the daily reminder once, after a real missed day, only if it's still off.
+  const offerReminder = useMemo(
+    () =>
+      !dailyReminderEnabled &&
+      !reminderCardDismissed &&
+      missedRecentScheduledDay(allHabits, today),
+    [dailyReminderEnabled, reminderCardDismissed, allHabits, today],
+  );
 
   // Normal backdating window
   const earliestCreated = allHabits.reduce<string>(
@@ -139,6 +152,9 @@ export function DashboardView({
 
       {/* Welcome card — shown once after character creation, dismissed and persisted */}
       {isToday && created && !hasSeenWelcome && <WelcomeCard />}
+
+      {/* One-time daily-reminder offer — after a missed day, if reminders are still off */}
+      {isToday && hasSeenWelcome && offerReminder && <ReminderCard />}
 
       {/* Dashboard command center — only shown when viewing today */}
       {isToday && (

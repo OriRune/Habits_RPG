@@ -13,13 +13,11 @@ import {
   FOREST_STASH_KEEP,
   FOREST_WINDUP_MS,
   type ForestTile,
-  type ForestBeast,
   type PendingActKind,
 } from '@/engine/forest';
 import { cameraWindow, VIEW } from '@/engine/crawl';
 import { useSmoothCamera, type SmoothCameraLayout } from '@/hooks/useSmoothCamera';
 import { bandForStage, type ForestBandId } from '@/engine/crawlBiomes';
-import { getSpell } from '@/engine/spells';
 import type { Reward } from '@/engine/challenges';
 import { FOREST_NODES, FOREST_BEASTS, SHRINE_EVENTS, type ShrineEventKind } from '@/content/forest';
 import { BOONS } from '@/content/boons';
@@ -30,6 +28,12 @@ import { FitToWidth } from '@/components/ui/FitToWidth';
 import { cn } from '@/lib/cn';
 import { ForestControls } from './ForestControls';
 import { CrawlerAvatar } from '@/components/minigame/CrawlerAvatar';
+import { CrawlGauge } from '@/components/minigame/CrawlGauge';
+import { RemoteCrawlers } from '@/components/minigame/RemoteCrawlers';
+import { BoonChoicePanel } from '@/components/minigame/BoonChoicePanel';
+import { useCrawlRunFx } from '@/components/minigame/useCrawlRunFx';
+import { CrawlSpellBar } from '@/components/minigame/CrawlSpellBar';
+import { StreakBonusChip } from '@/components/character/StreakBonusChip';
 import { useCoopStore } from '@/net/coop/session';
 import { useAuthStore } from '@/net/auth';
 import { usePartyStore } from '@/hooks/useParty';
@@ -167,24 +171,6 @@ function floorStyle(kind: ForestTile['kind'], r: number, c: number, bandId: Fore
   return { backgroundColor: '#111d0d' };
 }
 
-type LootPop = { key: string; r: number; c: number; at: number; text: string; color: string };
-/** One-shot impact / dash-ring VFX burst rendered inside the world container. */
-type VfxPop = { key: string; r: number; c: number; at: number; anim: string; size: number; color: string };
-
-function Gauge({ icon, value, max, fill }: { icon: React.ReactNode; value: number; max: number; fill: string }) {
-  const pct = max > 0 ? Math.max(0, Math.min(100, Math.round((value / max) * 100))) : 0;
-  return (
-    <div className="flex items-center gap-1.5">
-      {icon}
-      <div className="h-2.5 w-24 overflow-hidden rounded-full border border-gold-deep/50 bg-wood-900">
-        <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: fill }} />
-      </div>
-      <span className="font-display text-[11px] tabular-nums text-parchment-300">
-        {Math.max(0, Math.round(value))}/{max}
-      </span>
-    </div>
-  );
-}
 
 function rewardChips(reward: Reward): Array<{ label: string; color: string }> {
   const out: Array<{ label: string; color: string }> = [];
@@ -220,6 +206,7 @@ export function ForestRunOverlay() {
   const skipForestBoon = useGameStore((s) => s.skipForestBoon);
   const beginForestBanking = useGameStore((s) => s.beginForestBanking);
   const forestStash = useGameStore((s) => s.forestStash);
+  const habitBonus = useGameStore((s) => s.character.habitBonus);
   const remotePlayers = useCoopStore((s) => s.remotePlayers);
   const coopSession = useCoopStore((s) => s.session);
   const coopJoined = useCoopStore((s) => s.joined);
@@ -241,17 +228,6 @@ export function ForestRunOverlay() {
   });
   const { shake } = useSmoothCamera(worldRef, playerRef, moverRefs, layoutRef, { CELL, VIEW });
 
-  // Moving flag — true for ~250 ms after any player step
-  const [moving, setMoving] = useState(false);
-  const prevPosRef = useRef<{ r: number; c: number } | null>(null);
-  const movingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const [pops, setPops] = useState<Array<{ key: string; r: number; c: number; at: number }>>([]);
-  const [lootPops, setLootPops] = useState<LootPop[]>([]);
-  // Phase 6: combat number floaters, one-shot VFX bursts, vignette + descent wipe
-  const [dmgPops, setDmgPops] = useState<LootPop[]>([]);
-  const [vfxPops, setVfxPops] = useState<VfxPop[]>([]);
-  const [hitAt, setHitAt] = useState(0);
   const [wipeAt, setWipeAt] = useState(0);
   const stageMountRef = useRef(false);
   // Charge bar — updated imperatively each rAF frame to avoid 60fps React re-renders.
@@ -259,159 +235,19 @@ export function ForestRunOverlay() {
   // Guardian arrival alert (timestamp; 0 = none active).
   const [guardianAlert, setGuardianAlert] = useState(0);
   const prevGuardianStageRef = useRef<number | null>(null);
-  const prevRef = useRef<{
-    tiles: ForestTile[][];
-    beasts: ForestBeast[];
-    haul: { gold?: number; materials?: Record<string, number> };
-    sta: number;
-    hp: number;
-    lastDashMs: number;
-  } | null>(null);
 
-  useEffect(() => {
-    if (!forest) { prevRef.current = null; prevPosRef.current = null; return; }
-
-    // Moving detection
-    const pos = forest.player;
-    const prev2 = prevPosRef.current;
-    if (prev2 && (prev2.r !== pos.r || prev2.c !== pos.c)) {
-      setMoving(true);
-      if (movingTimerRef.current) clearTimeout(movingTimerRef.current);
-      movingTimerRef.current = setTimeout(() => setMoving(false), 250);
-    }
-    prevPosRef.current = { r: pos.r, c: pos.c };
-
-    const prev = prevRef.current;
-    prevRef.current = { tiles: forest.tiles, beasts: forest.beasts, haul: forest.haul, sta: forest.sta, hp: forest.hp, lastDashMs: forest.lastDashMs };
-    if (!prev) return;
-    const now = Date.now();
-    const newPops: Array<{ key: string; r: number; c: number; at: number }> = [];
-    let eventPos: { r: number; c: number } | null = null;
-
-    // Node-gathered and tree-chopped pops
-    forest.tiles.forEach((row, r) =>
-      row.forEach((tile, c) => {
-        const was = prev.tiles[r]?.[c];
-        if (tile.kind === 'trail' && (was?.kind === 'node' || was?.kind === 'tree')) {
-          newPops.push({ key: `t-${r}-${c}-${now}`, r, c, at: now });
-          eventPos = { r, c };
-        }
-      }),
-    );
-    // Beast-killed pops
-    const liveIds = new Set(forest.beasts.map((b) => b.id));
-    prev.beasts.forEach((b) => {
-      if (!liveIds.has(b.id)) {
-        newPops.push({ key: `b-${b.id}-${now}`, r: b.r, c: b.c, at: now });
-        eventPos = { r: b.r, c: b.c };
-      }
-    });
-    if (newPops.length > 0) {
-      setPops((ps) => [...ps.filter((p) => now - p.at < 550), ...newPops]);
-      setTimeout(() => setPops((ps) => ps.filter((p) => Date.now() - p.at < 550)), 600);
-    }
-    if (eventPos) {
-      const pos2 = eventPos as { r: number; c: number };
-      const newLootPops: LootPop[] = [];
-      const goldDelta = (forest.haul.gold ?? 0) - (prev.haul.gold ?? 0);
-      if (goldDelta > 0) {
-        newLootPops.push({ key: `lg-${now}`, ...pos2, at: now, text: `+${goldDelta} gold`, color: '#e8c860' });
-      } else {
-        for (const [matKey, val] of Object.entries(forest.haul.materials ?? {})) {
-          const delta = val - ((prev.haul.materials ?? {})[matKey] ?? 0);
-          if (delta > 0) {
-            const mat = getMaterial(matKey);
-            newLootPops.push({ key: `lm-${now}`, ...pos2, at: now, text: `+${delta} ${mat?.name ?? matKey}`, color: mat?.color ?? '#f3e7c9' });
-            break;
-          }
-        }
-      }
-      const netSta = forest.sta - prev.sta;
-      if (netSta > 0) {
-        newLootPops.push({ key: `ls-${now}`, ...pos2, at: now, text: `+${netSta} sta`, color: '#22d3ee' });
-      }
-      if (newLootPops.length > 0) {
-        setLootPops((ps) => [...ps.filter((p) => now - p.at < 900), ...newLootPops]);
-        setTimeout(() => setLootPops((ps) => ps.filter((p) => Date.now() - p.at < 900)), 950);
-      }
-    }
-
-    // --- Phase 6: Combat damage floaters + screen shake ---
-    const newDmgPops: LootPop[] = [];
-    const newVfxPops: VfxPop[] = [];
-
-    // Beast HP diffs — emit a damage number and flash the entity element.
-    const beastSnap = new Map(prev.beasts.map((b) => [b.id, b]));
-    for (const b of forest.beasts) {
-      const was = beastSnap.get(b.id);
-      if (was && b.hp < was.hp) {
-        const dmg = was.hp - b.hp;
-        const isHeavy = dmg >= was.maxHp * 0.35;
-        newDmgPops.push({
-          key: `dmg-${b.id}-${now}`,
-          r: b.r, c: b.c, at: now,
-          text: `-${Math.round(dmg)}`,
-          color: isHeavy ? '#fbbf24' : '#f87171',
-        });
-        // Flash the entity element directly — avoids a re-render.
-        const el = moverRefs.current.get(b.id);
-        if (el) {
-          el.classList.add('crawler-hit-flash');
-          setTimeout(() => el.classList.remove('crawler-hit-flash'), 220);
-        }
-        if (isHeavy) shake(5, 220);
-      }
-    }
-
-    // Player took damage → red floater + vignette + shake.
-    if (forest.hp < prev.hp) {
-      const dmg = prev.hp - forest.hp;
-      newDmgPops.push({
-        key: `pdmg-${now}`,
-        r: forest.player.r, c: forest.player.c, at: now,
-        text: `-${Math.round(dmg)}`,
-        color: '#f87171',
-      });
-      setHitAt(now);
-      shake(8, 300);
-      if (playerRef.current) {
-        playerRef.current.classList.add('crawler-hit-flash');
-        setTimeout(() => playerRef.current?.classList.remove('crawler-hit-flash'), 220);
-      }
-    }
-
-    // Player healed.
-    if (forest.hp > prev.hp && prev.hp > 0) {
-      const heal = forest.hp - prev.hp;
-      newDmgPops.push({
-        key: `heal-${now}`,
-        r: forest.player.r, c: forest.player.c, at: now,
-        text: `+${Math.round(heal)}`,
-        color: '#34d399',
-      });
-    }
-
-    // Dash fired → light shake + expanding ring.
-    if (forest.lastDashMs !== prev.lastDashMs && forest.lastDashMs > 0) {
-      shake(4, 180);
-      newVfxPops.push({
-        key: `dash-${now}`,
-        r: forest.player.r, c: forest.player.c, at: now,
-        anim: 'arena-cast 0.4s ease-out forwards',
-        size: Math.round(CELL * 1.1),
-        color: 'rgba(140,230,120,0.75)',
-      });
-    }
-
-    if (newDmgPops.length > 0) {
-      setDmgPops((ps) => [...ps.filter((p) => now - p.at < 850), ...newDmgPops]);
-      setTimeout(() => setDmgPops((ps) => ps.filter((p) => Date.now() - p.at < 850)), 900);
-    }
-    if (newVfxPops.length > 0) {
-      setVfxPops((ps) => [...ps.filter((p) => now - p.at < 500), ...newVfxPops]);
-      setTimeout(() => setVfxPops((ps) => ps.filter((p) => Date.now() - p.at < 500)), 550);
-    }
-  }, [forest]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Shared state-diff FX (destruction pops, loot/damage floaters, dash rings, shake).
+  // Forest is silent (no sfx bag) and omits the mine-only descent/defeat stings.
+  const { moving, pops, lootPops, dmgPops, vfxPops, hitAt } = useCrawlRunFx(forest ?? null, {
+    moverRefs, playerRef, shake, cell: CELL,
+    materialName: getMaterial,
+    unitsOf: (f) => f.beasts,
+    tileBreak: (tile, was) =>
+      tile.kind === 'trail' && (was?.kind === 'node' || was?.kind === 'tree') ? was.kind : null,
+    dashColor: 'rgba(140,230,120,0.75)',
+    lootPopWindow: 900,
+    lootPopTimeout: 950,
+  });
 
   // Phase 6: stage-change wipe (skip first mount).
   useEffect(() => {
@@ -548,10 +384,10 @@ export function ForestRunOverlay() {
           })}
         </span>
         <div className="flex flex-col items-end gap-1">
-          <Gauge icon={<Heart className="h-3.5 w-3.5 text-stat-HP" />} value={forest.hp} max={forest.maxHp} fill="#2e8a5e" />
-          <Gauge icon={<Zap className="h-3.5 w-3.5 text-stat-AG" />} value={forest.sta} max={forest.maxSta} fill="#b8860b" />
+          <CrawlGauge icon={<Heart className="h-3.5 w-3.5 text-stat-HP" />} value={forest.hp} max={forest.maxHp} fill="#2e8a5e" />
+          <CrawlGauge icon={<Zap className="h-3.5 w-3.5 text-stat-AG" />} value={forest.sta} max={forest.maxSta} fill="#b8860b" />
           {forest.maxMp > 0 && (
-            <Gauge icon={<Sparkles className="h-3.5 w-3.5 text-violet-400" />} value={forest.mp} max={forest.maxMp} fill="#7c3aed" />
+            <CrawlGauge icon={<Sparkles className="h-3.5 w-3.5 text-violet-400" />} value={forest.mp} max={forest.maxMp} fill="#7c3aed" />
           )}
           {/* Charge bar — filled while holding Space; updated imperatively via rAF */}
           <div className="flex items-center gap-1.5">
@@ -981,32 +817,19 @@ export function ForestRunOverlay() {
           );
         })}
 
-        {/* Co-op party members — positions arrive over the broadcast channel (~10 Hz).
-            Registered as movers so the rAF loop interpolates them in world-pixel space
-            (smooth glide + camera-locked), same path as beasts. Shown through fog. */}
-        {Object.values(remotePlayers).map((p) => {
-          if (p.floor !== forest.stage) return null;
-          const vci = vc(p.c);
-          const vri = vr(p.r);
-          if (vri < 0 || vri >= RENDER_VIEW || vci < 0 || vci >= RENDER_VIEW) return null;
-          return (
-            <div
-              key={p.userId}
-              ref={(el) => {
-                const id = `rp:${p.userId}`;
-                if (el) moverRefs.current.set(id, el);
-                else moverRefs.current.delete(id);
-              }}
-              className="pointer-events-none absolute z-[10]"
-              style={{ width: CELL, height: CELL, transform: `translate(${vci * CELL}px, ${vri * CELL}px)` }}
-            >
-              <CrawlerAvatar variant="forager" facing={p.facing} moving dead={p.hp <= 0} cell={CELL} />
-              <span className="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-black/60 px-1 font-display text-[9px] text-gold-bright">
-                {nameFor(p.userId, p.username)}
-              </span>
-            </div>
-          );
-        })}
+        {/* Co-op party members — see RemoteCrawlers. Forest draws them at z 10 (own player z 11), shown through fog. */}
+        <RemoteCrawlers
+          remotePlayers={remotePlayers}
+          currentDepth={forest.stage}
+          baseR0={baseR0}
+          baseC0={baseC0}
+          RENDER_VIEW={RENDER_VIEW}
+          CELL={CELL}
+          moverRefs={moverRefs}
+          nameFor={nameFor}
+          variant="forager"
+          zIndex={10}
+        />
 
         {/* Player — rAF drives position */}
         <div
@@ -1122,36 +945,15 @@ export function ForestRunOverlay() {
           </div>
         )}
 
-        {/* Boon choice panel (pauses the run while the player picks) */}
-        {forest.status === 'choosing' && forest.pendingBoonChoice && (
-          <div className="pointer-events-auto absolute inset-0 z-40 flex flex-col items-center justify-center gap-4 rounded-md bg-black/85 p-4">
-            <p className="font-display text-lg font-bold text-gold-bright">Choose a Boon</p>
-            <div className="flex gap-3">
-              {forest.pendingBoonChoice.map((key, i) => {
-                const boon = BOONS[key];
-                if (!boon) return null;
-                return (
-                  <button
-                    key={key}
-                    onClick={() => chooseForestBoon(key)}
-                    className="flex flex-col items-center gap-1.5 rounded-md border border-gold-deep/60 bg-parchment-300/20 p-3 text-center hover:bg-parchment-300/40 transition-colors w-28"
-                    style={{ animation: `boon-deal-in 0.22s ease-out ${i * 75}ms both` }}
-                  >
-                    <span className="text-3xl leading-none">{boon.icon}</span>
-                    <span className="font-display text-sm font-bold text-gold-bright">{boon.name}</span>
-                    <span className="text-[11px] text-parchment-300 leading-tight">{boon.desc}</span>
-                  </button>
-                );
-              })}
-            </div>
-            <button
-              onClick={() => skipForestBoon()}
-              className="rounded-md border border-parchment-300/40 px-4 py-1.5 text-sm text-parchment-300 hover:bg-parchment-300/20 transition-colors"
-            >
-              Skip
-            </button>
-          </div>
-        )}
+        {/* Boon choice panel (pauses the run while the player picks). Forest deals the
+            cards in with a staggered animation and plays no sound. */}
+        <BoonChoicePanel
+          status={forest.status}
+          pendingBoonChoice={forest.pendingBoonChoice}
+          onChoose={(key) => chooseForestBoon(key)}
+          onSkip={() => skipForestBoon()}
+          staggerIn
+        />
 
         {/* Guardian arrival alert — brief red flash + banner on descent into a guardian stage */}
         {guardianAlert > 0 && (
@@ -1182,8 +984,12 @@ export function ForestRunOverlay() {
               <p className="font-display text-xs text-gold-bright">Score {forest.score.toLocaleString()}</p>
             )}
             <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs">
-              <HaulChips reward={forest.haul} empty="nothing gathered" />
+              <HaulChips
+                reward={{ ...forest.haul, gold: Math.round((forest.haul.gold ?? 0) * habitBonus) }}
+                empty="nothing gathered"
+              />
             </div>
+            <StreakBonusChip className="text-[11px]" />
             <Button variant="primary" onClick={endForest} className="mt-1 px-4 py-2 text-sm">
               Bank &amp; Leave
             </Button>
@@ -1203,7 +1009,10 @@ export function ForestRunOverlay() {
               <div>
                 <div className="font-display text-[10px] uppercase tracking-wider text-parchment-300/70">Carried home</div>
                 <div className="flex flex-wrap items-center justify-center gap-x-2.5 gap-y-0.5 text-xs">
-                  <HaulChips reward={death?.kept ?? {}} empty="nothing made it out" />
+                  <HaulChips
+                    reward={death?.kept ? { ...death.kept, gold: Math.round((death.kept.gold ?? 0) * habitBonus) } : {}}
+                    empty="nothing made it out"
+                  />
                 </div>
               </div>
               <div>
@@ -1213,6 +1022,7 @@ export function ForestRunOverlay() {
                 </div>
               </div>
             </div>
+            <StreakBonusChip className="text-[11px]" />
             <Button variant="primary" onClick={endForest} className="mt-1 px-4 py-2 text-sm">
               Retrieve Haul &amp; Leave
             </Button>
@@ -1221,33 +1031,18 @@ export function ForestRunOverlay() {
       </div>
       </FitToWidth>
 
-      {/* Spell ability bar */}
-      {forest.knownSpells.length > 0 && (
-        <div className="flex w-full max-w-[600px] items-center gap-2">
-          <span className="font-display text-[10px] uppercase tracking-wider text-parchment-300/60">Spells</span>
-          {forest.knownSpells.slice(0, 4).map((key, i) => {
-            const sp = getSpell(key);
-            if (!sp) return null;
-            const canCast = forest.mp >= sp.mpCost;
-            return (
-              <button
-                key={key}
-                onClick={() => controls.castSpell(key)}
-                disabled={!canCast || forest.status !== 'active'}
-                className={cn(
-                  'flex flex-col items-center rounded border px-2 py-1 font-display text-[10px] transition-opacity',
-                  canCast ? 'border-violet-500/60 bg-violet-900/30 text-violet-200 hover:bg-violet-800/40' : 'border-wood-700 bg-wood-900/50 text-parchment-300/40 opacity-60',
-                )}
-                title={`${sp.name} (${sp.mpCost} MP) — key [${i + 1}]`}
-              >
-                <span className="text-[9px] text-parchment-300/50">[{i + 1}]</span>
-                <span className="truncate max-w-[60px]">{sp.name}</span>
-                <span className="text-[9px] text-violet-400">{sp.mpCost}mp</span>
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {/* Spell ability bar — violet accent, always shown (buttons disable off-active), 3-line cards. */}
+      <CrawlSpellBar
+        knownSpells={forest.knownSpells}
+        mp={forest.mp}
+        status={forest.status}
+        onCast={(key) => controls.castSpell(key)}
+        accent="violet"
+        hideWhenInactive={false}
+        tooltip={(sp, i) => `${sp.name} (${sp.mpCost} MP) — key [${i + 1}]`}
+        layout="three-line"
+        maxWidthClass="max-w-[600px]"
+      />
 
       {/* Push deeper / stash / leave */}
       <div className="flex w-full max-w-[600px] flex-col items-center gap-1">

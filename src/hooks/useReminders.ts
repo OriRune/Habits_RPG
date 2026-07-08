@@ -7,13 +7,52 @@ import { now, toISODate } from '@/engine/date';
 const CHECK_INTERVAL_MS = 60_000; // poll once per minute
 
 /**
+ * Fire the daily reminder through the best available channel. Prefers the service
+ * worker's `showNotification` (required on Chrome-for-Android), then a page-context
+ * Notification, then an in-app toast. `getRegistration()` resolves quickly (unlike
+ * `serviceWorker.ready`, which hangs forever when no SW is registered — e.g. in dev).
+ */
+function fireReminder(body: string, pushToast: (t: { text: string }) => void) {
+  const canNotify =
+    typeof Notification !== 'undefined' && Notification.permission === 'granted';
+  if (!canNotify) {
+    pushToast({ text: body });
+    return;
+  }
+
+  const opts: NotificationOptions = { body, icon: '/favicon.png' };
+  const toast = () => pushToast({ text: body });
+  const nativeThenToast = () => {
+    try {
+      new Notification('HabitsRPG', opts);
+    } catch {
+      toast();
+    }
+  };
+
+  if (typeof navigator !== 'undefined' && navigator.serviceWorker) {
+    navigator.serviceWorker
+      .getRegistration()
+      .then((reg) => (reg ? reg.showNotification('HabitsRPG', opts) : nativeThenToast()))
+      .catch(nativeThenToast);
+  } else {
+    nativeThenToast();
+  }
+}
+
+/**
  * Foreground daily reminder hook — mounted once in App.tsx.
  *
  * When `settings.dailyReminderEnabled` is true and the browser has notification
- * permission, fires a native Notification once per calendar day at the configured
- * time (`settings.dailyReminderTime`, "HH:MM" 24-hour). Falls back to an in-app
- * toast (reusing the Stage-6.1 Toaster) if permission is denied or the API is
- * unavailable. No service worker is required — this is foreground-only.
+ * permission, fires a notification once per calendar day at the configured time
+ * (`settings.dailyReminderTime`, "HH:MM" 24-hour). Prefers the service worker's
+ * `registration.showNotification` — the only path that works on Chrome-for-Android,
+ * where page-context `new Notification(...)` throws — and falls back to a native
+ * Notification, then to an in-app toast, if the SW or API is unavailable.
+ *
+ * Still foreground-only: the once-a-minute poll only runs while a tab is open, so
+ * this is a "you left the tab open past your reminder time" cue, not a true
+ * background push (which would need Periodic Background Sync or a push endpoint).
  *
  * Design constraints:
  *  - One notification per day max (tracked in a ref, not persisted — resets on reload).
@@ -58,22 +97,7 @@ export function useReminders() {
 
       // Mark fired before attempting notification so a permission error doesn't loop.
       lastFiredISO.current = todayISO;
-
-      const notifAvailable =
-        typeof Notification !== 'undefined' &&
-        Notification.permission === 'granted';
-
-      if (notifAvailable) {
-        try {
-          new Notification('HabitsRPG', { body, icon: '/favicon.png' });
-        } catch {
-          // Fallback: show an in-app toast if the notification API throws.
-          pushToast({ text: body });
-        }
-      } else {
-        // Notification unavailable or denied — show in-app toast instead.
-        pushToast({ text: body });
-      }
+      fireReminder(body, pushToast);
     }
 
     // Run an immediate check on mount (in case the user enabled reminders after the time).

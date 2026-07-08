@@ -18,20 +18,14 @@
 import type { Reward } from './challenges';
 import type { StatId } from './stats';
 import { mergeReward } from './dungeon';
-import { attackRoll, spellDamageRoll, spellHealAmount } from './combat';
-import { getSpell, SCHOOL_STAT } from './spells';
+import { attackRoll } from './combat';
 import type { WeaponDef } from './weapons';
 import { MINE_ORES, MINE_MONSTERS, MINE_GUARDIAN_FLOORS, type MineOreDef } from '@/content/mining';
-import {
-  BOONS,
-  boonMeleeMult,
-  boonDefenseBonus,
-  boonYieldMult,
-  boonMoveMult,
-  boonDashCdMult,
-  rollBoonChoices,
-} from '@/content/boons';
-import { bandForFloor } from './crawlBiomes';
+import { BOONS } from '@/content/boons';
+import { bandForFloor, MINE_BANDS } from './crawlBiomes';
+
+/** First floor of the deepest (open-ended) band — anchor for late-depth damage scaling. */
+const MAGMA_BAND_START = MINE_BANDS[MINE_BANDS.length - 1].depthMin;
 import {
   type Dir,
   type RNG,
@@ -44,13 +38,10 @@ import {
   flowStep,
   adjacent,
   manhattan,
-  applyStatus,
   pruneStatuses,
   activeStatus,
   DOT_TICK_MS,
-  FREEZE_DURATION_MS,
   RING_HIT_CD_MS,
-  RING_DURATION_MS,
   STA_REGEN_MS,
   MP_REGEN_MS,
   DASH_BASE_CD_MS,
@@ -59,6 +50,23 @@ import {
   dashCooldown,
   moveInterval,
   boonConsolation,
+  boonMeleeMult,
+  boonDefenseBonus,
+  boonYieldMult,
+  boonMoveMult,
+  boonDashCdMult,
+  boonSightBonus,
+  rollBoonChoices,
+  lateDepthDamageScale,
+  crawlCastSpell,
+  crawlTriggerRunes,
+  crawlCoopClientStep,
+  crawlDamageUnitById,
+  crawlApplyBoonChoice,
+  type CrawlSpellCaps,
+  type CrawlRuneCaps,
+  type CrawlContactCaps,
+  type CrawlUnitCaps,
 } from './crawl';
 
 export type { Dir, RNG } from './crawl';
@@ -71,6 +79,8 @@ export const MINE_BASE_ROWS = 33;
 export const MINE_BASE_COLS = 33;
 export const MINE_MAX_ROWS = 57;
 export const MINE_MAX_COLS = 57;
+/** Base sight radius in tiles — the Lantern boon adds to this via boonSightBonus. */
+export const MINE_SIGHT_RADIUS = 4;
 /** The map grows by this many cells per floor band. */
 const MINE_SCALE_PER_BAND = 4;
 /** Floors per growth band. */
@@ -84,6 +94,9 @@ export const MINE_COLS = MINE_BASE_COLS;
 export const MINE_ENERGY_COST = 2;
 /** Fraction of the haul a fallen miner keeps on death; mirrors FOREST_DEATH_KEEP. */
 export const MINE_DEATH_KEEP = 0.5;
+/** Fraction of the haul kept when end-banking OFF a safe tile (the "hurry tax"); mirrors
+ *  FOREST_STASH_KEEP. Full 1.0 banking is only paid on the entrance (see isMineSafeBankTile). */
+export const MINE_STASH_KEEP = 0.8;
 
 /** Stamina spent per pick swing (rock / ore). */
 const STRIKE_STA_COST = 1;
@@ -101,6 +114,25 @@ const SPELL_CD_MS = 500;
 // ---------------------------------------------------------------------------
 
 export type MineTileKind = 'floor' | 'rock' | 'ore' | 'bedrock' | 'shaft' | 'entrance' | 'boon' | 'tombstone';
+
+/** The entrance is the only safe harbour where a full-value (1.0) end-bank is paid (BAL-12).
+ *  Banking anywhere else keeps only MINE_STASH_KEEP, pricing the risk of a long haul out. */
+export function isMineSafeBankTile(kind: MineTileKind | undefined): boolean {
+  return kind === 'entrance';
+}
+
+/**
+ * The deepest floor a SOLO run may start on: the deepest guardian boundary the player has
+ * already descended PAST (strictly below `deepest`), else floor 1. Reuses the persisted
+ * deepestMineFloor as the "guardian beaten" proxy — no new field, no persist bump (BAL-25).
+ */
+export function unlockedStartFloor(deepest: number): number {
+  let start = 1;
+  for (const g of Object.keys(MINE_GUARDIAN_FLOORS).map(Number)) {
+    if (g < deepest) start = Math.max(start, g);
+  }
+  return start;
+}
 
 export interface MineTile {
   kind: MineTileKind;
@@ -156,6 +188,9 @@ export interface MineSnapshot {
   /** Active boon keys carried from the previous floor. Optional so callers that
    *  construct a snapshot literal without boons (e.g. beginMining) don't break. */
   activeBoons?: string[];
+  /** Homestead Watchtower sight bonus (0 or 1) snapshotted at run start. Optional so
+   *  callers without a town perk (or old saves) default to 0. See sightRadiusFor. */
+  sightBonus?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +259,9 @@ export interface MineState {
   agLevel: number;
   /** Position of the descent shaft on the current floor — for the HUD directional indicator. */
   shaftPos?: { r: number; c: number };
+  /** Homestead Watchtower sight bonus (0 or 1), snapshotted at run start and carried
+   *  across floors via mineSnapshot. Added by sightRadiusFor. */
+  sightBonus?: number;
 }
 
 /**
@@ -284,6 +322,11 @@ export function facedCell(state: MineState): { r: number; c: number } {
 
 export function canDescend(state: MineState): boolean {
   return tileAt(state, state.player.r, state.player.c)?.kind === 'shaft';
+}
+
+/** Current sight radius — base plus the Lantern boon and the Watchtower town perk. Mirrors forest.sightRadiusFor. */
+export function sightRadiusFor(state: MineState): number {
+  return MINE_SIGHT_RADIUS + boonSightBonus(state.activeBoons) + (state.sightBonus ?? 0);
 }
 
 /** Nearest monster to the player (for damage-school spells). */
@@ -590,7 +633,9 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
   const eligibleMon = Object.values(MINE_MONSTERS).filter(
     (m) => !m.isGuardian && m.floorMin <= floor && (!m.band || m.band === currentBandId),
   );
-  const monCount = eligibleMon.length === 0 ? 0 : Math.min(10, 2 + Math.floor(floor * 0.6));
+  // Space-bounded uncap: count keeps climbing with floor (deep floors no longer
+  // plateau at a flat 10) but never exceeds the placeable spawn cells.
+  const monCount = eligibleMon.length === 0 ? 0 : Math.min(mFloor.length, 2 + Math.floor(floor * 0.6));
   const monsters: MineMonster[] = [];
   for (let i = 0; i < monCount && i < mFloor.length; i++) {
     const [mr, mc] = mFloor[i];
@@ -702,6 +747,7 @@ export function generateMine(floor: number, snapshot: MineSnapshot, rng: RNG): M
     activeBoons,
     pendingBoonChoice: null,
     shaftPos: { r: shaftR, c: shaftC },
+    sightBonus: snapshot.sightBonus,
   };
 }
 
@@ -723,6 +769,7 @@ export function mineSnapshot(state: MineState): MineSnapshot {
     pickaxePower: state.pickaxePower,
     agLevel: state.agLevel,
     activeBoons: state.activeBoons,
+    sightBonus: state.sightBonus,
   };
 }
 
@@ -771,6 +818,20 @@ export function placeTombstone(state: MineState, rng: RNG): MineState {
   const tiles = state.tiles.map((row) => row.slice());
   tiles[tr][tc] = { kind: 'tombstone' };
   return { ...state, tiles };
+}
+
+/**
+ * MINI-31: find the tombstone tile on the current floor, if any. The tombstone is
+ * only encoded as a tile kind (there is no `tombstonePos` on state), so the overlay
+ * compass has to scan for it. Returns null when this floor holds no tombstone.
+ */
+export function findTombstone(state: MineState): { r: number; c: number } | null {
+  for (let r = 0; r < state.rows; r++) {
+    for (let c = 0; c < state.cols; c++) {
+      if (state.tiles[r]?.[c]?.kind === 'tombstone') return { r, c };
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -836,12 +897,19 @@ function killMonster(state: MineState, mon: MineMonster, rng: RNG): MineState {
   if (isGuardian) {
     drop = guardianTreasure(state.floor, rng);
   } else {
+    // Guaranteed bounty gold on every kill (mirrors forest killBeast).
+    const bounty = def ? randInt(def.bounty[0], def.bounty[1], rng) : 0;
     const killBonus = state.killsThisFloor + 1;
-    const swingsToKill = Math.ceil(mon.maxHp / Math.max(1, state.meleePower));
+    // Loot quantity scales with the swings the kill *would* take with the wielded
+    // weapon's attack stat (DX weapons fire on rangedPower, else meleePower).
+    const atkPower = state.weapon.attackStat === 'DX' ? state.rangedPower : state.meleePower;
+    const swingsToKill = Math.ceil(mon.maxHp / Math.max(1, atkPower));
     const qty = Math.max(1, Math.round(swingsToKill / avgNodeDurability(state.floor)) + killBonus);
     const pool = monsterLootPool(state.floor);
     const pick = pool[Math.floor(rng() * pool.length)];
-    drop = pick.kind === 'gold' ? { gold: qty } : { materials: { [pick.material]: qty } };
+    // Pool pick (gold-or-material) is a bonus roll on top of the guaranteed bounty.
+    const bonus: Reward = pick.kind === 'gold' ? { gold: qty } : { materials: { [pick.material]: qty } };
+    drop = mergeReward(bonus, bounty > 0 ? { gold: bounty } : {});
   }
   const afterKill: MineState = {
     ...state,
@@ -981,151 +1049,36 @@ export function strike(state: MineState, rng: RNG, nowMs = 0, charged = false): 
 // Spell casting
 // ---------------------------------------------------------------------------
 
+// Callback bag wiring the mine's concrete state/monster/content into the shared
+// crawl.ts generics (ARCH-06 twin hoist).
+const mineUnitCaps: CrawlUnitCaps<MineState, MineMonster> = {
+  unitsOf: (s) => s.monsters,
+  withUnits: (s, units) => ({ ...s, monsters: units }),
+  killUnit: killMonster,
+};
+const mineSpellCaps: CrawlSpellCaps<MineState, MineMonster> = {
+  ...mineUnitCaps,
+  isWalkableAt: (s, r, c) => isWalkable(tileAt(s, r, c)),
+  unitAt: monsterAt,
+  nearestUnit: nearestMonster,
+  unitDef: (m) => MINE_MONSTERS[m.key],
+  preferFaced: true,
+};
+const mineRuneCaps: CrawlRuneCaps<MineState, MineMonster> = {
+  ...mineUnitCaps,
+  iframeMs: MINE_IFRAME_MS,
+};
+const mineContactCaps: CrawlContactCaps<MineState, MineMonster> = {
+  unitsOf: (s) => s.monsters,
+  // MINI-17: a frozen/staggered monster can't bite.
+  canStrike: (m, nowMs) => !(m.frozenUntilMs && nowMs < m.frozenUntilMs),
+  contactRaw: (m, s) => Math.round((MINE_MONSTERS[m.key]?.touchDamage ?? 1) * lateDepthDamageScale(s.floor - MAGMA_BAND_START)),
+  defenseBonus: boonDefenseBonus,
+  iframeMs: MINE_IFRAME_MS,
+};
+
 export function castSpell(state: MineState, spellKey: string, nowMs: number, rng: RNG): MineState {
-  if (state.status !== 'active') return state;
-  if (!state.knownSpells.includes(spellKey)) return state;
-  const spell = getSpell(spellKey);
-  if (!spell || state.mp < spell.mpCost) return state;
-  if (nowMs - state.lastSpellMs < SPELL_CD_MS) return state;
-
-  let s: MineState = { ...state, mp: state.mp - spell.mpCost, lastSpellMs: nowMs };
-  const schoolStat = SCHOOL_STAT[spell.school];
-
-  // Rune placement (on the faced floor tile)
-  if (spell.mechanic === 'rune-fire' || spell.mechanic === 'rune-ice' || spell.mechanic === 'rune-poison') {
-    const kind = spell.mechanic.slice(5) as 'fire' | 'ice' | 'poison';
-    const { r, c } = facedCell(s);
-    const t = tileAt(s, r, c);
-    if (t && isWalkable(t)) {
-      const { dealt } = spellDamageRoll(spell.power, s.damageSpell, schoolStat, [], [], 0, rng);
-      const rune: CrawlRune = {
-        id: s.nextRuneId,
-        r, c, kind, power: dealt,
-        expiresAtMs: nowMs + 30000,
-      };
-      s = { ...s, runes: [...s.runes, rune], nextRuneId: s.nextRuneId + 1 };
-    }
-    return s;
-  }
-
-  // Ring of fire
-  if (spell.mechanic === 'ring-of-fire') {
-    const dmg = Math.max(2, Math.round(spell.power + s.damageSpell * 0.5));
-    return { ...s, ringOfFire: { expiresAtMs: nowMs + RING_DURATION_MS, dmg }, ringNextHitMs: {} };
-  }
-
-  // Teleport to a random open cell 3-6 steps away
-  if (spell.mechanic === 'teleport') {
-    const { r: pr, c: pc } = s.player;
-    const candidates: Array<{ r: number; c: number }> = [];
-    for (let row = 0; row < s.rows; row++) {
-      for (let col = 0; col < s.cols; col++) {
-        const d = manhattan({ r: row, c: col }, { r: pr, c: pc });
-        if (d >= 3 && d <= 6 && isWalkable(tileAt(s, row, col)) && !monsterAt(s, row, col)) {
-          candidates.push({ r: row, c: col });
-        }
-      }
-    }
-    if (candidates.length > 0) {
-      const dest = candidates[Math.floor(rng() * candidates.length)];
-      s = { ...s, player: { ...s.player, r: dest.r, c: dest.c } };
-    }
-    return s;
-  }
-
-  // Damage spell: hit the monster the player is facing first, then fall back to nearest.
-  if (spell.school === 'damage') {
-    const { r: fr, c: fc } = facedCell(s);
-    const target = monsterAt(s, fr, fc) ?? nearestMonster(s);
-    if (target) {
-      const def = MINE_MONSTERS[target.key];
-      const { dealt } = spellDamageRoll(
-        spell.power, s.damageSpell, schoolStat,
-        (def?.weakTo ?? []) as StatId[],
-        (def?.resistTo ?? []) as StatId[],
-        def?.defense ?? 0, rng,
-      );
-      const newHp = target.hp - dealt;
-      if (newHp <= 0) {
-        s = killMonster(s, target, rng);
-      } else {
-        let updatedMon = s.monsters.map((m) => m.id === target.id ? { ...m, hp: newHp } : m);
-        // Apply status if applicable (e.g. fire → burn, ice → freeze, poison)
-        if (spell.status) {
-          const key = spell.status.key;
-          if (key === 'burn' || key === 'poison') {
-            const magnitude = spell.status.magnitude;
-            const durationMs = spell.status.turns * DOT_TICK_MS;
-            if (key === 'burn') {
-              updatedMon = updatedMon.map((m) =>
-                m.id === target.id
-                  ? { ...m, poisonDmg: Math.max(m.poisonDmg ?? 0, magnitude), poisonNextTickMs: nowMs + DOT_TICK_MS, poisonExpiresMs: nowMs + durationMs }
-                  : m
-              );
-            } else {
-              updatedMon = updatedMon.map((m) =>
-                m.id === target.id
-                  ? { ...m, poisonDmg: Math.max(m.poisonDmg ?? 0, magnitude), poisonNextTickMs: nowMs + DOT_TICK_MS, poisonExpiresMs: nowMs + durationMs }
-                  : m
-              );
-            }
-          } else if (key === 'freeze') {
-            updatedMon = updatedMon.map((m) =>
-              m.id === target.id ? { ...m, frozenUntilMs: nowMs + FREEZE_DURATION_MS } : m
-            );
-          }
-        }
-        s = { ...s, monsters: updatedMon };
-      }
-    }
-    return s;
-  }
-
-  // Support spell: heal HP, apply player status (bless)
-  if (spell.school === 'support') {
-    if (spell.power > 0) {
-      const heal = spellHealAmount(spell.power, s.supportSpell);
-      s = { ...s, hp: Math.min(s.maxHp, s.hp + heal) };
-    }
-    if (spell.status) {
-      const { key, magnitude, turns } = spell.status;
-      s = {
-        ...s,
-        playerStatuses: applyStatus(s.playerStatuses, { key: key as CrawlStatusEffect['key'], magnitude, durationMs: turns * DOT_TICK_MS }, nowMs),
-      };
-    }
-    return s;
-  }
-
-  // Illusion spell: debuff the monster the player is facing first, then fall back to nearest.
-  if (spell.school === 'illusion' && spell.status) {
-    const { r: fr2, c: fc2 } = facedCell(s);
-    const target = monsterAt(s, fr2, fc2) ?? nearestMonster(s);
-    if (target) {
-      const { key, magnitude, turns } = spell.status;
-      const durationMs = (turns + Math.floor(s.illusionPower / 8)) * DOT_TICK_MS;
-      if (key === 'freeze') {
-        s = {
-          ...s,
-          monsters: s.monsters.map((m) =>
-            m.id === target.id ? { ...m, frozenUntilMs: nowMs + Math.max(FREEZE_DURATION_MS, durationMs) } : m
-          ),
-        };
-      } else if (key === 'poison') {
-        s = {
-          ...s,
-          monsters: s.monsters.map((m) =>
-            m.id === target.id
-              ? { ...m, poisonDmg: Math.max(m.poisonDmg ?? 0, magnitude), poisonNextTickMs: nowMs + DOT_TICK_MS, poisonExpiresMs: nowMs + durationMs }
-              : m
-          ),
-        };
-      }
-    }
-    return s;
-  }
-
-  return s;
+  return crawlCastSpell(state, spellKey, nowMs, rng, mineSpellCaps);
 }
 
 // ---------------------------------------------------------------------------
@@ -1133,70 +1086,7 @@ export function castSpell(state: MineState, spellKey: string, nowMs: number, rng
 // ---------------------------------------------------------------------------
 
 function triggerRunes(state: MineState, nowMs: number, rng: RNG): MineState {
-  if (state.runes.length === 0) return state;
-
-  const triggered = new Set<number>();
-  let s = state;
-
-  const fireRune = (rune: CrawlRune, monsterId: string | null) => {
-    triggered.add(rune.id);
-    if (monsterId === null) {
-      // Hit player
-      if (nowMs - s.lastHitAtMs >= MINE_IFRAME_MS) {
-        const dealt = Math.max(1, Math.round(rune.power * 0.5) - s.ward);
-        s = { ...s, hp: Math.max(0, s.hp - dealt), lastHitAtMs: nowMs };
-        if (s.hp <= 0) s = { ...s, status: 'ended' };
-      }
-    } else {
-      const mon = s.monsters.find((m) => m.id === monsterId);
-      if (!mon) return;
-      const newHp = mon.hp - rune.power;
-      if (newHp <= 0) {
-        s = killMonster(s, mon, rng);
-      } else {
-        let updatedMon = s.monsters.map((m) => m.id === monsterId ? { ...m, hp: newHp } : m);
-        if (rune.kind === 'fire') {
-          updatedMon = updatedMon.map((m) =>
-            m.id === monsterId
-              ? { ...m, poisonDmg: Math.max(m.poisonDmg ?? 0, Math.round(rune.power * 0.3)), poisonNextTickMs: nowMs + DOT_TICK_MS, poisonExpiresMs: nowMs + DOT_TICK_MS * 3 }
-              : m
-          );
-        } else if (rune.kind === 'ice') {
-          updatedMon = updatedMon.map((m) =>
-            m.id === monsterId ? { ...m, frozenUntilMs: nowMs + FREEZE_DURATION_MS } : m
-          );
-        } else if (rune.kind === 'poison') {
-          updatedMon = updatedMon.map((m) =>
-            m.id === monsterId
-              ? { ...m, poisonDmg: Math.max(m.poisonDmg ?? 0, Math.round(rune.power * 0.25)), poisonNextTickMs: nowMs + DOT_TICK_MS, poisonExpiresMs: nowMs + DOT_TICK_MS * 4 }
-              : m
-          );
-        }
-        s = { ...s, monsters: updatedMon };
-      }
-    }
-  };
-
-  // Check if player stepped on a rune
-  for (const rune of s.runes) {
-    if (triggered.has(rune.id)) continue;
-    if (rune.r === s.player.r && rune.c === s.player.c) {
-      fireRune(rune, null);
-    }
-  }
-  // Check if any monster stepped on a rune
-  for (const mon of s.monsters) {
-    for (const rune of s.runes) {
-      if (triggered.has(rune.id)) continue;
-      if (rune.r === mon.r && rune.c === mon.c) {
-        fireRune(rune, mon.id);
-      }
-    }
-  }
-
-  // Expire old runes
-  const survivors = s.runes.filter((r) => !triggered.has(r.id) && r.expiresAtMs > nowMs);
-  return { ...s, runes: survivors };
+  return crawlTriggerRunes(state, nowMs, rng, mineRuneCaps);
 }
 
 // ---------------------------------------------------------------------------
@@ -1279,6 +1169,9 @@ export function stepMonsters(
     for (const other of monsters) {
       if (other.id !== m.id) blocked.add(`${other.r},${other.c}`);
     }
+    // ARCH-05: also block cells already claimed by monsters that moved earlier this
+    // tick, so two monsters can't path onto the same free cell in one step.
+    for (const k of newOccupied) blocked.add(k);
 
     const next = flowStep({ r: m.r, c: m.c }, field, blocked);
     if (!next) return m;
@@ -1293,10 +1186,12 @@ export function stepMonsters(
   let hp = s.hp;
   let lastHitAtMs = s.lastHitAtMs;
   if (nowMs - s.lastHitAtMs >= MINE_IFRAME_MS) {
-    const toucher = movedMonsters.find((m) => adjacent(m, s.player));
+    // MINI-17: a frozen/staggered monster can't bite — parity with the forest (forest.ts),
+    // which is what gives the charge verb's 500ms stagger its defensive value in the mine.
+    const toucher = movedMonsters.find((m) => !(m.frozenUntilMs && nowMs < m.frozenUntilMs) && adjacent(m, s.player));
     if (toucher) {
       const def = MINE_MONSTERS[toucher.key];
-      const raw = def?.touchDamage ?? 1;
+      const raw = Math.round((def?.touchDamage ?? 1) * lateDepthDamageScale(s.floor - MAGMA_BAND_START));
       const bless = activeStatus(s.playerStatuses, 'bless', nowMs);
       const dealt = Math.max(1, raw - s.defense - (bless ? bless.magnitude : 0) - boonDefenseBonus(s.activeBoons));
       hp = Math.max(0, hp - dealt);
@@ -1363,32 +1258,7 @@ export function stepMonsters(
  * + contact-damage blocks of {@link stepMonsters}.
  */
 export function coopClientStep(state: MineState, nowMs: number): MineState {
-  if (state.status !== 'active') return state;
-  let s = state;
-
-  if (nowMs >= s.staNextRegenMs && s.sta < s.maxSta) {
-    s = { ...s, sta: Math.min(s.maxSta, s.sta + 1), staNextRegenMs: nowMs + STA_REGEN_MS };
-  }
-  if (nowMs >= s.mpNextRegenMs && s.mp < s.maxMp) {
-    s = { ...s, mp: Math.min(s.maxMp, s.mp + 1), mpNextRegenMs: nowMs + MP_REGEN_MS };
-  }
-
-  let hp = s.hp;
-  let lastHitAtMs = s.lastHitAtMs;
-  if (nowMs - s.lastHitAtMs >= MINE_IFRAME_MS) {
-    const toucher = s.monsters.find((m) => adjacent(m, s.player));
-    if (toucher) {
-      const raw = MINE_MONSTERS[toucher.key]?.touchDamage ?? 1;
-      const bless = activeStatus(s.playerStatuses, 'bless', nowMs);
-      const dealt = Math.max(1, raw - s.defense - (bless ? bless.magnitude : 0) - boonDefenseBonus(s.activeBoons));
-      hp = Math.max(0, hp - dealt);
-      lastHitAtMs = nowMs;
-    }
-  }
-
-  const playerStatuses = pruneStatuses(s.playerStatuses, nowMs);
-  if (hp === s.hp && lastHitAtMs === s.lastHitAtMs && s === state) return state;
-  return { ...s, hp, lastHitAtMs, playerStatuses, status: hp <= 0 ? 'ended' : s.status };
+  return crawlCoopClientStep(state, nowMs, mineContactCaps);
 }
 
 /**
@@ -1402,15 +1272,7 @@ export function damageMonsterById(
   dmg: number,
   rng: RNG,
 ): MineState {
-  if (state.status !== 'active' || dmg <= 0) return state;
-  const mon = state.monsters.find((m) => m.id === monsterId);
-  if (!mon) return state;
-  const newHp = mon.hp - dmg;
-  if (newHp <= 0) return killMonster(state, mon, rng);
-  return {
-    ...state,
-    monsters: state.monsters.map((m) => (m.id === monsterId ? { ...m, hp: newHp } : m)),
-  };
+  return crawlDamageUnitById(state, monsterId, dmg, rng, mineUnitCaps);
 }
 
 // ---------------------------------------------------------------------------
@@ -1425,20 +1287,5 @@ export function damageMonsterById(
  * No-ops if no choice is pending or the key is not in the offered set.
  */
 export function applyBoonChoice(state: MineState, key: string): MineState {
-  if (state.status !== 'choosing') return state;
-  if (!state.pendingBoonChoice?.includes(key)) return state;
-  const boon = BOONS[key];
-  if (!boon) return state;
-  const activeBoons = [...state.activeBoons, key];
-  const hpBonus = boon.maxHpBonus ?? 0;
-  return {
-    ...state,
-    activeBoons,
-    pendingBoonChoice: null,
-    status: 'active',
-    moveIntervalMs: Math.round(moveInterval(state.agLevel) / boonMoveMult(activeBoons)),
-    dashCooldownMs: Math.round(dashCooldown(state.agLevel) * boonDashCdMult(activeBoons)),
-    maxHp: state.maxHp + hpBonus,
-    hp: Math.min(state.maxHp + hpBonus, state.hp + hpBonus),
-  };
+  return crawlApplyBoonChoice(state, key, { getBoon: (k) => BOONS[k], boonMoveMult, boonDashCdMult });
 }

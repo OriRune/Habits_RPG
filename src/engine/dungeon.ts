@@ -9,6 +9,16 @@ import { type Reward } from './challenges';
 
 export const DUNGEON_ENERGY_COST = 3; // brief §7.2: "Dungeon entry = 3 Energy"
 
+/** Gold paid for a plain combat win — ≈ half a treasure room's base (resolveTreasure: 60+depth*10). */
+export function combatRoomGold(depth: number): number {
+  return 30 + depth * 5;
+}
+
+/** Gold for a floor-boss win — the marquee payout of a floor, well above a plain room. */
+export function bossRoomGold(depth: number): number {
+  return 100 + depth * 50;
+}
+
 export type RoomKind =
   | 'combat'
   | 'encounter'
@@ -62,12 +72,17 @@ export interface MerchantOffer {
   potionKey?: string;
 }
 
-/** The merchant's wares for a floor — a heal, a potion, and a relic, priced by depth. */
-export function merchantOffers(depth: number): MerchantOffer[] {
+/**
+ * The merchant's wares for a floor — a heal, a potion, and a relic, priced by depth.
+ * `discount01` is the Homestead Trading Post haggle perk (0 or 0.15); each price is
+ * scaled by (1 − discount01) and floored at 1g. Default 0 keeps the un-perked prices.
+ */
+export function merchantOffers(depth: number, discount01: number = 0): MerchantOffer[] {
+  const price = (base: number) => Math.max(1, Math.round(base * (1 - discount01)));
   return [
-    { id: 'heal', label: 'Tend your wounds — restore 40% HP', cost: 18 + depth * 4, kind: 'heal' },
-    { id: 'potion', label: 'A Healing Potion for the road', cost: 24 + depth * 5, kind: 'potion', potionKey: 'healing_potion' },
-    { id: 'boon', label: 'A relic from the pack', cost: 45 + depth * 9, kind: 'boon' },
+    { id: 'heal', label: 'Tend your wounds — restore 40% HP', cost: price(18 + depth * 4), kind: 'heal' },
+    { id: 'potion', label: 'A Healing Potion for the road', cost: price(24 + depth * 5), kind: 'potion', potionKey: 'healing_potion' },
+    { id: 'boon', label: 'A relic from the pack', cost: price(45 + depth * 9), kind: 'boon' },
   ];
 }
 

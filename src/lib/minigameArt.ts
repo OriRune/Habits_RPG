@@ -20,11 +20,6 @@ const ART: Record<string, string> = (() => {
   return map;
 })();
 
-/** Look up a single sprite by basename. */
-export function art(name: string): string | undefined {
-  return ART[name];
-}
-
 /** Stable 0..1 hash for a cell, so a tile's chosen variant never reshuffles between renders. */
 function cellHash(r: number, c: number): number {
   let h = (Math.imul(r, 73856093) ^ Math.imul(c, 19349663)) >>> 0;

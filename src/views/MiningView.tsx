@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Pickaxe, Zap } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
+import { useIsCoarsePointer } from '@/hooks/useIsCoarsePointer';
 import { MINE_ENERGY_COST } from '@/engine/mining';
 import { selectMineStats } from '@/store/selectors';
 import * as sfx from '@/lib/sfx';
@@ -28,6 +29,8 @@ export function MiningView() {
   const beginMining = useGameStore((s) => s.beginMining);
   const mineStats = useGameStore(selectMineStats);
   const showAdventureRitual = useGameStore((s) => s.settings.showAdventureRitual);
+
+  const coarse = useIsCoarsePointer();
 
   const canEnter = energy >= MINE_ENERGY_COST;
 
@@ -101,10 +104,14 @@ export function MiningView() {
 
         <Button
           onClick={() => canEnter && showAdventureRitual ? setShowRitual(true) : (void sfx.resume(), beginMining())}
-          disabled={!canEnter}
+          disabled={!canEnter || coarse}
           className="w-full py-2.5"
         >
-          {canEnter ? 'Enter the Mine' : `Need ${MINE_ENERGY_COST} energy (complete habits)`}
+          {coarse
+            ? 'Best played on desktop'
+            : canEnter
+              ? 'Enter the Mine'
+              : `Need ${MINE_ENERGY_COST} energy (complete habits)`}
         </Button>
         {showRitual && (
           <AdventureRitualModal

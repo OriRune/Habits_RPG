@@ -17,6 +17,8 @@ import {
   applyForestRemoteAttack,
   applyTacticsState,
   resolveTacticsIntent,
+  shouldBroadcastTactics,
+  tailTacticsLog,
   nextSessionState,
   shouldReapOrphan,
   canJoinSession,
@@ -47,8 +49,10 @@ import {
   type EnemyUnit,
   type SelectedAction,
   type Tile,
+  selectAction,
 } from '@/engine/hexBattle';
 import type { PlayerSlice } from '../protocol';
+import { PAUSED_HOST_TIMEOUT_MS } from '../protocol';
 import {
   STA_REGEN_MS,
   MP_REGEN_MS,
@@ -303,6 +307,22 @@ describe('applyMineWorldSlice', () => {
     expect(result.floor).toBe(1);
   });
 
+  it('MP-29(f): floor mismatch + no baseSeed — never merges the host foreign-floor monsters', () => {
+    const local = { id: 'l1', key: 'slime', r: 2, c: 2, hp: 5, maxHp: 10, readyAtMs: 0 };
+    const mine = makeMineState({ floor: 1, monsters: [local] });
+    // Host is on floor 3 with its own monsters; we have no seed to regen floor 3.
+    const slice: WorldSliceInput = {
+      floor: 3,
+      monsters: [{ id: 'h1', key: 'slime', r: 4, c: 4, hp: 8, maxHp: 10, readyAtMs: 0 }],
+    };
+
+    const result = applyMineWorldSlice(mine, slice, { baseSeed: undefined, rng: rngFrom(1) });
+    // Bail unchanged — merging would drop our local monster onto our own floor and
+    // paste in a foreign-floor entity.
+    expect(result).toBe(mine);
+    expect(result.monsters).toBe(mine.monsters);
+  });
+
   it('host guardian kill — guest enters choosing while eligible boons remain', () => {
     const guardian = { id: 'g-1', key: 'stone_golem', r: 2, c: 2, hp: 20, maxHp: 50, readyAtMs: 0 };
     const mine = makeMineState({ monsters: [guardian] });
@@ -506,6 +526,19 @@ describe('applyForestWorldSlice', () => {
     expect(result.haul.materials?.['wood']).toBe(10);
   });
 
+  it('MP-29(f) twin: stage mismatch + no baseSeed — never merges the host foreign-stage beasts', () => {
+    const local = { id: 'l1', key: 'wolf', r: 2, c: 2, hp: 5, maxHp: 10, readyAtMs: 0, asleep: false };
+    const forest = makeForestState({ stage: 1, beasts: [local] });
+    const slice: WorldSliceInput = {
+      floor: 3,
+      monsters: [{ id: 'h1', key: 'wolf', r: 4, c: 4, hp: 8, maxHp: 10, readyAtMs: 0 }],
+    };
+
+    const result = applyForestWorldSlice(forest, slice, { baseSeed: undefined, rng: rngFrom(1) });
+    expect(result).toBe(forest);
+    expect(result.beasts).toBe(forest.beasts);
+  });
+
   it('host guardian kill with exhausted boon pool — consolation, never a zero-option choosing (MINI-01)', () => {
     const allForestBoons = Object.values(BOONS)
       .filter((b) => b.game === 'forest' || b.game === 'both')
@@ -635,6 +668,65 @@ describe('applyTacticsState', () => {
 
     // The result's player should be the guest's own hero (identified by id)
     expect(result.player.hp).toBe(70);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shouldBroadcastTactics (MP-22)
+// ---------------------------------------------------------------------------
+
+describe('shouldBroadcastTactics', () => {
+  it('undefined prev (first send) — always broadcasts', () => {
+    expect(shouldBroadcastTactics(undefined, makeTacticsState())).toBe(true);
+  });
+
+  it('selection-only delta (highlight caches + effects reset) — skips', () => {
+    // Post-action state: effects populated (as after an attack), log written.
+    const prev = makeTacticsState({
+      turnCount: 1, log: ['a', 'b'],
+      effects: [{ id: 1, kind: 'melee', from: { q: 0, r: 0 }, to: { q: 1, r: 0 }, startedAtMs: 0, durationMs: 100 }],
+    });
+    // A real selection click routes through selectAction → clone(), which rewrites
+    // the highlight caches AND resets effects to []. The blanking of both must make
+    // this a no-op broadcast; without blanking effects it would ship a full snapshot.
+    const next = selectAction(prev, { kind: 'move' });
+    expect(next.effects).toHaveLength(0); // clone() cleared the animation queue
+    expect(shouldBroadcastTactics(prev, next)).toBe(false);
+  });
+
+  it('log / turn / player / enemies / turnCount / status changes — broadcasts', () => {
+    const prev = makeTacticsState({ turnCount: 1, log: ['a'], status: 'active' });
+    // Each of these is an authoritative-world change that must reach the party,
+    // even alongside a selection change.
+    expect(shouldBroadcastTactics(prev, { ...prev, log: ['a', 'b'], selected: { kind: 'move' } })).toBe(true);
+    expect(shouldBroadcastTactics(prev, { ...prev, turn: 'enemy' })).toBe(true);
+    expect(shouldBroadcastTactics(prev, { ...prev, player: makePlayerUnit({ q: 1, r: -1 }, { hp: 10 }) })).toBe(true);
+    expect(shouldBroadcastTactics(prev, { ...prev, enemies: [makeEnemy(1, { q: 2, r: 0 })] })).toBe(true);
+    expect(shouldBroadcastTactics(prev, { ...prev, turnCount: 2 })).toBe(true);
+    expect(shouldBroadcastTactics(prev, { ...prev, status: 'won' })).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tailTacticsLog (MP-22)
+// ---------------------------------------------------------------------------
+
+describe('tailTacticsLog', () => {
+  it('caps the log to the last n lines, preserving other fields', () => {
+    const log = Array.from({ length: 30 }, (_, i) => `line ${i}`);
+    const state = makeTacticsState({ turnCount: 7, log });
+    const out = tailTacticsLog(state, 20);
+
+    expect(out.log).toHaveLength(20);
+    expect(out.log[0]).toBe('line 10'); // last 20 of 0..29
+    expect(out.log[19]).toBe('line 29');
+    expect(out.turnCount).toBe(7);
+    expect(out.player).toBe(state.player);
+  });
+
+  it('returns the same reference when already within the cap', () => {
+    const state = makeTacticsState({ log: ['a', 'b'] });
+    expect(tailTacticsLog(state, 20)).toBe(state);
   });
 });
 
@@ -975,6 +1067,37 @@ describe('pruneStalePlayers', () => {
     expect(Object.keys(roster)).toHaveLength(0);
     expect(timedOut).toHaveLength(0);
   });
+
+  it('MP-21: a paused host within the extended window is kept; a stale guest is pruned', () => {
+    const now = 10000;
+    const roster = makeRoster([
+      { id: 'host', lastSeen: 1000 }, // 9 s ago → past the 5 s window, but paused-exempt
+      { id: 'guest', lastSeen: 1000 }, // 9 s ago → stale, not exempt
+    ]);
+
+    const { roster: pruned, timedOut } = pruneStalePlayers(
+      roster, now, 5000, { isExempt: (uid) => uid === 'host', timeoutMs: PAUSED_HOST_TIMEOUT_MS },
+    );
+
+    expect(pruned['host']).toBeDefined();
+    expect(pruned['guest']).toBeUndefined();
+    expect(timedOut).toEqual(['X']); // only the guest, never the paused host
+  });
+
+  it('MP-21: a paused host stale beyond PAUSED_HOST_TIMEOUT_MS is still reaped', () => {
+    const lastSeen = 1000;
+    const now = lastSeen + PAUSED_HOST_TIMEOUT_MS + 1; // just past the extended window
+    const roster = makeRoster([{ id: 'host', lastSeen }]);
+
+    const { roster: pruned, timedOut } = pruneStalePlayers(
+      roster, now, 5000, { isExempt: (uid) => uid === 'host', timeoutMs: PAUSED_HOST_TIMEOUT_MS },
+    );
+
+    // A closed/dropped tab sends no bye and no further slice — the bounded window
+    // reaps it instead of leaving a permanent roster zombie.
+    expect(pruned['host']).toBeUndefined();
+    expect(timedOut).toEqual(['X']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1015,7 +1138,6 @@ describe('buildWorldSlice', () => {
 
     expect(slice.type).toBe('world');
     expect(slice.floor).toBe(2);
-    expect(slice.status).toBe('active');
     expect(slice.monsters).toHaveLength(1);
     expect(slice.monsters[0].id).toBe('m1');
     expect(slice.monsters[0].hp).toBe(5);
@@ -1023,10 +1145,10 @@ describe('buildWorldSlice', () => {
     expect(slice.monsters[0].maxHp).toBe(10);
   });
 
-  it('maps status "choosing" to "active" (boon-choice is a UI sub-state)', () => {
-    const mine = makeMineState({ status: 'choosing' });
-    const slice = buildWorldSlice(mine);
-    expect(slice.status).toBe('active');
+  it('MP-21: stamps hostPaused only when the host is hidden (absent otherwise)', () => {
+    const mine = makeMineState({ floor: 2, monsters: [], status: 'active' });
+    expect(buildWorldSlice(mine).hostPaused).toBeUndefined();
+    expect(buildWorldSlice(mine, true).hostPaused).toBe(true);
   });
 
   it('builds a WorldSlice from a ForestState using beasts', () => {

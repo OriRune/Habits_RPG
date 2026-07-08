@@ -409,23 +409,4 @@ export function resolvePalette(settings: PaletteSettings): Palette {
   return PREMADE_PALETTES.find((p) => p.id === settings.paletteId) ?? DEFAULT_PALETTE;
 }
 
-/**
- * Write a palette's derived vars onto :root.
- *
- * For the default palette in light mode we clear the inline overrides so the
- * exact index.css stylesheet baseline shows through (zero rounding drift).
- * For default+dark, or any custom/premade palette, we derive and apply real vars.
- */
-export function applyPalette(palette: Palette, mode: ThemeMode = 'light'): void {
-  const root = document.documentElement;
-  if (palette.id === 'default' && mode === 'light') {
-    for (const key of Object.keys(deriveThemeVars(palette.colors, 'light'))) {
-      root.style.removeProperty(key);
-    }
-    return;
-  }
-  const vars = deriveThemeVars(palette.colors, mode);
-  for (const [key, value] of Object.entries(vars)) {
-    root.style.setProperty(key, value);
-  }
-}
+// `applyPalette` (the :root DOM write) moved to @/lib/palettes to keep engine/ pure (ARCH-12).

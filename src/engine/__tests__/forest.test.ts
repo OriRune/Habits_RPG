@@ -6,6 +6,8 @@ import {
   act,
   rangedBeastId,
   stepBeasts,
+  castSpell,
+  coopClientStep,
   reveal,
   nodeYield,
   splitHaul,
@@ -13,7 +15,10 @@ import {
   isWalkable,
   isOnShrine,
   isVisible,
+  sightRadiusFor,
   canAdvance,
+  unlockedStartStage,
+  isForestSafeBankTile,
   type ForestState,
   type ForestTile,
   type ForestSnapshot,
@@ -23,7 +28,8 @@ import {
   FOREST_WINDUP_MS,
 } from '../forest';
 import { getWeapon, STARTER_WEAPON } from '@/engine/weapons';
-import { manhattan, STA_REGEN_MS, MP_REGEN_MS } from '@/engine/crawl';
+import { manhattan, STA_REGEN_MS, MP_REGEN_MS, lateDepthDamageScale } from '@/engine/crawl';
+import { FOREST_BEASTS } from '@/content/forest';
 
 const WEAPON = getWeapon(STARTER_WEAPON);
 
@@ -191,6 +197,15 @@ describe('generateForest', () => {
   it('has at least one spring on the map', () => {
     const springs = forest.tiles.flat().filter((t) => t.kind === 'node' && t.nodeKey === 'spring');
     expect(springs.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('sightRadiusFor — Homestead Watchtower sight bonus (10.5)', () => {
+  it('adds the sight bonus on top of the (trail) base radius', () => {
+    // makeForest parks the player on a trail tile, so the base is the standard SIGHT_RADIUS.
+    const base = sightRadiusFor(makeForest());
+    expect(sightRadiusFor(makeForest({ sightBonus: 0 }))).toBe(base);
+    expect(sightRadiusFor(makeForest({ sightBonus: 1 }))).toBe(base + 1);
   });
 });
 
@@ -648,6 +663,96 @@ describe('stepBeasts (telegraph)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Twin-hoist regressions (ARCH-02/03/04/05) — forest side of shared crawl.ts bodies
+// ---------------------------------------------------------------------------
+
+describe('crawl twin hoist (forest side)', () => {
+  // wild_boar: predator, touchDamage 4, no defense of its own.
+  const boar = () => ({ id: 'a', key: 'wild_boar', r: 3, c: 4, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false });
+
+  it('prunes an expired rune on a quiet tick (ARCH-02)', () => {
+    const s = makeForest({
+      beasts: [],
+      runes: [{ id: 1, r: 1, c: 1, kind: 'fire', power: 5, expiresAtMs: 500 }],
+    });
+    const out = stepBeasts(s, 1000, rngFrom(1));
+    expect(out.runes).toHaveLength(0); // pre-fix: forest kept expired runes on quiet ticks
+  });
+
+  it('rejects a spell not in knownSpells (ARCH-03)', () => {
+    const s = makeForest({ knownSpells: [], mp: 8 });
+    const out = castSpell(s, 'sparks', 1000, rngFrom(1));
+    expect(out).toBe(s); // no-op (pre-fix: forest cast any key)
+    expect(out.mp).toBe(8);
+    expect(out.lastSpellMs).toBe(s.lastSpellMs);
+  });
+
+  it('still casts a spell that IS known (ARCH-03 control)', () => {
+    const s = makeForest({ knownSpells: ['sparks'], mp: 8 });
+    const out = castSpell(s, 'sparks', 1000, rngFrom(1));
+    expect(out.mp).toBe(4); // 8 − mpCost(4)
+  });
+
+  describe('unified contact mitigation via stepBeasts (ARCH-04)', () => {
+    const strike = (over: Partial<ForestState>) => {
+      const s = makeForest({ hp: 50, lastHitAtMs: -1000, beasts: [boar()], ...over });
+      const t1 = stepBeasts(s, 1000, rngFrom(1));
+      return stepBeasts(t1, 1000 + FOREST_WINDUP_MS + 50, rngFrom(1));
+    };
+    it('baseline defense always mitigates (was bless-gated)', () => {
+      expect(strike({ defense: 2, ward: 0 }).hp).toBe(48); // 4 − 2; pre-fix: 46
+    });
+    it('bless magnitude stacks on top of defense', () => {
+      expect(strike({ defense: 1, ward: 0, playerStatuses: [{ key: 'bless', magnitude: 1, expiresAtMs: 999999 }] }).hp).toBe(48); // 4 − 1 − 1; pre-fix: 47
+    });
+    it('ward no longer reduces contact damage', () => {
+      expect(strike({ defense: 0, ward: 3 }).hp).toBe(46); // full 4; pre-fix: 49
+    });
+  });
+
+  describe('unified contact mitigation via coopClientStep (ARCH-04)', () => {
+    const hit = (over: Partial<ForestState>) =>
+      coopClientStep(makeForest({ hp: 50, lastHitAtMs: -1000, beasts: [boar()], ...over }), 1000).hp;
+    it('baseline defense always mitigates', () => {
+      expect(hit({ defense: 2, ward: 0 })).toBe(48); // pre-fix: 46
+    });
+    it('bless magnitude stacks on top of defense', () => {
+      expect(hit({ defense: 1, ward: 0, playerStatuses: [{ key: 'bless', magnitude: 1, expiresAtMs: 999999 }] })).toBe(48); // pre-fix: 47
+    });
+    it('ward no longer reduces contact damage', () => {
+      expect(hit({ defense: 0, ward: 3 })).toBe(46); // pre-fix: 49
+    });
+  });
+
+  it('two beasts funnelling into one cell do not both occupy it (ARCH-05)', () => {
+    const rows = 7;
+    const cols = 7;
+    const tiles: ForestTile[][] = [];
+    for (let r = 0; r < rows; r++) {
+      const row: ForestTile[] = [];
+      for (let c = 0; c < cols; c++) row.push({ kind: 'thicket' });
+      tiles.push(row);
+    }
+    for (const [r, c] of [[2, 3], [4, 3], [3, 3], [3, 4], [3, 5]] as [number, number][]) {
+      tiles[r][c] = { kind: 'trail' };
+    }
+    const seen = Array.from({ length: rows }, () => new Array(cols).fill(true));
+    const s = makeForest({
+      tiles,
+      seen,
+      player: { r: 3, c: 5, facing: 'left' },
+      beasts: [
+        { id: 'a', key: 'wild_boar', r: 2, c: 3, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false },
+        { id: 'b', key: 'wild_boar', r: 4, c: 3, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false },
+      ],
+    });
+    const out = stepBeasts(s, 1000, rngFrom(1));
+    const cells = out.beasts.map((b) => `${b.r},${b.c}`);
+    expect(new Set(cells).size).toBe(cells.length); // no same-tile stacking
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Feature: Shrine events
 // ---------------------------------------------------------------------------
 
@@ -727,5 +832,60 @@ describe('activateShrine', () => {
       // Any shrine must be a walkable tile (reachability check covers this).
       expect(reachesTreeline(forest)).toBe(true);
     }
+  });
+});
+
+describe('unlockedStartStage (BAL-25)', () => {
+  // FOREST_GUARDIAN_STAGES = { 4, 8 }.
+  it('starts at stage 1 until a guardian band is descended past', () => {
+    expect(unlockedStartStage(0)).toBe(1);
+    expect(unlockedStartStage(3)).toBe(1);
+    expect(unlockedStartStage(4)).toBe(1); // at the stage-4 guardian, not yet PAST it
+  });
+  it('unlocks a boundary only once the player has gone strictly below it', () => {
+    expect(unlockedStartStage(5)).toBe(4); // past stage 4
+    expect(unlockedStartStage(8)).toBe(4); // at the stage-8 guardian, past stage 4 only
+    expect(unlockedStartStage(9)).toBe(8); // past stage 8
+    expect(unlockedStartStage(99)).toBe(8); // clamps to the deepest boundary
+  });
+});
+
+describe('isForestSafeBankTile (BAL-12)', () => {
+  it('is true on the entrance and clearings only', () => {
+    expect(isForestSafeBankTile('entrance')).toBe(true);
+    expect(isForestSafeBankTile('clearing')).toBe(true);
+    expect(isForestSafeBankTile('trail')).toBe(false);
+    expect(isForestSafeBankTile('node')).toBe(false);
+    expect(isForestSafeBankTile(undefined)).toBe(false);
+  });
+});
+
+describe('deep-stage difficulty (MINI-20)', () => {
+  it('spawns the sub-300ms ancient-band predator on deep stages', () => {
+    let sawFast = false;
+    let minPredatorCadence = Infinity;
+    for (let seed = 0; seed < 8; seed++) {
+      const forest = generateForest(15, SNAP, rngFrom(seed));
+      for (const b of forest.beasts) {
+        const def = FOREST_BEASTS[b.key];
+        if (!def || def.flees || def.touchDamage <= 0) continue; // ignore harmless prey
+        minPredatorCadence = Math.min(minPredatorCadence, def.moveCadenceMs);
+        if (b.key === 'amber_stalker') sawFast = true;
+      }
+    }
+    expect(sawFast).toBe(true);                  // the new fast predator actually spawns
+    expect(minPredatorCadence).toBeLessThan(300); // fastest predator pre-fix was 320 (dire_wolf)
+  });
+
+  it('beast count keeps climbing past the old cap of 16', () => {
+    const forest = generateForest(15, SNAP, rngFrom(3));
+    expect(forest.beasts.length).toBeGreaterThan(16); // pre-fix: Math.min(16, …) capped at 16
+  });
+
+  it('lateDepthDamageScale ramps 4%/stage and caps at 2×', () => {
+    expect(lateDepthDamageScale(0)).toBe(1);
+    expect(lateDepthDamageScale(-3)).toBe(1);
+    expect(lateDepthDamageScale(5)).toBeCloseTo(1.2, 5);
+    expect(lateDepthDamageScale(1000)).toBe(2);
   });
 });

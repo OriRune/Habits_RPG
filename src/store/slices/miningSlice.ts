@@ -11,12 +11,13 @@ import {
   castSpell as minecastSpellFn,
   applyBoonChoice as applyMineBoonChoice,
   placeTombstone,
+  unlockedStartFloor,
   MINE_ENERGY_COST,
 } from '@/engine/mining';
-import { dungeonStamina, boonConsolation } from '@/engine/crawl';
+import { boonConsolation } from '@/engine/crawl';
 import { mulberry32, floorSeed } from '@/engine/rng';
 import { getGear } from '@/engine/gear';
-import { rollBoonChoices } from '@/content/boons';
+import { rollBoonChoices } from '@/engine/crawl';
 import {
   type WorldSliceInput,
   applyMineWorldSlice,
@@ -27,7 +28,8 @@ import {
 import type { Reward } from '@/engine/challenges';
 import { mergeReward } from '@/engine/dungeon';
 import type { GameState } from '../shared';
-import { fighterFor, gearBonuses, commitMining, commitMineDeath, energySpentPatch } from '../shared';
+import { crawlerLoadout, commitMining, commitMineDeath, energySpentPatch } from '../shared';
+import { townPerks } from '@/engine/town';
 import { getMineRng, getMineBaseSeed, setMineRun, acceptMineWorldT } from '../runRng';
 
 export interface MiningSlice {
@@ -37,7 +39,8 @@ export interface MiningSlice {
   /** Lost haul from the most recent death — recovered by reaching the tombstone tile. */
   mineTombstone: { floor: number; haul: Reward } | null;
 
-  beginMining: (seed?: number) => void;
+  /** `startFloor` (co-op) pins the run to a shared floor; omitted = solo deeper-start (BAL-25). */
+  beginMining: (seed?: number, startFloor?: number) => void;
   mineMove: (dir: Dir) => void;
   mineStrike: () => void;
   /** `nowMs` is the caller's rAF-clock timestamp — same timebase as mineTick. */
@@ -71,7 +74,7 @@ export const createMiningSlice: StateCreator<
   bestMineScore: 0,
   mineTombstone: null,
 
-  beginMining: (seed) =>
+  beginMining: (seed, startFloor) =>
     set((s) => {
       // Seed the run's RNG: shared mulberry32 for co-op, Math.random for solo.
       setMineRun(seed !== undefined ? mulberry32(seed) : Math.random, seed);
@@ -84,40 +87,23 @@ export const createMiningSlice: StateCreator<
       if (s.mining && seed === undefined) return s;
       if (!free && s.character.energy < MINE_ENERGY_COST) return s.mining ? { ...s, mining: null } : s;
 
-      // Grant the stone_pickaxe if the player has no mining tool yet
-      let ownedGear = s.ownedGear;
-      let equipment = s.equipment;
-      const hasMiningTool = ownedGear.some((k) => {
-        const g = getGear(k);
-        return g?.mining != null;
-      });
-      if (!hasMiningTool) {
-        ownedGear = [...ownedGear, 'stone_pickaxe'];
-        if (!equipment.tool) {
-          equipment = { ...equipment, tool: 'stone_pickaxe' };
-        }
-      }
-
-      // Build the snapshot with the (possibly updated) equipment
-      const stateWithGear: typeof s = { ...s, ownedGear, equipment };
-      const fighter = fighterFor(stateWithGear);
-      const { c } = fighter;
-
-      // Dungeon stamina is much larger than battle stamina (50 + EN from gear)
-      const gear = gearBonuses(stateWithGear);
-      const enBonus = gear.statBonuses.EN ?? 0;
-      const maxSta = dungeonStamina(s.character.statLevels.EN + enBonus);
+      // Grant a starter tool if needed, then snapshot the fighter/stamina/AG loadout
+      // (shared with beginForest via crawlerLoadout).
+      const { ownedGear, equipment, fighter, c, maxSta, agLevel } = crawlerLoadout(
+        s,
+        (g) => g.mining != null,
+      );
 
       // Pickaxe power from equipped tool gear
       const toolKey = equipment.tool;
       const toolGear = toolKey ? getGear(toolKey) : undefined;
       const pickaxePower = toolGear?.mining?.power ?? 0;
-      // AG level for dash cooldown + move speed (gear bonuses included via fighter)
-      const agBonus = (gearBonuses(stateWithGear).statBonuses.AG ?? 0);
-      const agLevel = s.character.statLevels.AG + agBonus;
 
+      // Solo runs re-enter at the deepest guardian band already cleared; co-op passes an
+      // explicit startFloor of 1 so host+guest generate the same shared map (BAL-25).
+      const start = startFloor ?? unlockedStartFloor(s.deepestMineFloor);
       let mining = generateMine(
-        1,
+        start,
         {
           meleePower: c.meleePower,
           rangedPower: c.rangedPower,
@@ -133,13 +119,15 @@ export const createMiningSlice: StateCreator<
           knownSpells: s.knownSpells,
           pickaxePower,
           agLevel,
+          // Homestead Watchtower (sight perk): +1 sight radius, snapshotted at run start (co-op-safe).
+          sightBonus: townPerks(s.town).sightBonus,
         },
-        // Floor 1 from the per-floor seed (co-op) so every client matches; solo
+        // The start floor from the per-floor seed (co-op) so every client matches; solo
         // falls back to the live mine RNG (Math.random).
-        seed !== undefined ? mulberry32(floorSeed(seed, 1)) : getMineRng(),
+        seed !== undefined ? mulberry32(floorSeed(seed, start)) : getMineRng(),
       );
-      // If a tombstone exists for floor 1, place it on the generated map.
-      if (s.mineTombstone && s.mineTombstone.floor === 1) {
+      // If a tombstone exists for the start floor, place it on the generated map.
+      if (s.mineTombstone && s.mineTombstone.floor === start) {
         mining = placeTombstone(mining, getMineRng());
       }
       return {

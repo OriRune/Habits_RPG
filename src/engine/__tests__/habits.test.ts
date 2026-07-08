@@ -7,7 +7,9 @@ import {
   isCompletedOn,
   weekCompletions,
   currentStreak,
+  mostRecentMissedScheduledDay,
   statCompletedWithin,
+  streakMilestone,
   type Habit,
 } from '../habits';
 
@@ -101,6 +103,34 @@ describe('currentStreak', () => {
   });
 });
 
+describe('mostRecentMissedScheduledDay', () => {
+  it('returns the missed day after a real gap', () => {
+    // 06-15 & 06-14 done, 06-13 missed, 06-12 done. Today 06-15 completed.
+    const h = makeHabit({ log: logFrom(['2026-06-15', '2026-06-14', '2026-06-12']) });
+    expect(mostRecentMissedScheduledDay(h, '2026-06-15')).toBe('2026-06-13');
+  });
+  it('returns undefined when there is no miss back to createdISO', () => {
+    const h = makeHabit({ createdISO: '2026-06-13', log: logFrom(['2026-06-15', '2026-06-14', '2026-06-13']) });
+    expect(mostRecentMissedScheduledDay(h, '2026-06-15')).toBeUndefined();
+  });
+  it('treats frozen days as bridged, not as a miss', () => {
+    const h = makeHabit({
+      createdISO: '2026-06-13',
+      log: {
+        '2026-06-15': { xp: 0, frozen: true },
+        '2026-06-14': { xp: 0, frozen: true },
+        '2026-06-13': { xp: 0, frozen: true },
+      },
+    });
+    expect(mostRecentMissedScheduledDay(h, '2026-06-15')).toBeUndefined();
+  });
+  it('does not report today-not-yet-done as a miss', () => {
+    // Today (06-15) unlogged, but every prior scheduled day back to createdISO is done.
+    const h = makeHabit({ createdISO: '2026-06-13', log: logFrom(['2026-06-14', '2026-06-13']) });
+    expect(mostRecentMissedScheduledDay(h, '2026-06-15')).toBeUndefined();
+  });
+});
+
 describe('resolveCompletion', () => {
   it('first completion gives base XP, no recovery', () => {
     const r = resolveCompletion(makeHabit(), '2026-06-13');
@@ -116,6 +146,33 @@ describe('resolveCompletion', () => {
   it('as_needed never triggers a recovery penalty/bonus', () => {
     const h = makeHabit({ frequency: 'as_needed', lastCompletedISO: '2026-06-01' });
     expect(resolveCompletion(h, '2026-06-13').recovery).toBe(false);
+  });
+  it('a custom Mon/Wed/Fri habit with no missed scheduled day gets NO recovery (HABIT-05)', () => {
+    // Wed 2026-06-10 → Fri 2026-06-12: gap is 2 calendar days but Thursday isn't scheduled, so
+    // nothing was actually missed. The old `gap > 1` test wrongly handed this a permanent 1.1×.
+    const h = makeHabit({
+      frequency: 'custom',
+      days: [1, 3, 5],
+      createdISO: '2026-06-01',
+      log: { '2026-06-10': { xp: 20 } },
+      lastCompletedISO: '2026-06-10',
+    });
+    const r = resolveCompletion(h, '2026-06-12');
+    expect(r.recovery).toBe(false);
+    expect(r.xp).toBe(20); // base, no bonus
+  });
+  it('a custom Mon/Wed/Fri habit that actually skipped a scheduled day DOES recover (HABIT-05)', () => {
+    // Completed Mon 2026-06-08, skipped Wed 2026-06-10, returning Fri 2026-06-12 → genuine miss.
+    const h = makeHabit({
+      frequency: 'custom',
+      days: [1, 3, 5],
+      createdISO: '2026-06-01',
+      log: { '2026-06-08': { xp: 20 } },
+      lastCompletedISO: '2026-06-08',
+    });
+    const r = resolveCompletion(h, '2026-06-12');
+    expect(r.recovery).toBe(true);
+    expect(r.xp).toBe(22);
   });
   it('uncapped quantity scales XP past 150%', () => {
     const h = makeHabit({ type: 'quantity', target: 3, uncapped: true });
@@ -167,5 +224,19 @@ describe('statCompletedWithin (Stage 4.4)', () => {
     const h = makeHabit({ stat: 'AG', log: { [threeDaysAgo]: { xp: 20 } } });
     // lastCompletedISO is undefined on the base makeHabit, so this tests the log-scan path.
     expect(statCompletedWithin([h], 'AG', today, 7)).toBe(true);
+  });
+});
+
+describe('streakMilestone', () => {
+  it('returns a reward at 7 / 30 / 100 days', () => {
+    expect(streakMilestone(7)).toEqual({ days: 7, gold: 25, freezes: 0 });
+    expect(streakMilestone(30)).toEqual({ days: 30, gold: 100, freezes: 1 });
+    expect(streakMilestone(100)).toEqual({ days: 100, gold: 500, freezes: 1 });
+  });
+
+  it('returns null for non-milestone streaks (incl. 0, 6, 8, 29, 31, 99, 101)', () => {
+    for (const n of [0, 1, 6, 8, 29, 31, 99, 101, 200]) {
+      expect(streakMilestone(n)).toBeNull();
+    }
   });
 });

@@ -20,7 +20,8 @@ import { InventoryView } from '@/views/InventoryView';
 import { HistoryView } from '@/views/HistoryView';
 import { SettingsView } from '@/views/SettingsView';
 import { useGameStore } from '@/store/useGameStore';
-import { applyPalette, resolvePalette } from '@/engine/palettes';
+import { resolvePalette } from '@/engine/palettes';
+import { applyPalette } from '@/lib/palettes';
 import { isBackendConfigured } from '@/net/env';
 import { useAuthStore } from '@/net/auth';
 import { useSaveConflictStore } from '@/net/cloudSave';
@@ -59,6 +60,10 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [planWeekOpen, setPlanWeekOpen] = useState(false);
   const [planWeekReport, setPlanWeekReport] = useState<WeeklyReport | null>(null);
+  // Guest / play-offline: lets a signed-out player skip the account wall (backend
+  // configured) and play locally. Component-local — never persisted; cloud sync stays
+  // inert because auth is still `signedOut`. Irrelevant once the player signs in.
+  const [guest, setGuest] = useState(false);
   const created = useGameStore((s) => s.created);
   const battle = useGameStore((s) => s.battle);
   const mining = useGameStore((s) => s.mining);
@@ -121,7 +126,7 @@ export default function App() {
         </div>
       );
     }
-    if (authStatus === 'signedOut') return <LoginView />;
+    if (authStatus === 'signedOut' && !guest) return <LoginView onGuest={() => setGuest(true)} />;
     // First sign-in found real progress both locally and in the cloud — block the
     // app until the player picks a side (see cloudSave.ts, MP-06).
     if (saveConflict) return <SaveConflictModal conflict={saveConflict} />;
@@ -174,6 +179,7 @@ export default function App() {
           setPlanWeekReport(pendingReport);
           setPlanWeekOpen(true);
         }}
+        onReviewHabit={() => setTab('habits')}
       />
       {planWeekOpen && (
         <PlanWeekModal lastReport={planWeekReport} onClose={() => setPlanWeekOpen(false)} />

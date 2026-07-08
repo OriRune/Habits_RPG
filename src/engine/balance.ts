@@ -42,6 +42,27 @@ export interface EnergyLogEntry {
   spent: number;
 }
 
+// ---------------------------------------------------------------------------
+// Minigame reward-tuning constants — change these to retune stat-XP across all
+// minigames. Consumed by the store's per-mode commit wrappers.
+// ---------------------------------------------------------------------------
+
+/** Mine/forest: base stat-XP trickle per completed run. */
+export const CRAWLER_XP_BASE = 4;
+/** Mine/forest: additional stat XP per deepest floor/stage reached. */
+export const CRAWLER_XP_PER_DEPTH = 3;
+
+/** Arena/tactics: base stat-XP budget per tier. */
+export const MINIGAME_XP_BASE = 4;
+/** Arena/tactics: additional XP budget per tier level. */
+export const MINIGAME_XP_PER_TIER = 1;
+/** Arena/tactics: fraction of full budget awarded on a loss/retreat. */
+export const MINIGAME_XP_LOSS_FACTOR = 0.4;
+/** Arena: fraction of bossMaxHp at which budget is calculated (damage floor). */
+export const ARENA_XP_DAMAGE_FLOOR = 0.4;
+/** Arena: weight of actual damage progress on top of the floor. */
+export const ARENA_XP_DAMAGE_SCALE = 0.6;
+
 /** Computed per-source stats for one category row in the balance report. */
 export interface BalanceSourceRow {
   source: EarningSource;

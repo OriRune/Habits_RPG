@@ -29,7 +29,7 @@ import {
   damageBeastById,
 } from '@/engine/forest';
 import { mulberry32, floorSeed } from '@/engine/rng';
-import { rollBoonChoices } from '@/content/boons';
+import { rollBoonChoices } from '@/engine/crawl';
 import { MINE_MONSTERS } from '@/content/mining';
 import { FOREST_BEASTS } from '@/content/forest';
 import {
@@ -42,13 +42,13 @@ import {
   recomputeClientHighlights,
 } from '@/engine/hexBattle';
 import type { Hex } from '@/engine/hex';
-import type { WorldSlice, PlayerSlice, TacticsIntent } from './protocol';
+import type { WorldSlice, PlayerSlice, TacticsIntent, CoopMessage } from './protocol';
 import type { CoopSession } from './session'; // type-only: no runtime import cycle
 
 /**
  * The fields of a WorldSlice that the mine/forest reducers actually consume.
- * The `type`, `t`, and `status` fields are transport/ordering concerns that
- * the reducers don't need — only `floor` and `monsters` drive state changes.
+ * The `type` and `t` fields are transport/ordering concerns that the reducers
+ * don't need — only `floor` and `monsters` drive state changes.
  * Using this narrower type lets callers (the store, tests) pass a partial
  * object without constructing a full WorldSlice.
  *
@@ -98,7 +98,9 @@ export type RemotePlayers = Record<string, PlayerSlice & { lastSeen: number }>;
  * - Detect a guardian kill on the host side so the guest can trigger a boon
  *   choice.
  *
- * Always returns a new MineState (the caller should set it unconditionally).
+ * Returns a new MineState in the common case; returns the input reference
+ * unchanged when the host is on a floor we cannot follow (floor mismatch with no
+ * baseSeed to regen from) — see the MP-29(f) bail below.
  */
 export function applyMineWorldSlice(
   mining: MineState,
@@ -123,6 +125,11 @@ export function applyMineWorldSlice(
       deepest: Math.max(current.deepest, slice.floor),
     };
   }
+
+  // MP-29(f): host is on a different floor but we have no seed to regen ours —
+  // never merge the host's foreign-floor monsters onto our current floor. Bail
+  // and wait for a slice we can actually apply.
+  if (slice.floor !== current.floor && deps.baseSeed === undefined) return current;
 
   // Host-authoritative rebuild: walk the host's list, matching local monsters
   // by id (the spread preserves guest-visible status fields) and
@@ -311,6 +318,10 @@ export function applyForestWorldSlice(
       deepest: Math.max(current.deepest, slice.floor),
     };
   }
+
+  // MP-29(f) twin: host is on a different stage but we have no seed to regen
+  // ours — never merge the host's foreign-stage beasts onto our current stage.
+  if (slice.floor !== current.stage && deps.baseSeed === undefined) return current;
 
   // Host-authoritative rebuild (mirrors applyMineWorldSlice): match local
   // beasts by id, re-instantiate host-alive beasts missing locally (e.g. after
@@ -523,6 +534,117 @@ export function resolveTacticsIntent(
   }
 }
 
+/**
+ * MP-22: whether a tactics state change is worth broadcasting to the party.
+ *
+ * A bare selection click (`tacticsSelect` → `selectAction`) only rewrites the
+ * local highlight caches — `selected`, `reachable`, `targetable` — which every
+ * guest recomputes itself. Re-broadcasting the whole board on each hover/click is
+ * pure free-tier waste. Returns false only when NOTHING but those fields
+ * differs; any change to the authoritative world (player/enemies/turn/log/status/
+ * turnCount/…) still broadcasts. A null/undefined `prev` (first send) always broadcasts.
+ *
+ * `selectAction` deep-clones the state (`clone`), which also resets `effects` to `[]`,
+ * so `effects` is blanked too — otherwise the first click after any action would differ
+ * on the cleared animation queue and ship a redundant full snapshot. Every real resolver
+ * that pushes `effects` also writes `log`/hp, so genuine actions still differ and still
+ * broadcast. The surviving fields are fresh references but value-equal — compare by value
+ * (JSON), like `tilesEqual` above.
+ */
+export function shouldBroadcastTactics(
+  prev: HexBattleState | null | undefined,
+  next: HexBattleState,
+): boolean {
+  if (!prev) return true;
+  const strip = (s: HexBattleState) => ({ ...s, selected: null, reachable: [], targetable: [], effects: [] });
+  return JSON.stringify(strip(prev)) !== JSON.stringify(strip(next));
+}
+
+/**
+ * MP-22: cap the `log` on the wire to its last `n` lines. The log grows unbounded
+ * over a battle but the overlay only ever renders `log.slice(-4)`, so a tail loses
+ * nothing visible while keeping the broadcast payload small. Returns the same
+ * reference when already within the cap.
+ */
+export function tailTacticsLog(state: HexBattleState, n: number): HexBattleState {
+  if (state.log.length <= n) return state;
+  return { ...state, log: state.log.slice(-n) };
+}
+
+/**
+ * The inputs the tactics message router needs, gathered by the caller (the hook)
+ * from the store / staleness mark. Kept as plain values so the decision stays pure.
+ *
+ * `accept` is the RESULT of the stateful `acceptTacticsStateT(t)` high-water guard,
+ * computed by the caller. It must only be evaluated for a guest receiving a
+ * `tactics-state` (the host never advances its own mark) — the router simply
+ * consumes the boolean.
+ */
+export interface TacticsMsgCtx {
+  isHost: boolean;
+  userId: string;
+  /** Whether a local tactics board currently exists (`!!store.tactics`). */
+  hasTactics: boolean;
+  /** Whether the local board exists AND its status is 'active'. */
+  tacticsActive: boolean;
+  /** Result of the staleness guard for a `tactics-state` (guest only). */
+  accept: boolean;
+}
+
+/**
+ * Descriptor the router returns; the hook executes it against the store/channel.
+ *  - `resend`: host, hero-join, board already exists → rebroadcast current state (MP-10).
+ *  - `begin`:  host, hero-join, no board → beginTacticsCoop with the joiner's hero.
+ *  - `apply`:  guest, fresh tactics-state → coopApplyTactics re-keyed to us (MP-03).
+ *  - `intent`: host, valid guest tactics-intent → resolve + rebroadcast.
+ *  - `bye`:    a peer departed → drop its avatar + toast.
+ *  - `ignore`: every early-exit (wrong role, stale, self-intent, inactive board).
+ */
+export type TacticsMsgAction =
+  | { kind: 'resend' }
+  | { kind: 'begin' }
+  | { kind: 'apply' }
+  | { kind: 'intent' }
+  | { kind: 'bye'; userId: string; username: string }
+  | { kind: 'ignore' };
+
+/**
+ * Pure decision for an incoming co-op tactics message — the branch logic
+ * extracted from `useTacticsCoopSession`'s inline broadcast handler so it's
+ * unit-testable (MP-03 staleness accept/reject, MP-10 hero-join resend-on-existing).
+ * No store reads, no sends, no module state: the caller supplies `ctx` and runs
+ * the returned descriptor.
+ */
+export function handleTacticsMessage(msg: CoopMessage, ctx: TacticsMsgCtx): TacticsMsgAction {
+  switch (msg.type) {
+    case 'hero-join':
+      // Host only: build the board, or resend if it already exists.
+      if (!ctx.isHost) return { kind: 'ignore' };
+      return ctx.hasTactics ? { kind: 'resend' } : { kind: 'begin' };
+
+    case 'tactics-state':
+      // Guest only: apply the host's authoritative state, dropping stale stamps.
+      if (ctx.isHost) return { kind: 'ignore' };
+      if (!ctx.accept) return { kind: 'ignore' };
+      return { kind: 'apply' };
+
+    case 'tactics-intent':
+      // Host only: apply the guest's action while the board is live and the
+      // heroId belongs to a non-host hero.
+      if (!ctx.isHost) return { kind: 'ignore' };
+      if (!ctx.tacticsActive) return { kind: 'ignore' };
+      if (msg.heroId === ctx.userId) return { kind: 'ignore' };
+      return { kind: 'intent' };
+
+    case 'bye':
+      if (msg.userId === ctx.userId) return { kind: 'ignore' };
+      return { kind: 'bye', userId: msg.userId, username: msg.username };
+
+    default:
+      return { kind: 'ignore' };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Session lifecycle helpers
 // ---------------------------------------------------------------------------
@@ -611,16 +733,24 @@ export function applyBye(roster: RemotePlayers, userId: string): RemotePlayers {
  * Prune players who haven't sent a slice within `timeoutMs`.
  * Returns the pruned roster and the usernames of timed-out players (so the
  * caller can show departure notices).
+ *
+ * MP-21: `exempt` grants a matching userId a longer `timeoutMs` (not immortality) —
+ * used to keep a backgrounded host (whose sim/broadcast throttles while its tab is
+ * hidden) in the roster instead of falsely reporting it left. The window is bounded
+ * so a host that closed its tab or dropped the network — which sends no `bye` and no
+ * further slice to clear its paused flag — is still reaped once it exceeds that window.
  */
 export function pruneStalePlayers(
   roster: RemotePlayers,
   now: number,
   timeoutMs: number,
+  exempt?: { isExempt: (userId: string) => boolean; timeoutMs: number },
 ): { roster: RemotePlayers; timedOut: string[] } {
   const next: RemotePlayers = {};
   const timedOut: string[] = [];
   for (const key of Object.keys(roster)) {
-    if (now - roster[key].lastSeen < timeoutMs) {
+    const limit = exempt?.isExempt(key) ? exempt.timeoutMs : timeoutMs;
+    if (now - roster[key].lastSeen < limit) {
       next[key] = roster[key];
     } else {
       timedOut.push(roster[key].username);
@@ -652,8 +782,14 @@ export function buildPlayerSlice(
   };
 }
 
-/** Build a WorldSlice from the host's current run state. */
-export function buildWorldSlice(run: MineState | ForestState): WorldSlice {
+/**
+ * Build a WorldSlice from the host's current run state.
+ *
+ * MP-21: `hostPaused` flags a host whose tab is hidden (monster sim frozen). It is
+ * only stamped when true so guests keep the host in their roster instead of evicting
+ * it during the alt-tab throttle; a later slice with it absent clears the flag.
+ */
+export function buildWorldSlice(run: MineState | ForestState, hostPaused = false): WorldSlice {
   const depth = 'floor' in run ? run.floor : run.stage;
   const entities = 'monsters' in run ? run.monsters : run.beasts;
   return {
@@ -663,8 +799,7 @@ export function buildWorldSlice(run: MineState | ForestState): WorldSlice {
     // every new slice look stale to a guest's high-water mark).
     t: Date.now(),
     floor: depth,
-    // 'choosing' is a UI sub-status; from the guest's perspective the world is still 'active'.
-    status: run.status === 'choosing' ? 'active' : (run.status as WorldSlice['status']),
+    ...(hostPaused ? { hostPaused: true } : {}),
     monsters: entities.map((m) => ({
       id: m.id,
       key: m.key,

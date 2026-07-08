@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { initAuth, useAuthStore } from '@/net/auth';
 import { isBackendConfigured } from '@/net/env';
-import { pullCloudSave, startAutoSync, stopAutoSync, wipeLocalSave } from '@/net/cloudSave';
+import { pullCloudSave, startAutoSync, stopAutoSync, wipeLocalSave, foregroundRepull } from '@/net/cloudSave';
 import { syncServerClock } from '@/net/clock';
 
 /**
@@ -37,7 +37,13 @@ export function useCloudSync(): { cloudReady: boolean; clockReady: boolean } {
     // daily/weekly boundary 1:1 for the rest of the session — the exact spoof
     // vector the server-clock seam exists to close.
     const onVisible = () => {
-      if (document.visibilityState === 'visible') void syncServerClock();
+      if (document.visibilityState === 'visible') {
+        void syncServerClock();
+        // Re-pull the cloud save so a resumed phone sees progress made on another
+        // device (item 9.4). No-ops when local is dirty / a conflict is pending /
+        // no session — see foregroundRepull.
+        foregroundRepull();
+      }
     };
     document.addEventListener('visibilitychange', onVisible);
     const resyncId = setInterval(() => void syncServerClock(), 60 * 60_000);

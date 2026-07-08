@@ -27,6 +27,8 @@
 import { COURT_DC } from '@/engine/trials/royalCourt';
 
 export interface SpiritGroveRound {
+  /** Stable identity for persisted seen-state (survives pool reordering). */
+  id: string;
   omen: string;
   choices: { label: string; clue?: string }[];
   correctIndex: number;
@@ -65,7 +67,8 @@ export interface CourtExchange {
 
 // ── Spirit Grove ───────────────────────────────────────────────────────────────
 //
-// Pool of 15 rounds: 5 easy, 5 medium, 5 hard.
+// Pool of 30 rounds: 10 easy, 10 medium, 10 hard. Each round has a stable `id`
+// (MINI-16) so per-account seen-history can bias drafts toward unseen rounds.
 // The trial draws 1 easy + 2 medium + 2 hard per session, presented in that
 // order so difficulty ramps across the five rounds.
 //
@@ -78,6 +81,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
   // ── EASY ────────────────────────────────────────────────────────────────────
 
   {
+    id: 'sg-e1',
     difficulty: 'easy',
     omen: 'The bark of the elder tree has split, and sap weeps upward like tears.',
     choices: [
@@ -90,6 +94,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'Sap weeping from a split — the tree is wounded. The spirits call for Mending, not growth or purging.',
   },
   {
+    id: 'sg-e2',
     difficulty: 'easy',
     omen: 'The stream runs backwards for three heartbeats, then resumes.',
     choices: [
@@ -102,6 +107,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'The stream reversed itself — something disturbed its natural course. Balance restores harmony to what is upset.',
   },
   {
+    id: 'sg-e3',
     difficulty: 'easy',
     omen: 'Frost appears on the leaves in midsummer, then melts at your touch.',
     choices: [
@@ -114,6 +120,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'Cold where it has no place, and it yields to your touch. Warmth counters the cold directly.',
   },
   {
+    id: 'sg-e4',
     difficulty: 'easy',
     omen: 'A fallen oak now bridges the stream, and fox, deer, and beetle all use it to cross.',
     choices: [
@@ -126,6 +133,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'The tree does not gather them — they simply use its shape. What has ended has found its purpose, not a shared bond or final crossing.',
   },
   {
+    id: 'sg-e5',
     difficulty: 'easy',
     omen: 'Frost on a spider\'s web at dawn makes every thread glow — the whole pattern revealed at once.',
     choices: [
@@ -141,6 +149,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
   // ── MEDIUM ──────────────────────────────────────────────────────────────────
 
   {
+    id: 'sg-m1',
     difficulty: 'medium',
     omen: 'A raven circles the grove seven times, then lands facing west.',
     choices: [
@@ -153,6 +162,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'Seven circuits, then facing west — completion and the direction long held to mark endings. Foresight would mean the raven sees ahead, not that it marks a close.',
   },
   {
+    id: 'sg-m2',
     difficulty: 'medium',
     omen: 'Three fireflies form a perfect triangle, hold it for a long breath, then scatter.',
     choices: [
@@ -165,6 +175,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'Three things formed a shape together and held it — the scattering came after. The blessing is the act of union, not the dispersal that follows.',
   },
   {
+    id: 'sg-m3',
     difficulty: 'medium',
     omen: 'An acorn cracks open and a fully-grown sapling springs out in moments.',
     choices: [
@@ -177,6 +188,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'The sapling was always inside the acorn — it needed only a moment to emerge. Potential brings latent power to the surface; Haste compresses time, which is not the same thing.',
   },
   {
+    id: 'sg-m4',
     difficulty: 'medium',
     omen: 'A wolf pup stands at the tree line in silence, watching the storm, and does not step into the open field.',
     choices: [
@@ -189,6 +201,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'The pup does not seem frightened — it is still, not shrinking. Wisdom recognises the limit of one\'s current strength. Caution reacts to perceived danger; this pup simply knows where it stands.',
   },
   {
+    id: 'sg-m5',
     difficulty: 'medium',
     omen: 'A single candle left burning in an empty hall keeps the darkness at bay all night.',
     choices: [
@@ -204,6 +217,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
   // ── HARD ────────────────────────────────────────────────────────────────────
 
   {
+    id: 'sg-h1',
     difficulty: 'hard',
     omen: 'The shadow of the great oak falls toward the sun at noon.',
     choices: [
@@ -216,6 +230,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'Shadows always fall away from the sun — this one does not. It is not a mistake of the light; it is deliberate opposition to nature\'s rule. Defiance acts against the order by choice. Inversion merely reverses — it does not choose.',
   },
   {
+    id: 'sg-h2',
     difficulty: 'hard',
     omen: 'Smoke rises from a cold, unlit hearth — no embers, no flame, only the scent of old wood.',
     choices: [
@@ -228,6 +243,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'The fire is gone, but its mark remains in the smoke. Memory carries the trace of what once was — it does not summon anything back, nor does it grieve. The smoke does not call anyone home; it only remembers.',
   },
   {
+    id: 'sg-h3',
     difficulty: 'hard',
     omen: 'A river bends sharply around the base of a mountain rather than cutting through it.',
     choices: [
@@ -240,6 +256,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'The river does not wait, and it does not grind the mountain down — it bends. Prudence is the act of choosing the better path. Wisdom would be knowing the mountain cannot be cut; Prudence is going around it.',
   },
   {
+    id: 'sg-h4',
     difficulty: 'hard',
     omen: 'A bird continues its call in a forest where all its kind have already flown south for winter.',
     choices: [
@@ -252,6 +269,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'The bird is not lost — it calls because it has always called. It stays not because it cannot leave but because it will not. Faithfulness, not grief or folly — those would imply the bird knows something is wrong.',
   },
   {
+    id: 'sg-h5',
     difficulty: 'hard',
     omen: 'At the moment of the first snowfall, every remaining leaf on every tree falls at once.',
     choices: [
@@ -267,6 +285,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
   // ── EASY (additional) ────────────────────────────────────────────────────────
 
   {
+    id: 'sg-e6',
     difficulty: 'easy',
     omen: 'A crow drops a single white feather at your feet, then flies east.',
     choices: [
@@ -279,6 +298,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'The crow is a messenger; the white feather it leaves behind is the message. Flying east points toward the rising sun — a beginning, not an end. The gift is the sign itself: the omen has been delivered, not a new day opened or something released.',
   },
   {
+    id: 'sg-e7',
     difficulty: 'easy',
     omen: 'Two deer drink from the same pool without startling each other.',
     choices: [
@@ -291,6 +311,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'Deer are wary by nature — their reflex is to startle and flee. Together at the pool, neither one does. This is the absence of conflict, not a bond or shared abundance. Peace is the state in which fear finds no cause to act.',
   },
   {
+    id: 'sg-e8',
     difficulty: 'easy',
     omen: 'A moth lands on the hearthstone but is not burned.',
     choices: [
@@ -303,6 +324,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'The hearthstone should be dangerous to the moth — yet it rests there unharmed. Something has turned the danger aside. Warding keeps what would cause harm from doing so, without the moth needing to endure or conceal itself.',
   },
   {
+    id: 'sg-e9',
     difficulty: 'easy',
     omen: 'Raindrops fall upward from the surface of a still pond.',
     choices: [
@@ -315,6 +337,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'Raindrops fall — that is their nature. These rise. The direction they should travel has been inverted. Reversal is not about revealing or nourishing; it is about the order of things running the wrong way against itself.',
   },
   {
+    id: 'sg-e10',
     difficulty: 'easy',
     omen: 'A single candle lights itself in an empty room.',
     choices: [
@@ -330,6 +353,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
   // ── MEDIUM (additional) ──────────────────────────────────────────────────────
 
   {
+    id: 'sg-m6',
     difficulty: 'medium',
     omen: 'A stone dropped into a still lake makes no ripple. The water closes over it as if nothing passed.',
     choices: [
@@ -342,6 +366,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'The stone entered the water — something should mark its passing. Nothing does. The water has erased the evidence of the event. Concealment removes the trace; Acceptance would mean the water yielded without protest, but this goes further — it hides what happened entirely.',
   },
   {
+    id: 'sg-m7',
     difficulty: 'medium',
     omen: "The elder tree's shadow stretches east at noon, when all other shadows point north.",
     choices: [
@@ -354,6 +379,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'At noon every shadow obeys the same rule — except this one. The elder has not chosen to disobey; it simply is not what it should be. Aberration marks a deviation from the nature of the thing, without will or intention. Defiance would mean the tree chose this; the shadow cannot choose.',
   },
   {
+    id: 'sg-m8',
     difficulty: 'medium',
     omen: 'A wolf sits at the edge of the grove for three nights and does not enter.',
     choices: [
@@ -366,6 +392,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'The wolf is a predator — the grove has prey. Three nights pass; it does not cross. This is not patience (which waits for the right moment to act) or warding (which keeps things out by force). The wolf has the power to enter and withholds it. Restraint is when strength declines to act because something deserves to be left alone.',
   },
   {
+    id: 'sg-m9',
     difficulty: 'medium',
     omen: 'A thornbush blooms white in the dead of winter. By morning, the flowers are gone.',
     choices: [
@@ -378,6 +405,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: "The thornbush blooms where nothing should bloom — that is the wonder. But what the blessing marks is the vanishing, not the blooming. Transience is what comes and goes before it can be grasped. Defiance is the act of blooming; Transience is what the bloom itself embodies by being gone before morning.",
   },
   {
+    id: 'sg-m10',
     difficulty: 'medium',
     omen: 'An old wound on your palm begins to ache in the presence of the ancient oak.',
     choices: [
@@ -393,6 +421,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
   // ── HARD (additional) ────────────────────────────────────────────────────────
 
   {
+    id: 'sg-h6',
     difficulty: 'hard',
     omen: "A bird's nest sits in the lowest branch — within reach of the fox — and goes untouched all season.",
     choices: [
@@ -405,6 +434,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: "The nest is not hidden — it is in the lowest branch, visible and reachable. The fox knows the grove; it does not take the nest all season. This is not luck (which has no cause), nor concealment (it is plainly there), nor being overlooked (the fox must have seen it). Something has made this place untouchable. Sanctuary is the protection granted by the nature of a space, not by hiding or chance.",
   },
   {
+    id: 'sg-h7',
     difficulty: 'hard',
     omen: 'The river splits around a stone, and where the two currents meet again downstream, the water is still.',
     choices: [
@@ -417,6 +447,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'The river divides — then meets again, and at the meeting-point it is still. Two flows that separated found a quieter state when rejoined, neither dominating. Harmony is the peace that arises when things that differ stop opposing each other. Reunion merely rejoins; Stillness would quiet the motion without explaining the why — only Harmony captures the accord between the two currents.',
   },
   {
+    id: 'sg-h8',
     difficulty: 'hard',
     omen: "A child's laughter echoes in the grove long after the child has gone home.",
     choices: [
@@ -429,6 +460,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: 'The child is home — the laughter should have ended with her. The grove holds it past the point it had any right to remain. Echo fades quickly; Memory would be the silent trace, not the living sound; Joy is the feeling, not its peculiar persistence. Lingering is specifically what stays beyond the moment it should have released.',
   },
   {
+    id: 'sg-h9',
     difficulty: 'hard',
     omen: 'A door stands alone in the forest with no wall around it. It is still locked.',
     choices: [
@@ -441,6 +473,7 @@ export const SPIRIT_GROVE_ROUNDS: SpiritGroveRound[] = [
     explanation: "The door has no wall — it serves no structural function anymore. Yet it is still locked. A lock insists that something is inside and something is outside. Without the wall, only the lock's intention holds that line. Boundaries are what define inside from outside, and this lock is still insisting on that distinction. Threshold marks transitions; Purpose would imply the door still serves passage — but a locked door with no wall serves only separation.",
   },
   {
+    id: 'sg-h10',
     difficulty: 'hard',
     omen: 'Your reflection in the pool wears a serene face while your own expression is afraid.',
     choices: [
@@ -472,7 +505,7 @@ export const ROYAL_COURT_EXCHANGES: CourtExchange[] = [
       { label: '"I\'m here. Where\'s the queen?"', favorDelta: -1 },
       { label: '"It is my profound honour to attend the court today."', favorDelta: 3 },
       // 🎲 Gambit — blunt candour. High CH turns it into refreshing confidence; low CH reads as flat rudeness.
-      { label: '"I was told to show up. So here I am."', favorDelta: 4, check: { dc: COURT_DC.medium, failDelta: -3 } },
+      { label: '"I was told to show up. So here I am."', favorDelta: 6, check: { dc: COURT_DC.medium, failDelta: -2 } },
     ],
   },
   {
@@ -485,7 +518,7 @@ export const ROYAL_COURT_EXCHANGES: CourtExchange[] = [
       { label: '"More than you, clearly."', favorDelta: -2 },
       { label: '"I have served the realm faithfully and ask only for an audience."', favorDelta: 3 },
       // 🎲 Gambit — bold defiance in the queen's court. High CH commands the room; low CH is simply rude.
-      { label: '"I don\'t answer to you."', favorDelta: 4, check: { dc: COURT_DC.hard, failDelta: -3 } },
+      { label: '"I don\'t answer to you."', favorDelta: 6, check: { dc: COURT_DC.hard, failDelta: -2 } },
     ],
   },
   {
@@ -523,7 +556,7 @@ export const ROYAL_COURT_EXCHANGES: CourtExchange[] = [
       { label: '"I see the bell is the only thing in this court that tells the truth."', favorDelta: 3 },
       { label: '"Ha. Ha. Ha. I am being funny now."', favorDelta: -1 },
       // 🎲 Gambit — grand theatrical confidence. High CH draws a genuine laugh; low CH draws silence.
-      { label: '"Your Majesty, my arrival alone should suffice as entertainment."', favorDelta: 4, check: { dc: COURT_DC.medium, failDelta: -2 } },
+      { label: '"Your Majesty, my arrival alone should suffice as entertainment."', favorDelta: 6, check: { dc: COURT_DC.medium, failDelta: -1 } },
       { label: '"I am not here to perform."', favorDelta: -2 },
     ],
   },
@@ -572,7 +605,7 @@ export const ROYAL_COURT_EXCHANGES: CourtExchange[] = [
       '"In my homeland, honoured guests are welcomed with a shared cup — unfiltered, faintly bitter. The queen watches your reaction."',
     choices: [
       // 🎲 Gambit — drain the cup with a smile and hold eye contact throughout. High CH makes it effortlessly charming; low CH ends in a cough.
-      { label: 'You accept with a gracious smile and drink without hesitation.', favorDelta: 4, check: { dc: COURT_DC.easy, failDelta: -2 } },
+      { label: 'You accept with a gracious smile and drink without hesitation.', favorDelta: 5, check: { dc: COURT_DC.easy, failDelta: -2 } },
       { label: 'You accept, lift the cup, and take a small sip.', favorDelta: 2 },
       { label: 'You accept graciously but set the cup aside, untouched.', favorDelta: 1 },
       { label: 'You decline politely, citing unfamiliarity with foreign customs.', favorDelta: -2 },
@@ -599,7 +632,7 @@ export const ROYAL_COURT_EXCHANGES: CourtExchange[] = [
       { label: '"I appreciate the counsel, but I prefer to make my own judgements."', favorDelta: 3 },
       { label: '"Duly noted. I\'ll bear that in mind."', favorDelta: 1 },
       // 🎲 Gambit — call her bluff directly. High CH earns her respect; low CH reads as clumsy and suspicious.
-      { label: '"That sounds very much like an offer. What would you want in return?"', favorDelta: 3, check: { dc: COURT_DC.medium, failDelta: -2 } },
+      { label: '"That sounds very much like an offer. What would you want in return?"', favorDelta: 6, check: { dc: COURT_DC.medium, failDelta: -2 } },
       { label: '"Lord Aldric seems perfectly reasonable to me."', favorDelta: -2 },
     ],
   },
@@ -611,7 +644,7 @@ export const ROYAL_COURT_EXCHANGES: CourtExchange[] = [
     choices: [
       { label: '"I vouch for my companion and ask that all evidence be heard first."', favorDelta: 3 },
       // 🎲 Gambit — publicly challenge the accuser's credibility. High CH sways the room; low CH seems presumptuous.
-      { label: '"Question the accuser\'s motivations — something feels wrong here."', favorDelta: 4, check: { dc: COURT_DC.medium, failDelta: -2 } },
+      { label: '"Question the accuser\'s motivations — something feels wrong here."', favorDelta: 6, check: { dc: COURT_DC.medium, failDelta: -2 } },
       { label: '"Defer to the palace\'s justice — whatever you decide."', favorDelta: 1 },
       { label: '"Detain my companion for now. I won\'t interfere with palace law."', favorDelta: -2 },
     ],
@@ -638,7 +671,7 @@ export const ROYAL_COURT_EXCHANGES: CourtExchange[] = [
       { label: '"I was unwell, but did not wish to trouble the court."', favorDelta: 2 },
       { label: '"Fatigue from travel, nothing more. I am fine."', favorDelta: 1 },
       // 🎲 Gambit — push back on being called to account. High CH reads as principled; low CH reads as entitled.
-      { label: '"I was not informed my schedule required accounting."', favorDelta: 3, check: { dc: COURT_DC.hard, failDelta: -3 } },
+      { label: '"I was not informed my schedule required accounting."', favorDelta: 6, check: { dc: COURT_DC.hard, failDelta: -2 } },
     ],
   },
 ];

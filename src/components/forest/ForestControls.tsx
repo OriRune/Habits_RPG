@@ -53,6 +53,9 @@ export function ForestControls({ controls }: { controls: ForestControlsApi }) {
               e.preventDefault();
               controls.act();
             }}
+            onPointerUp={() => controls.releaseCharge()}
+            onPointerLeave={() => controls.releaseCharge()}
+            onPointerCancel={() => controls.releaseCharge()}
             aria-label="Slash / gather"
             className={cn(
               pad,

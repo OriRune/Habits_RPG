@@ -60,6 +60,31 @@ export interface ClassAssignment {
  * `ambiguous` flag set when ties at the first- or second-place boundary mean the
  * brief's "if tied, player chooses" rule applies.
  */
+/** Pending class choice when level-10 stats tie (brief: "if tied, player chooses"). */
+export interface PendingClassChoice {
+  options: { primary: StatId; secondary: StatId; classId: string }[];
+}
+
+/** Build the distinct top-tier class pairings among the tied-highest stats (level-10 tie-break). */
+export function buildClassChoice(statXp: Record<StatId, number>): PendingClassChoice {
+  // Offer the distinct top-tier pairings among the tied-highest stats.
+  const sorted = (Object.entries(statXp) as [StatId, number][]).sort((a, b) => b[1] - a[1]);
+  const topVal = sorted[0][1];
+  const tied = sorted.filter(([, v]) => v === topVal).map(([s]) => s);
+  const second = sorted.find(([s]) => !tied.includes(s));
+  const options: PendingClassChoice['options'] = [];
+  for (const p of tied) {
+    for (const q of tied) {
+      if (p === q) continue;
+      options.push({ primary: p, secondary: q, classId: classFor(p, q) });
+    }
+    if (second) {
+      options.push({ primary: p, secondary: second[0], classId: classFor(p, second[0]) });
+    }
+  }
+  return { options };
+}
+
 export function assignClass(statXp: Record<StatId, number>): ClassAssignment {
   const ranked = rankStats(statXp);
   const primary = ranked[0];

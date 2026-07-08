@@ -1,5 +1,7 @@
 import { useGameStore } from '@/store/useGameStore';
 import { getWeapon } from '@/engine/weapons';
+import { CRAFT_TIERS, NORMAL, asCraftTier, scaleWeaponDef } from '@/engine/crafting';
+import { tierPrefix } from '@/components/inventory/GearSection';
 import { weaponCrest } from '@/lib/sprites';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
@@ -10,6 +12,7 @@ import { SectionTitle } from '@/components/ui/Divider';
 export function WeaponsSection() {
   const ownedWeapons = useGameStore((s) => s.ownedWeapons);
   const equippedWeapon = useGameStore((s) => s.equippedWeapon);
+  const weaponQuality = useGameStore((s) => s.weaponQuality);
   const equipWeapon = useGameStore((s) => s.equipWeapon);
 
   if (ownedWeapons.length === 0) return null;
@@ -21,6 +24,9 @@ export function WeaponsSection() {
         {ownedWeapons.map((key) => {
           const w = getWeapon(key);
           const equipped = key === equippedWeapon;
+          // Show the quality-scaled bonus (matches combat) and a tier-prefixed, tinted name.
+          const tier = asCraftTier(weaponQuality[key]);
+          const scaled = scaleWeaponDef(w, tier);
           return (
             <div
               key={key}
@@ -29,9 +35,14 @@ export function WeaponsSection() {
               <div className="flex min-w-0 items-center gap-2.5">
                 <Sprite spriteKey={`weapon:${key}`} look={weaponCrest(w.name, w.attackStat)} size="md" />
                 <div className="min-w-0">
-                  <div className="text-sm font-semibold text-ink">{w.name}</div>
+                  <div
+                    className="text-sm font-semibold text-ink"
+                    style={tier !== NORMAL ? { color: CRAFT_TIERS[tier].color } : undefined}
+                  >
+                    {tierPrefix(w.name, weaponQuality[key])}
+                  </div>
                   <div className="truncate text-[11px] text-ink-muted">
-                    {w.attackStat === 'DX' ? 'Dexterity' : 'Strength'} · +{w.bonus}
+                    {w.attackStat === 'DX' ? 'Dexterity' : 'Strength'} · +{scaled.bonus}
                   </div>
                 </div>
               </div>

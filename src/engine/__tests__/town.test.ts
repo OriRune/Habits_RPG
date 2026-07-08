@@ -1,0 +1,350 @@
+import { describe, it, expect } from 'vitest';
+import {
+  freshTown,
+  laborFor,
+  gridSizeFor,
+  inUnlockedLand,
+  occupancy,
+  canPlace,
+  prestigeOf,
+  townPerks,
+  queueBuild,
+  queueUpgrade,
+  cancelProject,
+  applyLabor,
+  clawBackLabor,
+  settleProjects,
+  demolish,
+  moveBuilding,
+  placeDecor,
+  type TownState,
+  type TownBuilding,
+} from '../town';
+import { TOWN_BUILDINGS } from '@/content/townBuildings';
+import { TOWN_DECOR } from '@/content/townDecor';
+
+const WATCHTOWER = TOWN_BUILDINGS['watchtower']; // 1×1, perk sight, labor 15/30/55
+const BATHHOUSE = TOWN_BUILDINGS['bathhouse'];   // 2×2, perk stamina
+const CHAPEL = TOWN_BUILDINGS['chapel'];         // 2×2, unlock prestige >= 80
+const MANOR = TOWN_BUILDINGS['manor'];           // 2×3, unlock deed >= 2
+
+/** Seed a town with explicit overrides for reducer-level tests. */
+function town(overrides: Partial<TownState> = {}): TownState {
+  return { ...freshTown(), ...overrides };
+}
+
+const bld = (o: Partial<TownBuilding> & Pick<TownBuilding, 'id' | 'key' | 'r' | 'c' | 'tier'>): TownBuilding => o;
+
+describe('deed helpers', () => {
+  it('gridSizeFor is 14/18/21/24 square, clamped', () => {
+    expect(gridSizeFor(0)).toEqual({ rows: 14, cols: 14 });
+    expect(gridSizeFor(1)).toEqual({ rows: 18, cols: 18 });
+    expect(gridSizeFor(2)).toEqual({ rows: 21, cols: 21 });
+    expect(gridSizeFor(3)).toEqual({ rows: 24, cols: 24 });
+    expect(gridSizeFor(4)).toEqual({ rows: 24, cols: 24 });
+    expect(gridSizeFor(-1)).toEqual({ rows: 14, cols: 14 });
+  });
+
+  it('inUnlockedLand tracks the deed square', () => {
+    expect(inUnlockedLand(0, 13, 13)).toBe(true);
+    expect(inUnlockedLand(0, 14, 0)).toBe(false);
+    expect(inUnlockedLand(1, 14, 14)).toBe(true);
+  });
+
+  it('laborFor maps difficulty to the labor rate', () => {
+    expect(laborFor('easy')).toBe(1);
+    expect(laborFor('normal')).toBe(2);
+    expect(laborFor('hard')).toBe(4);
+    expect(laborFor('epic')).toBe(6);
+  });
+});
+
+describe('canPlace', () => {
+  it('rejects out-of-bounds footprints', () => {
+    expect(canPlace(town(), WATCHTOWER, -1, 0)).toEqual({ ok: false, reason: 'bounds' });
+    expect(canPlace(town({ deeds: 3 }), BATHHOUSE, 23, 23)).toEqual({ ok: false, reason: 'bounds' });
+  });
+
+  it('rejects cells outside the purchased district (locked)', () => {
+    // In absolute bounds (< 24) but outside the deed-0 (14×14) square.
+    expect(canPlace(town(), WATCHTOWER, 14, 14)).toEqual({ ok: false, reason: 'locked' });
+  });
+
+  it('rejects overlap with a reserved queued-build footprint (occupied)', () => {
+    const queued = queueBuild(town(), WATCHTOWER, 0, 0, undefined, 'p1')!;
+    // Different building key at the same cell → occupied (checked before queue_full).
+    expect(canPlace(queued, BATHHOUSE, 0, 0)).toEqual({ ok: false, reason: 'occupied' });
+  });
+
+  it('rejects a second instance of a unique building', () => {
+    const queued = queueBuild(town(), WATCHTOWER, 0, 0, undefined, 'p1')!;
+    expect(canPlace(queued, WATCHTOWER, 5, 5)).toEqual({ ok: false, reason: 'unique' });
+  });
+
+  it('rejects a prestige-gated building below the threshold', () => {
+    expect(canPlace(town(), CHAPEL, 0, 0)).toEqual({ ok: false, reason: 'prestige' });
+  });
+
+  it('rejects a deed-gated building below the deed requirement', () => {
+    expect(canPlace(town({ deeds: 3 }), MANOR, 0, 0).ok).toBe(true);
+    expect(canPlace(town(), MANOR, 0, 0)).toEqual({ ok: false, reason: 'prestige' });
+  });
+
+  it('accepts a valid placement', () => {
+    expect(canPlace(town(), WATCHTOWER, 3, 3)).toEqual({ ok: true });
+  });
+});
+
+describe('occupancy', () => {
+  it('includes buildings, reserved queue footprints, and decor', () => {
+    const t = town({
+      buildings: [bld({ id: 'b1', key: 'watchtower', r: 0, c: 0, tier: 1 })],
+      queue: [{ id: 'p1', kind: 'build', key: 'bathhouse', r: 2, c: 2, laborNeed: 15, laborApplied: 0 }],
+      decor: [{ key: 'well', r: 10, c: 10 }],
+    });
+    const occ = occupancy(t);
+    expect(occ.has('0,0')).toBe(true);   // building
+    expect(occ.has('3,3')).toBe(true);   // bathhouse 2×2 reserved footprint
+    expect(occ.has('10,10')).toBe(true); // decor
+  });
+});
+
+describe('queueBuild / queueUpgrade', () => {
+  it('reserves the footprint so a second build on the same cells fails', () => {
+    const t = queueBuild(town(), WATCHTOWER, 0, 0, undefined, 'p1')!;
+    expect(t.queue).toHaveLength(1);
+    expect(queueBuild(t, BATHHOUSE, 0, 0, undefined, 'p2')).toBeNull();
+  });
+
+  it('refuses a second project at the slot cap (queue_full)', () => {
+    const t = queueBuild(town(), WATCHTOWER, 0, 0, undefined, 'p1')!;
+    // slots = 1 (no Keep III); a valid placement elsewhere still fails on queue_full.
+    expect(queueBuild(t, BATHHOUSE, 5, 5, undefined, 'p2')).toBeNull();
+  });
+
+  it('snapshots the labor need (no Mason discount by default)', () => {
+    const t = queueBuild(town(), WATCHTOWER, 0, 0, undefined, 'p1')!;
+    expect(t.queue[0].laborNeed).toBe(WATCHTOWER.tiers[0].labor); // 15
+  });
+
+  it('applies the Mason discount at queue time (snapshotted)', () => {
+    // A completed Mason's Guild grants laborDiscount01 = 0.10.
+    const t = town({ buildings: [bld({ id: 'm', key: 'masons_guild', r: 0, c: 0, tier: 1 })] });
+    const queued = queueBuild(t, WATCHTOWER, 5, 5, undefined, 'p1')!;
+    expect(queued.queue[0].laborNeed).toBe(Math.ceil(15 * 0.9)); // 14
+  });
+
+  it('queueUpgrade needs the building and stops at maxTier', () => {
+    const t = town({ buildings: [bld({ id: 'w', key: 'watchtower', r: 0, c: 0, tier: 3 })] });
+    expect(queueUpgrade(t, 'w', 'u1')).toBeNull(); // already at maxTier 3
+    expect(queueUpgrade(town(), 'missing', 'u1')).toBeNull();
+  });
+
+  it('queueUpgrade snapshots the next tier cost', () => {
+    const t = town({ buildings: [bld({ id: 'w', key: 'watchtower', r: 0, c: 0, tier: 1 })] });
+    const up = queueUpgrade(t, 'w', 'u1')!;
+    expect(up.queue[0]).toMatchObject({ kind: 'upgrade', buildingId: 'w', laborNeed: 30 });
+  });
+});
+
+describe('applyLabor', () => {
+  it('caps labor at the daily cap (25th point refused)', () => {
+    const day1 = applyLabor(town(), 24, 'D1');
+    expect(day1.laborBank).toBe(24);
+    expect(day1.laborToday).toBe(24);
+    const more = applyLabor(day1, 1, 'D1');
+    expect(more.laborBank).toBe(24); // refused
+    expect(more.laborToday).toBe(24);
+  });
+
+  it('resets the daily counter on a new ISO day', () => {
+    const day1 = applyLabor(town(), 24, 'D1');
+    const day2 = applyLabor(day1, 10, 'D2');
+    expect(day2.laborToday).toBe(10);
+    expect(day2.laborBank).toBe(34);
+  });
+
+  it('caps the bank and drops overflow', () => {
+    const t = town({ laborBank: 190, laborISO: 'D1', laborToday: 0 });
+    const out = applyLabor(t, 24, 'D2');
+    expect(out.laborBank).toBe(200); // 190 + 24 = 214, clamped; 14 lost
+  });
+
+  it('drains the bank into queue[0..slots) in order (2 slots)', () => {
+    const t = town({
+      buildings: [bld({ id: 'keep', key: 'keep', r: 0, c: 0, tier: 3 })], // queueSlots 2
+      queue: [
+        { id: 'p1', kind: 'build', key: 'watchtower', r: 5, c: 5, laborNeed: 10, laborApplied: 0 },
+        { id: 'p2', kind: 'build', key: 'bathhouse', r: 7, c: 7, laborNeed: 10, laborApplied: 0 },
+      ],
+    });
+    const out = applyLabor(t, 15, 'D1');
+    expect(out.queue[0].laborApplied).toBe(10); // filled first
+    expect(out.queue[1].laborApplied).toBe(5);  // remainder
+    expect(out.laborBank).toBe(0);
+  });
+});
+
+describe('settleProjects', () => {
+  it('completes a build (building appears, perk activates) and reuses the project id', () => {
+    const queued = queueBuild(town(), WATCHTOWER, 5, 5, undefined, 'p1')!;
+    const labored = applyLabor(queued, 15, 'D1');
+    expect(townPerks(labored).sightBonus).toBe(0); // queued ≠ perk
+    const { town: settled, completed } = settleProjects(labored);
+    expect(completed).toHaveLength(1);
+    expect(settled.buildings).toHaveLength(1);
+    expect(settled.buildings[0]).toMatchObject({ id: 'p1', key: 'watchtower', tier: 1 });
+    expect(settled.queue).toHaveLength(0);
+    expect(townPerks(settled).sightBonus).toBe(1); // live now
+  });
+
+  it('completes an upgrade by bumping the target tier', () => {
+    const t = town({ buildings: [bld({ id: 'w', key: 'watchtower', r: 0, c: 0, tier: 1 })] });
+    // laborNeed 30 exceeds the daily cap (24), so labor is applied across two days.
+    let up = applyLabor(queueUpgrade(t, 'w', 'u1')!, 24, 'D1');
+    up = applyLabor(up, 24, 'D2');
+    const { town: settled } = settleProjects(up);
+    expect(settled.buildings[0].tier).toBe(2);
+  });
+
+  it('is a no-op when nothing is complete', () => {
+    const queued = queueBuild(town(), WATCHTOWER, 5, 5, undefined, 'p1')!;
+    const { completed } = settleProjects(queued);
+    expect(completed).toHaveLength(0);
+  });
+});
+
+describe('cancelProject', () => {
+  it('refunds 100% of the escrowed materials and drops the project', () => {
+    const queued = queueBuild(town(), WATCHTOWER, 0, 0, undefined, 'p1')!;
+    const { town: t, refundMaterials } = cancelProject(queued, 'p1');
+    expect(refundMaterials).toEqual(WATCHTOWER.tiers[0].materials); // { stone: 4, wood: 4 }
+    expect(t.queue).toHaveLength(0);
+  });
+
+  it('refunds the current-tier cost for an upgrade', () => {
+    const t = town({ buildings: [bld({ id: 'w', key: 'watchtower', r: 0, c: 0, tier: 1 })] });
+    const up = queueUpgrade(t, 'w', 'u1')!;
+    const { refundMaterials } = cancelProject(up, 'u1');
+    expect(refundMaterials).toEqual(WATCHTOWER.tiers[1].materials);
+  });
+});
+
+describe('clawBackLabor', () => {
+  it('drains the bank first, then the least-progressed project, clamped', () => {
+    const t = town({
+      laborBank: 5,
+      laborISO: 'D1',
+      laborToday: 20,
+      queue: [
+        { id: 'p1', kind: 'build', key: 'watchtower', r: 5, c: 5, laborNeed: 20, laborApplied: 3 },
+        { id: 'p2', kind: 'build', key: 'bathhouse', r: 7, c: 7, laborNeed: 20, laborApplied: 8 },
+      ],
+    });
+    const out = clawBackLabor(t, 10, 'D1');
+    expect(out.laborBank).toBe(0);            // 5 from bank
+    expect(out.queue[0].laborApplied).toBe(0); // p1 (least progressed) drained 3 → clamped
+    expect(out.queue[1].laborApplied).toBe(6); // p2 gives the remaining 2
+    expect(out.laborToday).toBe(10);           // decremented so the day cap refills
+  });
+
+  it('never drops below zero', () => {
+    const t = town({ laborBank: 1, laborToday: 1, laborISO: 'D1' });
+    const out = clawBackLabor(t, 100, 'D1');
+    expect(out.laborBank).toBe(0);
+    expect(out.laborToday).toBe(0);
+  });
+});
+
+describe('demolish', () => {
+  it('refunds 50% of cumulative tier materials (floored), 0% gold', () => {
+    const t = town({ buildings: [bld({ id: 'w', key: 'watchtower', r: 0, c: 0, tier: 2 })] });
+    // cumulative tiers 1..2: stone 4+8=12, wood 4+6=10, iron_bar 2 → 50%: 6 / 5 / 1
+    const { town: after, refundMaterials } = demolish(t, 'w');
+    expect(refundMaterials).toEqual({ stone: 6, wood: 5, iron_bar: 1 });
+    expect(after.buildings).toHaveLength(0);
+  });
+
+  it('never demolishes the Keep', () => {
+    const t = town({ buildings: [bld({ id: 'k', key: 'keep', r: 0, c: 0, tier: 1 })] });
+    const { town: after, refundMaterials } = demolish(t, 'k');
+    expect(after).toBe(t); // unchanged
+    expect(refundMaterials).toEqual({});
+  });
+});
+
+describe('moveBuilding', () => {
+  it('relocates freely but is blocked while a project targets it', () => {
+    const base = town({ buildings: [bld({ id: 'w', key: 'watchtower', r: 0, c: 0, tier: 1 })] });
+    const moved = moveBuilding(base, 'w', 5, 5)!;
+    expect(moved.buildings[0]).toMatchObject({ r: 5, c: 5 });
+    const withUpgrade = queueUpgrade(base, 'w', 'u1')!;
+    expect(moveBuilding(withUpgrade, 'w', 8, 8)).toBeNull();
+  });
+});
+
+describe('placeDecor', () => {
+  it('enforces the per-type cap', () => {
+    let t = town();
+    for (let i = 0; i < 10; i++) t = placeDecor(t, TOWN_DECOR['tree'], i, 0, 0)!;
+    expect(t.decor).toHaveLength(10);
+    expect(placeDecor(t, TOWN_DECOR['tree'], 11, 0, 0)).toBeNull(); // 11th tree refused
+  });
+});
+
+describe('prestigeOf / townPerks', () => {
+  it('sums completed building tiers plus decor', () => {
+    const t = town({
+      buildings: [bld({ id: 'k', key: 'keep', r: 0, c: 0, tier: 2 })], // 25 + 40
+      decor: [{ key: 'lamppost', r: 5, c: 5 }],                        // +1
+    });
+    expect(prestigeOf(t)).toBe(66);
+  });
+
+  it('derives queueSlots from Keep tier and perks from completed buildings only', () => {
+    const t = town({
+      buildings: [
+        bld({ id: 'k', key: 'keep', r: 0, c: 0, tier: 3 }),
+        bld({ id: 'w', key: 'watchtower', r: 4, c: 0, tier: 1 }),
+      ],
+    });
+    const perks = townPerks(t);
+    expect(perks.queueSlots).toBe(2);
+    expect(perks.sightBonus).toBe(1);
+  });
+});
+
+// Party-visit forward-compat freeze (plan3 10.6 / M6): the future read-only visit payload is
+// TownState verbatim, so it must stay a plain JSON-serializable bag (ids/coords/counters) with
+// no functions or class instances. See the doc block above the TownState interface.
+describe('party-visit payload freeze (M6)', () => {
+  it('a fully-populated TownState round-trips losslessly through JSON', () => {
+    const t = town({
+      v: 1,
+      deeds: 2,
+      buildings: [
+        bld({ id: 'k', key: 'keep', r: 0, c: 0, tier: 3, rot: 0 }),
+        bld({ id: 'w', key: 'watchtower', r: 4, c: 0, tier: 2 }),
+      ],
+      decor: [{ key: 'well', r: 5, c: 5, v: 2 }, { key: 'tree', r: 6, c: 6 }],
+      laborBank: 42,
+      queue: [{ id: 'p1', kind: 'build', key: 'bathhouse', r: 8, c: 8, rot: 0, laborNeed: 15, laborApplied: 7 }],
+      laborISO: '2026-07-07',
+      laborToday: 12,
+    });
+    expect(JSON.parse(JSON.stringify(t))).toEqual(t);
+  });
+
+  it('holds no function/instance values (visitors get a data blob, never behaviour)', () => {
+    const t = freshTown();
+    const hasNonPlain = (val: unknown): boolean => {
+      if (typeof val === 'function') return true;
+      if (val && typeof val === 'object') {
+        if (val.constructor !== Object && val.constructor !== Array) return true;
+        return Object.values(val).some(hasNonPlain);
+      }
+      return false;
+    };
+    expect(hasNonPlain(t)).toBe(false);
+  });
+});

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Grid3x3, Zap, Mountain, Sparkles, Gift } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
+import { useIsCoarsePointer } from '@/hooks/useIsCoarsePointer';
 import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
 import { TACTICS_ENERGY_COST, TACTICS_UNLOCK_LEVEL, TACTICS_GRANTED_SPELLS, STA_REGEN_PER_TURN, isTacticsLoadoutSpell, type TacticsSize } from '@/engine/hexBattle';
 import { getSpell } from '@/engine/spells';
@@ -34,6 +35,12 @@ export function TacticsView() {
 
   // Default the loadout to the first LOADOUT_CAP eligible spells.
   const [loadout, setLoadout] = useState<string[]>(() => eligibleSpells.slice(0, LOADOUT_CAP));
+  // Ephemeral difficulty-tier pick (like the loadout — NOT persisted). Defaults to the top tier.
+  const [tier, setTier] = useState<number>(level);
+  const tierOptions = Array.from(
+    { length: Math.max(0, level - TACTICS_UNLOCK_LEVEL + 1) },
+    (_, i) => TACTICS_UNLOCK_LEVEL + i,
+  );
   const [showRitual, setShowRitual] = useState(false);
   const showAdventureRitual = useGameStore((s) => s.settings.showAdventureRitual);
 
@@ -44,6 +51,8 @@ export function TacticsView() {
       return [...prev, key];
     });
   }
+
+  const coarse = useIsCoarsePointer();
 
   const unlocked = level >= TACTICS_UNLOCK_LEVEL;
   const canEnter = unlocked && energy >= TACTICS_ENERGY_COST;
@@ -93,6 +102,33 @@ export function TacticsView() {
             ))}
           </div>
         </div>
+
+        {level > TACTICS_UNLOCK_LEVEL && (
+          <div className="rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3">
+            <div className="mb-2 font-display text-sm text-ink">Difficulty tier</div>
+            <div className="flex flex-wrap gap-1.5">
+              {tierOptions.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setTier(t)}
+                  className={cn(
+                    'flex flex-col items-center rounded-md border px-2.5 py-1.5 font-display text-xs font-bold transition-colors',
+                    tier === t
+                      ? 'border-stat-AG bg-stat-AG/20 text-stat-AG'
+                      : 'border-gold-deep/30 bg-parchment-300/40 text-ink-muted hover:bg-parchment-300/70',
+                  )}
+                >
+                  Tier {t}
+                  {t === level && <span className="text-[9px] font-normal opacity-70">max</span>}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1.5 text-[11px] text-ink-muted">
+              Higher tiers field tougher foes and pay more gold. Capped at your level ({level}).
+            </p>
+          </div>
+        )}
 
         {/* Spell loadout picker */}
         <div className="rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3">
@@ -205,16 +241,18 @@ export function TacticsView() {
         <Button
           onClick={() => {
             if (canEnter && showAdventureRitual) { setShowRitual(true); return; }
-            void sfxResume(); beginTactics(eligibleSpells.length > 0 ? loadout : undefined);
+            void sfxResume(); beginTactics(eligibleSpells.length > 0 ? loadout : undefined, tier);
           }}
-          disabled={!canEnter}
+          disabled={!canEnter || coarse}
           className="w-full py-2.5"
         >
-          {!unlocked
-            ? `Unlocks at Level ${TACTICS_UNLOCK_LEVEL}`
-            : canEnter
-              ? 'Begin the Skirmish'
-              : `Need ${TACTICS_ENERGY_COST} energy (complete habits)`}
+          {coarse
+            ? 'Best played on desktop'
+            : !unlocked
+              ? `Unlocks at Level ${TACTICS_UNLOCK_LEVEL}`
+              : canEnter
+                ? 'Begin the Skirmish'
+                : `Need ${TACTICS_ENERGY_COST} energy (complete habits)`}
         </Button>
         {showRitual && (
           <AdventureRitualModal
@@ -222,7 +260,7 @@ export function TacticsView() {
             onConfirm={() => {
               setShowRitual(false);
               void sfxResume();
-              beginTactics(eligibleSpells.length > 0 ? loadout : undefined);
+              beginTactics(eligibleSpells.length > 0 ? loadout : undefined, tier);
             }}
             onCancel={() => setShowRitual(false)}
           />

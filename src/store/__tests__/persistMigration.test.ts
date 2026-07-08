@@ -18,6 +18,7 @@ import { emptyStatXP } from '@/engine/stats';
 import { statLevelsFromXp } from '@/engine/progression';
 import { emptyTrialsClearedOn, emptyBestTrialScore } from '@/engine/trials/trials';
 import { freshEarningsLedger } from '@/engine/balance';
+import { freshTown } from '@/engine/town';
 
 function getPersistFns() {
   // The polyfilled localStorage hydrates synchronously during createGameStore(),
@@ -139,6 +140,7 @@ describe('persist migrate (ARCH-08)', () => {
     expect(out.earnings).toEqual(freshEarningsLedger());
     expect(out.energyLog).toEqual({});
     expect(out.mineTombstone).toBeNull();
+    expect(out.reminderCardDismissed).toBe(false); // v28 default
   });
 
   it('populated modern save rides through unchanged — backfills must never overwrite real data', () => {
@@ -182,6 +184,9 @@ describe('persist migrate (ARCH-08)', () => {
 
     expect(out.character!.statLevels).toEqual(allocatedLevels);
     expect(out.character!.statXpAtLastLevel).toEqual(xpAtLastLevel);
+    // v30: the trickle sub-ledger backfills to zero on a save that predates it (BAL-09).
+    expect(out.character!.statXpTrickle).toEqual(emptyStatXP());
+    expect(out.character!.statXpTrickleAtLastLevel).toEqual(emptyStatXP());
     expect(out.challenges[0].def.kind).toBe('count');
     expect(out.trialsClearedOn).toEqual(trialsClearedOn);
     expect(out.bestTrialScore).toEqual(bestTrialScore);
@@ -190,6 +195,24 @@ describe('persist migrate (ARCH-08)', () => {
     expect(out.earnings).toEqual(earnings);
     expect(out.energyLog).toEqual({ '2026-07-05': 3 });
     expect(out.mineTombstone).toEqual(tombstone);
+  });
+
+  it('v33-era save (pre-Homestead): town backfills to freshTown(); a populated town rides through', () => {
+    const { migrate } = getPersistFns();
+
+    // Pre-v34 envelope: no `town` key at all.
+    const out = migrate({ habits: [] }, 33) as GameState;
+    expect(out.town).toEqual(freshTown());
+
+    // A modern save's town must never be reset by re-migration (idempotency for v34).
+    const town = {
+      ...freshTown(),
+      deeds: 2,
+      laborBank: 55,
+      buildings: [{ id: 'b1', key: 'keep', r: 3, c: 3, tier: 2 }],
+    };
+    const out2 = migrate({ habits: [], town: JSON.parse(JSON.stringify(town)) }, 34) as GameState;
+    expect(out2.town).toEqual(town);
   });
 
   it('is idempotent — running an already-migrated save through again changes nothing', () => {
@@ -357,6 +380,24 @@ describe('persist merge (ARCH-08)', () => {
     expect(run.tier).toBe(2);
     expect(run.hp).toBe(40);
     expect(run.minions[0].hp).toBe(5);
+  });
+
+  it('nested-default merges town so fields added in later versions backfill (trialsClearedOn idiom)', () => {
+    const { merge, store } = getPersistFns();
+    const current = store.getState();
+
+    // A persisted town missing later-added fields (simulated by deleting one):
+    const partialTown = JSON.parse(JSON.stringify({ ...freshTown(), deeds: 1, laborBank: 30 }));
+    delete partialTown.laborISO;
+
+    const out = merge({ town: partialTown }, current) as GameState;
+
+    expect(out.town.deeds).toBe(1); // persisted values win…
+    expect(out.town.laborBank).toBe(30);
+    expect(out.town.laborISO).toBe(freshTown().laborISO); // …missing fields backfill
+    // Absent town entirely → fresh.
+    const out2 = merge({}, current) as GameState;
+    expect(out2.town).toEqual(freshTown());
   });
 
   it('a live in-memory run is NOT rebased (rebase only applies to runs adopted from storage)', () => {

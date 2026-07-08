@@ -342,10 +342,11 @@ describe('no-moveset fallback', () => {
     expect(after.playerHp).toBeLessThan(b.playerHp);
   });
 
-  it('trial bosses (no moveset) remain unchanged', () => {
+  it('named trial bosses now telegraph a moveset', () => {
+    // procrastination_slime is multi-phase, so its moves live on phase[0], not BossDef.moveset.
     const boss = bossForLevel(5) as BossDef;
-    expect(boss.moveset).toBeUndefined();
-    const b = createBattle(strongFighter(), boss);
-    expect(b.enemyIntent).toBeNull();
+    expect(boss.phases![0].moveset?.length).toBeGreaterThan(0);
+    const b = createBattle(strongFighter(), boss, {}, fixed(0));
+    expect(b.enemyIntent).not.toBeNull();
   });
 });

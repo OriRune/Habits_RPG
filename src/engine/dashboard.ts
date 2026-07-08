@@ -70,7 +70,6 @@ export type RecommendedActionKind =
   | 'energy_ready'
   | 'streak_at_risk'
   | 'struggling'
-  | 'load_warning'
   | 'all_done';
 
 export interface RecommendedAction {
@@ -111,11 +110,18 @@ export interface DashboardOptions {
   currentEnergy: number;
   /** Minimum energy needed to play any minigame — used for "energy ready" suggestion. */
   minMinigameCost: number;
-  /** Whether the account-level daily load is high. */
-  loadWarning: boolean;
   /** Whether the user appears to be struggling (for the recovery CTA). */
   struggling: boolean;
+  /** Local hour 0–23. When ≥ URGENT_HOUR a long at-risk streak is promoted above generic prompts. Defaults to 0 (never urgent). */
+  nowHour?: number;
+  /** Number of Streak Freeze items owned — appended to the at-risk message when > 0. Defaults to 0. */
+  streakFreezes?: number;
 }
+
+/** At-risk streak length at/above which the warning is promoted above generic prompts. */
+const URGENT_STREAK_THRESHOLD = 7;
+/** Local hour at/after which a long at-risk streak is promoted (evening = last chance to log). */
+const URGENT_HOUR = 18;
 
 /**
  * Build the daily summary from the full habit list and today's ISO date.
@@ -141,28 +147,33 @@ export function buildDailySummary(
 
   // Top streaks
   const withStreaks = habits
-    .filter((h) => h.status === 'active' && h.streak > 0)
-    .map((h) => ({ habitId: h.id, habitName: h.name, streak: h.streak, stat: h.stat }))
+    .filter((h) => h.status === 'active')
+    .map((h) => ({ habitId: h.id, habitName: h.name, streak: currentStreak(h, today), stat: h.stat }))
+    .filter((h) => h.streak > 0)
     .sort((a, b) => b.streak - a.streak)
     .slice(0, 3);
 
   const focusHabits = habits.filter((h) => h.focus && h.status === 'active');
   const pendingFocusHabits = focusHabits.filter((h) => !isCompletedOn(h, today));
 
-  const atRiskHabits = activeLoggable.filter(
-    (h) => !isCompletedOn(h, today) && currentStreak(h, today) > 0,
-  );
+  // At-risk = scheduled today, not done, with a live streak — sorted longest-streak first
+  // so the recommendation names the most valuable streak, not an arbitrary array-order one.
+  const atRiskHabits = activeLoggable
+    .filter((h) => !isCompletedOn(h, today) && currentStreak(h, today) > 0)
+    .sort((a, b) => currentStreak(b, today) - currentStreak(a, today));
 
   const action = buildRecommendedAction({
+    today,
     pendingFocusHabits,
     pendingToday,
     completedToday,
     atRiskHabits,
     currentEnergy: opts.currentEnergy,
     minMinigameCost: opts.minMinigameCost,
-    loadWarning: opts.loadWarning,
     struggling: opts.struggling,
     scheduledToday,
+    nowHour: opts.nowHour ?? 0,
+    streakFreezes: opts.streakFreezes ?? 0,
   });
 
   return {
@@ -183,16 +194,29 @@ export function buildDailySummary(
 // Recommended action (priority-ordered)
 // ---------------------------------------------------------------------------
 
+/** Build the at-risk message for the top (sorted-first) at-risk habit, mentioning owned freezes. */
+function streakAtRiskAction(habit: Habit, streak: number, freezes: number): RecommendedAction {
+  const freezeNote =
+    freezes > 0 ? ` You have ${freezes} Streak Freeze${freezes !== 1 ? 's' : ''}.` : '';
+  return {
+    kind: 'streak_at_risk',
+    message: `"${habit.name}" (${streak}-day streak) is at risk — log it before the day ends.${freezeNote}`,
+    targetHabitId: habit.id,
+  };
+}
+
 function buildRecommendedAction(opts: {
+  today: string;
   pendingFocusHabits: Habit[];
   pendingToday: number;
   completedToday: number;
   atRiskHabits: Habit[];
   currentEnergy: number;
   minMinigameCost: number;
-  loadWarning: boolean;
   struggling: boolean;
   scheduledToday: number;
+  nowHour: number;
+  streakFreezes: number;
 }): RecommendedAction | null {
   // 1. Recovery / struggling — highest empathy priority
   if (opts.struggling) {
@@ -200,6 +224,16 @@ function buildRecommendedAction(opts: {
       kind: 'struggling',
       message: "Things feel tough right now — let's simplify. Pick 1–3 habits to keep this week.",
     };
+  }
+
+  // 1b. Urgent streak at risk — a long streak, late in the day, is promoted above the generic
+  //     "start today"/"finish focus" prompts that would otherwise mask it exactly when it matters.
+  if (opts.atRiskHabits.length > 0) {
+    const top = opts.atRiskHabits[0]; // sorted longest-streak first
+    const topStreak = currentStreak(top, opts.today);
+    if (topStreak >= URGENT_STREAK_THRESHOLD && opts.nowHour >= URGENT_HOUR) {
+      return streakAtRiskAction(top, topStreak, opts.streakFreezes);
+    }
   }
 
   // 2. Incomplete focus habit
@@ -220,37 +254,31 @@ function buildRecommendedAction(opts: {
     };
   }
 
-  // 4. Streak at risk (has a streak and is not done today)
+  // 4. Streak at risk (has a streak and is not done today) — fallback, any hour
   if (opts.atRiskHabits.length > 0) {
-    const h = opts.atRiskHabits[0];
+    const top = opts.atRiskHabits[0]; // sorted longest-streak first
+    return streakAtRiskAction(top, currentStreak(top, opts.today), opts.streakFreezes);
+  }
+
+  // 5. All done — the closure moment. Checked before energy_ready so a fully-finished
+  //    day shows completion (not a minigame nudge). The energy hint is appended only when
+  //    the player has energy to spend.
+  if (opts.scheduledToday > 0 && opts.pendingToday === 0) {
+    const energyHint =
+      opts.currentEnergy > 0
+        ? ` You've got ${opts.currentEnergy} energy to spend on an adventure.`
+        : '';
     return {
-      kind: 'streak_at_risk',
-      message: `"${h.name}" streak is at risk — log it before the day ends.`,
-      targetHabitId: h.id,
+      kind: 'all_done',
+      message: `All habits complete — well done, hero!${energyHint}`,
     };
   }
 
-  // 5. Enough energy for a minigame
+  // 6. Enough energy for a minigame (partial day — something done, more still pending)
   if (opts.completedToday > 0 && opts.currentEnergy >= opts.minMinigameCost) {
     return {
       kind: 'energy_ready',
       message: `You've earned ${opts.currentEnergy} energy — enough to start an adventure!`,
-    };
-  }
-
-  // 6. Load warning
-  if (opts.loadWarning) {
-    return {
-      kind: 'load_warning',
-      message: 'Your habit load is high. Consider making some habits weekly instead of daily.',
-    };
-  }
-
-  // 7. All done
-  if (opts.scheduledToday > 0 && opts.pendingToday === 0) {
-    return {
-      kind: 'all_done',
-      message: 'All habits complete — well done, hero!',
     };
   }
 

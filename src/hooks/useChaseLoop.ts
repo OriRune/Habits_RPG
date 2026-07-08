@@ -29,7 +29,7 @@ export interface ChaseControls {
  * imperative control callbacks for the on-screen buttons.
  * The run stops when state.done — the caller is responsible for submission.
  */
-export function useChaseLoop(): {
+export function useChaseLoop(agLevel = 0): {
   state:    ChaseState;
   controls: ChaseControls;
 } {
@@ -37,7 +37,8 @@ export function useChaseLoop(): {
   const seed = useRef(Date.now());
 
   // Stable sim ref — updated every frame, never triggers re-renders by itself.
-  const stateRef    = useRef<ChaseState>(initChase(seededRng(seed.current)));
+  // agLevel is read once at mount (static for the duration of a trial run).
+  const stateRef    = useRef<ChaseState>(initChase(seededRng(seed.current), agLevel));
   // Render state — one setState per frame.
   const [renderState, setRenderState] = useState<ChaseState>(() => stateRef.current);
 

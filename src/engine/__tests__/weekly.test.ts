@@ -127,6 +127,42 @@ describe('buildWeeklyReport — mostImproved / mostMissed / suggestedAdjustment'
     expect(report.mostMissed).toBeNull();
   });
 
+  it('focusResults: reports completed vs scheduled days for each focus habit', () => {
+    const full = makeHabit({
+      id: 'fa', name: 'FullFocus', focus: true, frequency: 'daily', createdISO: '2026-01-01',
+      log: Object.fromEntries(Array.from({ length: 7 }, (_, d) => [addDays(WS2, d), { xp: 10 }])),
+    });
+    const partial = makeHabit({
+      id: 'pa', name: 'PartialFocus', focus: true, frequency: 'daily', createdISO: '2026-01-01',
+      log: {
+        [addDays(WS2, 0)]: { xp: 10 },
+        [addDays(WS2, 1)]: { xp: 10 },
+        [addDays(WS2, 2)]: { xp: 10 },
+      },
+    });
+    // Custom Mon/Wed/Fri (weekdays 1,3,5): only 3 scheduled days in the week, not 7.
+    // WS2 = Sun 2026-06-07 → Mon 06-08, Wed 06-10, Fri 06-12 are scheduled.
+    const mwf = makeHabit({
+      id: 'mwf', name: 'MWFFocus', focus: true, frequency: 'custom', days: [1, 3, 5],
+      createdISO: '2026-01-01',
+      log: {
+        [addDays(WS2, 1)]: { xp: 10 }, // Mon (scheduled)
+        [addDays(WS2, 3)]: { xp: 10 }, // Wed (scheduled)
+        // Fri (day 5) missed → completed 2 < scheduled 3
+      },
+    });
+    const ignored = makeHabit({
+      id: 'ig', name: 'NotFocus', frequency: 'daily', createdISO: '2026-01-01',
+      log: { [addDays(WS2, 0)]: { xp: 10 } },
+    });
+    const report = buildWeeklyReport(WS2, [full, partial, mwf, ignored], {}, [], 'steady');
+    expect(report.focusResults).toEqual([
+      { habitName: 'FullFocus', completed: 7, scheduled: 7 },
+      { habitName: 'PartialFocus', completed: 3, scheduled: 7 },
+      { habitName: 'MWFFocus', completed: 2, scheduled: 3 },
+    ]);
+  });
+
   it('suggestedAdjustment: non-null when the mostMissed habit is old enough for habitHealth', () => {
     // Habit with enough missed days (4+) in a 28-day window to trigger a warning.
     // createdISO well before the window so MIN_AGE_DAYS check passes.
@@ -154,6 +190,21 @@ describe('buildWeeklyReport — mostImproved / mostMissed / suggestedAdjustment'
     // AND has enough misses in the 28-day window → habitHealth triggers repeated_misses
     expect(report.suggestedAdjustment).not.toBeNull();
     expect(typeof report.suggestedAdjustment).toBe('string');
+    // healthAction carries the winning warning's habit + its first suggested action.
+    expect(report.healthAction).toEqual({ habitId: 'f', action: 'change_frequency' });
+  });
+
+  it('healthAction: null when the suggestion comes from account-level health', () => {
+    // 4 fresh daily habits on one stat: too new for habitHealth (→ no per-habit warning),
+    // but accountHealth flags stat overload → suggestedAdjustment set, healthAction null.
+    const weekEndDate = addDays(WS2, 6);
+    const freshStart = addDays(weekEndDate, -5); // too new for per-habit habitHealth
+    const habits = Array.from({ length: 4 }, (_, i) =>
+      makeHabit({ id: `acc${i}`, name: `Acc${i}`, stat: 'KN', frequency: 'daily', createdISO: freshStart }),
+    );
+    const report = buildWeeklyReport(WS2, habits, {}, [], 'steady');
+    expect(report.suggestedAdjustment).not.toBeNull();
+    expect(report.healthAction).toBeNull();
   });
 
   it('suggestedAdjustment: null for a clean account with no warnings', () => {
@@ -172,6 +223,7 @@ describe('buildWeeklyReport — mostImproved / mostMissed / suggestedAdjustment'
     });
     const report = buildWeeklyReport(WS2, [h], {}, [], 'steady');
     expect(report.suggestedAdjustment).toBeNull();
+    expect(report.healthAction).toBeNull();
   });
 });
 

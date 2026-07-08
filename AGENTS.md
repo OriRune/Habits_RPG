@@ -27,11 +27,11 @@ This is a habit-tracking RPG: players log real-life habits to earn XP, level up 
 
 **`src/content/`** — Static data definitions (item tables, encounter scripts, biome configs, gear, recipes, etc.). These feed the engine and store but contain no logic.
 
-**`src/store/useGameStore.ts`** — Single Zustand store with `persist` middleware (localStorage). Holds all serialized game state and every action. Actions orchestrate engine modules: they call pure engine functions and write the results back into state. `src/store/selectors.ts` contains derived read helpers that components use instead of computing values inline.
+**`src/store/useGameStore.ts`** — A thin (~180-line) shell that composes **12 feature slices** (`src/store/slices/*.ts`: core, habits, economy, challenges, battle, dungeon, mining, forest, arena, tactics, trials, settings) into one Zustand store with `persist` middleware (localStorage, via a trailing-debounced storage adapter). Holds all serialized game state and every action; actions orchestrate engine modules (call pure engine functions, write results back into state). `src/store/shared.ts` is a barrel of cross-slice helpers that also re-exports `src/store/gameState.ts` (the `GameState` type surface + fresh-state initializers) and `src/store/commit.ts` (reward/run-commit orchestration). `src/store/selectors.ts` contains derived read helpers that components use instead of computing values inline.
 
 **`src/hooks/`** — Real-time loop hooks (`useMiningLoop`, `useForestLoop`, `useArenaLoop`, `useSmoothCamera`). These hold *no game state*; they only fire store actions on a `requestAnimationFrame` clock based on held keys/buttons. The timing lives here; the rules live in the engine.
 
-**`src/net/`** — Supabase layer: `env.ts` (feature flags), `auth.ts` (session store), `clock.ts` (server-time sync), `cloudSave.ts` (CAS cloud sync), `party.ts` (realtime presence/chat/quests), `coop/` (co-op broadcast reducers for Mine/Forest/Tactics). This is the only layer that reads env vars or calls the network.
+**`src/net/`** — Supabase layer: `env.ts` (feature flags), `auth.ts` (session store), `clock.ts` (server-time sync), `cloudSave.ts` (CAS cloud sync), `party.ts` (realtime presence/chat/quests), `coop/` (co-op broadcast for Mine/Forest/Tactics — the shared decision/reducer logic lives in `net/coop/reduce.ts`). This is the only layer that reads env vars or calls the network.
 
 **`src/store/runRng.ts`** — Transient PRNG state for active minigame runs. Kept *outside* the Zustand store and localStorage intentionally (see file docstring) — it does not need to survive a page refresh, and keeping it out of the save avoids bloat. Tests must call `resetRunRng()` in `beforeEach`.
 
@@ -39,7 +39,7 @@ This is a habit-tracking RPG: players log real-life habits to earn XP, level up 
 
 **`src/components/`** — Feature-grouped UI components consumed by views.
 
-**`src/lib/`** — Small utilities: `cn.ts` (Tailwind class merging), `sprites.ts` / `minigameArt.ts` / `placeholderArt.ts` (tile/sprite rendering helpers), `scenes.ts` (scene art config).
+**`src/lib/`** — Small utilities: `cn.ts` (Tailwind class merging), `sprites.ts` / `minigameArt.ts` / `placeholderArt.ts` (tile/sprite rendering helpers), `scenes.ts` (scene art config), `palettes.ts` (`applyPalette` — the `:root` CSS-variable DOM write, kept here so `engine/palettes.ts` stays DOM-free), `sfx.ts` (Web Audio cues).
 
 ### Core game concepts
 
@@ -49,14 +49,14 @@ This is a habit-tracking RPG: players log real-life habits to earn XP, level up 
 
 **Level-up flow:** Levels 1–4 auto-advance when XP crosses the threshold (`BOSS_GATE_LEVEL = 5`). Level 5 and above queue a `pendingLevelUp` that the player must clear by winning a boss battle (`startBattle` → `dismissBattle` applies `applyLevelUp`).
 
-**Shared dungeon crawl core (`src/engine/crawl.ts`):** Both the Deep Mine and the Wild Forest are real-time grid crawlers. `crawl.ts` exports the shared geometry (BFS `floodField`/`flowStep`, `cameraWindow`, stamina formula, status effect helpers, rune types). `engine/mining.ts` and `engine/forest.ts` each import from it.
+**Shared dungeon crawl core (`src/engine/crawl.ts`):** Both the Deep Mine and the Wild Forest are real-time grid crawlers. `crawl.ts` exports the shared geometry (BFS `floodFieldMulti`/`flowStep`, `cameraWindow`, stamina formula, status effect helpers, rune types) plus the hoisted shared crawler logic — spell/rune resolution and the boon effect reducers (`engine/crawl.ts::rollBoonChoices` et al.). `engine/mining.ts` and `engine/forest.ts` each import from it.
 
 **Skill Trials:** Eight daily minigames, one per stat (see `engine/trials/trials.ts`). Each is gated once per calendar day (`trialsClearedOn`). Completions call `store.completeTrial(trialId, score01)` which applies `trialReward` and updates the best score.
 
-**Energy:** Completing any habit awards +1 energy. Minigame entries consume a fixed energy cost (`DUNGEON_ENERGY_COST`, `MINE_ENERGY_COST`, `FOREST_ENERGY_COST`, `ARENA_ENERGY_COST`). The `unlimitedEnergy` dev setting bypasses this.
+**Energy:** Completing any habit awards +1 energy. Every mode entry consumes a fixed energy cost, all bypassed by the `unlimitedEnergy` dev setting: Dungeon Delve `DUNGEON_ENERGY_COST = 3`, Deep Mine `MINE_ENERGY_COST = 2`, Wild Forest `FOREST_ENERGY_COST = 2`, Arena `ARENA_ENERGY_COST = 3`, Hex Tactics `TACTICS_ENERGY_COST = 3`, and each Skill Trial `TRIAL_ENERGY_COST = 1` (trials are no longer free — the once-per-day gate still applies).
 
 **Persistence:** All state is in one Zustand store persisted to `localStorage`. `withCharacterDefaults` backfills missing character fields when loading old saves.
 
 **Server time / clock seam:** `src/engine/date.ts::now()` is the single chokepoint for "what time is it right now" — every daily/weekly gate (`toISODate`, `weekKey`, streaks, trial resets, weekly rollover, challenge expiry) routes through it. `src/net/clock.ts::syncServerClock()` fetches `server_now()` from Supabase with RTT compensation and calls `setClockOffset(ms)` to shift `now()`. `App.tsx` gates the startup `normalizeHabits()`/`checkWeeklyRollover()` calls on `clockReady` so the first evaluation uses server time. Trust model: **Option A — friendly trust** (client-trusted saves, server clock for anti-spoof, no save validation). See `docs/trust-model.md`.
 
-**Minigame run completion:** All four real-time minigames (Mine, Forest, Arena, Tactics) share a single `commitRun(state, opts)` helper in `src/store/shared.ts` — banks rewards, clears active run, updates depth records, applies the habit-streak gold multiplier, calls `applyReward` and `checkLevelUp`. Each mode has a thin wrapper (`commitMining`, `commitArena`, etc.). Dungeon Delve uses a separate `finishRun` helper (intentional — its flow is turn-based, not real-time).
+**Minigame run completion:** All four real-time minigames (Mine, Forest, Arena, Tactics) share a single `commitRun(state, opts)` helper in `src/store/commit.ts` (re-exported via `src/store/shared.ts`) — banks rewards, clears active run, updates depth records, applies the habit-streak gold multiplier, calls `applyReward` and `checkLevelUp`. Each mode has a thin wrapper (`commitMining`, `commitArena`, etc.). Dungeon Delve uses a separate `finishRun` helper (intentional — its flow is turn-based, not real-time).

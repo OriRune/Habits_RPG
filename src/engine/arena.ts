@@ -11,9 +11,10 @@
 // spellDamageRoll / spellHealAmount / variance in src/engine/combat.ts) so the numbers match.
 import type { StatId } from './stats';
 import type { BossDef, BossPhase, MinionVariant } from './bosses';
+import { genericBossReward } from './bosses';
 import type { WeaponDef } from './weapons';
 import type { Fighter } from './combat';
-import { attackRoll, spellDamageRoll, spellHealAmount, variance } from './combat';
+import { attackRoll, spellDamageRoll, spellHealAmount, variance, illusionBoost } from './combat';
 import { getSpell, SCHOOL_STAT, type StatusKey } from './spells';
 import { getItem } from './items';
 import type { Reward } from './challenges';
@@ -68,6 +69,7 @@ const DENSITY_FRAC: Record<ObstacleDensity, number> = { light: 0.06, medium: 0.1
 // --- New mechanic tuning ---
 const RUNE_EXPIRE_MS = 12000;       // untriggered rune lifetime
 const FREEZE_DURATION_MS = 3000;    // ice rune freeze duration
+const FREEZE_IMMUNITY_MS = 6000;    // MINI-07: post-freeze window a boss can't be re-frozen (breaks ice_rune stunlock)
 const RING_DURATION_MS = 3500;      // ring of fire duration
 const RING_HIT_CD_MS = 600;         // ring damage interval per enemy
 const POISON_TICK_MS = 1100;        // arena poison DoT tick interval (mirrors TURN_MS)
@@ -84,10 +86,11 @@ const PATTERNS: Record<TelegraphKind, PatternSpec> = {
   line: { kind: 'line', windupMs: 760, dmgMult: 1.05 },
   nova: { kind: 'nova', windupMs: 950, dmgMult: 1.15 },
   volley: { kind: 'volley', windupMs: 860, dmgMult: 0.85 },
+  charge: { kind: 'charge', windupMs: 720, dmgMult: 1.1 },
 };
 
 // --- Types ----------------------------------------------------------------------------------
-export type TelegraphKind = 'slam' | 'line' | 'nova' | 'volley';
+export type TelegraphKind = 'slam' | 'line' | 'nova' | 'volley' | 'charge';
 export type ArenaStatus = 'active' | 'won' | 'ended' | 'banking';
 export type ObstacleDensity = 'light' | 'medium' | 'heavy';
 export type ArenaSpeed = 'auto' | 'slow' | 'normal' | 'fast';
@@ -171,6 +174,9 @@ export interface ArenaState {
   phaseIndex: number;
   totalPhases: number;
   bossFrozenUntilMs: number;
+  /** MINI-07: while `now < bossFreezeImmuneUntilMs` a fresh ice_rune cannot re-freeze the boss.
+   *  Optional-safe on read (`?? 0`) so a run persisted before this field shipped rehydrates cleanly. */
+  bossFreezeImmuneUntilMs: number;
 
   // Minions
   minions: Minion[];
@@ -265,6 +271,7 @@ export function rebaseArenaRun(run: ArenaState): ArenaState {
   return {
     ...run,
     bossFrozenUntilMs: 0,
+    bossFreezeImmuneUntilMs: 0,
     playerFrozenUntilMs: 0,
     minions: (run.minions ?? []).map((m) => ({
       ...m,
@@ -411,7 +418,7 @@ export function arenaSpeedFactor(setting: ArenaSpeed, level: number): number {
     case 'normal': return 1.0;
     case 'auto':
     default:
-      return Math.max(0.85, Math.min(1.2, 0.8 + (level - ARENA_UNLOCK_LEVEL) * 0.02));
+      return Math.max(0.85, Math.min(1.6, 0.8 + (level - ARENA_UNLOCK_LEVEL) * 0.02));
   }
 }
 
@@ -578,6 +585,7 @@ export function createArena(
     phaseIndex: 0,
     totalPhases: phases.length,
     bossFrozenUntilMs: 0,
+    bossFreezeImmuneUntilMs: 0,
     minions: [],
     minionHp: Math.max(1, Math.round(phases[0].hp * MINION_HP_FRAC)),
     minionAttack: Math.max(1, Math.round(phases[0].attack * MINION_ATK_FRAC)),
@@ -624,8 +632,10 @@ export function createArena(
     bossNextActionMs: startMs + BOSS_OPENING_GRACE_MS,
     bossNextMoveMs: startMs + BOSS_OPENING_GRACE_MS,
     nextSummonMs: startMs + SUMMON_CD_MS / speed,
-    rewardGold: boss.rewards.gold,
-    rewardItems: [...boss.rewards.items],
+    // Arena pays the repeatable generic curve at every tier — named-boss reward
+    // tables are reserved for the one-shot level-up battle (see battleSlice).
+    rewardGold: genericBossReward(opts.tier).gold,
+    rewardItems: genericBossReward(opts.tier).items,
     tier: opts.tier,
     status: 'active',
     seq: 1,
@@ -672,6 +682,7 @@ function resolveBossDown(s: ArenaState, now: number, rng: RNG): void {
     s.projectiles = [];
     s.bossPos = { x: 0, y: -s.radius };
     s.bossFrozenUntilMs = 0;
+    s.bossFreezeImmuneUntilMs = 0; // fresh boss form can be frozen once again
     s.bossNextActionMs = now + BOSS_OPENING_GRACE_MS;
     s.bossNextMoveMs = now + BOSS_OPENING_GRACE_MS;
     const summons = s.radius >= 5 ? 2 : s.radius >= 4 ? 1 : 0;
@@ -746,7 +757,7 @@ export function arenaMelee(state: ArenaState, now: number, rng: RNG = Math.rando
   s.cooldownUntilMs = now + ATTACK_CD_MS;
   // Usage tracking for usage-based XP
   s.statUsage.ST = (s.statUsage.ST ?? 0) + 1;
-  s.statUsage.EN = (s.statUsage.EN ?? 0) + 1;
+  s.statUsage.EN = (s.statUsage.EN ?? 0) + 0.25;
   return s;
 }
 
@@ -759,9 +770,10 @@ export function arenaRanged(state: ArenaState, now: number, rng: RNG = Math.rand
   const staCost = s.weapon.attackStat === 'DX' ? s.weapon.staminaCost : BASE_ATTACK_STA;
   const full = s.sta >= staCost;
   s.sta = Math.max(0, s.sta - staCost);
-  // Store pre-defense damage so the correct target's defense can be applied on impact.
+  // MINI-37a: roll affinity-free here — the target (boss vs minion) isn't known until impact,
+  // so weak/resist AND defense are both applied in stepProjectiles, not baked in against the boss.
   const { dealt } = attackRoll(
-    s.rangedPower, bonus, 'DX', s.weakTo, s.resistTo, full, 0, rng,
+    s.rangedPower, bonus, 'DX', [], [], full, 0, rng,
   );
   s.projectiles.push({
     id: s.seq++,
@@ -773,7 +785,7 @@ export function arenaRanged(state: ArenaState, now: number, rng: RNG = Math.rand
   s.cooldownUntilMs = now + ATTACK_CD_MS;
   // Usage tracking for usage-based XP
   s.statUsage.DX = (s.statUsage.DX ?? 0) + 1;
-  s.statUsage.EN = (s.statUsage.EN ?? 0) + 1;
+  s.statUsage.EN = (s.statUsage.EN ?? 0) + 0.25;
   return s;
 }
 
@@ -900,7 +912,7 @@ export function arenaCast(
     }
     if (spell.status) applyArenaStatus(s.playerStatuses, spell.status, now);
   } else if (spell.status) {
-    const boosted = { ...spell.status, turns: spell.status.turns + Math.floor(s.illusionPower / 8) };
+    const boosted = illusionBoost(spell.status, s.illusionPower);
     applyArenaStatus(s.enemyStatuses, boosted, now);
   }
   return s;
@@ -977,10 +989,17 @@ function stepProjectiles(s: ArenaState, now: number, rng: RNG): void {
           break;
         }
       } else {
-        // Player projectile — damages the first enemy hit.
+        // Player projectile — damages the first enemy hit. MINI-37a: apply the boss's DX
+        // affinity + defense only when the boss is actually the target; minions (no affinity
+        // fields of their own) take the raw bolt instead of inheriting the boss's weak/resist.
         const here = enemyAt(s, p.pos);
         if (here) {
-          const dmg = here.kind === 'boss' ? Math.max(1, p.dealt - s.bossDefense) : p.dealt;
+          let dmg = p.dealt;
+          if (here.kind === 'boss') {
+            if (s.weakTo.includes('DX')) dmg = Math.round(dmg * 1.25);
+            else if (s.resistTo.includes('DX')) dmg = Math.round(dmg * 0.6);
+            dmg = Math.max(1, dmg - s.bossDefense);
+          }
           hurtEnemy(s, here, dmg, now, rng);
           done = true;
           break;
@@ -998,9 +1017,27 @@ function resolveTelegraphs(s: ArenaState, now: number, rng: RNG): void {
   const pending: Telegraph[] = [];
   for (const t of s.telegraphs) {
     if (now < t.firesAtMs) { pending.push(t); continue; }
+    if (t.kind === 'charge') { resolveCharge(s, t, now, rng); continue; }
     if (t.tiles.some((h) => cellEquals(h, s.player.pos))) strikePlayer(s, t.raw, t.school, now, rng);
   }
   s.telegraphs = pending;
+}
+
+/**
+ * Resolve a boss charge: dash the boss down its telegraphed lane, stopping at the first wall,
+ * minion, or the player's cell, then strike only if the dash ended adjacent to the player. A
+ * player who stepped off the lane during the windup gets overrun harmlessly — the counterplay.
+ */
+function resolveCharge(s: ArenaState, t: Telegraph, now: number, rng: RNG): void {
+  const occupied = new Set(s.minions.map((m) => cellKey(m.pos)));
+  let dest = s.bossPos;
+  for (const h of t.tiles) {
+    if (!inBoard(h, s.radius) || isBlocked(s, h)) break; // walls halt the dash
+    if (cellEquals(h, s.player.pos) || occupied.has(cellKey(h))) break; // can't overrun a unit
+    dest = h;
+  }
+  s.bossPos = dest;
+  if (distance(s.bossPos, s.player.pos) <= 1) strikePlayer(s, t.raw, t.school, now, rng);
 }
 
 /** Trigger any runes that a unit just stepped onto. Called after every unit movement. */
@@ -1014,13 +1051,21 @@ function triggerRunes(s: ArenaState, now: number, rng: RNG): void {
       if (!s.invincible) strikePlayer(s, rune.power, 'magic', now, rng);
       if (rune.kind === 'poison') applyArenaStatus(s.playerStatuses, { key: 'poison', turns: 3, magnitude: Math.round(rune.power * 0.25) }, now);
     } else {
-      hurtEnemy(s, target, rune.power, now, rng);
+      // MINI-26: rune damage was rolled target-agnostic (ward 0) at cast; subtract the boss ward
+      // here so runes no longer bypass the anti-caster defense that direct spells already respect.
+      const runeDmg = target.kind === 'boss' ? Math.max(1, rune.power - s.bossWard) : rune.power;
+      hurtEnemy(s, target, runeDmg, now, rng);
       if (rune.kind === 'fire') {
         if (target.kind === 'boss') applyArenaStatus(s.enemyStatuses, { key: 'burn', turns: 2, magnitude: Math.round(rune.power * 0.3) }, now);
       } else if (rune.kind === 'ice') {
         if (target.kind === 'boss') {
-          s.bossFrozenUntilMs = now + FREEZE_DURATION_MS;
-          applyArenaStatus(s.enemyStatuses, { key: 'freeze', turns: 3, magnitude: 1 }, now);
+          // MINI-07: one freeze lands, then the boss is immune for FREEZE_IMMUNITY_MS past the
+          // thaw. A rune stepped onto during immunity still chips (runeDmg above) but can't re-lock.
+          if (now >= (s.bossFreezeImmuneUntilMs ?? 0)) {
+            s.bossFrozenUntilMs = now + FREEZE_DURATION_MS;
+            s.bossFreezeImmuneUntilMs = now + FREEZE_DURATION_MS + FREEZE_IMMUNITY_MS;
+            applyArenaStatus(s.enemyStatuses, { key: 'freeze', turns: 3, magnitude: 1 }, now);
+          }
         } else {
           const m = s.minions.find((x) => x.id === target.id);
           if (m) m.frozenUntilMs = now + FREEZE_DURATION_MS;
@@ -1059,7 +1104,8 @@ function tickRingOfFire(s: ArenaState, now: number, rng: RNG): void {
   if (distance(s.bossPos, s.player.pos) <= 1) {
     const nextHit = s.ringNextHitMs[0] ?? 0;
     if (now >= nextHit) {
-      hurtEnemy(s, { kind: 'boss' }, dmg, now, rng);
+      // MINI-26: ring damage now respects the boss ward like direct spells do.
+      hurtEnemy(s, { kind: 'boss' }, Math.max(1, dmg - s.bossWard), now, rng);
       s.ringNextHitMs[0] = now + RING_HIT_CD_MS;
     }
   }
@@ -1177,7 +1223,9 @@ function telegraphTiles(kind: TelegraphKind, s: ArenaState, rng: RNG): Cell[] {
       return range(target, 1).filter((h) => inBoard(h, s.radius));
     case 'nova':
       return range(s.bossPos, 2).filter((h) => inBoard(h, s.radius) && !cellEquals(h, s.bossPos));
-    case 'line': {
+    case 'line':
+    case 'charge': {
+      // Both draw a lane from the boss toward the player; 'charge' also dashes the boss down it.
       const dir = stepToward(s.bossPos, target);
       const tiles: Cell[] = [];
       for (const h of line(s.bossPos, dir, s.radius * 2)) {
@@ -1202,7 +1250,9 @@ function chooseKind(dist: number, rng: RNG): TelegraphKind {
   const roll = rng();
   if (dist <= 1) return roll < 0.7 ? 'nova' : 'slam';
   if (dist <= 3) return roll < 0.5 ? 'slam' : 'line';
-  return roll < 0.5 ? 'line' : 'volley';
+  // Far away — the player is kiting; bias toward a gap-closing charge.
+  if (roll < 0.4) return 'charge';
+  return roll < 0.7 ? 'line' : 'volley';
 }
 
 function bossThink(s: ArenaState, now: number, field: Map<string, number>, rng: RNG): void {

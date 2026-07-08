@@ -68,7 +68,7 @@ export const ENEMIES: Record<string, EnemyTemplate> = {
     id: 'ghoul', name: 'Crypt Ghoul',
     flavor: 'It feeds on the careless and the slow.',
     hp: 38, attack: 8, defense: 1, ward: 1,
-    attackSchool: 'physical', weakTo: ['WI', 'CH'], resistTo: ['ST'],
+    attackSchool: 'physical', weakTo: ['WI'], resistTo: ['ST'],
     archetype: 'undead', glyph: '🧟',
     moveset: [
       { kind: 'attack',  weight: 2, label: 'lunges with raking claws', icon: '⚔️' },
@@ -131,7 +131,7 @@ export const ENEMIES: Record<string, EnemyTemplate> = {
     id: 'dire_wolf', name: 'Dire Wolf',
     flavor: 'It hunts in the ruins where walls have fallen.',
     hp: 36, attack: 9, defense: 1, ward: 0,
-    attackSchool: 'physical', weakTo: ['DX'], resistTo: ['CH'],
+    attackSchool: 'physical', weakTo: ['DX'], resistTo: [],
     archetype: 'beast', glyph: '🐺',
     moveset: [
       { kind: 'attack', weight: 2, label: 'mauls with savage jaws', icon: '⚔️' },
@@ -157,7 +157,7 @@ export const ENEMIES: Record<string, EnemyTemplate> = {
     id: 'frost_troll', name: 'Frost Troll',
     flavor: 'Pale as the ice it was born in, and twice as hard.',
     hp: 50, attack: 12, defense: 2, ward: 1,
-    attackSchool: 'physical', weakTo: ['ST', 'WI'], resistTo: ['CH'],
+    attackSchool: 'physical', weakTo: ['ST', 'WI'], resistTo: [],
     archetype: 'beast', glyph: '🧌',
     moveset: [
       { kind: 'attack', weight: 2, label: 'drives a frozen fist into you', icon: '⚔️' },
@@ -169,7 +169,7 @@ export const ENEMIES: Record<string, EnemyTemplate> = {
     id: 'ice_wolf', name: 'Ice Wolf',
     flavor: 'Its coat is pale as frost, its breath a killing cold.',
     hp: 36, attack: 9, defense: 1, ward: 1,
-    attackSchool: 'physical', weakTo: ['DX'], resistTo: ['CH'],
+    attackSchool: 'physical', weakTo: ['DX'], resistTo: [],
     archetype: 'beast', glyph: '🐺',
     moveset: [
       { kind: 'attack',  weight: 2, label: 'mauls with frost-rimed jaws', icon: '⚔️' },

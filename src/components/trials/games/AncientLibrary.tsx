@@ -27,17 +27,22 @@ import {
 
 interface AncientLibraryProps {
   onFinish: (score01: number) => void;
+  /** MINI-11: per-attempt nonce XOR'd into the daily seed so a reopened trial isn't replayable. */
+  attemptNonce: number;
 }
 
 type Phase = 'showing' | 'input' | 'wrong' | 'correct' | 'done';
 
-export function AncientLibrary({ onFinish }: AncientLibraryProps) {
+export function AncientLibrary({ onFinish, attemptNonce }: AncientLibraryProps) {
   const knLevel = useGameStore((s) => s.character.statLevels.KN);
 
-  // Daily-seeded sequence: same glyphs for all players on a given calendar day.
+  // Daily seed XOR'd with the per-attempt nonce (MINI-11): a reopened trial draws a fresh
+  // sequence instead of an identical, transcribe-able one. (The nonce advances on every
+  // Begin, so the day's first attempt is no longer shared across players — an acceptable
+  // trade to close the watch-abandon-transcribe exploit.)
   const masterSeq = useMemo(
-    () => generateSequence(seededRng(dailySeed(toISODate()))),
-    [],
+    () => generateSequence(seededRng(dailySeed(toISODate()) ^ attemptNonce)),
+    [attemptNonce],
   );
 
   const [round, setRound] = useState(0);

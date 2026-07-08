@@ -3,15 +3,17 @@ import { useState } from 'react';
 import { Heart, Sparkles, Coins, Zap, Wind, ChevronsDown, DoorOpen } from 'lucide-react';
 import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
 import { useGameStore } from '@/store/useGameStore';
+import { selectDungeonMilestone } from '@/store/selectors';
 import { ROOM_META, DUNGEON_ENERGY_COST } from '@/engine/dungeon';
 import { getBiome } from '@/engine/biomes';
-import { getEncounter, checkChance, choiceAvailable } from '@/engine/encounters';
+import { getEncounter, checkChance, choiceAvailable, encounterDepthTier } from '@/engine/encounters';
+import { runStatBonuses } from '@/store/shared';
 import { getRelic } from '@/engine/relics';
 import { type Reward } from '@/engine/challenges';
 import { getMaterial } from '@/engine/materials';
 import { getItem } from '@/engine/items';
 import { getWeapon } from '@/engine/weapons';
-import { getGear, aggregateGear, type GearSlot } from '@/engine/gear';
+import { getGear } from '@/engine/gear';
 import { getStat } from '@/engine/stats';
 import { DUNGEON_UNLOCK_LEVEL } from '@/engine/progression';
 import { materialCrest } from '@/lib/sprites';
@@ -22,6 +24,7 @@ import { Sprite } from '@/components/ui/Sprite';
 import { SectionTitle } from '@/components/ui/Divider';
 import { SceneArt } from '@/components/ui/SceneArt';
 import { BattleScene } from '@/components/combat/BattleScene';
+import { StreakBonusChip } from '@/components/character/StreakBonusChip';
 import { RelicTray } from '@/components/dungeon/RelicTray';
 import { RunBuffs } from '@/components/dungeon/RunBuffs';
 import { FloorMap } from '@/components/dungeon/FloorMap';
@@ -29,14 +32,6 @@ import { ShrineRoom } from '@/components/dungeon/ShrineRoom';
 import { MerchantRoom } from '@/components/dungeon/MerchantRoom';
 import { RestRoom } from '@/components/dungeon/RestRoom';
 import { useDungeonAudio } from '@/hooks/useDungeonAudio';
-
-/** What the next depth milestone unlocks (gates mirror engine/dungeonMap weights). */
-function milestoneHint(deepest: number): string {
-  if (deepest < 5) return 'Reach Floor 5 to unlock Merchants.';
-  if (deepest < 8) return 'Reach Floor 8 to unlock Elite foes.';
-  if (deepest < 10) return 'Reach Floor 10 to unlock rare (Tier 3) relics.';
-  return 'All depths unlocked — chase a new record.';
-}
 
 function RunGauge({
   icon,
@@ -110,7 +105,9 @@ export function DungeonView() {
   useDungeonAudio(dungeon ?? null, soundEnabled);
   const energy = useGameStore((s) => s.character.energy);
   const level = useGameStore((s) => s.character.level);
+  const habitBonus = useGameStore((s) => s.character.habitBonus);
   const deepestFloor = useGameStore((s) => s.deepestFloor);
+  const nextMilestone = useGameStore(selectDungeonMilestone).nextMilestone;
   const showAdventureRitual = useGameStore((s) => s.settings.showAdventureRitual);
   const dungeonHistory = useGameStore((s) => s.dungeonHistory ?? []);
   const startDungeon = useGameStore((s) => s.startDungeon);
@@ -158,7 +155,11 @@ export function DungeonView() {
                 {deepestFloor > 0 ? `Floor ${deepestFloor}` : '—'}
               </span>
             </div>
-            <div className="mt-1 text-[11px] text-ink-muted">{milestoneHint(deepestFloor)}</div>
+            <div className="mt-1 text-[11px] text-ink-muted">
+              {nextMilestone
+                ? `Reach Floor ${nextMilestone.depth} — ${nextMilestone.label}.`
+                : 'All depths unlocked — chase a new record.'}
+            </div>
           </div>
 
           {dungeonHistory.length > 0 && (
@@ -255,7 +256,8 @@ export function DungeonView() {
           </div>
           <div>
             <div className="mb-1 font-display text-xs uppercase tracking-wider text-ink-muted">Spoils</div>
-            <RewardLine reward={dungeon.bankedReward} />
+            <RewardLine reward={{ ...dungeon.bankedReward, gold: Math.round((dungeon.bankedReward.gold ?? 0) * habitBonus) }} />
+            <StreakBonusChip className="mt-1.5 text-xs text-amber-600" />
           </div>
           <Button onClick={collectDungeon} className="w-full py-2.5">
             Collect &amp; Leave
@@ -445,10 +447,10 @@ function EncounterRoom({
   onAdvance: () => void;
 }) {
   const statLevels = useGameStore((s) => s.character.statLevels);
-  const equipment = useGameStore((s) => s.equipment);
-  const gearBonus = aggregateGear(
-    (['armor', 'trinket', 'tool'] as GearSlot[]).map((sl) => (equipment[sl] ? getGear(equipment[sl]!) : undefined)),
-  ).statBonuses;
+  // MINI-27: the odds preview must count relics/runBuff the same as the resolver does, or the
+  // displayed % lies. Read the merged run bonuses imperatively (a fresh object from a plain
+  // selector would loop under useSyncExternalStore); the parent re-renders us on every run change.
+  const runBonus = runStatBonuses(useGameStore.getState());
 
   // Gate context for choice availability checks.
   const gateCtx = { hp: dungeon.hp, mp: dungeon.mp, sta: dungeon.sta, depth: dungeon.depth, relics: dungeon.relics };
@@ -543,8 +545,10 @@ function EncounterRoom({
         <div className="space-y-2">
           {(node.choices ?? []).map((choice, i) => {
             const lvl = choice.stat ? statLevels[choice.stat] : null;
-            const power = choice.stat ? lvl! + (gearBonus[choice.stat] ?? 0) : 0;
-            const odds = choice.stat ? Math.round(checkChance(power, choice.difficulty ?? 5) * 100) : null;
+            const power = choice.stat ? lvl! + (runBonus[choice.stat] ?? 0) : 0;
+            const odds = choice.stat
+              ? Math.round(checkChance(power, (choice.difficulty ?? 5) + encounterDepthTier(dungeon.depth)) * 100)
+              : null;
             const available = choiceAvailable(choice, gateCtx);
 
             // Build a short unavailability hint for locked choices.
@@ -593,8 +597,8 @@ function EncounterRoom({
                       <span
                         className="rounded border border-gold-deep/40 bg-parchment-300/40 px-1.5 py-0.5 text-[11px] tabular-nums text-ink-muted"
                         title={`Your ${getStat(choice.stat).name} is ${lvl}${
-                          gearBonus[choice.stat] ? ` (+${gearBonus[choice.stat]} gear)` : ''
-                        } vs difficulty ${choice.difficulty ?? 5}`}
+                          runBonus[choice.stat] ? ` (+${runBonus[choice.stat]} gear/relics)` : ''
+                        } vs difficulty ${(choice.difficulty ?? 5) + encounterDepthTier(dungeon.depth)}`}
                       >
                         {getStat(choice.stat).short} {lvl} · ~{odds}%
                       </span>

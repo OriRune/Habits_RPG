@@ -5,6 +5,7 @@ import { getStat, type StatId } from '@/engine/stats';
 import { CLASS_CHART } from '@/engine/classes';
 import { getMaterial } from '@/engine/materials';
 import { SCHOOL_STAT, type SpellSchool } from '@/engine/spells';
+import { ITEMS } from '@/engine/items';
 import { framedSvg } from '@/lib/placeholderArt';
 
 /** Reverse map: class name -> its primary stat (the chart row it sits in). */
@@ -46,11 +47,6 @@ export function avatarCrest(classId: string | null, topStat: StatId): CrestLook 
 function firstLetter(name: string): string {
   const cleaned = name.replace(/^The\s+/i, '').trim();
   return (cleaned.charAt(0) || '?').toUpperCase();
-}
-
-/** Boss crest: initial of its name on an ember field. */
-export function bossCrest(name: string): CrestLook {
-  return { glyph: firstLetter(name), color: EMBER };
 }
 
 /** Item crest: initial tinted by item kind. */
@@ -141,13 +137,10 @@ const FOLDER_PREFIX: Record<string, string> = {
   avatars: 'avatar',
 };
 
-/** One generic tome sprite stands in for every spellbook item. */
-const SPELLBOOK_KEYS = [
-  'item:spellbook_firebolt',
-  'item:spellbook_bless',
-  'item:spellbook_dazzle',
-  'item:spellbook_hex',
-];
+/** One generic tome sprite stands in for every spellbook item (derived from the item table). */
+const SPELLBOOK_KEYS = Object.values(ITEMS)
+  .filter((i) => i.kind === 'spellbook')
+  .map((i) => `item:${i.key}`);
 
 const SPRITE_REGISTRY: Record<string, string> = (() => {
   const registry: Record<string, string> = {};

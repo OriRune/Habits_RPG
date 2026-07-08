@@ -1,12 +1,19 @@
 import { useGameStore } from '@/store/useGameStore';
 import { type GearDef, getGear } from '@/engine/gear';
 import { getStat, type StatId } from '@/engine/stats';
+import { CRAFT_TIERS, NORMAL, asCraftTier, scaleGearDef } from '@/engine/crafting';
 import { gearCrest } from '@/lib/sprites';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { Sprite } from '@/components/ui/Sprite';
 import { SectionTitle } from '@/components/ui/Divider';
 import { EmptyState } from '@/components/ui/EmptyState';
+
+/** Prefix an item name with its quality tier ("Fine Leather Vest"); plain name at Normal/absent. */
+export function tierPrefix(name: string, tier: number | undefined): string {
+  const t = asCraftTier(tier);
+  return t === NORMAL ? name : `${CRAFT_TIERS[t].name} ${name}`;
+}
 
 export function gearBonusText(g: GearDef): string {
   const parts: string[] = [];
@@ -25,6 +32,7 @@ export function gearBonusText(g: GearDef): string {
 export function GearSection() {
   const ownedGear = useGameStore((s) => s.ownedGear);
   const equipment = useGameStore((s) => s.equipment);
+  const gearQuality = useGameStore((s) => s.gearQuality);
   const equipGear = useGameStore((s) => s.equipGear);
   const unequipGear = useGameStore((s) => s.unequipGear);
 
@@ -45,16 +53,24 @@ export function GearSection() {
           const g = getGear(key);
           if (!g) return null;
           const equipped = equipment[g.slot] === key;
+          // Show the quality-scaled stats (matches combat) and a tier-prefixed, tinted name.
+          const tier = asCraftTier(gearQuality[key]);
+          const scaled = scaleGearDef(g, tier);
           return (
             <div key={key} className="flex items-center justify-between gap-3 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-2.5">
               <div className="flex min-w-0 items-center gap-3">
                 <Sprite spriteKey={`gear:${key}`} look={gearCrest(g.name, g.slot)} size="md" />
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5">
-                    <span className="truncate text-sm font-semibold text-ink">{g.name}</span>
+                    <span
+                      className="truncate text-sm font-semibold text-ink"
+                      style={tier !== NORMAL ? { color: CRAFT_TIERS[tier].color } : undefined}
+                    >
+                      {tierPrefix(g.name, gearQuality[key])}
+                    </span>
                     <span className="text-[10px] uppercase tracking-wide text-ink-light">{g.slot}</span>
                   </div>
-                  <div className="truncate text-[11px] text-ink-muted">{gearBonusText(g)}</div>
+                  <div className="truncate text-[11px] text-ink-muted">{gearBonusText(scaled)}</div>
                 </div>
               </div>
               <Button

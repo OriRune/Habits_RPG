@@ -9,8 +9,12 @@ import { signIn, signUp } from '@/net/auth';
  * Sign-in / sign-up gate, shown by App when there is no session (and the backend
  * is configured). Username + password only — no email, no recovery, no OAuth. On
  * success the session listener flips the gate; this view just submits.
+ *
+ * `onGuest` (optional): lets the player skip the account wall and play offline on
+ * this device. App keeps auth `signedOut`, so cloud sync stays inert until they
+ * choose to create an account later.
  */
-export function LoginView() {
+export function LoginView({ onGuest }: { onGuest?: () => void }) {
   const [mode, setMode] = useState<'signIn' | 'signUp'>('signIn');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -112,10 +116,26 @@ export function LoginView() {
         </Panel>
 
         <p className="text-center text-[11px] text-parchment-300/70">
-          No email needed. Your progress syncs to this account across devices.
+          No email needed. With an account your progress syncs across devices.
           <br />
           There is no password recovery — keep it safe.
         </p>
+
+        {onGuest && (
+          <p className="text-center text-xs text-parchment-300">
+            <button
+              type="button"
+              onClick={() => onGuest()}
+              className="font-semibold text-parchment-200 underline-offset-2 hover:underline"
+            >
+              Play offline as a guest
+            </button>
+            <br />
+            <span className="text-[11px] text-parchment-300/70">
+              You can create an account later to sync — progress stays on this device until then.
+            </span>
+          </p>
+        )}
       </div>
     </div>
   );

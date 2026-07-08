@@ -18,6 +18,111 @@
 import type { EncounterDef } from '@/engine/encounters';
 
 export const ENCOUNTERS: Record<string, EncounterDef> = {
+  // --- Shared social event (drawn by every biome) -------------------------
+  //  BAL-07: CH was the least-checked non-HP stat (11 of ~120 checks). This standoff is a
+  //  CH through-line — five of its six checks read Charisma — so a player who trained CH finally
+  //  meets it in the dungeon, not just in the Royal Court trial.
+  tense_standoff: {
+    key: 'tense_standoff',
+    title: 'A Tense Standoff',
+    start: 'meet',
+    nodes: {
+      meet: {
+        id: 'meet',
+        text: 'A knot of ragged survivors bars the passage, weapons half-raised. They have not yet decided whether you are a threat.',
+        choices: [
+          {
+            label: 'Disarm them with easy words (Charisma)',
+            stat: 'CH',
+            difficulty: 5,
+            goSuccess: 'welcomed',
+            goFail: 'bristle',
+            successText: 'You smile, hands open, and the blades lower. They wave you through.',
+            failText: 'Your words ring false; hands tighten on their hilts.',
+            rewardOnSuccess: { gold: 35 },
+            hpOnFail: -6,
+          },
+          {
+            label: 'Draw yourself up and command them aside (Charisma)',
+            stat: 'CH',
+            difficulty: 7,
+            goSuccess: 'captain',
+            goFail: 'bristle',
+            successText: 'Something in your bearing makes them flinch. Their leader steps forward to take your measure.',
+            failText: 'They only sneer at the bluster.',
+          },
+          {
+            label: 'Slip past while they hesitate (Dexterity)',
+            stat: 'DX',
+            difficulty: 6,
+            goSuccess: 'welcomed',
+            goFail: 'bristle',
+            successText: 'You melt along the wall and are gone before they blink.',
+            failText: 'A loose stone betrays you and they close ranks.',
+          },
+        ],
+      },
+      captain: {
+        id: 'captain',
+        text: 'Their captain — scarred, unhurried — studies you. "Give me one reason," she says.',
+        choices: [
+          {
+            label: 'Sway her with a promise of shared spoils (Charisma)',
+            stat: 'CH',
+            difficulty: 8,
+            goSuccess: 'honored',
+            goFail: 'brawl',
+            successText: 'She weighs your words, then barks an order. Her band stands down — and points you toward the richer path.',
+            failText: 'She spits. "Cheap talk." Steel answers.',
+            rewardOnSuccess: { gold: 55 },
+            hpOnFail: -12,
+          },
+          { label: 'Back away slowly', go: 'bristle', successText: 'You raise your palms and give ground.' },
+        ],
+      },
+      bristle: {
+        id: 'bristle',
+        text: 'The standoff tightens. One wrong move turns it into a killing.',
+        choices: [
+          {
+            label: 'Talk the whole room down (Charisma)',
+            stat: 'CH',
+            difficulty: 6,
+            goSuccess: 'welcomed',
+            goFail: 'brawl',
+            successText: 'Word by word you bleed the tension from the air, and they let you pass.',
+            failText: 'A nervous hand slips. The room erupts.',
+            rewardOnSuccess: { gold: 20 },
+            hpOnFail: -14,
+          },
+          {
+            label: 'Flatter the youngest into lowering his blade (Charisma)',
+            stat: 'CH',
+            difficulty: 4,
+            goSuccess: 'welcomed',
+            goFail: 'brawl',
+            successText: 'The boy colours at the praise and steps aside; the others follow.',
+            failText: 'The praise lands wrong; they take it for mockery.',
+            rewardOnSuccess: { gold: 15 },
+            hpOnFail: -10,
+          },
+        ],
+      },
+      welcomed: {
+        id: 'welcomed',
+        text: 'They share a wary nod and a scrap of what they have hoarded before you part ways.',
+      },
+      honored: {
+        id: 'honored',
+        text: 'The captain clasps your arm and sends you toward a cache her band had been saving.',
+      },
+      brawl: {
+        id: 'brawl',
+        text: 'Blades cross in the dark. You cut your way through, bloodied but past.',
+      },
+    },
+  },
+
   // --- Catacombs ----------------------------------------------------------
   sealed_door: {
     key: 'sealed_door',
@@ -47,6 +152,18 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
             goFail: 'locked',
             successText: 'Hinges scream and give way.',
             failText: 'The iron holds; you wrench your shoulder against it.',
+            rewardOnSuccess: { gold: 20, materials: { iron_bar: 1 } },
+            hpOnFail: -10,
+          },
+          {
+            // BAL-24: HP gate — take the runic lash and keep shoving.
+            label: 'Shoulder it down and shrug off the runic lash (Hit Points)',
+            stat: 'HP',
+            difficulty: 6,
+            goSuccess: 'forced',
+            goFail: 'locked',
+            successText: 'The glyphs sear you, but you slam through on the fourth heave.',
+            failText: 'The backlash drives you back, singed and winded.',
             rewardOnSuccess: { gold: 20, materials: { iron_bar: 1 } },
             hpOnFail: -10,
           },
@@ -198,6 +315,17 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
             failText: 'Panic wins; you flounder out the hard way.',
             hpOnFail: -6,
           },
+          {
+            // BAL-24: HP was checked in only a handful of nodes; sheer toughness now clears hazards too.
+            label: 'Set your feet and outlast the drag (Hit Points)',
+            stat: 'HP',
+            difficulty: 5,
+            goSuccess: 'climbed',
+            goFail: 'crawl',
+            successText: 'You simply refuse to sink, hauling your own weight free.',
+            failText: 'The pit wins the tug; you scrape out battered.',
+            hpOnFail: -6,
+          },
         ],
       },
       climbed: { id: 'climbed', text: 'You reach solid ground, a relic clutched from the bones.' },
@@ -261,6 +389,17 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
             goFail: 'drop',
             successText: 'You swing and roll onto solid stone.',
             failText: 'You misjudge it and slam into the rock.',
+            hpOnFail: -12,
+          },
+          {
+            // BAL-24: HP gate — grit over grace.
+            label: 'Clamp on and haul through the rope-burn (Hit Points)',
+            stat: 'HP',
+            difficulty: 6,
+            goSuccess: 'across',
+            goFail: 'drop',
+            successText: 'Palms flayed, you refuse to let go and drag yourself over.',
+            failText: 'The rope tears loose — you fall, catching a ledge below.',
             hpOnFail: -12,
           },
         ],
@@ -935,6 +1074,17 @@ export const ENCOUNTERS: Record<string, EncounterDef> = {
             goFail: 'frostbit',
             successText: 'You focus past the cold and pull through.',
             failText: 'The cold wins this round.',
+            hpOnFail: -10,
+          },
+          {
+            // BAL-24: HP gate — bull through on sheer toughness.
+            label: 'Bull through the cold on sheer toughness (Hit Points)',
+            stat: 'HP',
+            difficulty: 5,
+            goSuccess: 'crossed',
+            goFail: 'frostbit',
+            successText: 'You ignore the bite of the ice and haul yourself across.',
+            failText: 'The cold saps you faster than you can climb.',
             hpOnFail: -10,
           },
         ],

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { ITEMS } from '@/engine/items';
 import { resolveSpriteImage } from '../sprites';
 
 describe('SPRITE_REGISTRY', () => {
@@ -22,6 +23,15 @@ describe('SPRITE_REGISTRY', () => {
     expect(resolveSpriteImage('item:spellbook_dazzle')).toBe(firebolt);
     // No bare `item:spellbook` key is emitted.
     expect(resolveSpriteImage('item:spellbook')).toBeUndefined();
+  });
+
+  it('registers the tome sprite for every spellbook item in the table', () => {
+    const firebolt = resolveSpriteImage('item:spellbook_firebolt');
+    const spellbooks = Object.values(ITEMS).filter((i) => i.kind === 'spellbook');
+    expect(spellbooks.length).toBeGreaterThan(4);
+    for (const book of spellbooks) {
+      expect(resolveSpriteImage(`item:${book.key}`)).toBe(firebolt);
+    }
   });
 
   it('leaves entities without art unregistered (placeholder fallback)', () => {

@@ -16,7 +16,8 @@ import '@fontsource/eb-garamond/latin-600.css';
 import '@fontsource/eb-garamond/latin-400-italic.css';
 import './index.css';
 import { registerSW } from 'virtual:pwa-register';
-import { applyPalette, resolvePalette } from '@/engine/palettes';
+import { resolvePalette } from '@/engine/palettes';
+import { applyPalette } from '@/lib/palettes';
 
 // PWA service worker (precache-only app shell; see vite.config.ts). autoUpdate
 // swaps in new builds on activation. Android keeps installed PWAs resumed for

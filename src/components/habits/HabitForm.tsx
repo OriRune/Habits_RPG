@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ChevronLeft, Sparkles, Pencil } from 'lucide-react';
 import { STATS, getStat } from '@/engine/stats';
-import { type Difficulty, BASE_XP, HABIT_GOLD } from '@/engine/xp';
+import { type Difficulty, BASE_XP, HABIT_GOLD, levelXpMultiplier } from '@/engine/xp';
 import { type Habit, type HabitType, type Frequency } from '@/engine/habits';
 import { useGameStore, type NewHabitInput } from '@/store/useGameStore';
 import { HABIT_TEMPLATE_GROUPS, type HabitTemplateGroup } from '@/content/habitTemplates';
@@ -175,6 +175,7 @@ function HabitFormFields({
 }) {
   const addHabit = useGameStore((s) => s.addHabit);
   const updateHabit = useGameStore((s) => s.updateHabit);
+  const level = useGameStore((s) => s.character.level);
   const isEdit = habit !== undefined;
 
   const [name, setName] = useState(habit?.name ?? '');
@@ -219,8 +220,9 @@ function HabitFormFields({
     onClose();
   }
 
-  // Reward preview values
-  const xpPerCompletion = BASE_XP[difficulty];
+  // Reward preview values — scaled by the player's level so the preview matches what a
+  // completion actually grants (BAL-01 habit-XP scaling); gear/recovery bonuses land on top.
+  const xpPerCompletion = Math.round(BASE_XP[difficulty] * levelXpMultiplier(level));
   const goldPerCompletion = HABIT_GOLD[difficulty];
   const freq = frequency === 'daily' ? 7 : frequency === 'weekdays' ? 5 : frequency === 'times_per_week' ? Math.min(7, Number(timesPerWeek) || 1) : null;
   const weeklyXp = freq !== null ? xpPerCompletion * freq : null;
@@ -318,7 +320,7 @@ function HabitFormFields({
             </div>
             <label className="col-span-2 flex items-center gap-2 text-sm text-ink">
               <input type="checkbox" checked={uncapped} onChange={(e) => setUncapped(e.target.checked)} />
-              Allow unlimited — no XP cap (e.g. miles run)
+              XP scales with amount, up to 10× target (normally capped at 150%)
             </label>
           </div>
         )}

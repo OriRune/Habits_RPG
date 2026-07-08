@@ -91,6 +91,10 @@ export const FOREST_NODES: Record<string, ForestNodeDef> = {
     key: 'flower_bush', name: 'Flower Bush', glyph: '🌸', color: '#d96aa0',
     stageMin: 1, weight: 3, grants: { kind: 'material', material: 'herbs', amount: [1, 2] },
   },
+  timber_stand: {
+    key: 'timber_stand', name: 'Timber Stand', glyph: '🌲', color: '#5a7a3a',
+    stageMin: 1, weight: 3, grants: { kind: 'material', material: 'wood', amount: [1, 2] },
+  },
   flax_plant: {
     key: 'flax_plant', name: 'Flax & Cotton', glyph: '🌾', color: '#c9b34f',
     stageMin: 1, weight: 3, grants: { kind: 'material', material: 'cloth_roll', amount: [1, 2] },
@@ -191,6 +195,13 @@ export const FOREST_BEASTS: Record<string, ForestBeastDef> = {
     band: 'ancient', defense: 2, weakTo: ['WI'], resistTo: ['DX'],
     dropMaterial: 'amber_resin', dropAmount: [1, 2],
   },
+  // Deep-ancient sprinter (stages 12+): sub-300ms cadence outruns the player, so
+  // deep stages can no longer be strolled through untouched.
+  amber_stalker: {
+    key: 'amber_stalker', name: 'Amber Stalker', glyph: '🐆', color: '#e8a020',
+    stageMin: 12, hp: 26, touchDamage: 13, moveCadenceMs: 250, aggroRadius: 5, bounty: [40, 60],
+    band: 'ancient', flees: false, weakTo: ['WI'], resistTo: ['DX'],
+  },
 };
 
 // ============================================================================
@@ -241,9 +252,3 @@ export const FOREST_GUARDIAN_STAGES: Record<number, string> = {
   8: 'ancient_guardian',
 };
 
-export function getForestNode(key: string): ForestNodeDef | undefined {
-  return FOREST_NODES[key];
-}
-export function getForestBeast(key: string): ForestBeastDef | undefined {
-  return FOREST_BEASTS[key];
-}
