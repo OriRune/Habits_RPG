@@ -5,7 +5,6 @@ import { useTacticsAudio } from '@/hooks/useTacticsAudio';
 import { useIsCoarsePointer } from '@/hooks/useIsCoarsePointer';
 import {
   type TacticalEffect,
-  type UnitStatus,
   type EnemyIntent,
   type AIArchetype,
   type TacticsObjective,
@@ -17,14 +16,17 @@ import {
   type AttackPreview,
 } from '@/engine/hexBattle';
 import { hexKey, hexDistance, type Hex } from '@/engine/hex';
-import { getSpell, SCHOOL_STAT, type StatusKey } from '@/engine/spells';
+import { getSpell, SCHOOL_STAT } from '@/engine/spells';
 import { tacticsStatXp } from '@/store/shared';
+import { selectTopStats } from '@/store/selectors';
 import { MATERIALS } from '@/content/materials';
 import { play as sfxPlay } from '@/lib/sfx';
+import { avatarCrest } from '@/lib/sprites';
 import { MAX_ELEVATION, SPELL_RANGE, STA_REGEN_PER_TURN, MP_REGEN_PER_TURN, MOVE_ANIM_MS, TACTICS_UNLOCK_LEVEL, climbFor, heightRangeBonus, hasLineOfSight, type HexBattleState } from '@/engine/hexBattle';
 import type { StatId } from '@/engine/stats';
 import { base, topCenter, hexCorners, isoBounds } from './iso';
 import { TacticsArtDefs, StaticTerrainLayer, ptsAt } from './terrainArt';
+import { UnitSprite, EffectSprite, SPELL_FX } from './UnitSprite';
 import { Button } from '@/components/ui/Button';
 import { StreakBonusChip } from '@/components/character/StreakBonusChip';
 import { cn } from '@/lib/cn';
@@ -42,30 +44,6 @@ function fitSize(radius: number, availW: number, availH: number): number {
   return Math.max(14, Math.min(72, Math.floor(s)));
 }
 
-const STATUS_GLYPH: Record<StatusKey, string> = {
-  bless: '🛡️', burn: '🔥', weaken: '🔻', blind: '💫', freeze: '❄️', poison: '☠️',
-};
-
-const SPELL_FX: Record<string, { anim: string; glyph: string }> = {
-  sparks:  { anim: 'tactics-sparks',  glyph: '⚡' },
-  firebolt:{ anim: 'tactics-firebolt',glyph: '🔥' },
-  mend:    { anim: 'tactics-mend',    glyph: '✚' },
-  bless:   { anim: 'tactics-bless',   glyph: '✨' },
-  dazzle:  { anim: 'tactics-dazzle',  glyph: '💫' },
-  hex:     { anim: 'tactics-hex',     glyph: '🟣' },
-  // Tactics positional spells (always available)
-  push:    { anim: 'tactics-cast',    glyph: '💨' },
-  blink:   { anim: 'tactics-cast',    glyph: '🌀' },
-  cleave:  { anim: 'tactics-cast',    glyph: '⚡' },
-};
-
-const FLOATER_COLOR: Record<NonNullable<TacticalEffect['color']>, string> = {
-  'dmg-enemy': '#fbbf24',  // amber — damage dealt by player
-  'dmg-player': '#f87171', // red — damage taken
-  'heal': '#34d399',       // green
-  'status': '#c084fc',     // purple — status inflicted
-};
-
 function Gauge({ icon, value, max, fill, note }: { icon: React.ReactNode; value: number; max: number; fill: string; note?: string }) {
   const pct = max > 0 ? Math.max(0, Math.min(100, Math.round((value / max) * 100))) : 0;
   return (
@@ -78,17 +56,6 @@ function Gauge({ icon, value, max, fill, note }: { icon: React.ReactNode; value:
         {Math.max(0, Math.round(value))}/{Math.round(max)}
         {note && <span className="ml-1 text-[9px] opacity-60">{note}</span>}
       </span>
-    </div>
-  );
-}
-
-function StatusRow({ statuses }: { statuses: UnitStatus[] }) {
-  if (statuses.length === 0) return null;
-  return (
-    <div className="pointer-events-none flex gap-0.5 text-[10px]" style={{ filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.8))' }}>
-      {statuses.map((st) => (
-        <span key={st.key} title={`${st.key} (${st.turns}t)`}>{STATUS_GLYPH[st.key]}</span>
-      ))}
     </div>
   );
 }
@@ -152,6 +119,10 @@ export function TacticsOverlay() {
   const habitBonus = useGameStore((s) => s.character.habitBonus);
   const deepestTacticsTier = useGameStore((s) => s.deepestTacticsTier);
   const soundEnabled = useGameStore((s) => s.settings.soundEnabled);
+  // Class tint for the hero token's cloak — same recipe as the Hero sheet banner.
+  const classId = useGameStore((s) => s.character.classId);
+  const topStat = useGameStore(selectTopStats)[0];
+  const cloakColor = avatarCrest(classId, topStat).color;
 
   // Co-op: identify local player and session role
   const coopJoined = useCoopStore((s) => s.joined);
@@ -420,6 +391,24 @@ export function TacticsOverlay() {
   const allyHeroes = isCoopSession ? (tactics.players ?? []).filter((p) => p.id !== tactics.player.id) : [];
   const allyName = allyHeroes[0]?.name ?? 'Ally';
 
+  // Facing (view-derived; the engine has no notion of it): units look toward their nearest foe.
+  // Tokens are authored facing right, so a target left of the unit mirrors the art.
+  const livingEnemyHexes = tactics.enemies.filter((e) => e.hp > 0).map((e) => e.hex);
+  const livingHeroHexes = [tactics.player, ...allyHeroes].filter((h) => h.hp > 0).map((h) => h.hex);
+  const faceToward = (from: Hex, targets: Hex[]): 'left' | 'right' => {
+    let best: Hex | null = null;
+    let bd = Infinity;
+    for (const t of targets) {
+      const d = hexDistance(from, t);
+      if (d < bd) { bd = d; best = t; }
+    }
+    return best && top(best).x < top(from).x ? 'left' : 'right';
+  };
+
+  // Freshest damage floater per unit — remounts the token art so the hit flash restarts.
+  const hitIdFor = (hex: Hex): number | undefined =>
+    live.find((fx) => fx.kind === 'floater' && (fx.color === 'dmg-enemy' || fx.color === 'dmg-player') && hexKey(fx.to) === hexKey(hex))?.id;
+
   const unitsByDepth = [
     {
       key: 'player', hex: tactics.player.hex, displayHex: tactics.player.hex, glyph: '🧝',
@@ -429,6 +418,9 @@ export function TacticsOverlay() {
       aiArchetype: undefined as AIArchetype | undefined,
       weakTo: [] as StatId[], resistTo: [] as StatId[],
       slideMs: 200,
+      templateId: undefined as string | undefined,
+      heroKind: 'player' as 'player' | 'ally' | undefined,
+      facing: faceToward(tactics.player.hex, livingEnemyHexes),
     },
     ...allyHeroes.map((p) => ({
       key: `ally-${p.id ?? 'ally'}`,
@@ -440,6 +432,9 @@ export function TacticsOverlay() {
       aiArchetype: undefined as AIArchetype | undefined,
       weakTo: [] as StatId[], resistTo: [] as StatId[],
       slideMs: 200,
+      templateId: undefined as string | undefined,
+      heroKind: 'ally' as 'player' | 'ally' | undefined,
+      facing: faceToward(p.hex, livingEnemyHexes),
     })),
     ...tactics.enemies.map((e) => {
       // hasPendingMove: a 'move' effect exists for this enemy and hasn't fired yet.
@@ -459,6 +454,9 @@ export function TacticsOverlay() {
         aiArchetype: e.aiArchetype,
         weakTo: e.weakTo, resistTo: e.resistTo,
         slideMs: hasPendingMove ? 0 : hasJustMoved ? MOVE_ANIM_MS : 200,
+        templateId: e.templateId as string | undefined,
+        heroKind: undefined as 'player' | 'ally' | undefined,
+        facing: faceToward(e.hex, livingHeroHexes),
       };
     }),
   ].sort((a, b) => groundY(a.hex) - groundY(b.hex));
@@ -747,6 +745,12 @@ export function TacticsOverlay() {
                 archetypeColor={archetypeColor}
                 archetypeBlurb={archetypeBlurb}
                 weakResist={weakResist}
+                templateId={u.templateId}
+                heroKind={u.heroKind}
+                classId={classId}
+                cloakColor={cloakColor}
+                facing={u.facing}
+                hitId={hitIdFor(u.hex)}
                 onClick={u.enemyId !== undefined ? () => onTileClick(u.hex) : undefined}
                 onHover={u.enemyId !== undefined ? (over) => onTileHover(over ? u.hex : null) : undefined}
               />
@@ -1010,176 +1014,6 @@ export function TacticsOverlay() {
         </div>
       </div>
       )}
-    </div>
-  );
-}
-
-function UnitSprite({
-  x, y, glyph, hp, maxHp, statuses, friendly, name, scale = 1,
-  slideMs = 200,
-  intent, archetypeColor, archetypeBlurb, weakResist, onClick, onHover,
-}: {
-  x: number; y: number; glyph: string; hp: number; maxHp: number; statuses: UnitStatus[];
-  friendly?: boolean; name?: string; scale?: number;
-  /**
-   * CSS transition duration for the position transform (ms).
-   * 0 = instant snap (used when holding a unit at prevHex before its stagger fires).
-   * MOVE_ANIM_MS = smooth slide after stagger timer fires.
-   */
-  slideMs?: number;
-  intent?: EnemyIntent;
-  /** Archetype ring color (hex string); absent for the player. */
-  archetypeColor?: string;
-  /** Short archetype label + blurb shown in the intent badge tooltip. */
-  archetypeBlurb?: string;
-  /** Whether the current player action hits a weakness (⬆) or resistance (⬇) of this enemy. */
-  weakResist?: 'weak' | 'resist' | null;
-  onClick?: () => void;
-  /** Hover pass-through: the sprite sits above its tile polygon and swallows mouse events,
-   *  so without this the damage preview never fires when pointing at the unit itself. */
-  onHover?: (over: boolean) => void;
-}) {
-  const pct = Math.max(0, Math.min(100, (hp / maxHp) * 100));
-  const tooltipText = archetypeBlurb ? `${name ?? ''}\n${archetypeBlurb}` : (name ?? undefined);
-  return (
-    <div
-      // hover:z-30 raises the pointed-at unit above overlapping neighbours (iso rows crowd).
-      className={cn('absolute z-20 flex flex-col items-center hover:z-30', onClick ? 'cursor-pointer' : 'pointer-events-none')}
-      style={{ left: 0, top: 0, transform: `translate(${x}px, ${y}px) translate(-50%, -78%)`, transition: slideMs > 0 ? `transform ${slideMs}ms ease-out` : 'none' }}
-      title={tooltipText}
-      onClick={onClick}
-      onMouseEnter={onHover ? () => onHover(true) : undefined}
-      onMouseLeave={onHover ? () => onHover(false) : undefined}
-    >
-      {/* Intent badge — shows planned action icon + archetype name (Phase C) */}
-      {intent && !friendly && (
-        <div
-          className="pointer-events-none flex items-center gap-0.5 rounded-sm bg-wood-950/70 px-0.5 text-[9px]"
-          title={archetypeBlurb ? `${archetypeBlurb}\n${intent.attackLabel}` : intent.attackLabel}
-        >
-          {intent.willAttack ? (
-            <span style={{ fontSize: Math.round(10 * scale) }}>{intent.lunge ? '💨' : ''}{intent.attackIcon === '💨' ? '⚔️' : intent.attackIcon}</span>
-          ) : intent.lunge ? (
-            // Winding up a catch-up lunge — reach next turn is 2×move+1, mirrored by the danger zone.
-            <span style={{ fontSize: Math.round(10 * scale) }} title="Winding up a lunge!">💨</span>
-          ) : intent.attackIcon === '❄️' ? (
-            <span className="text-blue-300">❄️</span>
-          ) : null}
-          {(name || archetypeBlurb) && (
-            // Creature name, colored by archetype — the log speaks in names ("Wailing Wisp hits…"),
-            // so the board must too; the archetype lives in the ring color + tooltip (audit U3).
-            <span
-              className="ml-0.5 truncate font-display leading-none"
-              style={{ fontSize: Math.round(8 * scale), color: archetypeColor ?? '#aaa', maxWidth: Math.round(64 * scale) }}
-            >
-              {name ?? archetypeBlurb!.split(' ')[0]}
-            </span>
-          )}
-        </div>
-      )}
-      <StatusRow statuses={statuses} />
-      <div className="h-1 overflow-hidden rounded-full border border-black/50 bg-black/60" style={{ width: Math.round(26 * scale) }}>
-        <div className="h-full" style={{ width: `${pct}%`, backgroundColor: friendly ? '#34d399' : '#ef4444' }} />
-      </div>
-      {/* Unit glyph — with subtle archetype glow and weak/resist indicator */}
-      <div className="relative flex items-center justify-center">
-        <span
-          style={{
-            fontSize: Math.round(26 * scale),
-            lineHeight: 1,
-            filter: archetypeColor
-              ? `drop-shadow(0 0 ${Math.round(5 * scale)}px ${archetypeColor}88) drop-shadow(0 2px 2px rgba(0,0,0,0.7))`
-              : 'drop-shadow(0 2px 2px rgba(0,0,0,0.7))',
-            animation: !friendly ? 'tactics-idle-pulse 2.8s ease-in-out infinite' : undefined,
-          }}
-        >
-          {glyph}
-        </span>
-        {/* Weak/resist affinity indicator — shown when the player's selected action has an affinity */}
-        {weakResist && (
-          <span
-            className="absolute -right-1 -bottom-0.5 leading-none"
-            style={{
-              fontSize: Math.round(10 * scale),
-              color: weakResist === 'weak' ? '#4ade80' : '#f87171',
-              filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.8))',
-            }}
-            title={weakResist === 'weak' ? 'Weak to this attack (+damage)' : 'Resists this attack (-damage)'}
-          >
-            {weakResist === 'weak' ? '⬆' : '⬇'}
-          </span>
-        )}
-      </div>
-      {/* Name tag — visible label for co-op heroes so each player knows who is who */}
-      {friendly && name && (
-        <div
-          className="pointer-events-none rounded bg-wood-950/75 px-1 py-px text-center font-display leading-tight"
-          style={{ fontSize: Math.round(7 * scale), color: '#c9b57a', whiteSpace: 'nowrap', maxWidth: Math.round(54 * scale) }}
-        >
-          {name}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function EffectSprite({ fx, from, to }: { fx: TacticalEffect; from: { x: number; y: number }; to: { x: number; y: number } }) {
-  if (fx.kind === 'floater') {
-    const color = fx.color ? FLOATER_COLOR[fx.color] : '#fbbf24';
-    // Deterministic horizontal jitter so overlapping floaters (multi-hit turns) don't stack.
-    const jitter = ((fx.id % 5) - 2) * 5;
-    return (
-      <div
-        className="pointer-events-none absolute z-40 select-none font-display font-bold"
-        style={{
-          left: to.x + jitter,
-          top: to.y,
-          color,
-          fontSize: fx.color === 'status' ? 13 : 19,
-          textShadow: '0 1px 3px rgba(0,0,0,0.95), 0 0 6px rgba(0,0,0,0.6)',
-          animation: `tactics-floater ${fx.durationMs}ms ease-out forwards`,
-        }}
-      >
-        {fx.label}
-      </div>
-    );
-  }
-  if (fx.kind === 'arrow') {
-    const dx = to.x - from.x;
-    const dy = to.y - from.y;
-    const rot = (Math.atan2(dy, dx) * 180) / Math.PI;
-    return (
-      <div
-        className="pointer-events-none absolute z-30 text-lg"
-        style={{
-          left: from.x, top: from.y,
-          ['--dx' as string]: `${dx}px`, ['--dy' as string]: `${dy}px`, ['--rot' as string]: `${rot}deg`,
-          transform: 'translate(-50%, -50%)',
-          animation: `tactics-arrow ${fx.durationMs}ms linear forwards`,
-        }}
-      >
-        ➶
-      </div>
-    );
-  }
-  if (fx.kind === 'melee') {
-    return (
-      <div
-        className="pointer-events-none absolute z-30 text-2xl"
-        style={{ left: to.x, top: to.y, transform: 'translate(-50%, -50%)', animation: `tactics-melee ${fx.durationMs}ms ease-out forwards` }}
-      >
-        💥
-      </div>
-    );
-  }
-  const key = fx.kind.slice('spell:'.length);
-  const conf = SPELL_FX[key] ?? { anim: 'tactics-cast', glyph: '✨' };
-  return (
-    <div
-      className="pointer-events-none absolute z-30 text-2xl"
-      style={{ left: to.x, top: to.y, transform: 'translate(-50%, -50%)', animation: `${conf.anim} ${fx.durationMs}ms ease-out forwards` }}
-    >
-      {conf.glyph}
     </div>
   );
 }

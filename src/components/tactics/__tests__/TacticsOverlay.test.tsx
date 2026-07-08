@@ -101,6 +101,13 @@ describe('TacticsOverlay (smoke)', () => {
     expect(getByText(/your turn/i)).toBeTruthy();
     // Action bar wired up.
     expect(getByText(/end turn/i)).toBeTruthy();
+    // The a11y surface survives the static/dynamic layer split (audit U10)…
+    const hexes = container.querySelectorAll('polygon[data-hex]');
+    expect(hexes.length).toBeGreaterThan(0);
+    expect(hexes[0].getAttribute('aria-label')).toMatch(/tile/);
+    // …and units render as procedural SVG tokens, not emoji.
+    expect(container.querySelector('svg[data-token="hero-player"]')).toBeTruthy();
+    expect(container.querySelectorAll('svg[data-token]').length).toBeGreaterThan(1);
   });
 
   it('clicking Move fires tacticsSelect and enters move-targeting mode', () => {
