@@ -218,6 +218,8 @@ export interface GameState {
   tactics: HexBattleState | null;
   /** Highest tier ever won in Hex Tactics — a persistent record. */
   deepestTacticsTier: number;
+  /** Enemy templateIds ever fielded against this player in Tactics — gates the bestiary. */
+  tacticsSeenFoes: string[];
   /** ISO date of the last daily clear per Skill Trial, for daily gating ('' = never). */
   trialsClearedOn: Record<TrialId, string>;
   /** Personal best score (0..1) per Skill Trial, for hub star display. */

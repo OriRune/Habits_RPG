@@ -5,13 +5,14 @@
 // Everything here is presentation-only; the engine's Tile is read, never written.
 //
 // Layer contract (see TacticsOverlay): this file renders the EXPENSIVE nodes — extruded walls,
-// textured top faces, terrain props — inside a React.memo boundary keyed on [tiles, size,
-// offsets], so hover/selection re-renders never touch it. The overlay keeps a thin dynamic
-// layer (transparent hit polygons, highlight strokes, threat tint) stacked above.
+// textured top faces, terrain props — behind a per-tile React.memo boundary (TileArt), so
+// hover/selection re-renders reconcile the tiles but bail out on their unchanged props. The
+// overlay interleaves each TileArt with that tile's thin dynamic overlay (transparent hit
+// polygon, highlight strokes, threat tint) in one depth-sorted pass, so a raised column's walls
+// occlude the tints of tiles behind it exactly like they occlude those tiles' top faces.
 import { memo, type ReactNode } from 'react';
 import type { Tile } from '@/engine/hexBattle';
-import { hexKey } from '@/engine/hex';
-import { base, topCenter, hexCorners, colHeight, type Pt } from './iso';
+import { topCenter, colHeight, type Pt } from './iso';
 import { cellHash } from '@/lib/minigameArt';
 
 // --- Shared color math (moved from TacticsOverlay so both layers agree on tile colors) ----------
@@ -216,7 +217,7 @@ function terrainProps(tile: Tile, c: Pt, s: number, corners: Pt[], rgb: [number,
 
 // --- Per-tile static art ---------------------------------------------------------------------
 
-function TileArt({ tile, size, corners }: { tile: Tile; size: number; corners: Pt[] }) {
+function TileArtImpl({ tile, size, corners }: { tile: Tile; size: number; corners: Pt[] }) {
   const c = topCenter(tile.hex, size, tile.elevation);
   const rgb = terrainRGB(tile);
   const E = tile.elevation * colHeight(size);
@@ -242,7 +243,9 @@ function TileArt({ tile, size, corners }: { tile: Tile; size: number; corners: P
     ` L ${c.x + corners[0].x} ${c.y + corners[0].y + dy}`;
 
   return (
-    <g>
+    // pointerEvents none: props (crags, flames) can poke above the hex outline — they must never
+    // swallow the hover/click meant for the hit polygon of this tile or the tile behind.
+    <g pointerEvents="none">
       {E > 0 && (
         <>
           {wall(3, 4, darken(rgb, 0.55))}
@@ -265,22 +268,10 @@ function TileArt({ tile, size, corners }: { tile: Tile; size: number; corners: P
 // --- The memo boundary -----------------------------------------------------------------------
 
 /**
- * All static board art, depth-sorted (same order as the overlay's dynamic layer so walls occlude
- * consistently). Re-renders only when the match's tiles object, the tile size, or the board
- * offsets change — hover/selection/threat updates never touch these ~900 nodes.
+ * One tile's static art. The overlay renders ~127 of these inside its depth-sorted tile loop;
+ * memo bails them out on hover/selection re-renders because every prop is referentially stable
+ * (tile objects live in the store, `corners` is memoized per size). Interleaving with the
+ * dynamic overlays — rather than a single static layer stacked below them — is what keeps the
+ * threat/firing tints correctly occluded by the walls of raised columns in front.
  */
-export const StaticTerrainLayer = memo(function StaticTerrainLayer({
-  tiles, size, offsetX, offsetY,
-}: { tiles: Record<string, Tile>; size: number; offsetX: number; offsetY: number }) {
-  const corners = hexCorners(size);
-  const sorted = Object.values(tiles)
-    .slice()
-    .sort((a, b) => base(a.hex, size).y - base(b.hex, size).y || a.hex.q - b.hex.q);
-  return (
-    <g transform={`translate(${offsetX},${offsetY})`} pointerEvents="none">
-      {sorted.map((tile) => (
-        <TileArt key={hexKey(tile.hex)} tile={tile} size={size} corners={corners} />
-      ))}
-    </g>
-  );
-});
+export const TileArt = memo(TileArtImpl);

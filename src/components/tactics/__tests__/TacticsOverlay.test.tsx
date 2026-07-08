@@ -108,6 +108,13 @@ describe('TacticsOverlay (smoke)', () => {
     // …and units render as procedural SVG tokens, not emoji.
     expect(container.querySelector('svg[data-token="hero-player"]')).toBeTruthy();
     expect(container.querySelectorAll('svg[data-token]').length).toBeGreaterThan(1);
+    // Interleaving contract: each hit polygon shares its tile group with that tile's static
+    // art, so state tints paint in depth order (a front column's walls occlude tints behind).
+    const tileGroup = hexes[0].parentElement!;
+    expect(tileGroup.querySelectorAll('polygon').length).toBeGreaterThan(2); // top + sheen + hit
+    // Side panels: the lg+ battle-log panel renders (CSS hides it on small screens).
+    expect(getByText(/battle log/i)).toBeTruthy();
+    expect(getByText(/foes — \d+ left/i)).toBeTruthy();
   });
 
   it('clicking Move fires tacticsSelect and enters move-targeting mode', () => {

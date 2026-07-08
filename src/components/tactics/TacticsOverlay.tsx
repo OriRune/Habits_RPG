@@ -25,8 +25,8 @@ import { avatarCrest } from '@/lib/sprites';
 import { MAX_ELEVATION, SPELL_RANGE, STA_REGEN_PER_TURN, MP_REGEN_PER_TURN, MOVE_ANIM_MS, TACTICS_UNLOCK_LEVEL, climbFor, heightRangeBonus, hasLineOfSight, type HexBattleState } from '@/engine/hexBattle';
 import type { StatId } from '@/engine/stats';
 import { base, topCenter, hexCorners, isoBounds } from './iso';
-import { TacticsArtDefs, StaticTerrainLayer, ptsAt } from './terrainArt';
-import { UnitSprite, EffectSprite, SPELL_FX } from './UnitSprite';
+import { TacticsArtDefs, TileArt, ptsAt } from './terrainArt';
+import { UnitSprite, EffectSprite, SPELL_FX, STATUS_GLYPH } from './UnitSprite';
 import { Button } from '@/components/ui/Button';
 import { StreakBonusChip } from '@/components/character/StreakBonusChip';
 import { cn } from '@/lib/cn';
@@ -56,6 +56,27 @@ function Gauge({ icon, value, max, fill, note }: { icon: React.ReactNode; value:
         {Math.max(0, Math.round(value))}/{Math.round(max)}
         {note && <span className="ml-1 text-[9px] opacity-60">{note}</span>}
       </span>
+    </div>
+  );
+}
+
+/** Full-width labelled vital bar for the lg+ side panel (the header Gauge stays for small screens). */
+function VitalBar({ icon, label, value, max, fill, note }: {
+  icon: React.ReactNode; label: string; value: number; max: number; fill: string; note?: string;
+}) {
+  const pct = max > 0 ? Math.max(0, Math.min(100, Math.round((value / max) * 100))) : 0;
+  return (
+    <div>
+      <div className="flex items-center justify-between text-[11px] text-parchment-300">
+        <span className="flex items-center gap-1">{icon} {label}</span>
+        <span className="font-display tabular-nums">
+          {Math.max(0, Math.round(value))}/{Math.round(max)}
+          {note && <span className="ml-1 text-[9px] opacity-60">{note}</span>}
+        </span>
+      </div>
+      <div className="mt-0.5 h-2 w-full overflow-hidden rounded-full border border-gold-deep/40 bg-wood-900">
+        <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: fill }} />
+      </div>
     </div>
   );
 }
@@ -232,6 +253,17 @@ export function TacticsOverlay() {
     [radius, vp.w, vp.h],
   );
   const bounds = useMemo(() => isoBounds(radius, size, MAX_ELEVATION), [radius, size]);
+  // Stable corner array so the per-tile TileArt memo can bail on identity (a fresh array per
+  // render would force all ~127 tiles to re-render on every hover).
+  const corners = useMemo(() => hexCorners(size), [size]);
+
+  // Side-panel battle log (lg+ screens) — keep it pinned to the newest entry.
+  const logPanelRef = useRef<HTMLDivElement>(null);
+  const logLength = tactics?.log.length ?? 0;
+  useEffect(() => {
+    const el = logPanelRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [logLength]);
 
   // Per-tile threat counts for the graded danger tint (audit U4): a tile one kiter can poke
   // reads differently from a tile three chargers converge on. Hook — stays above the early return.
@@ -393,7 +425,8 @@ export function TacticsOverlay() {
 
   // Facing (view-derived; the engine has no notion of it): units look toward their nearest foe.
   // Tokens are authored facing right, so a target left of the unit mirrors the art.
-  const livingEnemyHexes = tactics.enemies.filter((e) => e.hp > 0).map((e) => e.hex);
+  const livingEnemies = tactics.enemies.filter((e) => e.hp > 0);
+  const livingEnemyHexes = livingEnemies.map((e) => e.hex);
   const livingHeroHexes = [tactics.player, ...allyHeroes].filter((h) => h.hp > 0).map((h) => h.hex);
   const faceToward = (from: Hex, targets: Hex[]): 'left' | 'right' => {
     let best: Hex | null = null;
@@ -533,7 +566,8 @@ export function TacticsOverlay() {
             ))}
           </div>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+        {/* Compact vitals — small screens only; the lg+ side panel carries the full-size bars. */}
+        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 lg:hidden">
           {tactics.player.overwatch && (
             <span className="flex items-center gap-1 rounded border border-sky-500/50 bg-sky-900/30 px-2 py-0.5 font-display text-[10px] text-sky-300" title="Overwatch active — reaction shot fires on the first enemy that steps into range">
               ⌖ Watching
@@ -555,42 +589,90 @@ export function TacticsOverlay() {
       {/* Objective banner */}
       {tactics.objective && <ObjectiveBanner objective={tactics.objective} turnCount={tactics.turnCount} />}
 
-      {/* Board — warm radial vignette centres the eye on the battlefield */}
-      <div
-        ref={boardWrapRef}
-        className="relative flex flex-1 items-center justify-center overflow-hidden"
-        style={{ background: 'radial-gradient(ellipse 90% 75% at 50% 44%, #322618 0%, #221a10 55%, #120d07 100%)' }}
-      >
+      {/* Board row — side panels (lg+) flank the battlefield so wide screens spend their
+          gutters on information: full-size vitals + foes roster left, the battle log right. */}
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
+        {/* Left panel — your vitals and the enemy roster */}
+        <aside className="hidden w-56 shrink-0 flex-col gap-3 overflow-y-auto border-r border-gold-deep/40 bg-wood-900/70 p-3 lg:flex">
+          <div className="space-y-2 rounded-md border border-gold-deep/30 bg-wood-950/50 p-2.5">
+            <div className="font-display text-[10px] font-bold uppercase tracking-wider text-parchment-300/60">
+              {isCoopSession ? (tactics.player.name ?? 'You') : 'Your hero'}
+            </div>
+            <VitalBar icon={<Heart className="h-3.5 w-3.5 text-red-400" />} label="Health" value={tactics.player.hp} max={tactics.player.maxHp} fill="#ef4444" />
+            <VitalBar icon={<Sparkles className="h-3.5 w-3.5 text-blue-400" />} label="Mana" value={tactics.player.mp} max={tactics.player.maxMp} fill="#3b82f6" note={`+${MP_REGEN_PER_TURN}/turn`} />
+            <VitalBar icon={<Zap className="h-3.5 w-3.5 text-amber-400" />} label="Stamina" value={tactics.player.sta} max={tactics.player.maxSta} fill="#f59e0b" note={`+${STA_REGEN_PER_TURN}/turn`} />
+            <div className="flex items-center justify-between text-[11px] text-parchment-300">
+              <span className="flex items-center gap-1"><Footprints className="h-3 w-3 text-stat-AG" /> Moves left</span>
+              <span className="font-display font-bold text-stat-AG">{isPlayerTurn ? tactics.player.movesLeft : '—'}</span>
+            </div>
+            {tactics.player.overwatch && (
+              <div className="rounded border border-sky-500/50 bg-sky-900/30 px-1.5 py-0.5 text-center font-display text-[10px] text-sky-300">
+                ⌖ Overwatch armed
+              </div>
+            )}
+            {tactics.player.statuses.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {tactics.player.statuses.map((st) => (
+                  <span key={st.key} className="rounded border border-gold-deep/30 bg-wood-900/60 px-1 py-0.5 text-[10px] text-parchment-300" title={st.key}>
+                    {STATUS_GLYPH[st.key]} {st.key} · {st.turns}t
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2 rounded-md border border-gold-deep/30 bg-wood-950/50 p-2.5">
+            <div className="font-display text-[10px] font-bold uppercase tracking-wider text-parchment-300/60">
+              Foes — {livingEnemies.length} left
+            </div>
+            {livingEnemies.map((e) => {
+              const info = ARCHETYPE_INFO[e.aiArchetype];
+              const intent = intentByEnemyId.get(e.id);
+              return (
+                <div
+                  key={e.id}
+                  className="space-y-0.5"
+                  title={`${e.name} — ${info.label}: ${info.blurb}`}
+                  onMouseEnter={() => onTileHover(e.hex)}
+                  onMouseLeave={() => onTileHover(null)}
+                >
+                  <div className="flex items-center gap-1.5 text-[11px] text-parchment-200">
+                    <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: info.color }} />
+                    <span className="truncate font-display">{e.name}</span>
+                    {showIntents && intent?.willAttack && (
+                      <span className="ml-auto shrink-0 text-[10px]" title={intent.attackLabel}>
+                        {intent.attackIcon === '💨' ? '⚔️' : intent.attackIcon}
+                      </span>
+                    )}
+                  </div>
+                  <div className="h-1 w-full overflow-hidden rounded-full border border-black/50 bg-black/60">
+                    <div className="h-full" style={{ width: `${Math.max(0, Math.min(100, (e.hp / e.maxHp) * 100))}%`, backgroundColor: '#ef4444' }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </aside>
+
+        {/* Board — warm radial vignette centres the eye on the battlefield */}
+        <div
+          ref={boardWrapRef}
+          className="relative flex min-w-0 flex-1 items-center justify-center overflow-hidden"
+          style={{ background: 'radial-gradient(ellipse 90% 75% at 50% 44%, #322618 0%, #221a10 55%, #120d07 100%)' }}
+        >
         <div className="relative" style={{ width: bounds.width, height: bounds.height }}>
           {/* Board SVG */}
           <svg width={bounds.width} height={bounds.height} className="absolute inset-0">
             <TacticsArtDefs />
-            {/* Static textured board — memoized; hover/selection re-renders never touch it. */}
-            <StaticTerrainLayer tiles={tactics.tiles} size={size} offsetX={bounds.offsetX} offsetY={bounds.offsetY} />
-            {/* Intent movement lines (behind the dynamic tile overlays) */}
-            {showIntents && (tactics.intentPlan ?? []).map((intent) => {
-              if (hexKey(intent.moveTo) === hexKey(tactics.enemies.find(e => e.id === intent.enemyId)?.hex ?? intent.moveTo)) return null;
-              const enemy = tactics.enemies.find(e => e.id === intent.enemyId);
-              if (!enemy || enemy.hp <= 0) return null;
-              const from = top(enemy.hex);
-              const to = top(intent.moveTo);
-              return (
-                <line
-                  key={`intent-move-${intent.enemyId}`}
-                  x1={from.x} y1={from.y} x2={to.x} y2={to.y}
-                  stroke="rgba(251,146,60,0.55)" strokeWidth={2} strokeDasharray="4 3"
-                  style={{ pointerEvents: 'none' }}
-                />
-              );
-            })}
-
-            {/* Dynamic tile layer — one transparent hit polygon per tile (carries the a11y
-                surface + handlers) plus the cheap state overlays. All heavy art lives in
-                StaticTerrainLayer above. */}
+            {/* Tile pass — one depth-sorted loop interleaving each tile's static art (memoized
+                TileArt; hover re-renders bail out on it) with that tile's dynamic overlay: the
+                transparent hit polygon (a11y surface + handlers) and the cheap state tints.
+                Interleaving matters: a raised column's walls must occlude the threat/firing
+                tints of tiles behind it, or the red hexes float detached over the terrain. */}
+            <g transform={`translate(${bounds.offsetX},${bounds.offsetY})`}>
             {tilesByDepth.map((tile) => {
-              const t = top(tile.hex);
+              const t = topCenter(tile.hex, size, tile.elevation);
               const key = hexKey(tile.hex);
-              const corners = hexCorners(size);
               const highlight = reachable.has(key) ? 'reach' : targetable.has(key) ? 'target' : null;
               const isPlayerTile = key === playerKey;
               const isAllyTile = allyHeroes.some((p) => hexKey(p.hex) === key);
@@ -618,6 +700,7 @@ export function TacticsOverlay() {
 
               return (
                 <g key={key}>
+                  <TileArt tile={tile} size={size} corners={corners} />
                   <polygon
                     points={ptsAt(corners, t.x, t.y)}
                     // NEVER fill="none" — it would kill hit-testing. Hover gets a faint wash.
@@ -669,11 +752,29 @@ export function TacticsOverlay() {
                 </g>
               );
             })}
+            </g>
+
+            {/* Intent movement lines — above the tile pass so raised terrain never hides a
+                telegraphed path the player is meant to read. */}
+            {showIntents && (tactics.intentPlan ?? []).map((intent) => {
+              if (hexKey(intent.moveTo) === hexKey(tactics.enemies.find(e => e.id === intent.enemyId)?.hex ?? intent.moveTo)) return null;
+              const enemy = tactics.enemies.find(e => e.id === intent.enemyId);
+              if (!enemy || enemy.hp <= 0) return null;
+              const from = top(enemy.hex);
+              const to = top(intent.moveTo);
+              return (
+                <line
+                  key={`intent-move-${intent.enemyId}`}
+                  x1={from.x} y1={from.y} x2={to.x} y2={to.y}
+                  stroke="rgba(251,146,60,0.55)" strokeWidth={2} strokeDasharray="4 3"
+                  style={{ pointerEvents: 'none' }}
+                />
+              );
+            })}
 
             {/* Archetype rings — colored hex outlines on enemy tiles (helps read behavior at a glance) */}
             {tactics.enemies.filter((e) => e.hp > 0).map((e) => {
               const t = top(e.hex);
-              const corners = hexCorners(size);
               const info = ARCHETYPE_INFO[e.aiArchetype];
               return (
                 <polygon
@@ -692,7 +793,6 @@ export function TacticsOverlay() {
             {tactics.objective?.kind === 'beacon' && tactics.objective.beaconHex && (() => {
               const bHex = tactics.objective.beaconHex;
               const t = top(bHex);
-              const corners = hexCorners(size);
               const done = tactics.objective.complete;
               const color = done ? '#22c55e' : '#fbbf24';
               const inner = corners.map((p) => `${t.x + p.x * 0.55},${t.y + p.y * 0.55}`).join(' ');
@@ -790,6 +890,28 @@ export function TacticsOverlay() {
             );
           })()}
         </div>
+        </div>
+
+        {/* Right panel — the battle log at a readable size (the bottom strip keeps only the
+            last few lines; the full story lives here on wide screens). */}
+        <aside className="hidden w-64 shrink-0 flex-col border-l border-gold-deep/40 bg-wood-900/70 lg:flex">
+          <div className="border-b border-gold-deep/30 px-3 py-2 font-display text-[10px] font-bold uppercase tracking-wider text-parchment-300/60">
+            Battle log
+          </div>
+          <div ref={logPanelRef} className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-3">
+            {tactics.log.slice(-60).map((line, i, arr) => (
+              <div
+                key={`${logLength - arr.length + i}`}
+                className={cn(
+                  'text-[11px] leading-snug',
+                  i === arr.length - 1 ? 'text-parchment-200' : 'text-parchment-300/60',
+                )}
+              >
+                {line}
+              </div>
+            ))}
+          </div>
+        </aside>
 
         {/* Outcome card — the payoff moment: gold, materials, XP, objective recap, tier record.
             Displayed numbers come from the SAME functions commitTactics banks (no drift). */}
@@ -996,8 +1118,8 @@ export function TacticsOverlay() {
               Click an enemy — they'll be hurled away. Bonus damage if they hit a wall or hazard.
             </div>
           ) : (
-            /* Mini log: last 4 lines, newest at the bottom */
-            <div className="flex flex-col gap-0.5">
+            /* Mini log: last 4 lines, newest at the bottom — lg+ reads the side panel instead */
+            <div className="flex flex-col gap-0.5 lg:hidden">
               {logLines.map((line, i) => (
                 <div
                   key={i}

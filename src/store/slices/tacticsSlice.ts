@@ -28,6 +28,8 @@ export type { TacticsSize, HeroOpts };
 export interface TacticsSlice {
   tactics: HexBattleState | null;
   deepestTacticsTier: number;
+  /** Enemy templateIds ever fielded against this player — gates the entry-screen bestiary. */
+  tacticsSeenFoes: string[];
 
   beginTactics: (loadout?: string[], chosenTier?: number) => void;
   tacticsSelect: (action: TacticsAction) => void;
@@ -49,6 +51,7 @@ export const createTacticsSlice: StateCreator<
 > = (set) => ({
   tactics: null,
   deepestTacticsTier: 0,
+  tacticsSeenFoes: [],
 
   beginTactics: (loadout, chosenTier) =>
     set((s) => {
@@ -120,7 +123,18 @@ export const createTacticsSlice: StateCreator<
       return tactics === s.tactics ? s : { tactics };
     }),
 
-  endTactics: () => set((s) => (s.tactics ? commitTactics(s, s.tactics) : s)),
+  endTactics: () =>
+    set((s) => {
+      if (!s.tactics) return s;
+      // Record every foe this match fielded (dead ones and reinforcement waves stay in the
+      // array), so the entry-screen bestiary can reveal creatures the player has actually met.
+      const seen = new Set(s.tacticsSeenFoes);
+      for (const e of s.tactics.enemies) seen.add(e.templateId);
+      return {
+        ...commitTactics(s, s.tactics),
+        ...(seen.size !== s.tacticsSeenFoes.length ? { tacticsSeenFoes: [...seen] } : {}),
+      };
+    }),
 
   coopApplyTactics: (incoming) =>
     set((cur) => ({

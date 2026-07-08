@@ -6,7 +6,8 @@ import type { StatusKey } from '@/engine/spells';
 import { cn } from '@/lib/cn';
 import { CreatureToken, HeroToken, hasToken } from './tokenArt';
 
-const STATUS_GLYPH: Record<StatusKey, string> = {
+/** Status glyphs — shared with the overlay's side-panel status chips. */
+export const STATUS_GLYPH: Record<StatusKey, string> = {
   bless: '🛡️', burn: '🔥', weaken: '🔻', blind: '💫', freeze: '❄️', poison: '☠️',
 };
 

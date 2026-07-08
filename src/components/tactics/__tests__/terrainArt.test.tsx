@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
-// StaticTerrainLayer renders the heavy board art deterministically (cellHash-driven detail),
-// so the memo boundary never causes visible churn and every terrain kind draws its prop art.
+// TileArt renders the heavy per-tile board art deterministically (cellHash-driven detail),
+// so the per-tile memo boundary never causes visible churn and every terrain kind draws its
+// prop art. The harness mirrors the overlay's tile pass: depth-sorted TileArts inside one
+// offset group (the overlay interleaves its dynamic overlays between them).
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
-import { StaticTerrainLayer, TacticsArtDefs } from '@/components/tactics/terrainArt';
+import { TileArt, TacticsArtDefs } from '@/components/tactics/terrainArt';
+import { base, hexCorners } from '@/components/tactics/iso';
 import type { Tile } from '@/engine/hexBattle';
 import { hexKey } from '@/engine/hex';
 
@@ -24,16 +27,26 @@ const TILES: Record<string, Tile> = Object.fromEntries([
   tile(1, -1, 'floor', 2),
 ]);
 
+const SIZE = 24;
+
 function renderLayer() {
+  const corners = hexCorners(SIZE);
+  const sorted = Object.values(TILES)
+    .slice()
+    .sort((a, b) => base(a.hex, SIZE).y - base(b.hex, SIZE).y || a.hex.q - b.hex.q);
   return render(
     <svg>
       <TacticsArtDefs />
-      <StaticTerrainLayer tiles={TILES} size={24} offsetX={100} offsetY={100} />
+      <g transform="translate(100,100)">
+        {sorted.map((t) => (
+          <TileArt key={hexKey(t.hex)} tile={t} size={SIZE} corners={corners} />
+        ))}
+      </g>
     </svg>,
   );
 }
 
-describe('StaticTerrainLayer', () => {
+describe('TileArt', () => {
   it('renders deterministically — two renders produce identical markup', () => {
     const a = renderLayer();
     const first = a.container.innerHTML;
@@ -67,5 +80,12 @@ describe('StaticTerrainLayer', () => {
     const { container } = renderLayer();
     expect(container.querySelectorAll('polygon[fill="url(#tx-sheen)"]').length).toBe(6);
     expect(container.querySelectorAll('polygon[fill="url(#tx-ember)"]').length).toBe(1);
+  });
+
+  it('never captures pointer events — the hit polygons stacked above must own them', () => {
+    const { container } = renderLayer();
+    for (const g of container.querySelectorAll('g[transform] > g')) {
+      expect(g.getAttribute('pointer-events')).toBe('none');
+    }
   });
 });

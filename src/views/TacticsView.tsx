@@ -1,15 +1,24 @@
 import { useState } from 'react';
-import { Grid3x3, Zap, Mountain, Sparkles, Gift } from 'lucide-react';
+import { Grid3x3, Zap, Mountain, Sparkles, Gift, HelpCircle, ChevronDown } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { useIsCoarsePointer } from '@/hooks/useIsCoarsePointer';
 import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
-import { TACTICS_ENERGY_COST, TACTICS_UNLOCK_LEVEL, TACTICS_GRANTED_SPELLS, STA_REGEN_PER_TURN, MP_REGEN_PER_TURN, isTacticsLoadoutSpell, moveTilesFor, climbFor, type TacticsSize } from '@/engine/hexBattle';
+import {
+  TACTICS_ENERGY_COST, TACTICS_UNLOCK_LEVEL, TACTICS_GRANTED_SPELLS,
+  STA_REGEN_PER_TURN, MP_REGEN_PER_TURN, COVER_DEFENSE, HAZARD_DMG,
+  ARCHETYPE_INFO, isTacticsLoadoutSpell, moveTilesFor, climbFor,
+  type TacticsSize, type TerrainKind, type Tile, type AIArchetype,
+} from '@/engine/hexBattle';
+import { ENEMIES } from '@/engine/enemies';
 import { getSpell } from '@/engine/spells';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SectionTitle } from '@/components/ui/Divider';
 import { cn } from '@/lib/cn';
 import { resume as sfxResume } from '@/lib/sfx';
+import { hexCorners } from '@/components/tactics/iso';
+import { terrainRGB, rgbStr } from '@/components/tactics/terrainArt';
+import { CreatureToken } from '@/components/tactics/tokenArt';
 
 const SIZE_OPTIONS: { id: TacticsSize; label: string; tiles: number }[] = [
   { id: 'small', label: 'Small', tiles: 37 },
@@ -30,6 +39,7 @@ export function TacticsView() {
   const updateSettings = useGameStore((s) => s.updateSettings);
   const beginTactics = useGameStore((s) => s.beginTactics);
   const allKnownSpells = useGameStore((s) => s.knownSpells);
+  const seenFoes = useGameStore((s) => s.tacticsSeenFoes);
 
   // Spells the player can choose to bring (excludes the 3 always-granted positional spells).
   const eligibleSpells = allKnownSpells.filter(isTacticsLoadoutSpell);
@@ -85,6 +95,9 @@ export function TacticsView() {
           skirt hazards, and pick your moment. This is where <span className="text-ink">Agility</span> finally
           pays off — it sets how far you move and how high you can climb each turn.
         </p>
+
+        <HowToPlay seenFoes={seenFoes} />
+
 
         <div className="rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3">
           <div className="mb-2 font-display text-sm text-ink">Battlefield size</div>
@@ -285,6 +298,148 @@ export function TacticsView() {
           </p>
         )}
       </Panel>
+    </div>
+  );
+}
+
+// --- How to play -------------------------------------------------------------------------------
+
+/** Tiny top-down hex swatch in the tile's real board color, for the terrain legend. */
+function TileSwatch({ terrain }: { terrain: TerrainKind }) {
+  const pts = hexCorners(11).map((p) => `${13 + p.x},${8 + p.y}`).join(' ');
+  const rgb = terrainRGB({ hex: { q: 0, r: 0 }, terrain, elevation: 0 } as Tile);
+  return (
+    <svg width={26} height={16} className="shrink-0" aria-hidden>
+      <polygon points={pts} fill={rgbStr(rgb)} stroke="rgba(0,0,0,0.45)" strokeWidth={1} />
+    </svg>
+  );
+}
+
+const TERRAIN_GUIDE: { terrain: TerrainKind; name: string; desc: string }[] = [
+  { terrain: 'floor',   name: 'Open ground', desc: 'Plain footing — nothing special.' },
+  { terrain: 'cover',   name: 'Barricade',   desc: `Stand on it for +${COVER_DEFENSE} defense and ward against every attack.` },
+  { terrain: 'slow',    name: 'Tall grass',  desc: 'Heavy going — each step onto it costs 2 movement.' },
+  { terrain: 'hazard',  name: 'Embers',      desc: `End a turn standing here and take ${HAZARD_DMG} damage. Shove foes in for heavy bonus damage!` },
+  { terrain: 'blocked', name: 'Crag',        desc: 'Impassable — blocks movement and line of sight.' },
+];
+
+const FAMILY_LABEL: Record<NonNullable<(typeof ENEMIES)[string]['archetype']>, string> = {
+  undead: 'Undead', beast: 'Beast', elemental: 'Elemental', construct: 'Construct',
+};
+
+/** Collapsible rules primer + bestiary. Creature entries reveal only once fought (tacticsSeenFoes). */
+function HowToPlay({ seenFoes }: { seenFoes: string[] }) {
+  const [open, setOpen] = useState(false);
+  const seen = new Set(seenFoes);
+  const roster = Object.values(ENEMIES);
+  const discovered = roster.filter((t) => seen.has(t.id)).length;
+  return (
+    <div className="rounded-md border border-gold-deep/30 bg-parchment-100/70">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between p-3 font-display text-sm text-ink"
+        aria-expanded={open}
+      >
+        <span className="flex items-center gap-1.5">
+          <HelpCircle className="h-4 w-4 text-stat-AG" /> How to play
+        </span>
+        <ChevronDown className={cn('h-4 w-4 transition-transform', open && 'rotate-180')} />
+      </button>
+      {open && (
+        <div className="space-y-4 border-t border-gold-deep/20 p-3 text-sm text-ink-muted">
+          <div className="space-y-1">
+            <div className="font-display text-xs font-bold uppercase tracking-wide text-ink">Your turn</div>
+            <p>
+              Each turn you can <span className="text-ink">move</span> (your Agility sets the tile budget)
+              and take <span className="text-ink">one action</span> — a weapon strike or a spell. Attacks
+              cost stamina; swing while below the cost and the hit lands at half power. Stamina recovers
+              +{STA_REGEN_PER_TURN} and mana +{MP_REGEN_PER_TURN} each turn. Instead of acting you can{' '}
+              <span className="text-ink">Hold ⌖</span> to arm an overwatch shot at the first foe that steps
+              into range. Enemies telegraph their next move — read the badge over each foe before you commit.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="font-display text-xs font-bold uppercase tracking-wide text-ink">The battlefield</div>
+            {TERRAIN_GUIDE.map(({ terrain, name, desc }) => (
+              <div key={terrain} className="flex items-center gap-2">
+                <TileSwatch terrain={terrain} />
+                <span className="font-display text-xs font-bold text-ink">{name}</span>
+                <span className="text-xs">{desc}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="space-y-1">
+            <div className="font-display text-xs font-bold uppercase tracking-wide text-ink">High ground</div>
+            <p className="text-xs">
+              Attacks deal <span className="text-ink">+12% damage per level of height advantage</span> (up to
+              +36%) — and lose the same fighting uphill. Ranged weapons and spells also gain{' '}
+              <span className="text-ink">+1 reach per level above the target</span> (max +2). Your Agility sets
+              how many levels you can climb in a single step, and a taller ridge (or any unit) between you and
+              a target blocks the shot.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="font-display text-xs font-bold uppercase tracking-wide text-ink">Know your foes</div>
+            <p className="text-xs">
+              The colored ring under each foe is its temperament — it tells you how it will move before it does.
+            </p>
+            {(Object.entries(ARCHETYPE_INFO) as [AIArchetype, (typeof ARCHETYPE_INFO)[AIArchetype]][]).map(([arch, info]) => (
+              <div key={arch} className="flex items-center gap-2 text-xs">
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: info.color }} />
+                <span className="font-display font-bold text-ink">{info.label}</span>
+                <span>{info.blurb}</span>
+              </div>
+            ))}
+            <p className="text-xs">
+              Match your attack stat to a foe's <span className="text-green-700">⬆ weakness</span> for bonus
+              damage; a <span className="text-red-700">⬇ resistance</span> blunts it. The arrows appear on
+              foes while you aim.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="font-display text-xs font-bold uppercase tracking-wide text-ink">
+              Bestiary — {discovered}/{roster.length} discovered
+            </div>
+            <p className="text-xs">Creatures reveal themselves once you have faced them in a skirmish.</p>
+            <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+              {roster.map((t) =>
+                seen.has(t.id) ? (
+                  <div
+                    key={t.id}
+                    className="flex items-center gap-2 rounded-md border border-gold-deep/40 bg-wood-900 p-1.5"
+                    title={t.flavor}
+                  >
+                    <CreatureToken templateId={t.id} sizePx={34} />
+                    <div className="min-w-0">
+                      <div className="truncate font-display text-[11px] font-bold text-parchment-200">{t.name}</div>
+                      <div className="text-[9px] text-parchment-300/60">{FAMILY_LABEL[t.archetype ?? 'beast']}</div>
+                      <div className="text-[9px]">
+                        <span className="text-emerald-400">⬆ {t.weakTo.join(' ')}</span>
+                        {(t.resistTo?.length ?? 0) > 0 && (
+                          <span className="ml-1.5 text-red-400">⬇ {t.resistTo!.join(' ')}</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    key={t.id}
+                    className="flex items-center justify-center gap-1.5 rounded-md border border-dashed border-gold-deep/40 bg-parchment-300/30 p-1.5 text-ink-muted/60"
+                  >
+                    <span className="font-display text-base font-bold">?</span>
+                    <span className="text-[10px]">Undiscovered</span>
+                  </div>
+                ),
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
