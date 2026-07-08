@@ -152,10 +152,11 @@ describe('TacticsOverlay (smoke)', () => {
     useGameStore.setState({
       tactics: { ...tactics, status: 'lost', player: { ...tactics.player, hp: 0 } },
     });
-    const { getByText, queryByText } = render(<TacticsOverlay />);
+    const { getByText, queryByText, getByRole } = render(<TacticsOverlay />);
     expect(getByText(/defeated/i)).toBeTruthy();
     expect(getByText(/Training XP \(half\)/)).toBeTruthy();
     expect(queryByText('Roll of Cloth')).toBeNull(); // materials are win-only
-    expect(getByText(/leave/i)).toBeTruthy();
+    expect(getByText(/💡/)).toBeTruthy(); // rule-based coaching line
+    expect(getByRole('button', { name: 'Leave' })).toBeTruthy();
   });
 });

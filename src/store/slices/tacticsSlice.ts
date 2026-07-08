@@ -12,6 +12,7 @@ import {
   playerCastSpell as tacticsCastFn,
   endPlayerTurn as tacticsEndTurnFn,
   holdOverwatch as tacticsHoldFn,
+  climbFor,
   TACTICS_ENERGY_COST,
   TACTICS_UNLOCK_LEVEL,
 } from '@/engine/hexBattle';
@@ -63,6 +64,14 @@ export const createTacticsSlice: StateCreator<
       // Dev invincibility, arena-style: captured at match start (solo only — never in co-op,
       // where the state broadcasts to other players).
       if (s.settings.invincible) tactics.invincible = true;
+      // Habit→power visibility (audit §4.1): name the real-life habits behind this match's
+      // mobility, right where the player will read the opening log. Store-level on purpose —
+      // the engine knows stats, not habits.
+      const agHabits = s.habits.filter((h) => h.stat === 'AG').map((h) => h.name).slice(0, 2);
+      const trainedBy = agHabits.length > 0 ? ` (trained by ${agHabits.join(', ')})` : '';
+      tactics.log.push(
+        `Agility ${s.character.statLevels.AG}${trainedBy}: move ${tactics.player.movesLeft}, climb ${climbFor(s.character.statLevels.AG)}.`,
+      );
       return {
         character: {
           ...s.character,

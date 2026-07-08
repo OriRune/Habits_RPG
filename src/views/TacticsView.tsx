@@ -254,17 +254,20 @@ export function TacticsView() {
             if (canEnter && showAdventureRitual) { setShowRitual(true); return; }
             void sfxResume(); beginTactics(eligibleSpells.length > 0 ? loadout : undefined, tier);
           }}
-          disabled={!canEnter || coarse}
+          disabled={!canEnter}
           className="w-full py-2.5"
         >
-          {coarse
-            ? 'Best played on desktop'
-            : !unlocked
-              ? `Unlocks at Level ${TACTICS_UNLOCK_LEVEL}`
-              : canEnter
-                ? 'Begin the Skirmish'
-                : `Need ${TACTICS_ENERGY_COST} energy (complete habits)`}
+          {!unlocked
+            ? `Unlocks at Level ${TACTICS_UNLOCK_LEVEL}`
+            : canEnter
+              ? 'Begin the Skirmish'
+              : `Need ${TACTICS_ENERGY_COST} energy (complete habits)`}
         </Button>
+        {coarse && unlocked && (
+          <p className="text-center text-xs text-ink-muted">
+            Touch controls: tap a target once to preview the damage, tap again to confirm.
+          </p>
+        )}
         {showRitual && (
           <AdventureRitualModal
             energyCost={TACTICS_ENERGY_COST}

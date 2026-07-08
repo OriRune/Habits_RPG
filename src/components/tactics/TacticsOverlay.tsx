@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Heart, Zap, Sparkles, Footprints, LogOut, Skull, Trophy, ChevronRight, Shield, Eye, EyeOff, Coins } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { useTacticsAudio } from '@/hooks/useTacticsAudio';
+import { useIsCoarsePointer } from '@/hooks/useIsCoarsePointer';
 import {
   type Tile,
   type TacticalEffect,
@@ -22,7 +23,7 @@ import { getSpell, SCHOOL_STAT, type StatusKey } from '@/engine/spells';
 import { tacticsStatXp } from '@/store/shared';
 import { MATERIALS } from '@/content/materials';
 import { play as sfxPlay } from '@/lib/sfx';
-import { MAX_ELEVATION, SPELL_RANGE, STA_REGEN_PER_TURN, MP_REGEN_PER_TURN, MOVE_ANIM_MS, climbFor, heightRangeBonus, hasLineOfSight } from '@/engine/hexBattle';
+import { MAX_ELEVATION, SPELL_RANGE, STA_REGEN_PER_TURN, MP_REGEN_PER_TURN, MOVE_ANIM_MS, TACTICS_UNLOCK_LEVEL, climbFor, heightRangeBonus, hasLineOfSight, type HexBattleState } from '@/engine/hexBattle';
 import type { StatId } from '@/engine/stats';
 import { base, topCenter, hexCorners, isoBounds, colHeight, type Pt } from './iso';
 import { Button } from '@/components/ui/Button';
@@ -113,6 +114,31 @@ function StatusRow({ statuses }: { statuses: UnitStatus[] }) {
   );
 }
 
+/**
+ * One rule-based hint for the defeat card (audit §4.5) — turns a loss into a lesson, the
+ * growth-mindset frame the habit RPG wants. Checked most-specific first; always returns something.
+ */
+function defeatCoaching(run: HexBattleState): string {
+  const resists = run.log.filter((l) => l.includes('— resisted')).length;
+  if (resists >= 3) {
+    return 'Many of your hits were resisted — check the ⬆/⬇ arrows when aiming and switch damage types.';
+  }
+  const usage = run.statUsage ?? {};
+  const castStats: StatId[] = ['WI', 'KN', 'CH'];
+  const neverCast = castStats.every((st) => !(usage[st] && usage[st]! > 0));
+  if (neverCast) {
+    return 'You never cast a spell — Push, Blink, and Cleave are always in your kit, and mana now refills +1 each turn.';
+  }
+  const frozen = run.log.some((l) => l.includes('frozen solid'));
+  if (frozen) {
+    return 'Frost foes froze you out of whole turns — kill kiters and casters first, or keep a wall between you.';
+  }
+  if (run.tier > TACTICS_UNLOCK_LEVEL) {
+    return `Tier ${run.tier} punishes mistakes hard — Tier ${run.tier - 1} pays less but trains the same instincts.`;
+  }
+  return 'High ground adds damage and reach — fight downhill, and use cover when you must hold still.';
+}
+
 /** Compact preview tooltip shown in the action bar caption when hovering a target. */
 function PreviewBadge({ preview }: { preview: AttackPreview }) {
   if (preview.isHeal) {
@@ -161,6 +187,10 @@ export function TacticsOverlay() {
 
   // Retreat needs confirmation to prevent misclicks during a winning match.
   const [confirmRetreat, setConfirmRetreat] = useState(false);
+
+  // Touch (audit U8): no hover exists, so the first tap on a target shows the damage preview
+  // and the second tap commits — mirrors the entry screen's stated touch contract.
+  const coarse = useIsCoarsePointer();
 
   // Warn the browser before navigating away mid-match so the player doesn't lose their run.
   useEffect(() => {
@@ -325,6 +355,12 @@ export function TacticsOverlay() {
   function onTileClick(h: Hex) {
     if (locked) return;
     const key = hexKey(h);
+    // Tap-to-confirm on touch: an attack/spell tap on a fresh target previews first.
+    if (coarse && (sel?.kind === 'attack' || sel?.kind === 'spell') && targetable.has(key)
+        && (!hoveredHex || hexKey(hoveredHex) !== key)) {
+      setHoveredHex(h);
+      return;
+    }
     if (isCoopGuest && coopSend) {
       const heroId = tactics?.player.id ?? userId;
       if (sel?.kind === 'move' && reachable.has(key))
@@ -592,6 +628,18 @@ export function TacticsOverlay() {
                 return <polygon key={`${a}-${b}`} points={pts} fill={fill} />;
               };
 
+              // Accessibility + testability surface (audit U10): tiles were anonymous polygons.
+              const occupant = isPlayerTile ? 'you'
+                : tactics.enemies.find((e) => e.hp > 0 && hexKey(e.hex) === key)?.name
+                ?? (isAllyTile ? 'ally' : null);
+              const tileLabel = [
+                `${tile.terrain} tile ${key}`,
+                tile.elevation > 0 ? `elevation ${tile.elevation}` : null,
+                occupant ? `${occupant} here` : null,
+                highlight === 'reach' ? 'reachable' : highlight === 'target' ? 'targetable' : null,
+                threatCount > 0 ? `threatened by ${threatCount}` : null,
+              ].filter(Boolean).join(', ');
+
               return (
                 <g key={key}>
                   {E > 0 && (
@@ -613,6 +661,9 @@ export function TacticsOverlay() {
                       : 'rgba(0,0,0,0.4)'}
                     strokeWidth={isHovered ? 3.5 : highlight || isPlayerTile || isAllyTile ? 3 : 1}
                     style={{ cursor: highlight || firing.has(key) ? 'pointer' : 'default' }}
+                    data-hex={key}
+                    role={highlight ? 'button' : undefined}
+                    aria-label={tileLabel}
                     onClick={() => onTileClick(tile.hex)}
                     onMouseEnter={() => onTileHover(tile.hex)}
                     onMouseLeave={() => onTileHover(null)}
@@ -864,6 +915,11 @@ export function TacticsOverlay() {
                 </div>
 
                 <StreakBonusChip className="text-[11px]" />
+                {!won && (
+                  <div className="rounded-md border border-gold-deep/25 bg-wood-950/60 px-2.5 py-1.5 text-left text-[11px] leading-snug text-parchment-300/85">
+                    💡 {defeatCoaching(tactics)}
+                  </div>
+                )}
                 {!won && (
                   <div className="text-[11px] text-parchment-300/70">
                     Every skirmish trains you — the XP above is already earned.
