@@ -7,6 +7,10 @@ import {
   computeReachable,
   hasLineOfSight,
   computeTargetable,
+  computeEnemyThreat,
+  planEnemyIntents,
+  previewPlayerAttack,
+  previewSpell,
   selectAction,
   movePlayer,
   playerAttack,
@@ -27,7 +31,7 @@ import {
   type TacticsObjective,
   type Tile,
 } from '../hexBattle';
-import { hexBoard, hexKey, hexDistance, type Hex } from '../hex';
+import { hexBoard, hexKey, hexDistance, hexEquals, type Hex } from '../hex';
 import type { Fighter, Combatant } from '../combat';
 import type { WeaponDef } from '../weapons';
 
@@ -465,6 +469,174 @@ describe('charger lunge anti-kite', () => {
       expect(next.log.some((l) => l.includes('lunges forward')), `${arch} must not lunge`).toBe(false);
       expect(hexDistance(next.enemies[0].hex, next.player.hex), `${arch} closed too far`).toBeGreaterThan(1);
     }
+  });
+});
+
+// --- Lunge telegraph (audit D2): the predictors use the same budget enemyAct will ----------------
+describe('lunge telegraph in threat zone and intents', () => {
+  const r4 = tilesFor(4);
+  const setup = (turnsOutOfReach: number) =>
+    makeState({
+      radius: 4, tiles: r4,
+      player: makePlayer({ q: -4, r: 0 }, { hp: 500, maxHp: 500 }),
+      enemies: [makeEnemy(1, { q: 4, r: 0 }, { aiArchetype: 'charger', moveTiles: 3, turnsOutOfReach })],
+    });
+
+  it('the danger zone covers the lunge reach once the lunge is pending', () => {
+    // Distance 8; base budget 3 + melee range 1 threatens only to distance 4 — but the pending
+    // lunge budget (2×3+1 = 7) + range 1 reaches the player's own tile. The overlay must show it.
+    const calm = computeEnemyThreat(setup(0));
+    expect(calm.some((h) => hexEquals(h, { q: -4, r: 0 }))).toBe(false);
+    const primed = computeEnemyThreat(setup(2));
+    expect(primed.some((h) => hexEquals(h, { q: -4, r: 0 }))).toBe(true);
+  });
+
+  it('the intent plan predicts the lunge move and flags it', () => {
+    const calm = planEnemyIntents(setup(0));
+    expect(calm[0].lunge ?? false).toBe(false);
+    expect(hexDistance(calm[0].moveTo, { q: -4, r: 0 })).toBeGreaterThan(1);
+    const primed = planEnemyIntents(setup(2));
+    expect(primed[0].lunge).toBe(true);
+    expect(primed[0].attackIcon).toBe('💨');
+    // Prediction parity: intent lands where enemyAct's lunge budget actually reaches.
+    expect(hexDistance(primed[0].moveTo, { q: -4, r: 0 })).toBeLessThanOrEqual(1);
+    expect(primed[0].willAttack).toBe(true);
+  });
+});
+
+// --- Player-side freeze & blind (audit D1): inflicts on the hero actually bite -------------------
+describe('player-side freeze and blind', () => {
+  it('a freeze inflicted during the enemy phase costs the hero the coming turn', () => {
+    // Adjacent foe whose only move inflicts a 1-turn freeze (mirrors the ice templates).
+    const s0 = makeState({
+      enemies: [makeEnemy(1, { q: 1, r: 0 }, {
+        moveset: [{ kind: 'inflict', weight: 1, inflictKey: 'freeze', inflictTurns: 1, inflictMag: 1, label: 'breathes freezing air', icon: '❄️' }],
+      })],
+    });
+    const s1 = endPlayerTurn(s0, HIGH); // HIGH avoids the dodge gate; the inflict lands
+    expect(s1.player.statuses.some((st) => st.key === 'freeze')).toBe(true);
+    expect(s1.player.movesLeft).toBe(0);
+    expect(s1.player.hasActed).toBe(true);
+    expect(s1.log.some((l) => l.includes('frozen solid'))).toBe(true);
+    // The skip is real: move and attack are both no-ops (reference-equal returns).
+    expect(movePlayer(s1, { q: 0, r: 1 })).toBe(s1);
+    expect(playerAttack(s1, s1.enemies[0].hex, HIGH)).toBe(s1);
+  });
+
+  it('the hero thaws after the lost turn (freeze decays at their end of turn)', () => {
+    // Pre-frozen hero (2 turns so it survives the first decay) vs a guard-only foe (never re-inflicts).
+    const s0 = makeState({
+      player: makePlayer({ q: 0, r: 0 }, { statuses: [{ key: 'freeze', turns: 2, magnitude: 1 }] }),
+      enemies: [makeEnemy(1, { q: 3, r: 0 }, { moveTiles: 0, moveset: [{ kind: 'guard', weight: 1, bonus: 2, label: 'braces', icon: '🛡️' }] })],
+    });
+    const s1 = endPlayerTurn(s0, HIGH); // decay 2→1; still frozen → turn lost
+    expect(s1.player.movesLeft).toBe(0);
+    const s2 = endPlayerTurn(s1, HIGH); // decay 1→0 — thawed, full restore
+    expect(s2.player.statuses.some((st) => st.key === 'freeze')).toBe(false);
+    expect(s2.player.movesLeft).toBe(moveTilesFor(s2.player.ag));
+    expect(s2.player.hasActed).toBe(false);
+  });
+
+  it('a blinded hero whiffs 40% of strikes — stamina still spent', () => {
+    const LOW = () => 0.1; // blind roll 0.1 < 0.4 → miss
+    const blinded = () => makeState({
+      player: makePlayer({ q: 0, r: 0 }, { statuses: [{ key: 'blind', turns: 2, magnitude: 1 }] }),
+      enemies: [makeEnemy(1, { q: 1, r: 0 })],
+    });
+    const miss = playerAttack(blinded(), { q: 1, r: 0 }, LOW);
+    expect(miss.enemies[0].hp).toBe(30); // untouched
+    expect(miss.player.sta).toBe(18); // the committed swing still cost 2 stamina
+    expect(miss.player.hasActed).toBe(true);
+    expect(miss.log.some((l) => l.includes('blinded and miss'))).toBe(true);
+    // High roll passes the gate — the strike lands as normal.
+    const hit = playerAttack(blinded(), { q: 1, r: 0 }, HIGH);
+    expect(hit.enemies[0].hp).toBeLessThan(30);
+  });
+
+  it('an unblinded hero never consults the blind gate', () => {
+    const LOW = () => 0.1;
+    const s = makeState({ enemies: [makeEnemy(1, { q: 1, r: 0 })] });
+    const hit = playerAttack(s, { q: 1, r: 0 }, LOW);
+    expect(hit.enemies[0].hp).toBeLessThan(30);
+  });
+});
+
+// --- Preview honesty (audit D5/B7): the hover preview mirrors attackRoll exactly ------------------
+describe('attack preview honesty', () => {
+  const adjacentFoe = (over: Partial<PlayerUnit> = {}, enemyOver: Partial<EnemyUnit> = {}) =>
+    makeState({
+      player: makePlayer({ q: 0, r: 0 }, over),
+      enemies: [makeEnemy(1, { q: 1, r: 0 }, enemyOver)],
+    });
+
+  it('min/max bracket the actual roll at both variance extremes', () => {
+    const preview = previewPlayerAttack(adjacentFoe(), { q: 1, r: 0 })!;
+    const low = playerAttack(adjacentFoe(), { q: 1, r: 0 }, () => 0);
+    expect(30 - low.enemies[0].hp).toBe(preview.min);
+    const high = playerAttack(adjacentFoe(), { q: 1, r: 0 }, () => 0.9999999);
+    expect(30 - high.enemies[0].hp).toBe(preview.max);
+  });
+
+  it('flags and halves an exhausted swing (sta below weapon cost)', () => {
+    const fresh = previewPlayerAttack(adjacentFoe(), { q: 1, r: 0 })!;
+    expect(fresh.exhausted).toBeFalsy();
+    const tired = previewPlayerAttack(adjacentFoe({ sta: 1 }), { q: 1, r: 0 })!; // SWORD costs 2
+    expect(tired.exhausted).toBe(true);
+    expect(tired.min).toBeLessThan(fresh.min);
+    // The halved preview still brackets the actual exhausted roll.
+    const low = playerAttack(adjacentFoe({ sta: 1 }), { q: 1, r: 0 }, () => 0);
+    expect(30 - low.enemies[0].hp).toBe(tired.min);
+  });
+
+  it('never shows LETHAL on a hit exhaustion will leave short', () => {
+    // Foe at 7 HP: a fresh min (13) kills, an exhausted min (6) does not. The old preview
+    // ignored stamina and promised a kill the swing couldn't deliver.
+    const fresh = previewPlayerAttack(adjacentFoe({}, { hp: 7 }), { q: 1, r: 0 })!;
+    expect(fresh.lethal).toBe(true);
+    const tired = previewPlayerAttack(adjacentFoe({ sta: 1 }, { hp: 7 }), { q: 1, r: 0 })!;
+    expect(tired.lethal).toBe(false);
+  });
+
+  it('spell preview brackets the actual spell roll', () => {
+    const state = adjacentFoe();
+    const preview = previewSpell(state, 'sparks', { q: 1, r: 0 })!;
+    const low = playerCastSpell(adjacentFoe(), 'sparks', { q: 1, r: 0 }, () => 0);
+    expect(30 - low.enemies[0].hp).toBe(preview.min);
+    const high = playerCastSpell(adjacentFoe(), 'sparks', { q: 1, r: 0 }, () => 0.9999999);
+    expect(30 - high.enemies[0].hp).toBe(preview.max);
+  });
+});
+
+// --- Swift objective failure (audit B6): a spent budget reads as missed, not still-live ----------
+describe('swift objective failure', () => {
+  const swift = (target: number): TacticsObjective => ({
+    kind: 'swift', label: 'Swift Strike', desc: '', target, progress: 0, complete: false, failed: false,
+  });
+  // A distant foe that never closes (moveTiles 0, guard-only) so the match stays live.
+  const idleFoe = () => makeEnemy(1, { q: 3, r: 0 }, { moveTiles: 0, moveset: [{ kind: 'guard', weight: 1, bonus: 2, label: 'braces', icon: '🛡️' }] });
+
+  it('fails the moment the turn budget is spent without a win', () => {
+    const s0 = makeState({ objective: swift(2), turnCount: 2, enemies: [idleFoe()] });
+    const s1 = endPlayerTurn(s0, HIGH); // turn 2 (the last inside the budget) ends with foes alive
+    expect(s1.objective!.failed).toBe(true);
+    expect(s1.log.some((l) => l.includes('Swift Strike missed'))).toBe(true);
+  });
+
+  it('stays live while a win inside the budget is still possible', () => {
+    const s0 = makeState({ objective: swift(2), turnCount: 1, enemies: [idleFoe()] });
+    const s1 = endPlayerTurn(s0, HIGH);
+    expect(s1.objective!.failed).toBe(false);
+  });
+
+  it('a win after the miss does not resurrect the objective', () => {
+    const s0 = makeState({
+      objective: { ...swift(2), failed: true },
+      turnCount: 5,
+      enemies: [makeEnemy(1, { q: 1, r: 0 }, { hp: 1 })],
+    });
+    const s1 = playerAttack(s0, { q: 1, r: 0 }, HIGH); // kills the last foe → won
+    expect(s1.status).toBe('won');
+    expect(s1.objective!.complete).toBe(false);
   });
 });
 

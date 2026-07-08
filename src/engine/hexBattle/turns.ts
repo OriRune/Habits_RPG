@@ -9,6 +9,7 @@ import {
   HAZARD_DMG,
   STA_REGEN_PER_TURN,
   clone,
+  hasStatus,
   livingHeroes,
   moveTilesFor,
   tileAt,
@@ -93,7 +94,14 @@ export function endPlayerTurn(state: HexBattleState, rng: RNG = Math.random, her
         }
       }
     }
-    // swift is finalised in checkOutcome when the match ends, not per-turn.
+    else if (obj.kind === 'swift' && s.turnCount >= obj.target) {
+      // The just-completed turn was the last one inside the budget and the board isn't clear —
+      // the earliest possible win is now turn target+1, so the objective is already missed.
+      // (A win DURING the budget resolves through checkOutcome before this runs.)
+      obj.failed = true;
+      s.log.push(`Swift Strike missed — the turn budget of ${obj.target} is spent.`);
+    }
+    // A swift win inside the budget is finalised in checkOutcome when the match ends.
   }
 
   // Restore ALL heroes: fresh movement, action, stamina regen, clear endedTurn.
@@ -104,6 +112,14 @@ export function endPlayerTurn(state: HexBattleState, rng: RNG = Math.random, her
     h.overwatch = false; // expire any unused stance
     h.endedTurn = false;
     h.sta = Math.min(h.maxSta, h.sta + STA_REGEN_PER_TURN);
+    // Freeze bites heroes exactly as it bites enemies (enemyTurn skips a frozen enemy's act):
+    // a frozen hero loses the coming turn's movement AND action. Enemy freezes are 1-turn, so
+    // this is one skipped turn, not a chain-lock; the status decays at this hero's end of turn.
+    if (h.hp > 0 && hasStatus(h, 'freeze')) {
+      h.movesLeft = 0;
+      h.hasActed = true;
+      s.log.push(`${h.name ?? 'You'} ${h.name ? 'is' : 'are'} frozen solid — this turn is lost.`);
+    }
   }
 
   s.turnCount++;

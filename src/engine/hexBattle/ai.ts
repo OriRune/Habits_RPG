@@ -23,6 +23,8 @@ import {
   heightDamageMult,
   heightRangeBonus,
   livingHeroes,
+  lungePending,
+  moveBudgetFor,
   nearestHero,
   tileAt,
   weakenFactor,
@@ -222,9 +224,11 @@ function enemyAct(s: HexBattleState, enemy: EnemyUnit, rng: RNG, push: ReturnTyp
   // out-paces even a max-AG player — 2×moveTiles alone merely *ties* the top move on a medium board)
   // and keeps lunging every turn until it connects. This turn only; moveTiles is never mutated. Breaks
   // the "player speed ≥ enemy speed forever" kiting invariant. Kiters/holders are unaffected.
-  const lunge = chasing && (enemy.turnsOutOfReach ?? 0) >= 2;
+  // lungePending/moveBudgetFor live in ./state and are shared with the threat/intent predictors,
+  // so the telegraph can never drift from what actually happens here.
+  const lunge = lungePending(enemy);
   if (lunge) s.log.push(`${enemy.name} lunges forward!`);
-  const bestHex = bestMoveFor(s, enemy, lunge ? enemy.moveTiles * 2 + 1 : enemy.moveTiles);
+  const bestHex = bestMoveFor(s, enemy, moveBudgetFor(enemy));
   if (!hexEquals(bestHex, enemy.hex)) {
     // Emit a 'move' effect before mutating hex — the overlay will hold the sprite at
     // prevHex until this effect fires, then slide it to bestHex (staggered per-enemy).
@@ -318,7 +322,10 @@ export function planEnemyIntents(state: HexBattleState): EnemyIntent[] {
       if (hasStatus(enemy, 'freeze')) {
         return { enemyId: enemy.id, moveTo: enemy.hex, willAttack: false, attackLabel: 'frozen in place', attackIcon: '❄️' };
       }
-      const moveTo = bestMoveFor(state, enemy);
+      // Predict with the same budget enemyAct will actually use — including the catch-up lunge.
+      // (An in-range chaser attacks in place instead of lunging, so don't telegraph one.)
+      const lunge = lungePending(enemy) && !enemyInRange(state, enemy);
+      const moveTo = bestMoveFor(state, enemy, moveBudgetFor(enemy));
       // Each enemy independently targets its nearest living hero.
       const target = nearestHero(state, moveTo);
       const ez = elevationAt(state, moveTo);
@@ -331,8 +338,9 @@ export function planEnemyIntents(state: HexBattleState): EnemyIntent[] {
         enemyId: enemy.id,
         moveTo,
         willAttack,
-        attackLabel: move?.label ?? 'attacks',
-        attackIcon: move?.icon ?? (enemy.range > 1 ? '🏹' : '⚔️'),
+        attackLabel: lunge ? 'lunges forward!' : (move?.label ?? 'attacks'),
+        attackIcon: lunge ? '💨' : (move?.icon ?? (enemy.range > 1 ? '🏹' : '⚔️')),
+        lunge,
       };
     });
 }

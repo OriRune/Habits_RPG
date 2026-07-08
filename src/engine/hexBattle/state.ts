@@ -41,6 +41,8 @@ const EFFECT_DURATION_MS = 420;
 export const MOVE_ANIM_MS = 300;
 /** Stamina restored to the player at the start of each new turn after the enemy phase. */
 export const STA_REGEN_PER_TURN = 2;
+/** Consecutive out-of-reach enemy turns before a chasing enemy (charger/flanker) lunges. */
+export const LUNGE_AFTER_TURNS = 2;
 /**
  * Positional spells that are always available in Tactics regardless of the player's
  * inventory. They form the core of the positioning system (FF Tactics pattern: baseline
@@ -222,6 +224,9 @@ export interface EnemyIntent {
   attackLabel: string;
   /** Emoji icon for the planned action. */
   attackIcon: string;
+  /** True when this move uses the catch-up lunge budget (see lungePending) — telegraphed so the
+   *  danger overlay and intent badge never under-predict the one situation the lunge exists for. */
+  lunge?: boolean;
 }
 
 /** Pre-commit damage/heal estimate for the hover preview — min and max bracket the actual roll. */
@@ -239,6 +244,8 @@ export interface AttackPreview {
   resist: boolean;
   /** True when this is a healing preview (support spells). */
   isHeal?: boolean;
+  /** True when the swing will be exhausted (stamina below the weapon's cost — ×0.5 damage). */
+  exhausted?: boolean;
 }
 
 /**
@@ -361,6 +368,23 @@ export function enemyAt(s: HexBattleState, h: Hex): EnemyUnit | undefined {
 
 export function hasStatus(unit: { statuses: UnitStatus[] }, key: StatusKey): UnitStatus | undefined {
   return unit.statuses.find((st) => st.key === key);
+}
+
+/** Chasers are the melee "close-to-engage" archetypes that participate in the catch-up lunge. */
+export function isChaser(e: EnemyUnit): boolean {
+  return e.aiArchetype === 'charger' || e.aiArchetype === 'flanker';
+}
+
+/** True when this enemy will lunge on its next activation (kept out of reach ≥ LUNGE_AFTER_TURNS).
+ *  Lives here (not ./ai) so the threat/intent predictors in ./geometry and ./ai share one truth —
+ *  the danger overlay under-predicting a lunge is exactly the drift this helper exists to prevent. */
+export function lungePending(e: EnemyUnit): boolean {
+  return isChaser(e) && (e.turnsOutOfReach ?? 0) >= LUNGE_AFTER_TURNS;
+}
+
+/** Movement budget for this enemy's next activation, including the one-turn lunge bonus. */
+export function moveBudgetFor(e: EnemyUnit): number {
+  return lungePending(e) ? e.moveTiles * 2 + 1 : e.moveTiles;
 }
 
 export function weakenFactor(unit: { statuses: UnitStatus[] }): number {

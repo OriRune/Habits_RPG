@@ -118,9 +118,10 @@ function PreviewBadge({ preview }: { preview: AttackPreview }) {
   const lethal = preview.lethal ? ' 💀' : '';
   const guardNote = preview.guardBonus > 0 ? ` 🛡+${preview.guardBonus}` : '';
   const coverNote = preview.coverBonus > 0 ? ` cover-${preview.coverBonus}` : '';
+  const exhaustedNote = preview.exhausted ? ' 😮‍💨 exhausted ×½' : '';
   return (
-    <span className={cn('font-display text-xs', preview.lethal ? 'text-red-400' : preview.weak ? 'text-amber-300' : 'text-parchment-200')}>
-      {preview.min}–{preview.max} dmg{heightLabel}{guardNote}{coverNote}{tag}{lethal}
+    <span className={cn('font-display text-xs', preview.lethal ? 'text-red-400' : preview.exhausted ? 'text-orange-300' : preview.weak ? 'text-amber-300' : 'text-parchment-200')}>
+      {preview.min}–{preview.max} dmg{heightLabel}{guardNote}{coverNote}{tag}{exhaustedNote}{lethal}
     </span>
   );
 }
@@ -738,8 +739,14 @@ export function TacticsOverlay() {
           <ActionButton active={sel?.kind === 'move'} disabled={locked || tactics.player.movesLeft <= 0} onClick={() => { setHoveredHex(null); tacticsSelect({ kind: 'move' }); }}>
             <Footprints className="h-4 w-4" /> Move
           </ActionButton>
-          <ActionButton active={sel?.kind === 'attack'} disabled={locked || tactics.player.hasActed} onClick={() => { setHoveredHex(null); tacticsSelect({ kind: 'attack' }); }}>
+          <ActionButton
+            active={sel?.kind === 'attack'}
+            disabled={locked || tactics.player.hasActed}
+            title={tactics.player.sta < weapon.staminaCost ? `Exhausted — below ${weapon.staminaCost} stamina, this swing lands at half power` : undefined}
+            onClick={() => { setHoveredHex(null); tacticsSelect({ kind: 'attack' }); }}
+          >
             ⚔️ {attackLabel}
+            {tactics.player.sta < weapon.staminaCost && <span className="text-orange-300">×½</span>}
           </ActionButton>
           {knownSpells.map((key) => {
             const spell = getSpell(key);
@@ -877,7 +884,10 @@ function UnitSprite({
           title={archetypeBlurb ? `${archetypeBlurb}\n${intent.attackLabel}` : intent.attackLabel}
         >
           {intent.willAttack ? (
-            <span style={{ fontSize: Math.round(10 * scale) }}>{intent.attackIcon}</span>
+            <span style={{ fontSize: Math.round(10 * scale) }}>{intent.lunge ? '💨' : ''}{intent.attackIcon === '💨' ? '⚔️' : intent.attackIcon}</span>
+          ) : intent.lunge ? (
+            // Winding up a catch-up lunge — reach next turn is 2×move+1, mirrored by the danger zone.
+            <span style={{ fontSize: Math.round(10 * scale) }} title="Winding up a lunge!">💨</span>
           ) : intent.attackIcon === '❄️' ? (
             <span className="text-blue-300">❄️</span>
           ) : null}

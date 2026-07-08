@@ -2,7 +2,10 @@
 // shared strike resolver and the push mechanic. These mutate a cloned HexBattleState and hand off to
 // the turn/outcome plumbing in ./turns.
 import type { RNG } from '../combat';
-import { attackRoll, spellDamageRoll, spellHealAmount, illusionBoost } from '../combat';
+import {
+  attackRoll, spellDamageRoll, spellHealAmount, illusionBoost,
+  DMG_VARIANCE_MIN, DMG_VARIANCE_MAX, WEAK_MULT, RESIST_MULT, EXHAUSTED_MULT,
+} from '../combat';
 import { getSpell, SCHOOL_STAT } from '../spells';
 import { type Hex, hexDistance, hexEquals, hexKey } from '../hex';
 import {
@@ -20,6 +23,7 @@ import {
   effectPusher,
   elevationAt,
   enemyAt,
+  hasStatus,
   heightDamageMult,
   tileAt,
   weakenFactor,
@@ -46,13 +50,17 @@ export function previewPlayerAttack(state: HexBattleState, target: Hex): AttackP
   const base = basePower + weapon.bonus;
   const weak = enemy.weakTo.includes(weapon.attackStat);
   const resist = enemy.resistTo.includes(weapon.attackStat);
-  const weakMult = weak ? 1.25 : resist ? 0.6 : 1;
-  const minDmg = Math.max(1, Math.round(base * 0.85 * weakMult) - mitigation);
+  const weakMult = weak ? WEAK_MULT : resist ? RESIST_MULT : 1;
+  // Mirror attackRoll exactly: an under-stamina swing lands at half power. A preview that omits
+  // this can flag LETHAL on a hit that won't kill — precisely when the player is resource-starved.
+  const exhausted = p.sta < weapon.staminaCost;
+  const staMult = exhausted ? EXHAUSTED_MULT : 1;
+  const minDmg = Math.max(1, Math.round(base * DMG_VARIANCE_MIN * weakMult * staMult) - mitigation);
   return {
     min: minDmg,
-    max: Math.max(1, Math.round(base * 1.15 * weakMult) - mitigation),
+    max: Math.max(1, Math.round(base * DMG_VARIANCE_MAX * weakMult * staMult) - mitigation),
     dz, heightMult: hMult, mitigation, coverBonus, guardBonus: enemy.guardBonus,
-    lethal: minDmg >= enemy.hp, weak, resist,
+    lethal: minDmg >= enemy.hp, weak, resist, exhausted,
   };
 }
 
@@ -83,13 +91,13 @@ export function previewSpell(state: HexBattleState, key: string, target: Hex | n
   const schoolStat = SCHOOL_STAT[spell.school];
   const weak = enemy.weakTo.includes(schoolStat) || enemy.weakTo.includes('WI');
   const resist = enemy.resistTo.includes(schoolStat) || enemy.resistTo.includes('WI');
-  const weakMult = weak ? 1.25 : resist ? 0.6 : 1;
+  const weakMult = weak ? WEAK_MULT : resist ? RESIST_MULT : 1;
   const coverBonus = coverAt(state, enemy.hex);
   const mit = enemy.ward + coverBonus;
-  const minDmg = Math.max(1, Math.round(base * 0.85 * weakMult) - mit);
+  const minDmg = Math.max(1, Math.round(base * DMG_VARIANCE_MIN * weakMult) - mit);
   return {
     min: minDmg,
-    max: Math.max(1, Math.round(base * 1.15 * weakMult) - mit),
+    max: Math.max(1, Math.round(base * DMG_VARIANCE_MAX * weakMult) - mit),
     dz, heightMult: hMult, mitigation: mit, coverBonus, guardBonus: 0,
     lethal: minDmg >= enemy.hp, weak, resist,
   };
@@ -141,6 +149,18 @@ export function resolvePlayerStrike(s: HexBattleState, hero: PlayerUnit, enemy: 
   const rawPower = (ranged ? hero.rangedPower : hero.meleePower) * heightDamageMult(dz) * weakenFactor(hero);
   const full = hero.sta >= weapon.staminaCost;
   hero.sta = Math.max(0, hero.sta - weapon.staminaCost);
+  // Blind bites the player exactly as it bites enemies (ai.ts enemyAttack): 40% whiff. The swing
+  // still costs stamina — you committed to it. Without this, 5 of 16 enemy templates spend move
+  // weight on an inflict that does nothing, and the ❄️/💫 badge on the hero would be a lie.
+  if (hasStatus(hero, 'blind') && rng() < 0.4) {
+    const push = effectPusher(s);
+    push(ranged ? 'arrow' : 'melee', hero.hex, enemy.hex);
+    s.effects.push({ id: s.seq++, kind: 'floater', from: enemy.hex, to: enemy.hex, startedAtMs: EFFECT_STAGGER_MS + 60, durationMs: 900, label: 'MISS', color: 'status' });
+    const missName = hero.name ?? 'You';
+    const missVerb = hero.name ? 'is blinded and misses' : 'are blinded and miss';
+    s.log.push(`${missName} ${missVerb} ${enemy.name}!`);
+    return;
+  }
   const { dealt, weak, resist } = attackRoll(
     rawPower,
     weapon.bonus,

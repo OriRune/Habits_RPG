@@ -3,7 +3,7 @@ import { Grid3x3, Zap, Mountain, Sparkles, Gift } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { useIsCoarsePointer } from '@/hooks/useIsCoarsePointer';
 import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
-import { TACTICS_ENERGY_COST, TACTICS_UNLOCK_LEVEL, TACTICS_GRANTED_SPELLS, STA_REGEN_PER_TURN, isTacticsLoadoutSpell, type TacticsSize } from '@/engine/hexBattle';
+import { TACTICS_ENERGY_COST, TACTICS_UNLOCK_LEVEL, TACTICS_GRANTED_SPELLS, STA_REGEN_PER_TURN, isTacticsLoadoutSpell, moveTilesFor, climbFor, type TacticsSize } from '@/engine/hexBattle';
 import { getSpell } from '@/engine/spells';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
@@ -56,9 +56,9 @@ export function TacticsView() {
 
   const unlocked = level >= TACTICS_UNLOCK_LEVEL;
   const canEnter = unlocked && energy >= TACTICS_ENERGY_COST;
-  // Mirror the engine: 2 base move tiles + 1 per 4 AG (cap 6); climb 1 + 1 per 8 AG (cap 3).
-  const moveTiles = Math.min(6, 2 + Math.floor(ag / 4));
-  const climb = Math.min(3, 1 + Math.floor(ag / 8));
+  // The engine's own formulas — a local mirror here drifted once already (stale cap 6 vs 7).
+  const moveTiles = moveTilesFor(ag);
+  const climb = climbFor(ag);
 
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">

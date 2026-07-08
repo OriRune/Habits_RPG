@@ -16,6 +16,7 @@ import {
   elevationAt,
   hasStatus,
   heightRangeBonus,
+  moveBudgetFor,
   occupiedKeys,
 } from './state';
 
@@ -161,7 +162,9 @@ export function computeEnemyThreat(state: HexBattleState): Hex[] {
   const threatened = new Set<string>();
   for (const enemy of state.enemies) {
     if (enemy.hp <= 0 || hasStatus(enemy, 'freeze')) continue;
-    const positions = [enemy.hex, ...computeReachable(state, enemy.hex, enemy.moveTiles, enemy.climb)];
+    // moveBudgetFor includes the catch-up lunge (2×move+1 once kept out of reach) — the danger
+    // overlay must never under-predict reach in exactly the kiting situation the lunge punishes.
+    const positions = [enemy.hex, ...computeReachable(state, enemy.hex, moveBudgetFor(enemy), enemy.climb)];
     for (const from of positions) {
       const fromZ = elevationAt(state, from);
       for (const tile of Object.values(state.tiles)) {
