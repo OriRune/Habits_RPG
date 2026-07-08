@@ -7,7 +7,7 @@ import {
   DMG_VARIANCE_MIN, DMG_VARIANCE_MAX, WEAK_MULT, RESIST_MULT, EXHAUSTED_MULT,
 } from '../combat';
 import { getSpell, SCHOOL_STAT } from '../spells';
-import { type Hex, hexDistance, hexEquals, hexKey } from '../hex';
+import { type Hex, DIR_VECTORS, hexDistance, hexEquals, hexKey } from '../hex';
 import {
   type AttackPreview,
   type EnemyUnit,
@@ -25,6 +25,7 @@ import {
   enemyAt,
   hasStatus,
   heightDamageMult,
+  livingHeroes,
   tileAt,
   weakenFactor,
 } from './state';
@@ -378,17 +379,19 @@ function finishPlayerAction(s: HexBattleState): void {
 
 // --- Push helpers -------------------------------------------------------------------------------
 
-const HEX_DIRS: Hex[] = [
-  { q: 1, r: 0 }, { q: 1, r: -1 }, { q: 0, r: -1 },
-  { q: -1, r: 0 }, { q: -1, r: 1 }, { q: 0, r: 1 },
+// The six axial direction vectors from hex.ts, ordered to preserve this module's historical
+// tie-breaking in computePushDir (dot-product ties resolve to the earlier entry).
+const PUSH_DIRS: Hex[] = [
+  DIR_VECTORS.downRight, DIR_VECTORS.upRight, DIR_VECTORS.up,
+  DIR_VECTORS.upLeft, DIR_VECTORS.downLeft, DIR_VECTORS.down,
 ];
 
 function computePushDir(from: Hex, to: Hex): Hex {
   const dq = to.q - from.q;
   const dr = to.r - from.r;
-  let best = HEX_DIRS[0];
+  let best = PUSH_DIRS[0];
   let bestDot = -Infinity;
-  for (const d of HEX_DIRS) {
+  for (const d of PUSH_DIRS) {
     const dot = dq * d.q + dr * d.r;
     if (dot > bestDot) { bestDot = dot; best = d; }
   }
@@ -407,7 +410,10 @@ function applyPush(s: HexBattleState, enemy: EnemyUnit, dir: Hex, tiles: number)
       s.log.push(`${enemy.name} crashes into a wall for ${dmg}!`);
       break;
     }
+    // Any living unit blocks the flight path — enemies AND heroes. Without the hero check a
+    // co-op Force Push through an ally stacks the foe onto the ally's hex, corrupting occupancy.
     if (s.enemies.some((e) => e.id !== enemy.id && e.hp > 0 && hexEquals(e.hex, next))) break;
+    if (livingHeroes(s).some((h) => hexEquals(h.hex, next))) break;
     cur = next;
     if (tile.terrain === 'hazard') break; // stop in the hazard (takes bonus damage after)
   }

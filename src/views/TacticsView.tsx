@@ -22,6 +22,7 @@ const LOADOUT_CAP = 3;
 /** Entrance screen for Hex Tactics (the live skirmish renders in TacticsOverlay). */
 export function TacticsView() {
   const energy = useGameStore((s) => s.character.energy);
+  const unlimitedEnergy = useGameStore((s) => s.settings.unlimitedEnergy);
   const level = useGameStore((s) => s.character.level);
   const ag = useGameStore((s) => s.character.statLevels.AG);
   const deepestTacticsTier = useGameStore((s) => s.deepestTacticsTier);
@@ -55,7 +56,8 @@ export function TacticsView() {
   const coarse = useIsCoarsePointer();
 
   const unlocked = level >= TACTICS_UNLOCK_LEVEL;
-  const canEnter = unlocked && energy >= TACTICS_ENERGY_COST;
+  // Mirror TrialsView and the slice's own gate — the dev unlimited-energy toggle bypasses the cost.
+  const canEnter = unlocked && (unlimitedEnergy || energy >= TACTICS_ENERGY_COST);
   // The engine's own formulas — a local mirror here drifted once already (stale cap 6 vs 7).
   const moveTiles = moveTilesFor(ag);
   const climb = climbFor(ag);
@@ -214,7 +216,7 @@ export function TacticsView() {
           <span className="flex items-center gap-1.5 text-sm text-ink">
             <Zap className="h-4 w-4 text-stat-AG" /> Cost: {TACTICS_ENERGY_COST} energy
           </span>
-          <span className="text-sm text-ink-muted">You have {energy} ⚡</span>
+          <span className="text-sm text-ink-muted">You have {unlimitedEnergy ? '∞' : energy} ⚡</span>
         </div>
 
         <div className="rounded-md border border-gold-deep/30 bg-parchment-300/40 p-3 text-sm space-y-1.5">

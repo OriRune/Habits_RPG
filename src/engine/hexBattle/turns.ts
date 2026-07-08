@@ -112,6 +112,8 @@ export function endPlayerTurn(state: HexBattleState, rng: RNG = Math.random, her
     h.overwatch = false; // expire any unused stance
     h.endedTurn = false;
     h.sta = Math.min(h.maxSta, h.sta + STA_REGEN_PER_TURN);
+    // Dev invincibility: "HP, mana, and stamina stay full" — literal top-up each turn.
+    if (s.invincible) { h.hp = h.maxHp; h.mp = h.maxMp; h.sta = h.maxSta; }
     // Freeze bites heroes exactly as it bites enemies (enemyTurn skips a frozen enemy's act):
     // a frozen hero loses the coming turn's movement AND action. Enemy freezes are 1-turn, so
     // this is one skipped turn, not a chain-lock; the status decays at this hero's end of turn.
@@ -138,13 +140,15 @@ function applyDoTAndDecay(
   name: string,
   isPlayer: boolean,
 ): void {
+  // Dev invincibility shields heroes from hazard and DoT ticks (enemies still take theirs).
+  const shielded = isPlayer && s.invincible;
   const tile = tileAt(s, unit.hex);
-  if (tile?.terrain === 'hazard') {
+  if (tile?.terrain === 'hazard' && !shielded) {
     unit.hp -= HAZARD_DMG;
     s.log.push(`${name} ${isPlayer ? 'are' : 'is'} scorched by the hazard for ${HAZARD_DMG}.`);
   }
   for (const st of unit.statuses) {
-    if (st.key === 'burn' || st.key === 'poison') {
+    if ((st.key === 'burn' || st.key === 'poison') && !shielded) {
       const d = Math.max(1, Math.round(st.magnitude));
       unit.hp -= d;
       s.log.push(`${name} ${isPlayer ? 'suffer' : 'suffers'} ${d} ${st.key} damage.`);

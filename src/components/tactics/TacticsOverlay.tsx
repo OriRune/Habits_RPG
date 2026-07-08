@@ -233,6 +233,20 @@ export function TacticsOverlay() {
     [radius, vp.w, vp.h],
   );
   const bounds = useMemo(() => isoBounds(radius, size, MAX_ELEVATION), [radius, size]);
+
+  // Hover preview for a targeted action. This hook MUST stay above the `!tactics` early return
+  // (rules-of-hooks) — it re-derives the `locked` gate defensively since that's computed below.
+  const hoverPreview = useMemo((): AttackPreview | null => {
+    if (!tactics || !hoveredHex) return null;
+    const playerTurn = tactics.turn === 'player' && tactics.status === 'active';
+    const waiting = isCoopSession && playerTurn && (tactics.player.endedTurn ?? false);
+    if (animating || !playerTurn || waiting) return null;
+    const action = tactics.selected;
+    if (action?.kind === 'attack') return previewPlayerAttack(tactics, hoveredHex);
+    if (action?.kind === 'spell') return previewSpell(tactics, action.spellKey, hoveredHex);
+    return null;
+  }, [hoveredHex, tactics, animating, isCoopSession]);
+
   if (!tactics) return null;
 
   const elevationOf = (h: Hex) => tactics.tiles[hexKey(h)]?.elevation ?? 0;
@@ -274,14 +288,6 @@ export function TacticsOverlay() {
     }
     return set;
   })();
-
-  // Compute hover preview when hovering a targetable tile
-  const hoverPreview = useMemo((): AttackPreview | null => {
-    if (!hoveredHex || !sel || locked) return null;
-    if (sel.kind === 'attack') return previewPlayerAttack(tactics, hoveredHex);
-    if (sel.kind === 'spell') return previewSpell(tactics, sel.spellKey, hoveredHex);
-    return null;
-  }, [hoveredHex, sel, tactics, locked]);
 
   function onTileClick(h: Hex) {
     if (locked) return;
@@ -812,7 +818,7 @@ export function TacticsOverlay() {
               Move up to {tactics.player.movesLeft} more tile{tactics.player.movesLeft === 1 ? '' : 's'} · climb {climbFor(tactics.player.ag)} —
               <span className="text-parchment-300/80"> set by your Agility ({tactics.player.ag})</span>
             </div>
-          ) : sel?.kind === 'attack' && tactics.weapon.ranged ? (
+          ) : sel?.kind === 'attack' && weapon.ranged ? (
             <div className="truncate text-center text-[11px] text-orange-300/90">
               Orange tiles show your shot's reach — hover an enemy to preview damage.
             </div>

@@ -640,6 +640,59 @@ describe('swift objective failure', () => {
   });
 });
 
+// --- Dev invincibility (audit B2): wired like ArenaState.invincible ------------------------------
+describe('dev invincibility', () => {
+  it('heroes take no attack, hazard, or DoT damage and are topped up each turn', () => {
+    const tiles = tilesFor(3);
+    setTile(tiles, { q: 0, r: 0 }, { terrain: 'hazard' }); // hero ends the turn standing in fire
+    const s0 = makeState({
+      tiles,
+      invincible: true,
+      player: makePlayer({ q: 0, r: 0 }, { sta: 5, mp: 10, statuses: [{ key: 'poison', turns: 3, magnitude: 4 }] }),
+      enemies: [makeEnemy(1, { q: 1, r: 0 }, { attack: 50 })],
+    });
+    const s1 = endPlayerTurn(s0, HIGH);
+    expect(s1.player.hp).toBe(s1.player.maxHp);
+    expect(s1.player.mp).toBe(s1.player.maxMp);
+    expect(s1.player.sta).toBe(s1.player.maxSta);
+    expect(s1.status).toBe('active');
+  });
+
+  it('enemies still take their own hazard/DoT ticks while the hero is invincible', () => {
+    const tiles = tilesFor(3);
+    setTile(tiles, { q: 3, r: 0 }, { terrain: 'hazard' });
+    const s0 = makeState({
+      tiles,
+      invincible: true,
+      enemies: [makeEnemy(1, { q: 3, r: 0 }, { moveTiles: 0, moveset: [{ kind: 'guard', weight: 1, bonus: 2, label: 'braces', icon: '🛡️' }] })],
+    });
+    const s1 = endPlayerTurn(s0, HIGH);
+    expect(s1.enemies[0].hp).toBe(30 - HAZARD_DMG);
+  });
+});
+
+// --- Push respects hero occupancy (audit B5) ------------------------------------------------------
+describe('force push vs hero occupancy', () => {
+  it('a pushed enemy stops short of a living ally instead of stacking on their hex', () => {
+    // Co-op shape: caster h1 at origin, ally h2 directly along the push line behind the foe.
+    const h1 = makePlayer({ q: 0, r: 0 }, { id: 'h1', knownSpells: ['push', 'sparks'] });
+    const h2 = makePlayer({ q: 2, r: 0 }, { id: 'h2', name: 'Ally' });
+    const s0 = makeState({
+      player: h1,
+      players: [h1, h2],
+      activeHeroId: 'h1',
+      knownSpells: ['push', 'sparks'],
+      enemies: [makeEnemy(1, { q: 1, r: 0 })],
+    });
+    const s1 = playerCastSpell(s0, 'push', { q: 1, r: 0 }, HALF, 'h1');
+    expect(s1).not.toBe(s0); // the cast resolved
+    const foe = s1.enemies[0];
+    const ally = s1.players!.find((p) => p.id === 'h2')!;
+    expect(hexEquals(foe.hex, ally.hex)).toBe(false);
+    expect(hexEquals(foe.hex, { q: 1, r: 0 })).toBe(true); // blocked immediately — never moved
+  });
+});
+
 // --- End-of-turn DoT --------------------------------------------------------------------------
 describe('end-of-turn ticks', () => {
   it('a hazard tile burns its occupant', () => {

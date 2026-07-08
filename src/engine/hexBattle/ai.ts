@@ -290,8 +290,11 @@ function enemyAttack(s: HexBattleState, enemy: EnemyUnit, rng: RNG, push: Return
     totalDealt += Math.round(dmg);
   }
 
-  target.hp -= totalDealt;
-  s.effects.push({ id: s.seq++, kind: 'floater', from: target.hex, to: target.hex, startedAtMs: EFFECT_STAGGER_MS + 60, durationMs: 900, label: `-${totalDealt}`, color: 'dmg-player' });
+  // Dev invincibility (set at match start): the attack still resolves and narrates, but no HP moves.
+  if (!s.invincible) {
+    target.hp -= totalDealt;
+    s.effects.push({ id: s.seq++, kind: 'floater', from: target.hex, to: target.hex, startedAtMs: EFFECT_STAGGER_MS + 60, durationMs: 900, label: `-${totalDealt}`, color: 'dmg-player' });
+  }
 
   const targetLabel = target.name ?? 'you';
   if (kind === 'drain') {

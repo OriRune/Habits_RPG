@@ -60,6 +60,9 @@ export const createTacticsSlice: StateCreator<
         radius: TACTICS_SIZE_RADIUS[s.settings.tacticsSize],
         rng: Math.random,
       });
+      // Dev invincibility, arena-style: captured at match start (solo only — never in co-op,
+      // where the state broadcasts to other players).
+      if (s.settings.invincible) tactics.invincible = true;
       return {
         character: {
           ...s.character,

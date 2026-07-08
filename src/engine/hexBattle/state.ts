@@ -315,6 +315,9 @@ export interface HexBattleState {
    *  reward credit kills, not just chip damage on survivors (MINI-23). Optional: legacy in-flight
    *  runs from before this field lack it and fall back to a survivors-only metric. */
   enemyForceMaxHp?: number;
+  /** Dev-settings invincibility (mirrors ArenaState.invincible): heroes take no attack/hazard/DoT
+   *  damage and are topped up each turn. Set by beginTactics at match start; never set in co-op. */
+  invincible?: boolean;
   /** Full hero roster (1 in single-player, N in co-op). Populated by generateSkirmish.
    *  Engine functions fall back to [player] when this is absent for backward compat. */
   players?: PlayerUnit[];
