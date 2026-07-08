@@ -53,6 +53,8 @@ export function useTacticsAudio(
   const startingEnemies    = useRef(0);
   /** Whether the objective was already complete last render (edge-detect completion). */
   const prevObjComplete    = useRef(false);
+  /** Whether the objective was already failed last render (edge-detect the miss). */
+  const prevObjFailed      = useRef(false);
 
   // ── Main audio effect — fires whenever tactics state changes ─────────────
   useEffect(() => {
@@ -97,10 +99,15 @@ export function useTacticsAudio(
     }
     prevTurn.current = tactics.turn;
 
-    // ── Secondary objective completed ─────────────────────────────────────
+    // ── Secondary objective completed / missed ────────────────────────────
     const objNowComplete = tactics.objective?.complete ?? false;
     if (!prevObjComplete.current && objNowComplete) sfx.play('tacticsObjective');
     prevObjComplete.current = objNowComplete;
+    // A quiet descending thud when the objective is missed mid-match (swift budget spent,
+    // flawless HP floor broken) — softer than the defeat sting; the match itself is still live.
+    const objNowFailed = tactics.objective?.failed ?? false;
+    if (!prevObjFailed.current && objNowFailed && tactics.status === 'active') sfx.play('groveWrong');
+    prevObjFailed.current = objNowFailed;
 
     // ── Outcome ───────────────────────────────────────────────────────────
     if (prevStatus.current === 'active' && tactics.status !== 'active') {

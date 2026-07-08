@@ -765,11 +765,10 @@ export function commitArena(state: GameState, run: ArenaState): GameState {
 }
 
 /**
- * Bank a finished Hex Tactics skirmish and close it. A win pays scaled gold (tacticsReward) and
- * records the tier; either outcome earns an Agility-forward Agility/Dexterity/Endurance trickle —
- * Tactics is the mode that finally rewards mobility, so its XP leans on AG.
+ * The stat-XP split a finished Hex Tactics run will bank. Exported so the overlay's end-screen
+ * card shows exactly the numbers commitTactics is about to apply — one function, no drift.
  */
-export function commitTactics(state: GameState, run: HexBattleState): GameState {
+export function tacticsStatXp(run: HexBattleState): Partial<Record<StatId, number>> {
   const won = run.status === 'won';
   const trickle = Math.round(
     (MINIGAME_XP_BASE + MINIGAME_XP_PER_TIER * run.tier) * (won ? 1 : MINIGAME_XP_LOSS_FACTOR),
@@ -777,9 +776,19 @@ export function commitTactics(state: GameState, run: HexBattleState): GameState 
   // Split trickle across three stats — AG-forward (§5.4). Remainders go to AG then DX.
   const each = Math.floor(trickle / 3);
   const rem = trickle - each * 3; // 0, 1, or 2
+  return { AG: each + (rem > 0 ? 1 : 0), DX: each + (rem > 1 ? 1 : 0), EN: each };
+}
+
+/**
+ * Bank a finished Hex Tactics skirmish and close it. A win pays scaled gold (tacticsReward) and
+ * records the tier; either outcome earns an Agility-forward Agility/Dexterity/Endurance trickle —
+ * Tactics is the mode that finally rewards mobility, so its XP leans on AG.
+ */
+export function commitTactics(state: GameState, run: HexBattleState): GameState {
+  const won = run.status === 'won';
   return commitRun(state, {
     runField: 'tactics', reward: tacticsReward(run),
-    statXp: { AG: each + (rem > 0 ? 1 : 0), DX: each + (rem > 1 ? 1 : 0), EN: each },
+    statXp: tacticsStatXp(run),
     deepestField: 'deepestTacticsTier', deepestValue: run.tier, gateOnWin: won,
     // Tactics wins now award a material bundle (BAL-10) — clone so applyReward's in-place
     // `state.materials[key] += …` never aliases a shared snapshot object.

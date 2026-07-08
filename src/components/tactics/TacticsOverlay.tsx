@@ -18,6 +18,9 @@ import {
 } from '@/engine/hexBattle';
 import { hexKey, hexDistance, type Hex } from '@/engine/hex';
 import { getSpell, SCHOOL_STAT, type StatusKey } from '@/engine/spells';
+import { tacticsStatXp } from '@/store/shared';
+import { MATERIALS } from '@/content/materials';
+import { play as sfxPlay } from '@/lib/sfx';
 import { MAX_ELEVATION, SPELL_RANGE, STA_REGEN_PER_TURN, MOVE_ANIM_MS, climbFor, heightRangeBonus, hasLineOfSight } from '@/engine/hexBattle';
 import type { StatId } from '@/engine/stats';
 import { base, topCenter, hexCorners, isoBounds, colHeight, type Pt } from './iso';
@@ -136,6 +139,7 @@ export function TacticsOverlay() {
   const tacticsHold = useGameStore((s) => s.tacticsHold);
   const endTactics = useGameStore((s) => s.endTactics);
   const habitBonus = useGameStore((s) => s.character.habitBonus);
+  const deepestTacticsTier = useGameStore((s) => s.deepestTacticsTier);
   const soundEnabled = useGameStore((s) => s.settings.soundEnabled);
 
   // Co-op: identify local player and session role
@@ -227,6 +231,15 @@ export function TacticsOverlay() {
   // Hovered hex for preview (set on tile mouse-enter when a targeted action is selected)
   const [hoveredHex, setHoveredHex] = useState<Hex | null>(null);
 
+  // Transient "out of range" toast for clicks on non-highlighted tiles while an action is armed.
+  const invalidClickSeq = useRef(0);
+  const [invalidClick, setInvalidClick] = useState<{ id: number; hex: Hex; text: string } | null>(null);
+  useEffect(() => {
+    if (!invalidClick) return;
+    const t = window.setTimeout(() => setInvalidClick((cur) => (cur?.id === invalidClick.id ? null : cur)), 900);
+    return () => clearTimeout(t);
+  }, [invalidClick]);
+
   const radius = tactics?.radius ?? 3;
   const size = useMemo(
     () => (vp.w > 0 && vp.h > 0 ? fitSize(radius, vp.w - 16, vp.h - 16) : sizeFor(radius)),
@@ -289,6 +302,14 @@ export function TacticsOverlay() {
     return set;
   })();
 
+  /** A click landed on a tile the armed action can't use — say so instead of silently ignoring it. */
+  function flagInvalidClick(h: Hex) {
+    if (!sel) return;
+    const text = sel.kind === 'move' ? 'Out of reach' : 'Out of range';
+    setInvalidClick({ id: ++invalidClickSeq.current, hex: h, text });
+    sfxPlay('libraryWrong');
+  }
+
   function onTileClick(h: Hex) {
     if (locked) return;
     const key = hexKey(h);
@@ -300,10 +321,12 @@ export function TacticsOverlay() {
         coopSend({ type: 'tactics-intent', userId, heroId, action: 'attack', to: h });
       else if (sel?.kind === 'spell' && targetable.has(key))
         coopSend({ type: 'tactics-intent', userId, heroId, action: 'cast', spellKey: sel.spellKey, to: h });
+      else flagInvalidClick(h);
     } else {
       if (sel?.kind === 'move' && reachable.has(key)) tacticsMove(h);
       else if (sel?.kind === 'attack' && targetable.has(key)) tacticsAttack(h);
       else if (sel?.kind === 'spell' && targetable.has(key)) tacticsCast(sel.spellKey, h);
+      else flagInvalidClick(h);
     }
   }
 
@@ -699,6 +722,7 @@ export function TacticsOverlay() {
                 archetypeBlurb={archetypeBlurb}
                 weakResist={weakResist}
                 onClick={u.enemyId !== undefined ? () => onTileClick(u.hex) : undefined}
+                onHover={u.enemyId !== undefined ? (over) => onTileHover(over ? u.hex : null) : undefined}
               />
             );
           })}
@@ -707,39 +731,136 @@ export function TacticsOverlay() {
           {live.map((fx) => (
             <EffectSprite key={fx.id} fx={fx} from={top(fx.from)} to={top(fx.to)} />
           ))}
+
+          {/* Damage preview at the point of aim — the bottom-bar strip stays as a fallback,
+              but the decision is made looking at the target, so the numbers live there too. */}
+          {hoverPreview && hoveredHex && (sel?.kind === 'attack' || sel?.kind === 'spell') && (() => {
+            const p = top(hoveredHex);
+            return (
+              <div
+                className="pointer-events-none absolute z-40 whitespace-nowrap rounded-md border border-gold-deep/60 bg-wood-950/90 px-2 py-1 shadow-lg"
+                style={{ left: p.x, top: Math.max(28, p.y - size * 1.15), transform: 'translate(-50%, -100%)' }}
+              >
+                <PreviewBadge preview={hoverPreview} />
+              </div>
+            );
+          })()}
+
+          {/* Out-of-range toast for invalid clicks while an action is armed */}
+          {invalidClick && (() => {
+            const p = top(invalidClick.hex);
+            return (
+              <div
+                key={invalidClick.id}
+                className="pointer-events-none absolute z-40 whitespace-nowrap rounded-md border border-ember-deep/60 bg-wood-950/90 px-2 py-0.5 font-display text-[11px] text-ember-bright shadow-lg"
+                style={{ left: p.x, top: p.y - size * 0.9, transform: 'translate(-50%, -100%)', animation: 'tactics-floater 900ms ease-out forwards' }}
+              >
+                {invalidClick.text}
+              </div>
+            );
+          })()}
         </div>
 
-        {/* Outcome banner */}
-        {tactics.status !== 'active' && (
-          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-wood-950/80">
-            {tactics.status === 'won' ? (
-              <>
-                <Trophy className="h-10 w-10 text-gold-bright" />
-                <div className="font-display text-xl font-bold text-gold-bright">Victory!</div>
-              </>
-            ) : (
-              <>
-                <Skull className="h-10 w-10 text-ember-bright" />
-                <div className="font-display text-xl font-bold text-ember-bright">Defeated</div>
-              </>
-            )}
-            {(() => {
-              const goldOut = Math.round((tacticsReward(tactics).gold ?? 0) * habitBonus);
-              return goldOut > 0 ? (
-                <span className="flex items-center gap-1 text-xs text-gold-bright">
-                  <Coins className="h-3.5 w-3.5" /> {goldOut}
-                </span>
-              ) : null;
-            })()}
-            <StreakBonusChip className="text-[11px]" />
-            <Button onClick={endTactics} className="px-6 py-2">
-              {tactics.status === 'won' ? 'Claim reward' : 'Leave'}
-            </Button>
-          </div>
-        )}
+        {/* Outcome card — the payoff moment: gold, materials, XP, objective recap, tier record.
+            Displayed numbers come from the SAME functions commitTactics banks (no drift). */}
+        {tactics.status !== 'active' && (() => {
+          const won = tactics.status === 'won';
+          const reward = tacticsReward(tactics);
+          const goldOut = Math.round((reward.gold ?? 0) * habitBonus);
+          const xp = tacticsStatXp(tactics);
+          const newRecord = won && tactics.tier > deepestTacticsTier;
+          const obj = tactics.objective;
+          const statColor: Record<string, string> = { AG: 'text-stat-AG', DX: 'text-stat-DX', EN: 'text-stat-EN' };
+          return (
+            <div className="absolute inset-0 z-30 flex items-center justify-center bg-wood-950/85 p-4">
+              <div className="w-full max-w-sm space-y-3 rounded-lg border border-gold-deep/50 bg-wood-900/95 p-5 text-center shadow-2xl">
+                <div className="flex flex-col items-center gap-1.5">
+                  {won ? <Trophy className="h-10 w-10 text-gold-bright" /> : <Skull className="h-10 w-10 text-ember-bright" />}
+                  <div className={cn('font-display text-xl font-bold', won ? 'text-gold-bright' : 'text-ember-bright')}>
+                    {won ? 'Victory!' : 'Defeated'}
+                  </div>
+                  <div className="font-display text-[11px] uppercase tracking-wider text-parchment-300/60">
+                    Tier {tactics.tier} · turn {tactics.turnCount}
+                  </div>
+                  {newRecord && (
+                    <div className="rounded-full border border-gold-deep/60 bg-gold-deep/20 px-2.5 py-0.5 font-display text-[11px] font-bold text-gold-bright">
+                      🏅 New record — Tier {tactics.tier}!
+                    </div>
+                  )}
+                </div>
+
+                {obj && (
+                  <div
+                    className={cn(
+                      'rounded-md border px-2 py-1 font-display text-[11px]',
+                      obj.complete
+                        ? 'border-green-700/50 bg-green-900/20 text-green-300'
+                        : 'border-red-700/40 bg-red-900/15 text-red-400/90',
+                    )}
+                  >
+                    {obj.complete ? '✓' : '✗'} {obj.label}
+                    {obj.complete ? ' — +60% gold · potion' : won ? ' — missed' : ' — voided'}
+                  </div>
+                )}
+
+                <div className="space-y-1.5 rounded-md border border-gold-deep/30 bg-wood-950/50 p-3 text-left">
+                  {goldOut > 0 && (
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="flex items-center gap-1.5 text-parchment-300"><Coins className="h-3.5 w-3.5 text-gold-bright" /> Gold{!won && ' (damage dealt)'}</span>
+                      <span className="font-display font-bold text-gold-bright">+{goldOut}</span>
+                    </div>
+                  )}
+                  {Object.entries(reward.materials ?? {}).map(([key, qty]) => (
+                    <div key={key} className="flex items-center justify-between text-xs">
+                      <span className="flex items-center gap-1.5 text-parchment-300">
+                        <span
+                          className="flex h-3.5 w-3.5 items-center justify-center rounded-sm font-display text-[9px] font-bold text-white"
+                          style={{ backgroundColor: MATERIALS[key]?.color ?? '#666' }}
+                        >
+                          {MATERIALS[key]?.glyph ?? '?'}
+                        </span>
+                        {MATERIALS[key]?.name ?? key}
+                      </span>
+                      <span className="font-display font-bold text-parchment-200">×{qty}</span>
+                    </div>
+                  ))}
+                  {(reward.items ?? []).map((item) => (
+                    <div key={item} className="flex items-center justify-between text-xs">
+                      <span className="flex items-center gap-1.5 text-parchment-300">🧪 Healing Potion</span>
+                      <span className="font-display font-bold text-parchment-200">×1</span>
+                    </div>
+                  ))}
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-parchment-300">Training XP{!won && ' (half)'}</span>
+                    <span className="font-display font-bold">
+                      {Object.entries(xp).map(([stat, amt], i) => (
+                        <span key={stat}>
+                          {i > 0 && <span className="text-parchment-300/40"> · </span>}
+                          <span className={statColor[stat] ?? 'text-parchment-200'}>{stat} +{amt}</span>
+                        </span>
+                      ))}
+                    </span>
+                  </div>
+                </div>
+
+                <StreakBonusChip className="text-[11px]" />
+                {!won && (
+                  <div className="text-[11px] text-parchment-300/70">
+                    Every skirmish trains you — the XP above is already earned.
+                  </div>
+                )}
+                <Button onClick={endTactics} className="w-full py-2">
+                  {won ? 'Claim reward' : 'Leave'}
+                </Button>
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
-      {/* Action bar */}
+      {/* Action bar — removed entirely once the match ends so nothing stays interactive
+          (or misleadingly armed) beneath the outcome card. */}
+      {tactics.status === 'active' && (
       <div className="border-t border-gold-deep/40 bg-wood-900/80 px-3 py-2">
         <div className="mx-auto flex max-w-2xl flex-wrap items-center justify-center gap-1.5">
           <ActionButton active={sel?.kind === 'move'} disabled={locked || tactics.player.movesLeft <= 0} onClick={() => { setHoveredHex(null); tacticsSelect({ kind: 'move' }); }}>
@@ -848,6 +969,7 @@ export function TacticsOverlay() {
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }
@@ -855,7 +977,7 @@ export function TacticsOverlay() {
 function UnitSprite({
   x, y, glyph, hp, maxHp, statuses, friendly, name, scale = 1,
   slideMs = 200,
-  intent, archetypeColor, archetypeBlurb, weakResist, onClick,
+  intent, archetypeColor, archetypeBlurb, weakResist, onClick, onHover,
 }: {
   x: number; y: number; glyph: string; hp: number; maxHp: number; statuses: UnitStatus[];
   friendly?: boolean; name?: string; scale?: number;
@@ -873,6 +995,9 @@ function UnitSprite({
   /** Whether the current player action hits a weakness (⬆) or resistance (⬇) of this enemy. */
   weakResist?: 'weak' | 'resist' | null;
   onClick?: () => void;
+  /** Hover pass-through: the sprite sits above its tile polygon and swallows mouse events,
+   *  so without this the damage preview never fires when pointing at the unit itself. */
+  onHover?: (over: boolean) => void;
 }) {
   const pct = Math.max(0, Math.min(100, (hp / maxHp) * 100));
   const tooltipText = archetypeBlurb ? `${name ?? ''}\n${archetypeBlurb}` : (name ?? undefined);
@@ -882,6 +1007,8 @@ function UnitSprite({
       style={{ left: 0, top: 0, transform: `translate(${x}px, ${y}px) translate(-50%, -78%)`, transition: slideMs > 0 ? `transform ${slideMs}ms ease-out` : 'none' }}
       title={tooltipText}
       onClick={onClick}
+      onMouseEnter={onHover ? () => onHover(true) : undefined}
+      onMouseLeave={onHover ? () => onHover(false) : undefined}
     >
       {/* Intent badge — shows planned action icon + archetype name (Phase C) */}
       {intent && !friendly && (
@@ -956,15 +1083,17 @@ function UnitSprite({
 function EffectSprite({ fx, from, to }: { fx: TacticalEffect; from: { x: number; y: number }; to: { x: number; y: number } }) {
   if (fx.kind === 'floater') {
     const color = fx.color ? FLOATER_COLOR[fx.color] : '#fbbf24';
+    // Deterministic horizontal jitter so overlapping floaters (multi-hit turns) don't stack.
+    const jitter = ((fx.id % 5) - 2) * 5;
     return (
       <div
         className="pointer-events-none absolute z-40 select-none font-display font-bold"
         style={{
-          left: to.x,
+          left: to.x + jitter,
           top: to.y,
           color,
-          fontSize: 15,
-          textShadow: '0 1px 3px rgba(0,0,0,0.9)',
+          fontSize: fx.color === 'status' ? 13 : 19,
+          textShadow: '0 1px 3px rgba(0,0,0,0.95), 0 0 6px rgba(0,0,0,0.6)',
           animation: `tactics-floater ${fx.durationMs}ms ease-out forwards`,
         }}
       >

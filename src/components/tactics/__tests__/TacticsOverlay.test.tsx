@@ -124,4 +124,38 @@ describe('TacticsOverlay (smoke)', () => {
     // The skirmish is still a valid state after the enemy phase resolved.
     expect(useGameStore.getState().tactics).not.toBeNull();
   });
+
+  it('the victory card shows gold, the material bundle, the XP split, and a new tier record', () => {
+    const tactics = seedBattle();
+    // Force a won state: clear the enemy force and stamp the outcome.
+    useGameStore.setState({
+      tactics: { ...tactics, enemies: [], status: 'won' },
+      deepestTacticsTier: 4, // below tier 5 → the record chip must show
+    });
+    const { getByText, queryByText } = render(<TacticsOverlay />);
+    expect(getByText(/victory/i)).toBeTruthy();
+    expect(getByText(/new record — tier 5/i)).toBeTruthy();
+    // Reward rows mirror tacticsReward: gold + the BAL-10 material bundle (tier 5 → ×2 each).
+    expect(getByText(/^Gold$/)).toBeTruthy();
+    expect(getByText('Roll of Cloth')).toBeTruthy();
+    expect(getByText('Bronze Bar')).toBeTruthy();
+    // XP split mirrors tacticsStatXp — AG-forward trickle rendered per stat.
+    expect(getByText(/AG \+\d/)).toBeTruthy();
+    expect(getByText(/EN \+\d/)).toBeTruthy();
+    // The action bar is gone beneath the card.
+    expect(queryByText(/end turn/i)).toBeNull();
+    expect(getByText(/claim reward/i)).toBeTruthy();
+  });
+
+  it('the defeat card shows the half-XP note and no materials', () => {
+    const tactics = seedBattle();
+    useGameStore.setState({
+      tactics: { ...tactics, status: 'lost', player: { ...tactics.player, hp: 0 } },
+    });
+    const { getByText, queryByText } = render(<TacticsOverlay />);
+    expect(getByText(/defeated/i)).toBeTruthy();
+    expect(getByText(/Training XP \(half\)/)).toBeTruthy();
+    expect(queryByText('Roll of Cloth')).toBeNull(); // materials are win-only
+    expect(getByText(/leave/i)).toBeTruthy();
+  });
 });

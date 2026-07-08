@@ -21,6 +21,7 @@ interface Props {
 export function AdventureRitualModal({ energyCost, onConfirm, onCancel }: Props) {
   const habits = useGameStore((s) => s.habits);
   const energy = useGameStore((s) => s.character.energy);
+  const unlimitedEnergy = useGameStore((s) => s.settings.unlimitedEnergy);
   const updateSettings = useGameStore((s) => s.updateSettings);
   const [dontShow, setDontShow] = useState(false);
 
@@ -32,7 +33,8 @@ export function AdventureRitualModal({ energyCost, onConfirm, onCancel }: Props)
     onConfirm();
   }
 
-  const canEnter = energy >= energyCost;
+  // The dev unlimited-energy toggle bypasses the cost — mirror the slices' entry gates.
+  const canEnter = unlimitedEnergy || energy >= energyCost;
 
   return (
     <Modal title="Before You Adventure" onClose={onCancel}>
@@ -59,7 +61,7 @@ export function AdventureRitualModal({ energyCost, onConfirm, onCancel }: Props)
       {/* Dark inset rows — text must be on-wood (light), not ink (dark on dark). */}
       <div className="mb-4 flex items-center justify-between rounded bg-wood-900/60 px-3 py-2 text-sm">
         <span className="text-on-wood-hi">Energy available</span>
-        <span className="font-bold text-amber-400">{energy}</span>
+        <span className="font-bold text-amber-400">{unlimitedEnergy ? '∞' : energy}</span>
       </div>
 
       <div className="mb-5 flex items-center justify-between rounded bg-wood-900/60 px-3 py-2 text-sm">
