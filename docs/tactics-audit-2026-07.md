@@ -1,5 +1,15 @@
 # Hex Tactics — Full Audit (2026-07-08)
 
+> **Status (2026-07-08): all 6 phases of §6 implemented** on `feature/tactics-audit`
+> (commits `f224d5a`…`c6eae0a`, one per phase). Every D/B/U finding below is addressed;
+> §4's items shipped in Phases 5–6 (the 6A record row already existed). Notable extras found
+> during implementation: the U7 bleed-through root cause was an undefined `wood-950` Tailwind
+> shade (every `bg-wood-950/*` was silently transparent), the overlay sat at z-40 under the app
+> chrome (all other run overlays use z-50), the AdventureRitualModal had its own B1-class
+> unlimited-energy gate, and unit sprites swallowed hover so the damage preview never fired when
+> pointing at an enemy. Balance knobs to revisit after real play: holder leash 4, kiter press 3
+> turns, waves 2-per-2-turns above cap 5, Large gold step 0.25, +1 MP/turn.
+
 **Method:** Three passes, cross-checked against each other and against the two prior analysis docs:
 1. **Live playtest** via browser automation — fresh guest character, quick-start defaults, dev-leveled to 5, four matches played (Tier 5 Small ×2, Tier 4 Small ×2; one legitimate win, turn 15), exercising Move, Strike, Sparks, Force Push, Overwatch/Hold, Mend, danger-zone/intent toggles, the Adventure Ritual modal, and both end screens.
 2. **Game-design audit** of the engine (`src/engine/hexBattle/`, `tacticsSlice`, rewards/commit path), grounded in code with worked numbers.
