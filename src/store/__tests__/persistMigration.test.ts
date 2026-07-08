@@ -140,6 +140,7 @@ describe('persist migrate (ARCH-08)', () => {
     expect(out.earnings).toEqual(freshEarningsLedger());
     expect(out.energyLog).toEqual({});
     expect(out.mineTombstone).toBeNull();
+    expect(out.mineDailyBonus).toBeNull();
     expect(out.reminderCardDismissed).toBe(false); // v28 default
   });
 
@@ -159,6 +160,7 @@ describe('persist migrate (ARCH-08)', () => {
     const bestTrialScore = { ...emptyBestTrialScore(), st_trial: 0.8 };
     const earnings = { ...freshEarningsLedger(), energyEarned: 12 };
     const tombstone = { floor: 6, haul: { gold: 30, items: ['ore'] } };
+    const dailyBonus = { date: '2026-07-08', floorsUsed: 4 };
     const fixture = {
       habits: [],
       character: { name: 'Vet', level: 8, statXp, statLevels: allocatedLevels, statXpAtLastLevel: xpAtLastLevel, gold: 500, energy: 4 },
@@ -178,6 +180,7 @@ describe('persist migrate (ARCH-08)', () => {
       earnings,
       energyLog: { '2026-07-05': 3 },
       mineTombstone: tombstone,
+      mineDailyBonus: dailyBonus,
     };
 
     const out = migrate(fixture, 27) as GameState;
@@ -195,6 +198,7 @@ describe('persist migrate (ARCH-08)', () => {
     expect(out.earnings).toEqual(earnings);
     expect(out.energyLog).toEqual({ '2026-07-05': 3 });
     expect(out.mineTombstone).toEqual(tombstone);
+    expect(out.mineDailyBonus).toEqual(dailyBonus);
   });
 
   it('v33-era save (pre-Homestead): town backfills to freshTown(); a populated town rides through', () => {

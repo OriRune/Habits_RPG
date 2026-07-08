@@ -163,6 +163,18 @@ export type SfxCue =
   | 'forgeStrikeGood'
   /** Dull clang — a strike lands off the sweet-zone. */
   | 'forgeStrikeMiss'
+  /** Deep anvil clang + thump — a charged heavy strike lands. */
+  | 'forgeStrikeHeavy'
+  /** Bright bell ring — a near-perfect strike crits. */
+  | 'forgeCrit'
+  /** Warm crackle flare — an Ember Surge begins. */
+  | 'forgeEmber'
+  /** Descending cold sweep — a Cold Snap dims the coals. */
+  | 'forgeSnap'
+  /** Steam sizzle — a well-timed quench plunge. */
+  | 'forgeQuench'
+  /** Weak fizzle — a badly-timed quench plunge. */
+  | 'forgeQuenchWeak'
   /** Short triumphant fanfare — the piece is finished (result reveal). */
   | 'forgeComplete';
 
@@ -1074,6 +1086,44 @@ const _CUES: Record<SfxCue, (ctx: AudioContext) => void> = {
   forgeStrikeMiss(ctx) {
     _osc(ctx, 'triangle', 110, 42, 0.22, 0.35, 0.005);
     _noise(ctx, 180, 52, 0.15, 0.16, 'lowpass', 0.8);
+  },
+
+  /** Deep anvil clang + low thump + long ring — a charged heavy strike lands. */
+  forgeStrikeHeavy(ctx) {
+    _osc(ctx, 'square', 150, 55, 0.30, 0.42, 0.004);
+    _noise(ctx, 260, 60, 0.22, 0.30, 'lowpass', 0.9);
+    _osc(ctx, 'sine', 340, 110, 0.55, 0.20, 0.003); // lingering anvil ring
+  },
+
+  /** Bright bell — a near-perfect strike rings true (crit). */
+  forgeCrit(ctx) {
+    _osc(ctx, 'sine', 880, 850, 0.40, 0.24, 0.003);
+    _osc(ctx, 'sine', 1320, 1280, 0.32, 0.12, 0.003); // upper harmonic
+    _noise(ctx, 3600, 5200, 0.14, 0.05, 'bandpass', 4.0); // shimmer
+  },
+
+  /** Warm crackle flare — an Ember Surge begins. */
+  forgeEmber(ctx) {
+    _noise(ctx, 900, 2400, 0.45, 0.20, 'bandpass', 1.6);
+    _osc(ctx, 'triangle', 220, 460, 0.40, 0.14, 0.02); // rising warmth
+  },
+
+  /** Descending cold sweep + airy hiss — a Cold Snap dims the coals. */
+  forgeSnap(ctx) {
+    _osc(ctx, 'sine', 600, 180, 0.50, 0.18, 0.010);
+    _noise(ctx, 5200, 2000, 0.45, 0.10, 'highpass', 0.7);
+  },
+
+  /** Steam sizzle + soft thud — a well-timed quench plunge. */
+  forgeQuench(ctx) {
+    _noise(ctx, 3200, 700, 0.70, 0.26, 'bandpass', 1.2); // sizzle sweep
+    _osc(ctx, 'sine', 140, 60, 0.25, 0.16, 0.006); // the plunge itself
+  },
+
+  /** Weak fizzle — a badly-timed quench plunge. */
+  forgeQuenchWeak(ctx) {
+    _noise(ctx, 1400, 500, 0.30, 0.12, 'bandpass', 1.0);
+    _osc(ctx, 'triangle', 120, 60, 0.18, 0.10, 0.006);
   },
 
   /** Short triumphant fanfare — the piece is finished (result reveal). */

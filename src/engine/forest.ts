@@ -37,6 +37,7 @@ import {
   flowStep,
   adjacent,
   manhattan,
+  CRAWL_SPAWN_SAFE_RADIUS,
   applyStatus,
   pruneStatuses,
   activeStatus,
@@ -44,6 +45,8 @@ import {
   RING_HIT_CD_MS,
   STA_REGEN_MS,
   MP_REGEN_MS,
+  applyPassiveRegen,
+  setTile,
   DASH_BASE_CD_MS,
   STAGGER_MS,
   CHARGE_DAMAGE_MULT,
@@ -620,6 +623,11 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
   const exitC = oddCols[Math.floor(rng() * oddCols.length)];
   tiles[rows - 1][exitC] = { kind: 'treeline' };
 
+  // Spawn safety: the player starts on the entrance tile, and every beast placement
+  // below keeps at least CRAWL_SPAWN_SAFE_RADIUS away from it — a fresh stage must
+  // never open with a beast already inside aggro range of a player who hasn't moved.
+  const playerSpawn = { r: 0, c: startC };
+
   // --- Scatter nodes, clearing rooms, choppable trees, and beasts ---
   const shuffle = <T,>(arr: T[]): T[] => {
     for (let i = arr.length - 1; i > 0; i--) {
@@ -718,14 +726,22 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
       }
     }
 
-    // Beasts on remaining open clearing cells (1-3).
+    // Beasts on remaining open clearing cells (1-3). Cells inside the spawn-safety
+    // radius are filtered out — a room carved beside the entrance would otherwise
+    // seed an ambush beast adjacent to the player's spawn tile (it keeps its nodes
+    // and trees; it just holds fewer/no beasts, degrading gracefully).
     if (eligibleBeasts.length > 0) {
       const openRoom: [number, number][] = [];
       for (let dr = -1; dr <= 1; dr++) {
         for (let dc = -1; dc <= 1; dc++) {
           const nr = cr + dr;
           const nc = cc + dc;
-          if (tiles[nr]?.[nc]?.kind === 'clearing') openRoom.push([nr, nc]);
+          if (
+            tiles[nr]?.[nc]?.kind === 'clearing' &&
+            manhattan({ r: nr, c: nc }, playerSpawn) > CRAWL_SPAWN_SAFE_RADIUS
+          ) {
+            openRoom.push([nr, nc]);
+          }
         }
       }
       shuffle(openRoom);
@@ -795,10 +811,12 @@ export function generateForest(stage: number, snapshot: ForestSnapshot, rng: RNG
   }
 
   // --- Place wandering beasts on trail cells away from the entrance ---
+  // Spawn safety: measured from the first trail row (one below playerSpawn), so every
+  // wanderer starts strictly more than CRAWL_SPAWN_SAFE_RADIUS + 1 from the spawn tile.
   const trailCells: [number, number][] = [];
   for (let r = 1; r < rows - 1; r++) {
     for (let c = 1; c < cols - 1; c++) {
-      if (tiles[r][c].kind === 'trail' && Math.abs(r - 1) + Math.abs(c - startC) > 4) {
+      if (tiles[r][c].kind === 'trail' && Math.abs(r - 1) + Math.abs(c - startC) > CRAWL_SPAWN_SAFE_RADIUS) {
         trailCells.push([r, c]);
       }
     }
@@ -1087,26 +1105,22 @@ export function act(state: ForestState, rng: RNG, nowMs = 0, charged = false): F
       : baseChop + stBonus;
     const maxDur = tile.maxDurability ?? 1;
     const dur = (tile.durability ?? 1) - effectiveChop;
-    const tiles = state.tiles.map((row) => row.slice());
     let haul = state.haul;
     const newSta = Math.max(0, state.sta - CHOP_STA_COST);
     if (dur <= 0) {
       // Tree felled — opens a dead-end pocket (routing-safe by construction).
-      tiles[r][c] = { kind: 'trail' };
       const woodBase = randInt(maxDur, Math.min(3, maxDur + 1), rng);
       // Forager boon: double chop yield.
       const woodAmt = Math.round(woodBase * boonYieldMult(state.activeBoons));
       haul = mergeReward(haul, { materials: { wood: woodAmt } });
-    } else {
-      tiles[r][c] = { ...tile, durability: dur };
     }
+    const tiles = setTile(state.tiles, r, c, dur <= 0 ? { kind: 'trail' } : { ...tile, durability: dur });
     return { ...state, sta: newSta, tiles, haul };
   }
 
   // --- Gather a node instantly ---
   if (tile.kind === 'node' && tile.nodeKey) {
-    const tiles = state.tiles.map((row) => row.slice());
-    tiles[r][c] = { kind: 'trail' };
+    const tiles = setTile(state.tiles, r, c, { kind: 'trail' });
     const nodeDef = FOREST_NODES[tile.nodeKey];
     if (nodeDef?.grants.kind === 'stamina') {
       const restore = randInt(nodeDef.grants.amount[0], nodeDef.grants.amount[1], rng);
@@ -1202,12 +1216,7 @@ export function stepBeasts(
   const players = coPlayers.length > 0 ? [s.player, ...coPlayers] : [s.player];
 
   // ---------- Passive regen ----------
-  if (nowMs >= s.staNextRegenMs && s.sta < s.maxSta) {
-    s = { ...s, sta: Math.min(s.maxSta, s.sta + 1), staNextRegenMs: nowMs + STA_REGEN_MS };
-  }
-  if (nowMs >= s.mpNextRegenMs && s.mp < s.maxMp) {
-    s = { ...s, mp: Math.min(s.maxMp, s.mp + 1), mpNextRegenMs: nowMs + MP_REGEN_MS };
-  }
+  s = applyPassiveRegen(s, nowMs);
 
   // ---------- Player status pruning ----------
   s = { ...s, playerStatuses: pruneStatuses(s.playerStatuses, nowMs) };
@@ -1394,31 +1403,6 @@ export function coopClientStep(state: ForestState, nowMs: number): ForestState {
 }
 
 // ---------------------------------------------------------------------------
-// Death forfeit
-// ---------------------------------------------------------------------------
-
-/**
- * Split a haul into the portion the player keeps and the portion forfeited on death.
- */
-export function splitHaul(haul: Reward, keepFraction: number): { kept: Reward; lost: Reward } {
-  const kept: Reward = {};
-  const lost: Reward = {};
-  if (haul.gold) {
-    const k = Math.floor(haul.gold * keepFraction);
-    if (k > 0) kept.gold = k;
-    if (haul.gold - k > 0) lost.gold = haul.gold - k;
-  }
-  if (haul.materials) {
-    for (const [mat, qty] of Object.entries(haul.materials)) {
-      const k = Math.floor(qty * keepFraction);
-      if (k > 0) (kept.materials ??= {})[mat] = k;
-      if (qty - k > 0) (lost.materials ??= {})[mat] = qty - k;
-    }
-  }
-  return { kept, lost };
-}
-
-// ---------------------------------------------------------------------------
 // Shrine activation
 // ---------------------------------------------------------------------------
 
@@ -1453,8 +1437,7 @@ export function activateShrine(state: ForestState, nowMs: number, rng: RNG, allo
   if (!event) return state;
 
   // Consume the shrine tile.
-  const tiles = state.tiles.map((row) => row.slice());
-  tiles[state.player.r][state.player.c] = { kind: 'clearing' };
+  const tiles = setTile(state.tiles, state.player.r, state.player.c, { kind: 'clearing' });
   let s: ForestState = { ...state, tiles };
 
   if (event.kind === 'cache' && event.loot) {

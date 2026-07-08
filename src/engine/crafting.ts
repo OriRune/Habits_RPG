@@ -57,6 +57,29 @@ export function canCraft(recipe: RecipeDef, materials: Record<string, number>, g
 }
 
 // ---------------------------------------------------------------------------
+// Metal temperaments (Forge minigame variety)
+// ---------------------------------------------------------------------------
+
+import type { ForgeTemperamentId } from './crafting/forge';
+
+/** Material families → forging personality. Checked in priority order (fickle first):
+ *  a recipe with any crystalline material forges fickle even if it also uses iron. */
+const FICKLE_MATERIALS = ['crystals', 'frost_quartz', 'obsidian'];
+const STUBBORN_MATERIALS = ['iron_bar', 'bronze_bar'];
+
+/**
+ * A recipe's metal temperament (see TEMPERAMENTS in crafting/forge.ts): crystalline
+ * materials → fickle, metal bars → stubborn, everything else (leather/cloth/herbs/
+ * resin) → supple. Lives here rather than forge.ts so the reducer stays content-free.
+ */
+export function recipeTemperament(recipe: RecipeDef): ForgeTemperamentId {
+  const keys = Object.keys(recipe.materials);
+  if (keys.some((k) => FICKLE_MATERIALS.includes(k))) return 'fickle';
+  if (keys.some((k) => STUBBORN_MATERIALS.includes(k))) return 'stubborn';
+  return 'supple';
+}
+
+// ---------------------------------------------------------------------------
 // Quality tiers (Forge minigame output)
 // ---------------------------------------------------------------------------
 

@@ -23,14 +23,15 @@ import { SectionTitle } from '@/components/ui/Divider';
 import { gearBonusText } from './GearSection';
 import { ForgeMinigame } from './ForgeMinigame';
 
+/** Effect-only subtitle — the row title already shows the recipe (= item) name. */
 function resultLabel(kind: string, key: string): string {
   if (kind === 'gear') {
     const g = getGear(key);
-    return g ? `${g.name} — ${gearBonusText(g)}` : key;
+    return g ? gearBonusText(g) : key;
   }
   if (kind === 'weapon') {
     const w = getWeapon(key);
-    return `${w.name} — +${w.bonus} ${w.attackStat === 'DX' ? 'ranged' : 'melee'}`;
+    return `+${w.bonus} ${w.attackStat === 'DX' ? 'ranged' : 'melee'}`;
   }
   return getItem(key)?.name ?? key;
 }
@@ -159,9 +160,9 @@ export function ForgeSection() {
                   const have = materials[matKey] ?? 0;
                   const short = have < qty;
                   return (
-                    <span key={matKey} className={cn(short ? 'text-ember' : 'text-ink-muted')}>
+                    <span key={matKey} className={cn(short ? 'text-ember' : 'text-emerald-700')}>
                       {qty}× {getMaterial(matKey)?.name ?? matKey}
-                      <span className="text-ink-light"> ({have})</span>
+                      <span className={cn(short ? 'text-ink-light' : 'text-emerald-700/70')}> ({have})</span>
                     </span>
                   );
                 })}

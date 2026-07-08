@@ -199,6 +199,12 @@ export interface GameState {
    * A new death before recovery replaces the previous tombstone.
    */
   mineTombstone: { floor: number; haul: Reward } | null;
+  /**
+   * Per-day counter for the first-descent gold bonus (3.8) — the first MINE_DAILY_BONUS_FLOORS
+   * floors reached each calendar day pay MINE_DAILY_BONUS_MULT× gold. Reset to a fresh date/0
+   * count whenever `date` no longer matches today (see commitMining/commitMineDeath).
+   */
+  mineDailyBonus: { date: string; floorsUsed: number } | null;
   forest: ForestState | null;
   /** Deepest forest stage ever reached — a persistent record (mirrors deepestMineFloor). */
   deepestForestStage: number;

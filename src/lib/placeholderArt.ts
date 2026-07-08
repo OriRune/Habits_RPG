@@ -12,7 +12,9 @@ interface FramedOpts {
   wide?: boolean;
   /** Scene key to select distinct themed art instead of the generic motif. */
   sceneKey?: string;
-  /** Base entity key (e.g. 'skeleton', 'bone_tyrant') to select a bespoke monster silhouette. */
+  /** Base entity key (e.g. 'skeleton') or catalog item key (e.g. 'mithril_pickaxe') to
+   *  select a bespoke silhouette. Item keys must be in ITEM_ART_FAMILIES; anything else
+   *  is treated as a monster key. */
   entityKey?: string;
 }
 
@@ -42,6 +44,7 @@ export function framedSvg({ glyph, color, label, wide, sceneKey, entityKey }: Fr
   const svg =
     wide && sceneKey ? themedWideSvg(sceneKey, color, label) :
     wide ? wideSvg(color, label) :
+    entityKey && ITEM_ART_FAMILIES[entityKey] ? itemSquareSvg(entityKey, color, label) :
     entityKey ? monsterSquareSvg(entityKey, color, label) :
     squareSvg(glyph, color, label);
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
@@ -575,6 +578,248 @@ function monsterSquareSvg(entityKey: string, color: string, label?: string): str
   );
 }
 
+// ─── Item placeholder art ─────────────────────────────────────────────────────
+// Monster-silhouette treatment for gear/materials/weapons shipping without a PNG.
+// Concrete catalog keys map to a small library of shape FAMILIES — a pickaxe reads
+// as a pickaxe whether stone or mithril; the field tint and label band carry the
+// tier. Keys absent from this map keep the letter-glyph tile, and real PNGs still
+// auto-override via SPRITE_REGISTRY — this only upgrades the generated fallback.
+
+type ItemArtFamily =
+  | 'pickaxe' | 'plate' | 'amulet' | 'ring' | 'bow'
+  | 'shard' | 'droplet' | 'herb' | 'log' | 'stone' | 'icicle'
+  | 'meat' | 'pelt' | 'satchel';
+
+/** Catalog key → silhouette family. framedSvg consults this to route an entityKey
+ *  to the item renderer; sprites.ts consults it to decide whether to forward a key
+ *  at all (unmapped keys stay on the letter tile rather than a wrong silhouette). */
+export const ITEM_ART_FAMILIES: Record<string, ItemArtFamily> = {
+  // Gear (content/gear.ts)
+  stone_pickaxe: 'pickaxe',
+  iron_pickaxe: 'pickaxe',
+  mithril_pickaxe: 'pickaxe',
+  obsidian_plate: 'plate',
+  resin_trinket: 'amulet',
+  sage_ring: 'ring',
+  // Weapons (content/weapons.ts)
+  hunting_bow: 'bow',
+  // Materials (content/materials.ts)
+  herbs: 'herb',
+  wood: 'log',
+  stone: 'stone',
+  game_meat: 'meat',
+  pelt: 'pelt',
+  frost_quartz: 'icicle',
+  obsidian: 'shard',
+  amber_resin: 'droplet',
+};
+
+/** Radial-gradient hot-center color keyed by item key. Falls back to the crest color. */
+function itemPalette(key: string): string | undefined {
+  switch (key) {
+    case 'stone_pickaxe':   return '#3e3a34';
+    case 'iron_pickaxe':    return '#38414a';
+    case 'mithril_pickaxe': return '#2a4658';
+    case 'obsidian_plate':  return '#2a1a3a';
+    case 'resin_trinket':   return '#5a3c10';
+    case 'sage_ring':       return '#2a4030';
+    case 'hunting_bow':     return '#3a4a22';
+    case 'herbs':           return '#254a1e';
+    case 'wood':            return '#4a3418';
+    case 'stone':           return '#3c3c40';
+    case 'game_meat':       return '#4a1f1a';
+    case 'pelt':            return '#5a4526';
+    case 'frost_quartz':    return '#1a3a4e';
+    case 'obsidian':        return '#241432';
+    case 'amber_resin':     return '#5a3c08';
+    default:                return undefined;
+  }
+}
+
+/** Hand-authored SVG vector motif per shape family, drawn in a 100×100 viewport
+ *  (the label band claims y≥79, so motifs stay above it). Raw element strings. */
+function itemMotif(family: ItemArtFamily): string {
+  switch (family) {
+
+    case 'pickaxe':
+      return (
+        // Haft
+        `<line x1="36" y1="74" x2="63" y2="28" stroke="#8a5a2b" stroke-opacity="0.9" stroke-width="6" stroke-linecap="round"/>` +
+        // Crescent pick head
+        `<path d="M24 44 Q58 6 88 48 Q60 26 24 44 Z" fill="#d4cba0" fill-opacity="0.85" stroke="#f3e7c9" stroke-opacity="0.3" stroke-width="1.5"/>` +
+        // Binding at the eye
+        `<rect x="56" y="24" width="10" height="10" rx="2" fill="#8a5a2b" fill-opacity="0.9" transform="rotate(30 61 29)"/>`
+      );
+
+    case 'plate':
+      return (
+        // Breastplate body
+        `<path d="M30 18 L70 18 L79 32 L72 62 Q50 76 28 62 L21 32 Z" fill="#c9c2a8" fill-opacity="0.8" stroke="#f3e7c9" stroke-opacity="0.35" stroke-width="1.5"/>` +
+        // Neck cut
+        `<path d="M40 18 Q50 28 60 18" fill="#160c06" fill-opacity="0.45"/>` +
+        // Center ridge + waist curve
+        `<line x1="50" y1="30" x2="50" y2="70" stroke="#160c06" stroke-opacity="0.3" stroke-width="2"/>` +
+        `<path d="M30 52 Q50 60 70 52" fill="none" stroke="#160c06" stroke-opacity="0.25" stroke-width="1.5"/>` +
+        // Rivets
+        `<circle cx="32" cy="30" r="2" fill="#f3e7c9" fill-opacity="0.55"/>` +
+        `<circle cx="68" cy="30" r="2" fill="#f3e7c9" fill-opacity="0.55"/>` +
+        `<circle cx="35" cy="58" r="2" fill="#f3e7c9" fill-opacity="0.45"/>` +
+        `<circle cx="65" cy="58" r="2" fill="#f3e7c9" fill-opacity="0.45"/>`
+      );
+
+    case 'amulet':
+      return (
+        // Chain
+        `<path d="M28 12 Q50 34 72 12" fill="none" stroke="#d4cba0" stroke-opacity="0.75" stroke-width="2.5" stroke-dasharray="4 2.5"/>` +
+        // Bail
+        `<circle cx="50" cy="30" r="4" fill="none" stroke="#d4cba0" stroke-opacity="0.85" stroke-width="2.5"/>` +
+        // Pendant disc + inset amber gem
+        `<circle cx="50" cy="50" r="16" fill="#d4cba0" fill-opacity="0.8" stroke="#f3e7c9" stroke-opacity="0.35" stroke-width="1.5"/>` +
+        `<circle cx="50" cy="50" r="7" fill="#e8a020" fill-opacity="0.9"/>` +
+        `<circle cx="47" cy="47" r="2.5" fill="#ffe8b0" fill-opacity="0.85"/>`
+      );
+
+    case 'ring':
+      return (
+        // Band
+        `<circle cx="50" cy="54" r="16" fill="none" stroke="#d4cba0" stroke-opacity="0.85" stroke-width="7"/>` +
+        `<path d="M38 44 A16 16 0 0 1 56 39" fill="none" stroke="#f3e7c9" stroke-opacity="0.5" stroke-width="2"/>` +
+        // Mounted gem
+        `<polygon points="50,24 58,32 50,40 42,32" fill="#5ec8a0" fill-opacity="0.9" stroke="#f3e7c9" stroke-opacity="0.4" stroke-width="1"/>` +
+        `<circle cx="47" cy="30" r="1.8" fill="#e8fff4" fill-opacity="0.8"/>`
+      );
+
+    case 'bow':
+      return (
+        // Limb + string
+        `<path d="M34 12 Q80 45 34 78" fill="none" stroke="#8a5a2b" stroke-opacity="0.9" stroke-width="5" stroke-linecap="round"/>` +
+        `<line x1="34" y1="12" x2="34" y2="78" stroke="#f3e7c9" stroke-opacity="0.6" stroke-width="1.5"/>` +
+        // Nocked arrow
+        `<line x1="22" y1="45" x2="66" y2="45" stroke="#d4cba0" stroke-opacity="0.85" stroke-width="2.5"/>` +
+        `<polygon points="74,45 64,40 64,50" fill="#d4cba0" fill-opacity="0.9"/>` +
+        `<line x1="22" y1="45" x2="16" y2="39" stroke="#d4cba0" stroke-opacity="0.7" stroke-width="2" stroke-linecap="round"/>` +
+        `<line x1="22" y1="45" x2="16" y2="51" stroke="#d4cba0" stroke-opacity="0.7" stroke-width="2" stroke-linecap="round"/>` +
+        `<line x1="28" y1="45" x2="22" y2="39" stroke="#d4cba0" stroke-opacity="0.55" stroke-width="2" stroke-linecap="round"/>` +
+        `<line x1="28" y1="45" x2="22" y2="51" stroke="#d4cba0" stroke-opacity="0.55" stroke-width="2" stroke-linecap="round"/>`
+      );
+
+    case 'shard':
+      return (
+        // Main crystal + facet line
+        `<polygon points="50,12 64,38 59,70 41,70 36,38" fill="#d4cba0" fill-opacity="0.75" stroke="#f3e7c9" stroke-opacity="0.4" stroke-width="1.5"/>` +
+        `<line x1="50" y1="12" x2="47" y2="70" stroke="#f3e7c9" stroke-opacity="0.35" stroke-width="1"/>` +
+        // Flanking chips
+        `<polygon points="28,42 34,62 22,66" fill="#d4cba0" fill-opacity="0.55" stroke="#f3e7c9" stroke-opacity="0.3" stroke-width="1"/>` +
+        `<polygon points="72,44 78,64 64,64" fill="#d4cba0" fill-opacity="0.55" stroke="#f3e7c9" stroke-opacity="0.3" stroke-width="1"/>`
+      );
+
+    case 'droplet':
+      return (
+        // Resin drop + sheen + satellite bead
+        `<path d="M50 12 Q66 38 68 52 A18 20 0 1 1 32 52 Q34 38 50 12 Z" fill="#e8a020" fill-opacity="0.8" stroke="#f3e7c9" stroke-opacity="0.3" stroke-width="1.5"/>` +
+        `<ellipse cx="43" cy="54" rx="4" ry="6" fill="#ffe8b0" fill-opacity="0.7" transform="rotate(-20 43 54)"/>` +
+        `<path d="M74 26 Q78 33 78 36 A5 5 0 1 1 68 36 Q70 33 74 26 Z" fill="#e8a020" fill-opacity="0.55"/>`
+      );
+
+    case 'herb':
+      return (
+        // Stem + paired leaves + bud
+        `<path d="M50 76 Q47 50 52 22" fill="none" stroke="#7aa85a" stroke-opacity="0.9" stroke-width="2.5" stroke-linecap="round"/>` +
+        `<ellipse cx="40" cy="38" rx="11" ry="5" fill="#7aa85a" fill-opacity="0.75" transform="rotate(-32 40 38)"/>` +
+        `<ellipse cx="61" cy="32" rx="11" ry="5" fill="#7aa85a" fill-opacity="0.75" transform="rotate(28 61 32)"/>` +
+        `<ellipse cx="39" cy="56" rx="10" ry="4.5" fill="#5e8a2e" fill-opacity="0.75" transform="rotate(-24 39 56)"/>` +
+        `<ellipse cx="60" cy="52" rx="10" ry="4.5" fill="#5e8a2e" fill-opacity="0.75" transform="rotate(22 60 52)"/>` +
+        `<circle cx="52" cy="18" r="3.5" fill="#a8d080" fill-opacity="0.85"/>`
+      );
+
+    case 'log':
+      return (
+        // Bark cylinder with grain
+        `<rect x="22" y="38" width="50" height="26" rx="5" fill="#8a5a2b" fill-opacity="0.85"/>` +
+        `<line x1="26" y1="46" x2="66" y2="46" stroke="#5c3d1e" stroke-opacity="0.6" stroke-width="1.5"/>` +
+        `<line x1="26" y1="56" x2="66" y2="56" stroke="#5c3d1e" stroke-opacity="0.6" stroke-width="1.5"/>` +
+        // Cut face with growth rings
+        `<ellipse cx="72" cy="51" rx="8" ry="13" fill="#d4cba0" fill-opacity="0.9"/>` +
+        `<ellipse cx="72" cy="51" rx="4.5" ry="8" fill="none" stroke="#8a5a2b" stroke-opacity="0.6" stroke-width="1.2"/>` +
+        `<ellipse cx="72" cy="51" rx="1.8" ry="3.5" fill="#8a5a2b" fill-opacity="0.6"/>`
+      );
+
+    case 'stone':
+      return (
+        // Faceted boulder + pebble
+        `<polygon points="30,68 20,46 32,26 58,20 78,34 78,58 60,70" fill="#a8a294" fill-opacity="0.8" stroke="#f3e7c9" stroke-opacity="0.3" stroke-width="1.5"/>` +
+        `<line x1="32" y1="26" x2="46" y2="46" stroke="#160c06" stroke-opacity="0.25" stroke-width="1.5"/>` +
+        `<line x1="46" y1="46" x2="30" y2="68" stroke="#160c06" stroke-opacity="0.25" stroke-width="1.5"/>` +
+        `<line x1="46" y1="46" x2="78" y2="52" stroke="#160c06" stroke-opacity="0.2" stroke-width="1.5"/>` +
+        `<ellipse cx="26" cy="73" rx="7" ry="4" fill="#a8a294" fill-opacity="0.55"/>`
+      );
+
+    case 'icicle':
+      return (
+        // Ledge + hanging quartz spears
+        `<rect x="20" y="12" width="60" height="7" rx="2" fill="#d4cba0" fill-opacity="0.5"/>` +
+        `<polygon points="30,19 40,19 34,52" fill="#b8e4f0" fill-opacity="0.8" stroke="#e0f6fc" stroke-opacity="0.4" stroke-width="1"/>` +
+        `<polygon points="44,19 56,19 49,74" fill="#c8ecf6" fill-opacity="0.85" stroke="#e0f6fc" stroke-opacity="0.5" stroke-width="1"/>` +
+        `<polygon points="60,19 70,19 66,44" fill="#b8e4f0" fill-opacity="0.75" stroke="#e0f6fc" stroke-opacity="0.4" stroke-width="1"/>` +
+        `<line x1="48" y1="22" x2="48" y2="60" stroke="#f0fbff" stroke-opacity="0.6" stroke-width="1.2"/>` +
+        `<circle cx="49" cy="78" r="2" fill="#c8ecf6" fill-opacity="0.7"/>`
+      );
+
+    case 'meat':
+      return (
+        // Haunch + fat rim + sheen
+        `<ellipse cx="58" cy="38" rx="21" ry="16" fill="#b05040" fill-opacity="0.85" transform="rotate(-24 58 38)"/>` +
+        `<ellipse cx="58" cy="38" rx="21" ry="16" fill="none" stroke="#e8c8a8" stroke-opacity="0.55" stroke-width="3" transform="rotate(-24 58 38)"/>` +
+        `<ellipse cx="63" cy="32" rx="6" ry="3.5" fill="#e08868" fill-opacity="0.7" transform="rotate(-24 63 32)"/>` +
+        // Bone with knuckles
+        `<line x1="44" y1="52" x2="28" y2="68" stroke="#f3e7c9" stroke-opacity="0.85" stroke-width="5" stroke-linecap="round"/>` +
+        `<circle cx="25" cy="65" r="4" fill="#f3e7c9" fill-opacity="0.85"/>` +
+        `<circle cx="31" cy="71" r="4" fill="#f3e7c9" fill-opacity="0.85"/>`
+      );
+
+    case 'pelt':
+      return (
+        // Splayed hide: head stub top, four limbs, tail taper
+        `<path d="M50 14 Q60 15 63 24 L78 34 Q70 40 65 38 L67 58 Q60 54 57 58 L50 74 L43 58 Q40 54 33 58 L35 38 Q30 40 22 34 L37 24 Q40 15 50 14 Z" fill="#caa06a" fill-opacity="0.8" stroke="#f3e7c9" stroke-opacity="0.3" stroke-width="1.5"/>` +
+        `<ellipse cx="50" cy="42" rx="9" ry="13" fill="#e8cfa0" fill-opacity="0.5"/>`
+      );
+
+    // Final fallback family: any mapped key whose family lacks a bespoke drawing
+    // still gets a plausible "loot" silhouette instead of the letter tile.
+    case 'satchel':
+    default:
+      return (
+        `<path d="M34 32 Q50 10 66 32" fill="none" stroke="#6b4a24" stroke-opacity="0.85" stroke-width="3.5"/>` +
+        `<path d="M28 38 Q28 30 38 30 L62 30 Q72 30 72 38 L74 64 Q50 74 26 64 Z" fill="#8a6a3a" fill-opacity="0.85" stroke="#f3e7c9" stroke-opacity="0.25" stroke-width="1.5"/>` +
+        `<path d="M27 44 Q50 54 73 44 L72 34 Q50 24 28 34 Z" fill="#6b4a24" fill-opacity="0.9"/>` +
+        `<rect x="46" y="44" width="8" height="9" rx="2" fill="none" stroke="#d4cba0" stroke-opacity="0.8" stroke-width="2"/>`
+      );
+  }
+}
+
+/** Like monsterSquareSvg but for item keys with a mapped silhouette family. The
+ *  data-item attribute names the family so tests (and DOM inspection) can assert
+ *  which silhouette a key resolved to. */
+function itemSquareSvg(entityKey: string, color: string, label?: string): string {
+  const family = ITEM_ART_FAMILIES[entityKey] ?? 'satchel';
+  const fieldColor = itemPalette(entityKey) ?? color;
+  const lbl = label ? trim(label, 16).toUpperCase() : '';
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">` +
+    `<defs><radialGradient id="g" cx="50%" cy="42%" r="72%">` +
+    `<stop offset="0%" stop-color="${fieldColor}"/><stop offset="100%" stop-color="#160c06"/>` +
+    `</radialGradient></defs>` +
+    `<rect x="3" y="3" width="94" height="94" rx="12" fill="url(#g)" stroke="#c9a227" stroke-width="3"/>` +
+    `<g data-item="${family}">${itemMotif(family)}</g>` +
+    (label
+      ? `<rect x="3" y="79" width="94" height="18" rx="0" fill="#160c06" fill-opacity="0.55"/>` +
+        `<text x="50" y="89" text-anchor="middle" dominant-baseline="middle" ` +
+        `font-family="Georgia, serif" font-size="9" letter-spacing="0.6" fill="#f3e7c9" fill-opacity="0.85">${escapeXml(lbl)}</text>`
+      : '') +
+    `</svg>`
+  );
+}
+
 function wideSvg(color: string, label?: string): string {
   const cap = label ? trim(label, 30) : '';
   return (
@@ -597,6 +842,29 @@ function wideSvg(color: string, label?: string): string {
 /** Themed motif shapes for each scene key — drawn inside the 314×114 banner interior. */
 function sceneMotif(key: string): string {
   switch (key) {
+    case 'forge:anvil':
+      return (
+        // Hearth glow + flames (left)
+        `<ellipse cx="95" cy="92" rx="42" ry="10" fill="#9c3a25" fill-opacity="0.45"/>` +
+        `<path d="M78,90 Q74,66 86,50 Q90,68 100,54 Q96,74 108,62 Q104,80 98,90Z" fill="#c97a2e" fill-opacity="0.55"/>` +
+        `<path d="M86,90 Q84,74 93,62 Q99,74 96,90Z" fill="#f3e7c9" fill-opacity="0.4"/>` +
+        // Rising embers
+        `<circle cx="80" cy="42" r="2" fill="#c9a227" fill-opacity="0.5"/>` +
+        `<circle cx="100" cy="32" r="1.5" fill="#c97a2e" fill-opacity="0.45"/>` +
+        `<circle cx="90" cy="22" r="1.2" fill="#c9a227" fill-opacity="0.3"/>` +
+        // Anvil (centre-right): face + horn, waist, foot, on a stump
+        `<path d="M158,58 L232,58 Q244,58 250,52 Q246,66 232,68 L216,68 L212,78 L204,78 L200,68 L178,68 L174,78 L166,78 L162,68 L158,68Z" fill="#f3e7c9" fill-opacity="0.30" stroke="#c9a227" stroke-opacity="0.55" stroke-width="1.5"/>` +
+        `<rect x="176" y="78" width="38" height="8" rx="1.5" fill="#f3e7c9" fill-opacity="0.22"/>` +
+        `<rect x="168" y="86" width="54" height="12" rx="2" fill="#6b3a1e" fill-opacity="0.5"/>` +
+        // Workpiece glowing on the face + strike sparks
+        `<rect x="180" y="52" width="26" height="6" rx="2" fill="#c97a2e" fill-opacity="0.8"/>` +
+        `<line x1="196" y1="48" x2="203" y2="38" stroke="#c9a227" stroke-opacity="0.7" stroke-width="1.5" stroke-linecap="round"/>` +
+        `<line x1="188" y1="46" x2="184" y2="37" stroke="#c9a227" stroke-opacity="0.55" stroke-width="1.5" stroke-linecap="round"/>` +
+        `<line x1="204" y1="50" x2="214" y2="44" stroke="#c9a227" stroke-opacity="0.45" stroke-width="1.5" stroke-linecap="round"/>` +
+        // Raised hammer (top-right)
+        `<line x1="238" y1="44" x2="256" y2="20" stroke="#8a5a2e" stroke-opacity="0.7" stroke-width="3" stroke-linecap="round"/>` +
+        `<rect x="248" y="10" width="20" height="13" rx="3" fill="#f3e7c9" fill-opacity="0.35" stroke="#c9a227" stroke-opacity="0.5" stroke-width="1.5" transform="rotate(-36 258 16)"/>`
+      );
     case 'room:treasure':
       return (
         // Chest body + lid + coin stacks

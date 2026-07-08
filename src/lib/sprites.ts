@@ -6,7 +6,9 @@ import { CLASS_CHART } from '@/engine/classes';
 import { getMaterial } from '@/engine/materials';
 import { SCHOOL_STAT, type SpellSchool } from '@/engine/spells';
 import { ITEMS } from '@/engine/items';
-import { framedSvg } from '@/lib/placeholderArt';
+import { GEAR } from '@/engine/gear';
+import { WEAPONS } from '@/engine/weapons';
+import { framedSvg, ITEM_ART_FAMILIES } from '@/lib/placeholderArt';
 
 /** Reverse map: class name -> its primary stat (the chart row it sits in). */
 const CLASS_TO_STAT: Record<string, StatId> = (() => {
@@ -22,7 +24,8 @@ const CLASS_TO_STAT: Record<string, StatId> = (() => {
 export interface CrestLook {
   glyph: string;
   color: string;
-  /** Base entity key forwarded to placeholderArt for bespoke monster silhouettes. */
+  /** Base entity / catalog key forwarded to placeholderArt for bespoke monster or
+   *  item silhouettes (set only when a silhouette exists for the key). */
   art?: string;
 }
 
@@ -49,27 +52,43 @@ function firstLetter(name: string): string {
   return (cleaned.charAt(0) || '?').toUpperCase();
 }
 
+// Crest builders receive display names (that's what components hold), but the item
+// silhouette library is keyed by catalog key — invert the catalogs once to bridge.
+const ITEM_NAME_TO_KEY: Record<string, string> = (() => {
+  const map: Record<string, string> = {};
+  for (const def of [...Object.values(WEAPONS), ...Object.values(GEAR), ...Object.values(ITEMS)]) {
+    map[def.name] = def.key;
+  }
+  return map;
+})();
+
+/** Forward a catalog key as crest art only when a bespoke silhouette exists —
+ *  unmapped keys keep the letter-glyph tile instead of a wrong-family shape. */
+function itemArt(key: string | undefined): string | undefined {
+  return key && ITEM_ART_FAMILIES[key] ? key : undefined;
+}
+
 /** Item crest: initial tinted by item kind. */
 export function itemCrest(name: string, kind?: string): CrestLook {
   const color = kind === 'potion' ? '#5b3f6b' : kind === 'utility' ? '#35506b' : GOLD;
-  return { glyph: firstLetter(name), color };
+  return { glyph: firstLetter(name), color, art: itemArt(ITEM_NAME_TO_KEY[name]) };
 }
 
 /** Material crest from the materials catalog. */
 export function materialCrest(key: string): CrestLook {
   const m = getMaterial(key);
-  return m ? { glyph: m.glyph, color: m.color } : { glyph: '?', color: GOLD };
+  return m ? { glyph: m.glyph, color: m.color, art: itemArt(key) } : { glyph: '?', color: GOLD };
 }
 
 /** Gear crest: initial tinted by slot (armor steel, trinket gold, tool leather-brown). */
 export function gearCrest(name: string, slot?: string): CrestLook {
   const color = slot === 'armor' ? '#7a8590' : slot === 'tool' ? '#8a5a2b' : GOLD;
-  return { glyph: firstLetter(name), color };
+  return { glyph: firstLetter(name), color, art: itemArt(ITEM_NAME_TO_KEY[name]) };
 }
 
 /** Weapon crest: initial tinted by its attack stat (Strength ember, Dexterity gold). */
 export function weaponCrest(name: string, attackStat?: StatId): CrestLook {
-  return { glyph: firstLetter(name), color: attackStat === 'ST' ? EMBER : GOLD };
+  return { glyph: firstLetter(name), color: attackStat === 'ST' ? EMBER : GOLD, art: itemArt(ITEM_NAME_TO_KEY[name]) };
 }
 
 /** Spell crest: initial tinted by the spell school's stat color. */

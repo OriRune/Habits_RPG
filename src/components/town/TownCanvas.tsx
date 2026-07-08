@@ -63,48 +63,116 @@ function hashVariant(id: string): number {
   return Math.abs(h) % 4;
 }
 
+/**
+ * Deterministic per-cell hash for ground variation. Stable frame to frame (never
+ * Math.random — the ground layer re-renders on deed changes and must not shimmer).
+ */
+function cellHash(r: number, c: number): number {
+  let h = ((r + 1) * 73856093) ^ ((c + 1) * 19349663);
+  h = Math.imul(h ^ (h >>> 13), 0x5bd1e995);
+  return (h ^ (h >>> 15)) >>> 0;
+}
+
+/** Three grass tones (owned land) and three moss-grey tones (undeeded land) — the
+ *  middle tone bridges the original two-step checker so contrast stays subtle. */
+const GRASS_TONES = ['#4b7a52', '#456f4c', '#3f6b4a'];
+const LOCKED_TONES = ['#3c423c', '#383e38', '#343a34'];
+
+/** 'M x y L … Z' path segment from a corner list (for the locked-ring hatch). */
+function pathFromPts(points: Pt[]): string {
+  return 'M' + points.map((p) => `${p.x} ${p.y}`).join('L') + 'Z';
+}
+
 // ---------------------------------------------------------------------------
-// Ground layer — static during pan/zoom, so memoize on `deeds`.
+// Ground layer — static during pan/zoom, so memoize on `deeds`. All decorative
+// marks (tufts, speckles, south-face edges, locked hatch) are merged into a
+// handful of single <path> elements: 576 cells must not become 576×N nodes.
 // ---------------------------------------------------------------------------
 
 const GroundLayer = memo(function GroundLayer({ deeds }: { deeds: number }) {
+  const HW = TOWN_TILE_W / 2;
+  const HH = TOWN_TILE_H / 2;
   const cells: ReactNode[] = [];
+  const ownedEdges: string[] = [];
+  const lockedEdges: string[] = [];
+  const tufts: string[] = [];
+  const speckles: string[] = [];
   for (let r = 0; r < MAX_GRID.rows; r++) {
     for (let c = 0; c < MAX_GRID.cols; c++) {
       const b = base(r, c);
       const corners = diamondCorners(1, 1).map((p) => ({ x: b.x + p.x, y: b.y + p.y }));
       const unlocked = inUnlockedLand(deeds, r, c);
-      // Two-step lightness checker; locked land desaturated behind the deed boundary.
-      const fill = unlocked
-        ? ((r + c) % 2 === 0 ? '#4b7a52' : '#3f6b4a')
-        : ((r + c) % 2 === 0 ? '#3c423c' : '#343a34');
+      const h = cellHash(r, c);
+      // Three-tone deterministic variation; locked land desaturated behind the deed boundary.
+      const fill = (unlocked ? GRASS_TONES : LOCKED_TONES)[h % 3];
       cells.push(
         <polygon
           key={`g-${r}-${c}`}
           points={ptsStr(corners)}
+          // Self-coloured stroke seals antialiasing seams between diamonds without a hard border.
           fill={fill}
-          stroke="rgba(0,0,0,0.22)"
+          stroke={fill}
           strokeWidth={0.5}
         />,
       );
+      // Gentle depth: a faint darker line on each tile's two south faces (E→S→W) only.
+      (unlocked ? ownedEdges : lockedEdges).push(`M${b.x + HW} ${b.y}L${b.x} ${b.y + HH}L${b.x - HW} ${b.y}`);
+      if (unlocked) {
+        // Sparse organic marks on a deterministic subset (~1 in 4 tufts, ~1 in 4 speckles),
+        // hash-offset from the tile centre but always inside the diamond.
+        const x = b.x + (((h >>> 4) % 21) - 10); // −10..+10
+        const y = b.y + (((h >>> 9) % 9) - 4);   // −4..+4
+        const kind = (h >>> 14) % 4;
+        if (kind === 0) {
+          tufts.push(`M${x - 3} ${y + 2}l1.5 -4M${x} ${y + 2.5}l0 -4.5M${x + 3} ${y + 2}l-1.5 -4`);
+        } else if (kind === 1) {
+          speckles.push(`M${x} ${y}h0.01M${x + 5} ${y - 2}h0.01`);
+        }
+      }
     }
   }
-  // Dashed boundary around the currently unlocked square.
+
   const { rows, cols } = gridSizeFor(deeds);
-  const outline = diamondCorners(cols, rows);
-  cells.push(
-    <polygon
-      key="deed-boundary"
-      points={ptsStr(outline)}
-      fill="none"
-      stroke="rgb(var(--c-gold-bright))"
-      strokeOpacity={0.7}
-      strokeWidth={1.5}
-      strokeDasharray="6 5"
-      style={{ pointerEvents: 'none' }}
-    />,
+
+  // Undeeded ring: outer grid minus unlocked square (even-odd), diagonally hatched
+  // so locked districts read as unclaimed land rather than dead pixels.
+  const hatchRing =
+    rows < MAX_GRID.rows || cols < MAX_GRID.cols
+      ? pathFromPts(diamondCorners(MAX_GRID.cols, MAX_GRID.rows)) + pathFromPts(diamondCorners(cols, rows))
+      : null;
+
+  return (
+    <g style={{ pointerEvents: 'none' }}>
+      <defs>
+        <pattern id="town-ground-hatch" width={9} height={9} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+          <line x1={0} y1={0} x2={0} y2={9} stroke="rgba(0,0,0,0.35)" strokeWidth={1} />
+        </pattern>
+      </defs>
+      {cells}
+      {hatchRing && <path d={hatchRing} fill="url(#town-ground-hatch)" fillRule="evenodd" opacity={0.45} />}
+      {lockedEdges.length > 0 && (
+        <path d={lockedEdges.join('')} fill="none" stroke="rgba(0,0,0,0.12)" strokeWidth={0.6} />
+      )}
+      {ownedEdges.length > 0 && (
+        <path d={ownedEdges.join('')} fill="none" stroke="rgba(0,0,0,0.2)" strokeWidth={0.6} />
+      )}
+      {tufts.length > 0 && (
+        <path d={tufts.join('')} fill="none" stroke="#2f5a3e" strokeWidth={1} strokeLinecap="round" opacity={0.55} />
+      )}
+      {speckles.length > 0 && (
+        <path d={speckles.join('')} fill="none" stroke="#699e6e" strokeWidth={1.7} strokeLinecap="round" opacity={0.45} />
+      )}
+      {/* Dashed boundary around the currently unlocked square. */}
+      <polygon
+        points={ptsStr(diamondCorners(cols, rows))}
+        fill="none"
+        stroke="rgb(var(--c-gold-bright))"
+        strokeOpacity={0.7}
+        strokeWidth={1.5}
+        strokeDasharray="6 5"
+      />
+    </g>
   );
-  return <g style={{ pointerEvents: 'none' }}>{cells}</g>;
 });
 
 // ---------------------------------------------------------------------------

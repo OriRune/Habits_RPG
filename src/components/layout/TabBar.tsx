@@ -17,6 +17,8 @@ export type Tab =
 interface NavItem {
   id: Tab;
   label: string;
+  /** Bottom-bar label — 8 tabs at ~48px each can't fit "Crafting" without truncating. */
+  shortLabel?: string;
   icon: typeof ListChecks;
 }
 
@@ -27,7 +29,7 @@ export const NAV_ITEMS: NavItem[] = [
   { id: 'skills',     label: 'Skills',   icon: Target },
   { id: 'explore',    label: 'Explore',  icon: Compass },
   { id: 'battle',     label: 'Battle',   icon: Swords },
-  { id: 'inventory',  label: 'Crafting', icon: Backpack },
+  { id: 'inventory',  label: 'Crafting', shortLabel: 'Craft', icon: Backpack },
   // Party tab only when a backend is configured (multiplayer build).
   ...(isBackendConfigured() ? [{ id: 'party' as Tab, label: 'Party', icon: Users }] : []),
 ];
@@ -47,15 +49,18 @@ export function BottomBar({ active, onChange, badges }: NavProps) {
   return (
     <nav className="texture-wood sticky bottom-0 z-10 border-t-2 border-gold-deep shadow-wood pb-[env(safe-area-inset-bottom)] lg:hidden">
       <div className="mx-auto flex max-w-2xl">
-        {NAV_ITEMS.map(({ id, label, icon: Icon }) => {
+        {NAV_ITEMS.map(({ id, label, shortLabel, icon: Icon }) => {
           const isActive = active === id;
           const hasBadge = badges?.[id] === true;
           return (
             <button
               key={id}
               onClick={() => onChange(id)}
+              aria-label={label}
               className={cn(
-                'relative flex min-w-0 flex-1 flex-col items-center gap-1 px-0.5 py-2.5 font-display text-[11px] uppercase leading-none tracking-tight transition-colors',
+                // 8 tabs on a 390px screen leave ~48px each: labels must be small,
+                // untracked, and truncable or adjacent tabs visually collide.
+                'relative flex min-w-0 flex-1 flex-col items-center gap-1 px-0.5 py-2.5 font-display text-[9px] uppercase leading-none tracking-normal transition-colors',
                 isActive ? 'text-gold-bright' : 'text-on-wood-dim hover:text-on-wood-hi',
               )}
             >
@@ -70,7 +75,7 @@ export function BottomBar({ active, onChange, badges }: NavProps) {
                   <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-ember-bright ring-1 ring-wood-800" />
                 )}
               </span>
-              {label}
+              <span className="max-w-full truncate">{shortLabel ?? label}</span>
             </button>
           );
         })}
@@ -86,7 +91,10 @@ export function BottomBar({ active, onChange, badges }: NavProps) {
 export function Sidebar({ active, onChange, badges }: NavProps) {
   return (
     <nav className="hidden lg:flex lg:w-52 lg:shrink-0 lg:flex-col texture-wood border-r-2 border-gold-deep shadow-wood">
-      <div className="flex flex-col py-2">
+      {/* Sticky below the sticky header (top-14 ≈ header height) so navigation
+          stays reachable on long pages; the nav column itself still stretches
+          full height for the border/texture. */}
+      <div className="flex flex-col py-2 lg:sticky lg:top-14">
         {NAV_ITEMS.map(({ id, label, icon: Icon }) => {
           const isActive = active === id;
           const hasBadge = badges?.[id] === true;

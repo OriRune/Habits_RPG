@@ -186,21 +186,21 @@ export function TownView() {
       </div>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <div className="flex items-center gap-2 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3">
+        <div className="flex items-center gap-2 texture-parchment rounded-md border border-gold-deep/40 p-3">
           <Sparkles className="h-4 w-4 shrink-0 text-gold-deep" />
           <div>
             <div className="text-[11px] uppercase tracking-wide text-ink-muted">Prestige</div>
             <div className="font-display font-bold text-ink">{prestige}</div>
           </div>
         </div>
-        <div className="flex items-center gap-2 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3">
+        <div className="flex items-center gap-2 texture-parchment rounded-md border border-gold-deep/40 p-3">
           <Hammer className="h-4 w-4 shrink-0 text-ember" />
           <div>
             <div className="text-[11px] uppercase tracking-wide text-ink-muted">Labor bank</div>
             <div className="font-display font-bold text-ink">{town.laborBank} 🔨</div>
           </div>
         </div>
-        <div className="col-span-2 flex items-center gap-2 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3 sm:col-span-1">
+        <div className="col-span-2 flex items-center gap-2 texture-parchment rounded-md border border-gold-deep/40 p-3 sm:col-span-1">
           <Hammer className="h-4 w-4 shrink-0 text-ink-light" />
           <div>
             <div className="text-[11px] uppercase tracking-wide text-ink-muted">Labor today</div>

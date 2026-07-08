@@ -56,14 +56,15 @@ export function AdventureRitualModal({ energyCost, onConfirm, onCancel }: Props)
         </ul>
       )}
 
+      {/* Dark inset rows — text must be on-wood (light), not ink (dark on dark). */}
       <div className="mb-4 flex items-center justify-between rounded bg-wood-900/60 px-3 py-2 text-sm">
-        <span className="text-ink">Energy available</span>
+        <span className="text-on-wood-hi">Energy available</span>
         <span className="font-bold text-amber-400">{energy}</span>
       </div>
 
       <div className="mb-5 flex items-center justify-between rounded bg-wood-900/60 px-3 py-2 text-sm">
-        <span className="text-ink">Cost to enter</span>
-        <span className={`font-bold ${canEnter ? 'text-ember' : 'text-red-400'}`}>
+        <span className="text-on-wood-hi">Cost to enter</span>
+        <span className={`font-bold ${canEnter ? 'text-ember-bright' : 'text-red-400'}`}>
           -{energyCost}
         </span>
       </div>

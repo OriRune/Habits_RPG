@@ -21,7 +21,9 @@ const ART: Record<string, string> = (() => {
 })();
 
 /** Stable 0..1 hash for a cell, so a tile's chosen variant never reshuffles between renders. */
-function cellHash(r: number, c: number): number {
+/** Deterministic 0..1 hash for a cell — stable across renders. Shared by both crawler
+ *  overlays for jittered decal/tint placement (Mine's floorStyle, Forest's tileJitter). */
+export function cellHash(r: number, c: number): number {
   let h = (Math.imul(r, 73856093) ^ Math.imul(c, 19349663)) >>> 0;
   h ^= h >>> 13;
   return (h % 1000) / 1000;
@@ -85,13 +87,20 @@ export function mineFloorTile(r: number, c: number): string | undefined {
   return cellVariant(MINE_FLOORS, r, c);
 }
 
-/** Decor sprite for an ore vein, or undefined (rubble/gold/gemstone/energy → keep their icon). */
+/** Decor sprite for an ore vein, or undefined (rubble/gold → no defensible closest match,
+ *  keep their icon rather than pick a sprite that reads wrong). */
 const MINE_ORE_ART: Record<string, string> = {
   iron_vein: 'iron_ore_1',
   crystal_node: 'cave_crystal_1',
   gemstone_node: 'cave_crystal_2',
-  bronze_vein: 'copper_ore_1', // closest match — no dedicated bronze art
+  bronze_vein: 'copper_ore_1',  // closest match — no dedicated bronze art
   cave_mushroom: 'toadstool',   // reuses the forest berry node sprite
+  // 4.1 — mirrors the closest-match fallbacks MINE_MATERIAL_ART already uses for the
+  // broken-out material, so the vein in the wall matches the icon in the haul panel.
+  frost_quartz_vein: 'cave_crystal_1',
+  obsidian_vein: 'boulder_1',
+  stone_lode: 'boulder_2_jagged',
+  magma_geode: 'boulder_3_brown',
 };
 export function mineOreSprite(oreKey: string): string | undefined {
   const name = MINE_ORE_ART[oreKey];

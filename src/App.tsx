@@ -53,6 +53,10 @@ const BattleOverlay = lazy(() =>
   import('@/components/combat/BattleOverlay').then((m) => ({ default: m.BattleOverlay })),
 );
 
+/** Remembers "Play offline as a guest" across reloads (deliberately outside the
+ *  game save — it's a device-level choice about the auth wall, not game state). */
+const GUEST_FLAG_KEY = 'habits-rpg-guest-mode';
+
 export default function App() {
   const [tab, setTab] = useState<Tab>('habits');
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -61,9 +65,24 @@ export default function App() {
   const [planWeekOpen, setPlanWeekOpen] = useState(false);
   const [planWeekReport, setPlanWeekReport] = useState<WeeklyReport | null>(null);
   // Guest / play-offline: lets a signed-out player skip the account wall (backend
-  // configured) and play locally. Component-local — never persisted; cloud sync stays
-  // inert because auth is still `signedOut`. Irrelevant once the player signs in.
-  const [guest, setGuest] = useState(false);
+  // configured) and play locally. Persisted OUTSIDE the game save so a returning
+  // guest doesn't hit the sign-in wall on every reload; cloud sync stays inert
+  // because auth is still `signedOut`. Cleared when the player actually signs in.
+  const [guest, setGuest] = useState(() => {
+    try {
+      return localStorage.getItem(GUEST_FLAG_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const chooseGuest = () => {
+    try {
+      localStorage.setItem(GUEST_FLAG_KEY, '1');
+    } catch {
+      /* storage unavailable — session-only guest */
+    }
+    setGuest(true);
+  };
   const created = useGameStore((s) => s.created);
   const battle = useGameStore((s) => s.battle);
   const mining = useGameStore((s) => s.mining);
@@ -100,6 +119,18 @@ export default function App() {
   // Daily foreground reminders (no-op when disabled in settings).
   useReminders();
 
+  // A real sign-in supersedes guest mode — drop the flag so a later sign-out
+  // returns to the auth wall instead of silently resuming as a guest.
+  useEffect(() => {
+    if (authStatus !== 'signedIn') return;
+    try {
+      localStorage.removeItem(GUEST_FLAG_KEY);
+    } catch {
+      /* ignore */
+    }
+    setGuest(false);
+  }, [authStatus]);
+
   // Single apply path: re-skin the app whenever the selected palette or dark
   // mode changes (and once on mount, after the store has hydrated from localStorage).
   useEffect(() => {
@@ -126,7 +157,7 @@ export default function App() {
         </div>
       );
     }
-    if (authStatus === 'signedOut' && !guest) return <LoginView onGuest={() => setGuest(true)} />;
+    if (authStatus === 'signedOut' && !guest) return <LoginView onGuest={chooseGuest} />;
     // First sign-in found real progress both locally and in the cloud — block the
     // app until the player picks a side (see cloudSave.ts, MP-06).
     if (saveConflict) return <SaveConflictModal conflict={saveConflict} />;
@@ -142,7 +173,11 @@ export default function App() {
       <div className="flex flex-1">
         <Sidebar active={tab} onChange={setTab} badges={{ challenges: hasExpiringChallenge }} />
 
-        <main className="flex-1">
+        {/* min-w-0: as a flex item, main must be allowed to shrink below its
+            content's min-content width or long unwrappable rows widen the whole
+            page on narrow screens. overflow-x-clip is the backstop so a single
+            bad row can never reintroduce a horizontal scrollbar. */}
+        <main className="min-w-0 flex-1 overflow-x-clip">
           {tab === 'habits'     && <DashboardView onOpenHistory={(id) => { historyFocusId.current = id ?? null; setHistoryOpen(true); }} onPlanWeek={() => { setPlanWeekReport(null); setPlanWeekOpen(true); }} />}
           {tab === 'challenges' && <ChallengesView />}
           {tab === 'character'  && <CharacterView />}

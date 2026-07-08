@@ -26,11 +26,18 @@ describe('minigame art mapping', () => {
     expect(mineOreSprite('bronze_vein')).toBeTruthy();
   });
 
+  it('resolves closest-match art for the band-exclusive/late veins (4.1)', () => {
+    expect(mineOreSprite('frost_quartz_vein')).toBeTruthy();
+    expect(mineOreSprite('obsidian_vein')).toBeTruthy();
+    expect(mineOreSprite('stone_lode')).toBeTruthy();
+    expect(mineOreSprite('magma_geode')).toBeTruthy();
+  });
+
   it('returns undefined for entities with no art (caller keeps its glyph)', () => {
     expect(forestNodeSprite('spring')).toBeUndefined();
     expect(mineOreSprite('gold_vein')).toBeUndefined();
     expect(mineOreSprite('rubble')).toBeUndefined();
-    expect(mineOreSprite('energy_gem')).toBeUndefined();
+    expect(mineOreSprite('vigor_crystal')).toBeUndefined();
   });
 
   it('picks a stable variant for a given cell', () => {

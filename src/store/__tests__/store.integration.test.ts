@@ -14,7 +14,7 @@ import { BOONS } from '@/content/boons';
 import { type ForestState, type ForestTile, FOREST_WINDUP_MS } from '@/engine/forest';
 import { getEncounter, startEncounter } from '@/engine/encounters';
 import { toISODate, weekKey, _setNow, _resetNow, addDays } from '@/engine/date';
-import { MAX_ENERGY, maxEnergyFor, fighterFor } from '../shared';
+import { MAX_ENERGY, maxEnergyFor, fighterFor, MINE_DAILY_BONUS_FLOORS } from '../shared';
 import type { HexBattleState, HeroOpts } from '@/engine/hexBattle';
 import { selectHabitBonusInfo } from '../selectors';
 import { BASE_STAT_LEVEL } from '@/engine/progression';
@@ -1407,6 +1407,8 @@ describe('deep mine', () => {
 
   it('endMining on the entrance (safe tile) banks the full haul and records the deepest floor', () => {
     // BAL-12: full 1.0 payout requires standing on the entrance when end-banking.
+    // Daily first-descent bonus (3.8) exhausted so this test isolates BAL-12's split.
+    useGameStore.setState({ mineDailyBonus: { date: toISODate(), floorsUsed: MINE_DAILY_BONUS_FLOORS } });
     const tiles = makeMine().tiles;
     tiles[2][2] = { kind: 'entrance' };
     useGameStore.setState({ mining: makeMine({ tiles, haul: { gold: 50, materials: { iron_bar: 3 } }, deepest: 4 }) });
@@ -1427,6 +1429,8 @@ describe('deep mine', () => {
   it('endMining off a safe tile keeps only MINE_STASH_KEEP of the haul (BAL-12)', () => {
     // Default player stands on a floor tile (not the entrance) → 0.8 payout, pricing the
     // risk of not trekking back to the entrance for a full-value bank.
+    // Daily first-descent bonus (3.8) exhausted so this test isolates BAL-12's split.
+    useGameStore.setState({ mineDailyBonus: { date: toISODate(), floorsUsed: MINE_DAILY_BONUS_FLOORS } });
     useGameStore.setState({ mining: makeMine({ haul: { gold: 50, materials: { iron_bar: 3 } }, deepest: 4 }) });
     const goldBefore = get().character.gold;
     const ironBefore = get().materials.iron_bar ?? 0;
@@ -1447,6 +1451,8 @@ describe('deep mine', () => {
   });
 
   it('mineTick flips to ended on death; endMining then banks the haul', () => {
+    // Daily first-descent bonus (3.8) exhausted so this test isolates MINE_DEATH_KEEP's split.
+    useGameStore.setState({ mineDailyBonus: { date: toISODate(), floorsUsed: MINE_DAILY_BONUS_FLOORS } });
     useGameStore.setState({
       mining: makeMine({
         hp: 3,
@@ -1467,8 +1473,41 @@ describe('deep mine', () => {
     expect(get().deepestMineFloor).toBe(2);
   });
 
-  it('persists at version 34', () => {
-    expect(useGameStore.persist.getOptions().version).toBe(34);
+  it('persists at version 35', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(35);
+  });
+
+  describe('3.8: daily first-descent bonus', () => {
+    it('applies MINE_DAILY_BONUS_MULT to gold when the daily budget is fresh', () => {
+      const tiles = makeMine().tiles;
+      tiles[2][2] = { kind: 'entrance' };
+      useGameStore.setState({ mining: makeMine({ tiles, haul: { gold: 100 }, deepest: 3 }) });
+      const goldBefore = get().character.gold;
+      get().endMining();
+      expect(get().character.gold).toBe(goldBefore + 150); // 100 * 1.5
+      expect(get().mineDailyBonus).toEqual({ date: toISODate(), floorsUsed: 3 });
+    });
+
+    it('stops applying once the day\'s floor budget is exhausted', () => {
+      useGameStore.setState({ mineDailyBonus: { date: toISODate(), floorsUsed: MINE_DAILY_BONUS_FLOORS } });
+      const tiles = makeMine().tiles;
+      tiles[2][2] = { kind: 'entrance' };
+      useGameStore.setState({ mining: makeMine({ tiles, haul: { gold: 100 }, deepest: 3 }) });
+      const goldBefore = get().character.gold;
+      get().endMining();
+      expect(get().character.gold).toBe(goldBefore + 100); // no bonus — budget spent
+    });
+
+    it('resets the budget on a new calendar day', () => {
+      useGameStore.setState({ mineDailyBonus: { date: '2000-01-01', floorsUsed: MINE_DAILY_BONUS_FLOORS } });
+      const tiles = makeMine().tiles;
+      tiles[2][2] = { kind: 'entrance' };
+      useGameStore.setState({ mining: makeMine({ tiles, haul: { gold: 100 }, deepest: 2 }) });
+      const goldBefore = get().character.gold;
+      get().endMining();
+      expect(get().character.gold).toBe(goldBefore + 150); // stale date → fresh budget
+      expect(get().mineDailyBonus).toEqual({ date: toISODate(), floorsUsed: 2 });
+    });
   });
 
   it('coopApplyWorld drops a stale/duplicate world slice (t guard)', () => {
@@ -1507,6 +1546,33 @@ describe('deep mine', () => {
     expect(mine.pendingBoonChoice).toBeNull();
     expect(mine.hp).toBe(20 + BOON_CONSOLATION_HEAL);
     expect(mine.haul.gold ?? 0).toBe(BOON_CONSOLATION_GOLD);
+  });
+
+  it('5.2: mineStrike on a tombstone merges the lost haul back and clears mineTombstone', () => {
+    const tiles = makeMine().tiles;
+    tiles[2][2] = { kind: 'tombstone' }; // player stands here (see makeMine's player: {r:2,c:2})
+    useGameStore.setState({
+      mining: makeMine({ tiles, haul: { gold: 10 } }),
+      mineTombstone: { floor: 1, haul: { gold: 30, materials: { iron_bar: 2 } } },
+    });
+    get().mineStrike();
+    const mine = get().mining!;
+    expect(mine.tiles[2][2].kind).toBe('floor');
+    expect(mine.haul.gold).toBe(40); // 10 (run) + 30 (recovered)
+    expect(mine.haul.materials?.iron_bar).toBe(2);
+    expect(get().mineTombstone).toBeNull();
+  });
+
+  it('5.2: mineStrike on a boon cache with room in the pool opens a 3-option choice (happy path)', () => {
+    const tiles = makeMine().tiles;
+    tiles[2][2] = { kind: 'boon' }; // player stands here; Strike triggers the pickup
+    useGameStore.setState({ mining: makeMine({ tiles, activeBoons: [] }) });
+    get().mineStrike();
+    const mine = get().mining!;
+    expect(mine.tiles[2][2].kind).toBe('floor'); // cache consumed
+    expect(mine.status).toBe('choosing');
+    expect(mine.pendingBoonChoice).not.toBeNull();
+    expect(mine.pendingBoonChoice!.length).toBe(3);
   });
 
   it('skipMineBoon dismisses the boon panel without granting a boon', () => {
@@ -2200,6 +2266,8 @@ describe('habitBonus streak multiplier (Stage 3.4)', () => {
 
   it('mining gold is multiplied by habitBonus', () => {
     // Inject bonus directly, then run a mine with a known haul and check gold delta.
+    // Daily first-descent bonus (3.8) exhausted so this test isolates habitBonus alone.
+    useGameStore.setState({ mineDailyBonus: { date: toISODate(), floorsUsed: MINE_DAILY_BONUS_FLOORS } });
     useGameStore.setState({ character: { ...get().character, habitBonus: 1.25 } });
     const goldBefore = get().character.gold;
     useGameStore.setState({ mining: makeMinimalMine({ haul: { gold: 100 } }) });

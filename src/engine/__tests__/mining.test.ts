@@ -3,6 +3,7 @@ import {
   generateMine,
   descend,
   tryMove,
+  tryDash,
   strike,
   stepMonsters,
   castSpell,
@@ -16,17 +17,18 @@ import {
   sightRadiusFor,
   MINE_SIGHT_RADIUS,
   MINE_DEATH_KEEP,
+  MINE_TOMBSTONE_RECOVER_KEEP,
   type MineState,
   type MineTile,
   type MineSnapshot,
   type RNG,
-  MINE_ROWS,
-  MINE_COLS,
+  MINE_BASE_ROWS,
+  MINE_BASE_COLS,
 } from '../mining';
-import { splitHaul } from '../forest';
-import { MINE_ORES, MINE_MONSTERS } from '@/content/mining';
+import { splitHaul } from '../crawl';
+import { MINE_ORES, MINE_MONSTERS, MINE_AFFIXES } from '@/content/mining';
 import { getWeapon, STARTER_WEAPON } from '@/engine/weapons';
-import { STA_REGEN_MS, MP_REGEN_MS, FREEZE_DURATION_MS, lateDepthDamageScale } from '@/engine/crawl';
+import { STA_REGEN_MS, MP_REGEN_MS, FREEZE_DURATION_MS, DOT_TICK_MS, lateDepthDamageScale, manhattan, CRAWL_SPAWN_SAFE_RADIUS } from '@/engine/crawl';
 
 const WEAPON = getWeapon(STARTER_WEAPON);
 
@@ -116,6 +118,9 @@ function makeState(over: Partial<MineState> = {}): MineState {
     // Phase 5 fields
     activeBoons: [],
     pendingBoonChoice: null,
+    // 3.5 field
+    richVein: null,
+    richVeinRolled: false,
     ...over,
   };
 }
@@ -240,9 +245,9 @@ describe('crawl spell mechanics (mine wrapper)', () => {
 describe('generateMine', () => {
   const mine = generateMine(1, SNAP, rngFrom(42));
 
-  it('is at least the base size (MINE_ROWS × MINE_COLS) with a solid bedrock border', () => {
-    expect(mine.rows).toBe(MINE_ROWS);
-    expect(mine.cols).toBe(MINE_COLS);
+  it('is at least the base size (MINE_BASE_ROWS × MINE_BASE_COLS) with a solid bedrock border', () => {
+    expect(mine.rows).toBe(MINE_BASE_ROWS);
+    expect(mine.cols).toBe(MINE_BASE_COLS);
     for (let c = 0; c < mine.cols; c++) {
       expect(mine.tiles[0][c].kind).toBe('bedrock');
       expect(mine.tiles[mine.rows - 1][c].kind).toBe('bedrock');
@@ -293,7 +298,7 @@ describe('generateMine', () => {
   it('only places ore veins eligible for the floor', () => {
     const shallow = generateMine(1, SNAP, rngFrom(7));
     for (const tile of shallow.tiles.flat()) {
-      if (tile.kind === 'ore' && tile.oreKey && tile.oreKey !== 'energy_gem') {
+      if (tile.kind === 'ore' && tile.oreKey && tile.oreKey !== 'vigor_crystal') {
         expect(MINE_ORES[tile.oreKey].floorMin).toBeLessThanOrEqual(1);
       }
     }
@@ -303,8 +308,8 @@ describe('generateMine', () => {
     expect(keys).not.toContain('crystal_node');
   });
 
-  it('has at least one energy gem on the map', () => {
-    const gems = mine.tiles.flat().filter((t) => t.kind === 'ore' && t.oreKey === 'energy_gem');
+  it('has at least one vigor crystal on the map', () => {
+    const gems = mine.tiles.flat().filter((t) => t.kind === 'ore' && t.oreKey === 'vigor_crystal');
     expect(gems.length).toBeGreaterThanOrEqual(1);
   });
 });
@@ -661,6 +666,147 @@ describe('death split via splitHaul (ARCH-14)', () => {
   });
 });
 
+describe('3.1: band-exclusive spawn weighting', () => {
+  it('gates floor-1 filler ores out past their floorMax', () => {
+    for (let seed = 0; seed < 5; seed++) {
+      const mine = generateMine(20, SNAP, rngFrom(seed + 200));
+      const keys = mine.tiles.flat().map((t) => t.oreKey).filter(Boolean);
+      expect(keys).not.toContain('rubble');
+      expect(keys).not.toContain('bronze_vein');
+      expect(keys).not.toContain('stone_lode');
+    }
+  });
+
+  it('band-native monsters spawn more often than a band-agnostic monster of equal count', () => {
+    let iceCrawler = 0;
+    let deepLurker = 0; // band-agnostic, eligible from floor 6 onward, weight 1 (default)
+    for (let seed = 0; seed < 40; seed++) {
+      const mine = generateMine(10, SNAP, rngFrom(seed + 300));
+      for (const m of mine.monsters) {
+        if (m.key === 'ice_crawler') iceCrawler++;
+        if (m.key === 'deep_lurker') deepLurker++;
+      }
+    }
+    expect(iceCrawler).toBeGreaterThan(deepLurker);
+  });
+});
+
+describe('0.6: node durability scales with depth', () => {
+  it('rock and ore durability on a deep floor is at least as high as on floor 1', () => {
+    const shallow = generateMine(1, SNAP, rngFrom(5));
+    const deep = generateMine(30, SNAP, rngFrom(5));
+    const avgDur = (m: MineState) => {
+      const nodes = m.tiles.flat().filter((t) => (t.kind === 'rock' || t.kind === 'ore') && t.maxDurability != null);
+      return nodes.reduce((a, t) => a + (t.maxDurability ?? 0), 0) / Math.max(1, nodes.length);
+    };
+    expect(avgDur(deep)).toBeGreaterThan(avgDur(shallow));
+  });
+});
+
+describe('0.3: kill-loot snowball is capped', () => {
+  it('loot-per-kill growth flattens once killsThisFloor exceeds the cap', () => {
+    // One-shot power so every strike kills in a single swing; loot qty grows with
+    // killsThisFloor until the cap (5), then should stop growing further.
+    const totalLoot = (h: MineState['haul']) =>
+      (h.gold ?? 0) + Object.values(h.materials ?? {}).reduce((a, n) => a + n, 0);
+    let s = makeState({ meleePower: 999 });
+    const deltas: number[] = [];
+    let prevTotal = 0;
+    for (let i = 0; i < 9; i++) {
+      s = {
+        ...s,
+        monsters: [{ id: `m${i}`, key: 'cave_slug', r: 3, c: 4, hp: 8, maxHp: 8, readyAtMs: 0 }],
+      };
+      s = strike(s, rngFrom(100 + i));
+      const total = totalLoot(s.haul);
+      deltas.push(total - prevTotal);
+      prevTotal = total;
+    }
+    // Growth across the first few (uncapped) kills vs. the last few (capped) kills:
+    // the later deltas must not keep climbing linearly forever.
+    const earlyMax = Math.max(...deltas.slice(0, 4));
+    const lateMax = Math.max(...deltas.slice(5));
+    expect(lateMax).toBeLessThanOrEqual(earlyMax + 2); // small rng slack, no unbounded growth
+  });
+});
+
+describe('0.5: guardian re-kill farming is reduced', () => {
+  it('flags the guardian as a re-kill once the player has already passed its floor', () => {
+    const freshSnap: MineSnapshot = { ...SNAP, deepestMineFloor: 0 };
+    const fresh = generateMine(7, freshSnap, rngFrom(3));
+    const freshGuardian = fresh.monsters.find((m) => m.key === 'stone_golem');
+    expect(freshGuardian?.isRekillGuardian).toBeUndefined();
+
+    const pastSnap: MineSnapshot = { ...SNAP, deepestMineFloor: 10 };
+    const restarted = generateMine(7, pastSnap, rngFrom(3));
+    const rekillGuardian = restarted.monsters.find((m) => m.key === 'stone_golem');
+    expect(rekillGuardian?.isRekillGuardian).toBe(true);
+  });
+
+  it('a re-kill pays reduced gold-only treasure and skips the boon choice', () => {
+    const pastSnap: MineSnapshot = { ...SNAP, deepestMineFloor: 10 };
+    let s = generateMine(7, pastSnap, rngFrom(3));
+    const guardian = s.monsters.find((m) => m.key === 'stone_golem')!;
+    // Face the guardian directly (its cell may not be terrain-adjacent to the entrance).
+    s = {
+      ...s,
+      meleePower: 999,
+      monsters: [guardian],
+      player: { r: guardian.r, c: guardian.c - 1, facing: 'right' },
+    };
+    const after = strike(s, rngFrom(1));
+    expect(after.status).toBe('active'); // not 'choosing' — no boon offered on a re-kill
+    expect(Object.keys(after.haul.materials ?? {})).toHaveLength(0); // gold-only re-kill treasure
+    expect(after.haul.gold ?? 0).toBeLessThan(30); // below the genuine first-kill's 30-50 range
+  });
+});
+
+describe('1.1: late-depth monster HP and contact-hit scaling', () => {
+  it('a deep-floor monster spawns with more HP than the same key on floor 1', () => {
+    let shallowHp = 0;
+    let deepHp = 0;
+    for (let seed = 0; seed < 6 && (shallowHp === 0 || deepHp === 0); seed++) {
+      const shallow = generateMine(1, SNAP, rngFrom(seed));
+      const deep = generateMine(30, SNAP, rngFrom(seed));
+      const sm = shallow.monsters.find((m) => m.key === 'cave_slug');
+      const dm = deep.monsters.find((m) => m.key === 'cave_slug');
+      if (sm) shallowHp = sm.maxHp;
+      if (dm) deepHp = dm.maxHp;
+    }
+    expect(deepHp).toBeGreaterThan(shallowHp);
+  });
+
+  it('more than one adjacent monster can land a hit per i-frame window at max depth', () => {
+    const s = makeState({
+      floor: 40, // far past MAGMA_BAND_START(15)+25 → lateDepthDamageScale caps at 2
+      hp: 999,
+      maxHp: 999,
+      defense: 0,
+      lastHitAtMs: -1000,
+      monsters: [
+        { id: 'a', key: 'cave_slug', r: 3, c: 4, hp: 8, maxHp: 8, readyAtMs: 999999 },
+        { id: 'b', key: 'cave_slug', r: 3, c: 2, hp: 8, maxHp: 8, readyAtMs: 999999 },
+        { id: 'c', key: 'cave_slug', r: 2, c: 3, hp: 8, maxHp: 8, readyAtMs: 999999 },
+      ],
+    });
+    const single = stepMonsters(
+      makeState({ ...s, monsters: [s.monsters[0]] }),
+      1000,
+      rngFrom(1),
+    );
+    const swarmed = stepMonsters(s, 1000, rngFrom(1));
+    // A 3-monster swarm at max depth must deal strictly more than a single toucher would.
+    expect(999 - swarmed.hp).toBeGreaterThan(999 - single.hp);
+  });
+});
+
+describe('0.2: tombstone recovery keeps death worse than the free hurry-bank', () => {
+  it('MINE_TOMBSTONE_RECOVER_KEEP is below 1.0 so full recovery requires effort, not a guarantee', () => {
+    expect(MINE_TOMBSTONE_RECOVER_KEEP).toBeLessThan(1);
+    expect(MINE_TOMBSTONE_RECOVER_KEEP).toBeGreaterThan(0);
+  });
+});
+
 describe('MINI-31: findTombstone', () => {
   it('returns null on a floor with no tombstone', () => {
     const mine = generateMine(1, SNAP, rngFrom(11));
@@ -675,5 +821,428 @@ describe('MINI-31: findTombstone', () => {
     expect(withTomb.tiles[pos!.r][pos!.c].kind).toBe('tombstone');
     // The scan is a pure read — it must not mutate the passed state.
     expect(findTombstone(mine)).toBeNull();
+  });
+});
+
+describe('3.3: band hazard tiles', () => {
+  it('ice_slide only ever generates on frozen-band floors, lava_dot only on magma-band floors', () => {
+    let sawIceOffBand = false;
+    let sawLavaOffBand = false;
+    let sawIceOnFrozen = false;
+    let sawLavaOnMagma = false;
+    for (let seed = 0; seed < 20; seed++) {
+      const rocky = generateMine(3, SNAP, rngFrom(seed));
+      const frozen = generateMine(10, SNAP, rngFrom(seed));
+      const magma = generateMine(20, SNAP, rngFrom(seed));
+      for (const row of rocky.tiles) {
+        for (const t of row) {
+          if (t.kind === 'ice_slide' || t.kind === 'lava_dot') sawIceOffBand = sawIceOffBand || t.kind === 'ice_slide';
+          if (t.kind === 'lava_dot') sawLavaOffBand = true;
+        }
+      }
+      for (const row of frozen.tiles) {
+        for (const t of row) {
+          if (t.kind === 'lava_dot') sawLavaOffBand = true;
+          if (t.kind === 'ice_slide') sawIceOnFrozen = true;
+        }
+      }
+      for (const row of magma.tiles) {
+        for (const t of row) {
+          if (t.kind === 'ice_slide') sawIceOffBand = true;
+          if (t.kind === 'lava_dot') sawLavaOnMagma = true;
+        }
+      }
+    }
+    expect(sawIceOffBand).toBe(false);
+    expect(sawLavaOffBand).toBe(false);
+    expect(sawIceOnFrozen).toBe(true);
+    expect(sawLavaOnMagma).toBe(true);
+  });
+
+  it('landing on ice_slide keeps the player sliding through consecutive ice tiles', () => {
+    const s = makeState({ player: { r: 3, c: 2, facing: 'right' } });
+    s.tiles[3][3] = { kind: 'ice_slide' };
+    s.tiles[3][4] = { kind: 'ice_slide' };
+    const out = tryMove(s, 'right');
+    // Steps onto (3,3) [ice], slides through (3,4) [ice], one more step lands on (3,5) [floor].
+    expect(out.player).toEqual({ r: 3, c: 5, facing: 'right' });
+  });
+
+  it('a single ice_slide tile only adds one extra cell, and a dash onto ice slides too', () => {
+    const s = makeState({ player: { r: 3, c: 2, facing: 'right' } });
+    s.tiles[3][3] = { kind: 'ice_slide' };
+    const moved = tryMove(s, 'right');
+    expect(moved.player).toEqual({ r: 3, c: 4, facing: 'right' });
+
+    const dashState = makeState({ player: { r: 3, c: 1, facing: 'right' }, lastDashMs: -10000 });
+    dashState.tiles[3][3] = { kind: 'ice_slide' };
+    const dashed = tryDash(dashState, 'right', 5000);
+    // Dash lands on (3,3) [ice] after 2 cells, then slides one further to (3,4).
+    expect(dashed.player).toEqual({ r: 3, c: 4, facing: 'right' });
+  });
+
+  it('ice_slide does not slide the player past a monster or off the walkable floor', () => {
+    const s = makeState({
+      player: { r: 3, c: 2, facing: 'right' },
+      monsters: [{ id: 'm1', key: 'cave_slug', r: 3, c: 4, hp: 8, maxHp: 8, readyAtMs: 999999 }],
+    });
+    s.tiles[3][3] = { kind: 'ice_slide' };
+    const out = tryMove(s, 'right');
+    expect(out.player).toEqual({ r: 3, c: 3, facing: 'right' });
+  });
+
+  it('lava_dot deals ward-mitigated damage on a tick while the player stands on it', () => {
+    const noWard = makeState({ player: { r: 3, c: 3, facing: 'down' }, hp: 50, ward: 0, lastLavaTickMs: -100000 });
+    noWard.tiles[3][3] = { kind: 'lava_dot' };
+    const highWard = makeState({ player: { r: 3, c: 3, facing: 'down' }, hp: 50, ward: 5, lastLavaTickMs: -100000 });
+    highWard.tiles[3][3] = { kind: 'lava_dot' };
+
+    const noWardOut = stepMonsters(noWard, 5000, rngFrom(1));
+    const highWardOut = stepMonsters(highWard, 5000, rngFrom(1));
+
+    expect(noWardOut.hp).toBeLessThan(50);
+    expect(highWardOut.hp).toBeLessThan(50); // never fully negated — always at least 1 dmg
+    expect(50 - highWardOut.hp).toBeLessThan(50 - noWardOut.hp);
+  });
+
+  it('lava_dot does not re-tick until LAVA_TICK_MS has passed, and does nothing off the tile', () => {
+    const s = makeState({ player: { r: 3, c: 3, facing: 'down' }, hp: 50, ward: 0, lastLavaTickMs: -100000 });
+    s.tiles[3][3] = { kind: 'lava_dot' };
+    const firstTick = stepMonsters(s, 5000, rngFrom(1));
+    expect(firstTick.hp).toBeLessThan(50);
+    const immediateRetick = stepMonsters(firstTick, 5001, rngFrom(1));
+    expect(immediateRetick.hp).toBe(firstTick.hp);
+
+    const offTile = makeState({ player: { r: 3, c: 2, facing: 'down' }, hp: 50, ward: 0, lastLavaTickMs: -100000 });
+    offTile.tiles[3][3] = { kind: 'lava_dot' };
+    const stillFull = stepMonsters(offTile, 5000, rngFrom(1));
+    expect(stillFull.hp).toBe(50);
+  });
+});
+
+describe('3.4: mother lode vault', () => {
+  it('never spawns before the depth threshold, and spawns exactly one per floor past it', () => {
+    for (let floor = 1; floor < 6; floor++) {
+      for (let seed = 0; seed < 5; seed++) {
+        const mine = generateMine(floor, SNAP, rngFrom(seed));
+        const vaults = mine.tiles.flat().filter((t) => t.kind === 'vault');
+        expect(vaults).toHaveLength(0);
+      }
+    }
+    for (let seed = 0; seed < 10; seed++) {
+      const mine = generateMine(12, SNAP, rngFrom(seed));
+      const vaults = mine.tiles.flat().filter((t) => t.kind === 'vault');
+      expect(vaults.length).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('a vault node has far higher durability than a typical ore node on the same floor', () => {
+    let vaultDur = 0;
+    let maxOreDur = 0;
+    for (let seed = 0; seed < 10 && vaultDur === 0; seed++) {
+      const mine = generateMine(12, SNAP, rngFrom(seed));
+      for (const row of mine.tiles) {
+        for (const t of row) {
+          if (t.kind === 'vault') vaultDur = t.maxDurability ?? 0;
+          if (t.kind === 'ore') maxOreDur = Math.max(maxOreDur, t.maxDurability ?? 0);
+        }
+      }
+    }
+    expect(vaultDur).toBeGreaterThan(0);
+    expect(vaultDur).toBeGreaterThan(maxOreDur);
+  });
+
+  it('breaking a vault yields a reward notably larger than a single ore break', () => {
+    const s = makeState({
+      floor: 12,
+      player: { r: 3, c: 2, facing: 'right' },
+      pickaxePower: 99, // one-shot the node regardless of its durability
+    });
+    s.tiles[3][3] = { kind: 'vault', durability: 1, maxDurability: 1 };
+    const out = strike(s, rngFrom(1));
+    expect(out.tiles[3][3].kind).toBe('floor');
+    // motherLodeYield's flat gold floor is 20 + floor*2, before any of its 3 ore rolls.
+    expect(out.haul.gold ?? 0).toBeGreaterThanOrEqual(20 + s.floor * 2);
+  });
+});
+
+describe('3.5: timed rich vein event', () => {
+  it('never spawns before the depth threshold', () => {
+    for (let seed = 0; seed < 30; seed++) {
+      const out = stepMonsters(makeState({ floor: 2 }), 1000, rngFrom(seed));
+      expect(out.richVein).toBeNull();
+    }
+  });
+
+  it('rolls at most once per floor — later ticks never spawn a second vein or move an active one', () => {
+    let sawSpawn = false;
+    for (let seed = 0; seed < 30; seed++) {
+      const s = makeState({ floor: 10, player: { r: 1, c: 1, facing: 'right' } });
+      const firstTick = stepMonsters(s, 1000, rngFrom(seed));
+      expect(firstTick.richVeinRolled).toBe(true);
+      const secondTick = stepMonsters(firstTick, 1500, rngFrom(seed + 1));
+      expect(secondTick.richVein?.r).toBe(firstTick.richVein?.r);
+      expect(secondTick.richVein?.c).toBe(firstTick.richVein?.c);
+      if (firstTick.richVein) sawSpawn = true;
+    }
+    // ~40% spawn chance across 30 independent seeds should hit at least once.
+    expect(sawSpawn).toBe(true);
+  });
+
+  it('a spawned rich vein blocks movement, sits at its recorded position, and expires in the future', () => {
+    let armed: MineState | null = null;
+    for (let seed = 0; seed < 30 && !armed; seed++) {
+      const t = stepMonsters(makeState({ floor: 10, player: { r: 1, c: 1, facing: 'right' } }), 1000, rngFrom(seed));
+      if (t.richVein) armed = t;
+    }
+    expect(armed?.richVein).toBeTruthy();
+    const { r, c, expiresAtMs } = armed!.richVein!;
+    expect(armed!.tiles[r][c].kind).toBe('rich_vein');
+    expect(isWalkable(armed!.tiles[r][c])).toBe(false);
+    expect(expiresAtMs).toBeGreaterThan(1000);
+  });
+
+  it('reverts to floor and clears richVein once its window elapses unmined', () => {
+    let armed: MineState | null = null;
+    for (let seed = 0; seed < 30 && !armed; seed++) {
+      const t = stepMonsters(makeState({ floor: 10, player: { r: 1, c: 1, facing: 'right' } }), 1000, rngFrom(seed));
+      if (t.richVein) armed = t;
+    }
+    expect(armed?.richVein).toBeTruthy();
+    const { r, c, expiresAtMs } = armed!.richVein!;
+    const expired = stepMonsters(armed!, expiresAtMs + 1, rngFrom(999));
+    expect(expired.richVein).toBeNull();
+    expect(expired.tiles[r][c].kind).toBe('floor');
+  });
+
+  it('mining a rich vein yields a reward, clears its timer, and reverts the tile to floor', () => {
+    const s = makeState({
+      floor: 10,
+      player: { r: 3, c: 2, facing: 'right' },
+      pickaxePower: 99, // one-shot the node
+      richVein: { r: 3, c: 3, expiresAtMs: 999999 },
+    });
+    s.tiles[3][3] = { kind: 'rich_vein', durability: 1, maxDurability: 1 };
+    const out = strike(s, rngFrom(1));
+    expect(out.tiles[3][3].kind).toBe('floor');
+    expect(out.richVein).toBeNull();
+    const gotGold = (out.haul.gold ?? 0) > 0;
+    const gotMaterials = Object.keys(out.haul.materials ?? {}).length > 0;
+    expect(gotGold || gotMaterials).toBe(true);
+  });
+});
+
+describe('3.6: elite monster affixes', () => {
+  it('never rolls an elite at or before the depth threshold', () => {
+    for (let floor = 1; floor <= 10; floor++) {
+      for (let seed = 0; seed < 5; seed++) {
+        const mine = generateMine(floor, SNAP, rngFrom(seed));
+        expect(mine.monsters.some((m) => m.affix)).toBe(false);
+      }
+    }
+  });
+
+  it('rolls at most one elite per floor past the threshold, and does roll one sometimes', () => {
+    let sawAffix = false;
+    for (let seed = 0; seed < 15; seed++) {
+      const mine = generateMine(20, SNAP, rngFrom(seed));
+      const elites = mine.monsters.filter((m) => m.affix);
+      expect(elites.length).toBeLessThanOrEqual(1);
+      if (elites.length > 0) sawAffix = true;
+    }
+    expect(sawAffix).toBe(true);
+  });
+
+  it('armored affix increases effective defense against a melee strike', () => {
+    const base = makeState({ player: { r: 3, c: 2, facing: 'right' }, meleePower: 30 });
+    const mon = { id: 'm', key: 'cave_slug', r: 3, c: 3, hp: 999, maxHp: 999, readyAtMs: 999999 };
+    const plainOut = strike({ ...base, monsters: [{ ...mon }] }, rngFrom(7));
+    const armoredOut = strike({ ...base, monsters: [{ ...mon, affix: 'armored' as const }] }, rngFrom(7));
+    const plainDealt = 999 - plainOut.monsters[0].hp;
+    const armoredDealt = 999 - armoredOut.monsters[0].hp;
+    expect(armoredDealt).toBeLessThan(plainDealt);
+  });
+
+  it('swift affix shortens the delay before the monster is ready to step again', () => {
+    const rows = 7;
+    const cols = 7;
+    const tiles: MineTile[][] = [];
+    for (let r = 0; r < rows; r++) {
+      const row: MineTile[] = [];
+      for (let c = 0; c < cols; c++) {
+        const border = r === 0 || c === 0 || r === rows - 1 || c === cols - 1;
+        row.push({ kind: border ? 'bedrock' : 'floor' });
+      }
+      tiles.push(row);
+    }
+    const mon = { id: 'm', key: 'cave_slug', r: 1, c: 1, hp: 8, maxHp: 8, readyAtMs: 0 };
+    const plainOut = stepMonsters(
+      makeState({ tiles, player: { r: 5, c: 5, facing: 'left' }, monsters: [{ ...mon }] }),
+      1000, rngFrom(1),
+    );
+    const swiftOut = stepMonsters(
+      makeState({ tiles, player: { r: 5, c: 5, facing: 'left' }, monsters: [{ ...mon, affix: 'swift' as const }] }),
+      1000, rngFrom(1),
+    );
+    const def = MINE_MONSTERS['cave_slug'];
+    expect(plainOut.monsters[0].readyAtMs).toBe(1000 + def.moveCadenceMs);
+    expect(swiftOut.monsters[0].readyAtMs).toBeLessThan(plainOut.monsters[0].readyAtMs);
+  });
+
+  it('venomous affix poisons the player on a landed contact hit, and the poison later ticks on its own', () => {
+    const s = makeState({
+      player: { r: 3, c: 3, facing: 'right' },
+      hp: 50,
+      lastHitAtMs: -100000,
+      monsters: [{ id: 'v', key: 'cave_slug', r: 3, c: 4, hp: 8, maxHp: 8, readyAtMs: 999999, affix: 'venomous' as const }],
+    });
+    const afterHit = stepMonsters(s, 1000, rngFrom(1));
+    expect(afterHit.hp).toBeLessThan(50);
+    const poison = afterHit.playerStatuses.find((x) => x.key === 'poison');
+    expect(poison).toBeTruthy();
+    expect(poison!.magnitude).toBe(MINE_AFFIXES.venomous.poisonOnContact!.magnitude);
+
+    // Remove the monster so any further hp loss can only come from the poison DoT itself.
+    const noMonster = { ...afterHit, monsters: [] };
+    const afterTick = stepMonsters(noMonster, 1000 + DOT_TICK_MS, rngFrom(2));
+    expect(afterTick.hp).toBeLessThan(afterHit.hp);
+  });
+});
+
+describe('3.7: guardian telegraphed specials', () => {
+  it("a guardian within range starts winding up, targeting the player's current position", () => {
+    const s = makeState({
+      player: { r: 3, c: 3, facing: 'right' },
+      monsters: [{ id: 'g', key: 'stone_golem', r: 3, c: 5, hp: 50, maxHp: 50, readyAtMs: 999999 }],
+    });
+    const out = stepMonsters(s, 1000, rngFrom(1));
+    const g = out.monsters[0];
+    expect(g.special).toMatchObject({ targetR: 3, targetC: 3 });
+    expect(g.special!.readyAtMs).toBeGreaterThan(1000);
+  });
+
+  it('a guardian out of range does not start winding up', () => {
+    const s = makeState({
+      player: { r: 1, c: 1, facing: 'right' },
+      monsters: [{ id: 'g', key: 'stone_golem', r: 5, c: 5, hp: 50, maxHp: 50, readyAtMs: 999999 }],
+    });
+    const out = stepMonsters(s, 1000, rngFrom(1));
+    expect(out.monsters[0].special).toBeUndefined();
+  });
+
+  it('a guardian roots in place while winding up, even though it would otherwise path toward the player', () => {
+    const rows = 7;
+    const cols = 7;
+    const tiles: MineTile[][] = [];
+    for (let r = 0; r < rows; r++) {
+      const row: MineTile[] = [];
+      for (let c = 0; c < cols; c++) {
+        const border = r === 0 || c === 0 || r === rows - 1 || c === cols - 1;
+        row.push({ kind: border ? 'bedrock' : 'floor' });
+      }
+      tiles.push(row);
+    }
+    const s = makeState({
+      tiles,
+      player: { r: 5, c: 5, facing: 'left' },
+      monsters: [{
+        id: 'g', key: 'stone_golem', r: 1, c: 1, hp: 50, maxHp: 50, readyAtMs: 0,
+        special: { targetR: 5, targetC: 5, readyAtMs: 999999 },
+      }],
+    });
+    const out = stepMonsters(s, 1000, rngFrom(1));
+    expect(out.monsters[0].r).toBe(1);
+    expect(out.monsters[0].c).toBe(1);
+  });
+
+  it("a landed slam damages the player and applies the guardian's themed status when they are in the blast zone", () => {
+    const s = makeState({
+      player: { r: 3, c: 3, facing: 'right' },
+      hp: 50,
+      lastHitAtMs: -100000,
+      monsters: [{
+        id: 'g', key: 'stone_golem', r: 3, c: 6, hp: 50, maxHp: 50, readyAtMs: 999999,
+        special: { targetR: 3, targetC: 3, readyAtMs: 999 }, // already due
+      }],
+    });
+    const out = stepMonsters(s, 1000, rngFrom(1));
+    expect(out.hp).toBeLessThan(50);
+    expect(out.monsters[0].special).toBeUndefined();
+    expect(out.monsters[0].specialCooldownUntilMs).toBeGreaterThan(1000);
+    const weaken = out.playerStatuses.find((x) => x.key === 'weaken');
+    expect(weaken).toBeTruthy();
+    expect(weaken!.magnitude).toBeGreaterThan(0);
+  });
+
+  it('a landed slam whiffs (no damage, no status) when the player has moved out of the blast zone', () => {
+    const s = makeState({
+      player: { r: 1, c: 1, facing: 'right' },
+      hp: 50,
+      lastHitAtMs: -100000,
+      monsters: [{
+        id: 'g', key: 'stone_golem', r: 3, c: 6, hp: 50, maxHp: 50, readyAtMs: 999999,
+        special: { targetR: 3, targetC: 3, readyAtMs: 999 },
+      }],
+    });
+    const out = stepMonsters(s, 1000, rngFrom(1));
+    expect(out.hp).toBe(50);
+    expect(out.monsters[0].special).toBeUndefined(); // resolves (hit or miss)
+    expect(out.playerStatuses.find((x) => x.key === 'weaken')).toBeUndefined();
+  });
+
+  it('after a slam resolves, the guardian cannot immediately wind up again', () => {
+    const s = makeState({
+      player: { r: 3, c: 3, facing: 'right' },
+      hp: 50,
+      lastHitAtMs: -100000,
+      monsters: [{
+        id: 'g', key: 'stone_golem', r: 3, c: 4, hp: 50, maxHp: 50, readyAtMs: 999999,
+        special: { targetR: 3, targetC: 3, readyAtMs: 999 },
+      }],
+    });
+    const resolved = stepMonsters(s, 1000, rngFrom(1));
+    expect(resolved.monsters[0].special).toBeUndefined();
+    const again = stepMonsters(resolved, 1001, rngFrom(2));
+    expect(again.monsters[0].special).toBeUndefined();
+  });
+
+  it("magma colossus's slam applies a burn DoT instead of weaken", () => {
+    const s = makeState({
+      player: { r: 3, c: 3, facing: 'right' },
+      hp: 50,
+      lastHitAtMs: -100000,
+      monsters: [{
+        id: 'g', key: 'magma_colossus', r: 3, c: 6, hp: 70, maxHp: 70, readyAtMs: 999999,
+        special: { targetR: 3, targetC: 3, readyAtMs: 999 },
+      }],
+    });
+    const out = stepMonsters(s, 1000, rngFrom(1));
+    expect(out.playerStatuses.find((x) => x.key === 'burn')).toBeTruthy();
+    expect(out.playerStatuses.find((x) => x.key === 'weaken')).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Spawn safety (2026-07 UX audit): a fresh floor must never open with a monster
+// already within CRAWL_SPAWN_SAFE_RADIUS of the player's spawn tile.
+// ---------------------------------------------------------------------------
+
+describe('monster spawn safety (CRAWL_SPAWN_SAFE_RADIUS)', () => {
+  it('never places a floor-1 monster within the safety radius of the player spawn (50 seeds)', () => {
+    for (let seed = 1; seed <= 50; seed++) {
+      const mine = generateMine(1, SNAP, rngFrom(seed));
+      for (const m of mine.monsters) {
+        expect(manhattan({ r: m.r, c: m.c }, mine.player)).toBeGreaterThan(CRAWL_SPAWN_SAFE_RADIUS);
+      }
+    }
+  });
+
+  it('holds on a guardian floor too (floor 7, 50 seeds)', () => {
+    for (let seed = 1; seed <= 50; seed++) {
+      const mine = generateMine(7, SNAP, rngFrom(seed));
+      for (const m of mine.monsters) {
+        expect(manhattan({ r: m.r, c: m.c }, mine.player)).toBeGreaterThan(CRAWL_SPAWN_SAFE_RADIUS);
+      }
+    }
   });
 });

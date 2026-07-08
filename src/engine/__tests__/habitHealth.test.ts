@@ -330,4 +330,29 @@ describe('recoveryState', () => {
     const state = recoveryState([h], TODAY);
     expect(state.struggling).toBe(false);
   });
+
+  it('is NOT struggling for a fresh account with a perfect first day (no misses ever)', () => {
+    // 4 daily habits created today, all completed — days before creation are not
+    // obligations, and with zero recent misses the recovery flow must stay silent.
+    const habits = Array.from({ length: 4 }, (_, i) =>
+      makeHabit({ id: `h${i}`, createdISO: TODAY, log: { [TODAY]: { xp: 20 } } }),
+    );
+    expect(recoveryState(habits, TODAY).struggling).toBe(false);
+  });
+
+  it('is NOT struggling for a fresh account created today with nothing logged yet', () => {
+    // Day one, morning: no completions, but also no missed scheduled day — not a struggle.
+    const habits = Array.from({ length: 4 }, (_, i) =>
+      makeHabit({ id: `h${i}`, createdISO: TODAY, log: {} }),
+    );
+    expect(recoveryState(habits, TODAY).struggling).toBe(false);
+  });
+
+  it('still flags struggling when recent scheduled days were actually missed', () => {
+    // Established habit, only one completion in 14 days and yesterday unlogged —
+    // real evidence of a miss, so the recovery flow still fires.
+    const h = makeHabit({ log: { [addDays(TODAY, -13)]: { xp: 20 } } });
+    const state = recoveryState([h], TODAY);
+    expect(state.struggling).toBe(true);
+  });
 });

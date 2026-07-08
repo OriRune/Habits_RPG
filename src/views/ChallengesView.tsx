@@ -50,8 +50,10 @@ function progressText(def: ChallengeDef, progress: number): string {
 }
 
 function KindChip({ kind }: { kind: ChallengeKind }) {
+  // Solid dark chip + bright gold text — a translucent wash renders grey-on-grey
+  // over parchment rows.
   return (
-    <span className="rounded-full border border-gold-deep/40 bg-wood-900/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gold-deep">
+    <span className="rounded-full border border-gold-deep/60 bg-wood-800 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gold-bright">
       {KIND_LABEL[kind]}
     </span>
   );

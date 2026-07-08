@@ -8,6 +8,7 @@
 // Nothing here is React-aware; every export is a pure function or a type.
 
 import type { StatId } from './stats';
+import type { Reward } from './challenges';
 import { getSpell, SCHOOL_STAT } from './spells';
 import { spellDamageRoll, spellHealAmount } from './combat';
 // Engine imports the boon DATA table from content (the allowed direction); the boon
@@ -254,6 +255,64 @@ export function adjacent(a: { r: number; c: number }, b: { r: number; c: number 
 /** Manhattan distance between two cells. */
 export function manhattan(a: { r: number; c: number }, b: { r: number; c: number }): number {
   return Math.abs(a.r - b.r) + Math.abs(a.c - b.c);
+}
+
+/**
+ * Spawn-safety radius shared by both crawler generators (mine + forest): no hostile may
+ * be placed within this Manhattan distance of the player's spawn tile at floor-generation
+ * time, so a fresh floor never opens with a monster already on top of a low-level player
+ * before they can react. Walk distance (4-directional BFS) is always ≥ Manhattan, so this
+ * also guarantees at least this many steps of warning. Enforced as a candidate-cell filter,
+ * so an over-constrained floor degrades gracefully — it simply seeds fewer hostiles rather
+ * than looping or spilling closer to the spawn.
+ */
+export const CRAWL_SPAWN_SAFE_RADIUS = 4;
+
+// ---------------------------------------------------------------------------
+// Shared cave-generation placement primitive (2.1 — hoisted out of generateMine so
+// hazard tiles / vaults / elites can each be one data-driven placement step instead
+// of a bespoke procedure; generateForest has the identical shape and can adopt this
+// in a follow-up).
+// ---------------------------------------------------------------------------
+
+/** Filter a cell list down to placement candidates. Thin on its own — pairs with
+ *  {@link placeFeatures} so every placement step reads as "filter, then place". */
+export function pickCandidates<TCell>(
+  cells: ReadonlyArray<TCell>,
+  filterFn: (cell: TCell) => boolean,
+): TCell[] {
+  return cells.filter(filterFn);
+}
+
+/**
+ * Pop up to `count` cells off `candidates`, calling `place(cell)` for each — the shared
+ * placement primitive behind generateMine's cluster/single-feature steps (rock clusters,
+ * ore veins, guardians, boon caches). `candidates` is mutated (consumed); pass a copy if
+ * the caller still needs the original list afterward. Returns the cells actually placed —
+ * fewer than `count` once the pool runs dry.
+ *
+ * Two modes, matching the two placement patterns generateMine actually needs:
+ *  - No `rng`: pops from the tail — for a pool the caller already shuffled once up front
+ *    (e.g. openFloor), so repeated calls keep consuming the same shuffled order without
+ *    paying to re-shuffle (and without re-drawing from `rng`) on every call.
+ *  - With `rng`: picks a uniformly random remaining candidate each time (reservoir-style,
+ *    one rng() draw per placement) — for a freshly-filtered, unshuffled candidate list
+ *    where a single random pick is wanted (e.g. one guardian/boon cell out of many).
+ */
+export function placeFeatures<TCell>(
+  candidates: TCell[],
+  count: number,
+  place: (cell: TCell) => void,
+  rng?: RNG,
+): TCell[] {
+  const placed: TCell[] = [];
+  for (let i = 0; i < count && candidates.length > 0; i++) {
+    const idx = rng ? Math.floor(rng() * candidates.length) : candidates.length - 1;
+    const [cell] = candidates.splice(idx, 1);
+    place(cell);
+    placed.push(cell);
+  }
+  return placed;
 }
 
 // ---------------------------------------------------------------------------
@@ -555,6 +614,30 @@ export interface CrawlRunState {
   lastSpellMs: number;
 }
 
+/** Clone-on-write a single tile in a 2D tile grid — clones only the mutated row, not
+ *  the whole grid. `strike()`/`placeTombstone()` (mine), `act()`/`activateShrine()`
+ *  (forest), and `crawlPickupBoonCache` all did a full-grid `tiles.map(row =>
+ *  row.slice())` for a single-cell change before 5.3. */
+export function setTile<TTile>(tiles: TTile[][], r: number, c: number, tile: TTile): TTile[][] {
+  const next = tiles.slice();
+  next[r] = next[r].slice();
+  next[r][c] = tile;
+  return next;
+}
+
+/** Passive stamina/mp regen, shared by `stepMonsters` (mine), `stepBeasts` (forest), and
+ *  {@link crawlCoopClientStep} — was tripled verbatim across all three before 5.3. */
+export function applyPassiveRegen<TState extends CrawlRunState>(state: TState, nowMs: number): TState {
+  let s = state;
+  if (nowMs >= s.staNextRegenMs && s.sta < s.maxSta) {
+    s = { ...s, sta: Math.min(s.maxSta, s.sta + 1), staNextRegenMs: nowMs + STA_REGEN_MS };
+  }
+  if (nowMs >= s.mpNextRegenMs && s.mp < s.maxMp) {
+    s = { ...s, mp: Math.min(s.maxMp, s.mp + 1), mpNextRegenMs: nowMs + MP_REGEN_MS };
+  }
+  return s;
+}
+
 /** Read/write the engine's unit list (`s.monsters` vs `s.beasts`) + resolve a kill. */
 export interface CrawlUnitCaps<TState, TUnit> {
   unitsOf(s: TState): TUnit[];
@@ -846,14 +929,7 @@ export function crawlCoopClientStep<TState extends CrawlRunState, TUnit extends 
   caps: CrawlContactCaps<TState, TUnit>,
 ): TState {
   if (state.status !== 'active') return state;
-  let s = state;
-
-  if (nowMs >= s.staNextRegenMs && s.sta < s.maxSta) {
-    s = { ...s, sta: Math.min(s.maxSta, s.sta + 1), staNextRegenMs: nowMs + STA_REGEN_MS };
-  }
-  if (nowMs >= s.mpNextRegenMs && s.mp < s.maxMp) {
-    s = { ...s, mp: Math.min(s.maxMp, s.mp + 1), mpNextRegenMs: nowMs + MP_REGEN_MS };
-  }
+  let s = applyPassiveRegen(state, nowMs);
 
   let hp = s.hp;
   let lastHitAtMs = s.lastHitAtMs;
@@ -919,4 +995,62 @@ export function crawlApplyBoonChoice<T extends CrawlBoonState>(
     maxHp: state.maxHp + hpBonus,
     hp: Math.min(state.maxHp + hpBonus, state.hp + hpBonus),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Death/stash forfeit (2.3 — hoisted out of forest.ts; mine cross-imported it from
+// there, which meant an engine-layer feature ("mine" pulling reward-split logic from
+// "forest") had no home of its own. Shared code belongs in crawl.ts.)
+// ---------------------------------------------------------------------------
+
+/** Caps for {@link crawlPickupBoonCache}. */
+export interface CrawlBoonCacheCaps<TState, TTile> {
+  tilesOf(s: TState): TTile[][];
+  withTiles(s: TState, tiles: TTile[][]): TState;
+  /** The tile a cleared boon cache becomes (mine: `{kind:'floor'}`, forest: `{kind:'trail'}`). */
+  emptyTile: TTile;
+}
+
+/**
+ * Open a boon cache at (r, c): clears the tile, rolls up to 3 choices, and either enters
+ * 'choosing' or grants the exhausted-pool consolation prize (2.4). Shared body behind
+ * mine's mineStrike (deliberate press on the tile) and forest's forestMove (walk-onto) —
+ * both open the same cache mechanic, just from different input events. Mine wires this;
+ * forest's own call site (forestSlice.ts) is a follow-up, not part of this change.
+ */
+export function crawlPickupBoonCache<
+  TState extends CrawlBoonState & { haul: { gold?: number } },
+  TTile,
+>(
+  state: TState,
+  r: number,
+  c: number,
+  game: 'mine' | 'forest',
+  rng: RNG,
+  caps: CrawlBoonCacheCaps<TState, TTile>,
+): TState {
+  const tiles = setTile(caps.tilesOf(state), r, c, caps.emptyTile);
+  const cleared = caps.withTiles(state, tiles);
+  const choices = rollBoonChoices(game, cleared.activeBoons, rng);
+  if (choices.length === 0) return boonConsolation(cleared);
+  return { ...cleared, pendingBoonChoice: choices, status: 'choosing' };
+}
+
+/** Split a haul into the portion the player keeps and the portion forfeited. */
+export function splitHaul(haul: Reward, keepFraction: number): { kept: Reward; lost: Reward } {
+  const kept: Reward = {};
+  const lost: Reward = {};
+  if (haul.gold) {
+    const k = Math.floor(haul.gold * keepFraction);
+    if (k > 0) kept.gold = k;
+    if (haul.gold - k > 0) lost.gold = haul.gold - k;
+  }
+  if (haul.materials) {
+    for (const [mat, qty] of Object.entries(haul.materials)) {
+      const k = Math.floor(qty * keepFraction);
+      if (k > 0) (kept.materials ??= {})[mat] = k;
+      if (qty - k > 0) (lost.materials ??= {})[mat] = qty - k;
+    }
+  }
+  return { kept, lost };
 }

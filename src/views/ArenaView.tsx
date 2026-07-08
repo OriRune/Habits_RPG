@@ -37,7 +37,7 @@ export function ArenaView() {
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
       <SectionTitle tone="wood">The Arena</SectionTitle>
-      <Panel tone="parchment" className="space-y-4 p-5">
+      <Panel tone="parchment" frame="gold" className="space-y-4 p-5">
         <div className="flex items-center gap-3">
           <span className="flex h-12 w-12 items-center justify-center rounded-md texture-wood border border-gold-deep/60 text-ember-bright">
             <Swords className="h-6 w-6" />

@@ -110,14 +110,29 @@ export function DashboardView({
       })}`;
 
   return (
-    <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
-      <HeroBanner />
+    // Single column up to xl; at xl the hero/summary stack becomes a sticky right
+    // rail beside the quest log so wide desktops aren't a narrow strip of content.
+    <div className="mx-auto max-w-2xl space-y-4 px-4 py-5 xl:grid xl:max-w-5xl xl:grid-cols-[minmax(0,1fr)_22rem] xl:items-start xl:gap-6 xl:space-y-0">
+      <aside className="space-y-4 xl:sticky xl:top-16 xl:order-2">
+        <HeroBanner />
 
-      {/* Active challenge callout — compact strip below the hero banner */}
-      {activeChallenge && <ActiveChallengeCallout challenge={activeChallenge} today={today} />}
+        {/* Active challenge callout — compact strip below the hero banner */}
+        {activeChallenge && <ActiveChallengeCallout challenge={activeChallenge} today={today} />}
 
+        {/* Dashboard command center — only shown when viewing today */}
+        {isToday && (
+          <DailySummaryStrip
+            summary={summary}
+            onOpenRecovery={() => setShowRecovery(true)}
+            hideRecovery={recoveryDismissed}
+            onDismissRecovery={() => setRecoveryDismissed(true)}
+          />
+        )}
+      </aside>
+
+      <section className="mt-4 space-y-4 xl:order-1 xl:mt-0">
       {pendingLevelUp && (
-        <Panel tone="wood" className="flex items-center gap-3 p-4">
+        <Panel tone="wood" frame="gold" className="flex items-center gap-3 p-4">
           <Swords className="h-7 w-7 shrink-0 text-ember-bright" />
           <div className="min-w-0 flex-1">
             <div className="font-display text-base font-bold text-gold-bright">A Challenger Appears!</div>
@@ -156,20 +171,10 @@ export function DashboardView({
       {/* One-time daily-reminder offer — after a missed day, if reminders are still off */}
       {isToday && hasSeenWelcome && offerReminder && <ReminderCard />}
 
-      {/* Dashboard command center — only shown when viewing today */}
-      {isToday && (
-        <DailySummaryStrip
-          summary={summary}
-          onOpenRecovery={() => setShowRecovery(true)}
-          hideRecovery={recoveryDismissed}
-          onDismissRecovery={() => setRecoveryDismissed(true)}
-        />
-      )}
-
       {/* Quest Log panel */}
       <Panel tone="parchment" className="p-4">
-        <div className="mb-3 flex items-center gap-2">
-          <div className="flex-1">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <div className="min-w-0 flex-1 basis-40">
             <SectionTitle>{title}</SectionTitle>
             {isToday && (
               <p className="mt-0.5 font-display text-[11px] text-ink-muted">Your daily habits</p>
@@ -196,8 +201,10 @@ export function DashboardView({
             onClick={() => onOpenHistory()}
             className="flex items-center gap-1 px-2.5 py-1.5"
             aria-label="History"
+            title="History"
           >
             <BarChart3 className="h-4 w-4" />
+            <span className="hidden sm:inline">History</span>
           </Button>
           {isToday && (
             <Button
@@ -205,8 +212,10 @@ export function DashboardView({
               onClick={onPlanWeek}
               className="flex items-center gap-1 px-2.5 py-1.5"
               aria-label="Plan week"
+              title="Plan week"
             >
               <CalendarDays className="h-4 w-4" />
+              <span className="hidden sm:inline">Plan week</span>
             </Button>
           )}
           <Button onClick={() => setShowForm(true)} className="flex items-center gap-1 px-3 py-1.5">
@@ -276,11 +285,12 @@ export function DashboardView({
       {isToday && !recovery.struggling && allHabits.some((h) => h.status === 'active') && (
         <button
           onClick={() => setShowRecovery(true)}
-          className="mx-auto flex items-center gap-1.5 text-xs text-ink-muted/60 hover:text-ink-muted transition-colors"
+          className="mx-auto flex items-center gap-1.5 text-xs text-on-wood-dim hover:text-on-wood-mid transition-colors"
         >
           <Heart className="h-3 w-3" /> Having a rough week?
         </button>
       )}
+      </section>
 
       {showForm && <HabitForm onClose={() => setShowForm(false)} />}
       {showRecovery && (
@@ -349,7 +359,7 @@ function DailySummaryStrip({
 
       {/* Energy flow strip */}
       {hasEnergyData && (
-        <div className="flex items-center gap-1.5 rounded bg-wood-900/40 px-3 py-1.5 text-xs text-ink-muted">
+        <div className="flex flex-wrap items-center gap-1.5 rounded bg-wood-900/40 px-3 py-1.5 text-xs text-on-wood-mid">
           <Zap className="h-3 w-3 shrink-0 text-amber-400" />
           <span>
             Today{' '}
@@ -362,7 +372,7 @@ function DailySummaryStrip({
               </span>
             )}
           </span>
-          <span className="mx-1 text-ink-muted/50">·</span>
+          <span className="mx-1 text-on-wood-dim">·</span>
           <span>
             This week{' '}
             <span className="text-amber-400">+{energySummary.weekEarned}</span>
@@ -395,8 +405,10 @@ function StatChip({
   value: string;
   sub: string;
 }) {
+  // Opaque surface: these chips sit on the dark page background, so a
+  // translucent parchment wash turns muddy grey and ink text loses contrast.
   return (
-    <div className="flex flex-col items-center rounded-md border border-gold-deep/20 bg-parchment-100/50 px-2 py-2 text-center">
+    <div className="texture-parchment flex flex-col items-center rounded-md border border-gold-deep/40 px-2 py-2 text-center">
       <div className="mb-0.5">{icon}</div>
       <div className="font-display text-base font-bold text-ink tabular-nums leading-none">{value}</div>
       <div className="mt-0.5 text-[10px] font-medium text-ink-muted leading-tight">{label}</div>
@@ -466,12 +478,15 @@ function RecommendedActionCard({
   return (
     <div
       className={cn(
-        'flex items-start gap-2.5 rounded-md border px-3 py-2.5 text-sm',
+        // Opaque parchment surface (the card sits on the dark page background —
+        // translucent tints render as unreadable dark-on-dark in light mode);
+        // the tone is carried by the border + icon instead of the fill.
+        'texture-parchment flex items-start gap-2.5 rounded-md border px-3 py-2.5 text-sm text-ink',
         isRecovery
-          ? 'border-ember/40 bg-ember/10 text-ink'
+          ? 'border-ember/60'
           : isAllDone
-            ? 'border-gold-deep/40 bg-gold/10 text-ink'
-            : 'border-gold-deep/30 bg-parchment-100/50 text-ink',
+            ? 'border-gold-deep/50'
+            : 'border-gold-deep/30',
       )}
     >
       <span className="mt-0.5 shrink-0">

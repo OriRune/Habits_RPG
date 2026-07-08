@@ -176,7 +176,7 @@ export function createGameStore(bindGlobalFlush = false) {
     }),
     {
       name: 'habits-rpg-save',
-      version: 34,
+      version: 35,
       storage: debounced.storage,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
@@ -260,6 +260,9 @@ export function createGameStore(bindGlobalFlush = false) {
       //      TownState is a growing object whose later-version fields must backfill). The
       //      optional Habit field `lastLaborGrantISO` (M2) is absent ⇒ not yet granted — v29
       //      idiom, no backfill. NOT added to cloudSave TRANSIENT_KEYS: town rides the blob.
+      // v35: Deep Mine daily first-descent bonus (3.8) — new top-level `mineDailyBonus`
+      //      (`{date, floorsUsed} | null`) backfills to null on existing saves via merge — a
+      //      simple nullable object, mineTombstone-idiom, no nested-default merge needed.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {
@@ -290,7 +293,7 @@ export function createGameStore(bindGlobalFlush = false) {
               statXpTrickleAtLastLevel: p.character.statXpTrickleAtLastLevel ?? emptyStatXP(),
             }
           : p.character;
-        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, arena: null, tactics: null, created: true, hasSeenWelcome: true, trialsClearedOn: p.trialsClearedOn ?? emptyTrialsClearedOn(), bestTrialScore: p.bestTrialScore ?? emptyBestTrialScore(), dungeonHistory: p.dungeonHistory ?? [], claimedPartyQuests: p.claimedPartyQuests ?? [], earnings: p.earnings ?? freshEarningsLedger(), energyLog: p.energyLog ?? {}, mineTombstone: p.mineTombstone ?? null, reminderCardDismissed: p.reminderCardDismissed ?? false, trialAttemptNonce: p.trialAttemptNonce ?? 0, spiritGroveSeen: p.spiritGroveSeen ?? [], town: p.town ?? freshTown() } as GameState;
+        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, arena: null, tactics: null, created: true, hasSeenWelcome: true, trialsClearedOn: p.trialsClearedOn ?? emptyTrialsClearedOn(), bestTrialScore: p.bestTrialScore ?? emptyBestTrialScore(), dungeonHistory: p.dungeonHistory ?? [], claimedPartyQuests: p.claimedPartyQuests ?? [], earnings: p.earnings ?? freshEarningsLedger(), energyLog: p.energyLog ?? {}, mineTombstone: p.mineTombstone ?? null, mineDailyBonus: p.mineDailyBonus ?? null, reminderCardDismissed: p.reminderCardDismissed ?? false, trialAttemptNonce: p.trialAttemptNonce ?? 0, spiritGroveSeen: p.spiritGroveSeen ?? [], town: p.town ?? freshTown() } as GameState;
       },
       // Deep-merge the nested `character`/`settings` objects so fields added in later versions
       // (e.g. statLevels) always fall back to their defaults instead of being dropped by the

@@ -15,6 +15,29 @@
 > inside fighterFor `commit.ts:136`. Also corrected: `mining`/`chopping` power are **GearDef**
 > (tool-slot) fields, not WeaponDef; two bypass seams documented (mine/forest tool-power reads,
 > PaperDoll's raw display aggregation).
+>
+> **Revision 3 (2026-07-08) — SHIPPED.** All milestones M1–M6 are implemented and green
+> (85 forge engine tests + store `forgeQuality` suite + full suite passing; typecheck clean).
+> M1–M5 landed as planned. During build-out the mechanic was deliberately extended past the
+> plan (the "tempo/crit/quench overhaul") and §3/§6 below have been corrected to describe
+> what shipped:
+> - **Phase C "Quench"** — a third scored beat (one timed plunge, 0.10 of the score blend).
+> - **Tempo meter** — spaced landed blows build a ×0.75–1.25 progress multiplier; mashing or
+>   whiffing resets it (a second anti-mash layer on top of the √ blend).
+> - **Perfect-strike crits** (acc ≥ 0.92 → ×1.25) and **forge events** (Ember Surge / Cold
+>   Snap, rolled once at `initForge` from an injectable rng).
+> - **Metal temperaments** — recipes forge differently by material family (crystalline =
+>   fickle, metal bars = stubborn, soft goods = supple; `recipeTemperament` in `crafting.ts`,
+>   `TEMPERAMENTS` in `forge.ts`).
+> - **Constant retune** for the longer three-beat runs: `CHARGE_MULT` 1.9→1.7, `strikePower`
+>   base 0.20→0.13 (cap 0.26), `RESTOKE_FATIGUE` 0.15→0.10, Firebrick fatigue 0.08→0.05,
+>   score blend 0.35/0.65 → **0.32 heat / 0.58 strike / 0.10 quench**.
+> - Also shipped beyond plan: haptics (`src/lib/haptics.ts`), adaptive heat drone, 11 SFX
+>   cues (plan asked 4), living smithy scene (`src/components/inventory/forge/` — ForgeScene,
+>   SmithyBackdrop, ForgeResultPanel, ForgeBoostPanel), Homestead `forge_focus` perk consumed
+>   as `sweetBonus` (+0.03 strike-zone half-width).
+> **Still open:** the M6 *human* playtest-tuning pass (DX×ST grid at 1/8/16/25, re-forge
+> ≥500g sink feel) — flagged for Orion in plan3 item 8.3.
 
 ## 1. Context & Goal
 
@@ -38,7 +61,7 @@ Per plan3's strategic direction, *"the Forge exists to serve the economy (BAL-03
 | Decision | Choice |
 |---|---|
 | Risk model | **Crude tier, no loss** — materials/gold are never wasted; a poor run yields a sub-baseline *Crude* item. |
-| Mechanic depth | **Two-phase with a heat economy**: stoke (bellows) → strike (hammer), where heat is a spendable resource — light strikes, chargeable heavy strikes, mid-phase re-stoking with metal fatigue. |
+| Mechanic depth | **Heat economy in three beats** *(rev 3: quench added during build-out)*: stoke (bellows) → strike (hammer; light/heavy strikes, re-stoking with metal fatigue, tempo, crits, events) → quench (one timed plunge). |
 | Stat influence | **DX + ST** — DX widens the strike sweet-zone and heat band; ST powers each strike (fewer strikes needed). |
 | Quality spread | **Crude / Normal / Fine / Masterwork** via `scaleTierStat` — multiplier-based (×0.85 / ×1.0 / ×1.15 / ×1.3) with guaranteed-distinct integer floors (§2). |
 | Gating | None beyond material + gold cost (no energy/daily gate) — acceptable *only because the Forge is a pure sink*. |
@@ -129,7 +152,7 @@ Re-crafting can only **improve** a stored tier, never downgrade it. A run that s
 
 ---
 
-## 3. Minigame Mechanic (Two-Phase, Heat Economy)
+## 3. Minigame Mechanic (Three-Phase Heat Economy) *(§ corrected to as-shipped in rev 3)*
 
 Design intent: the audit's recurring minigame failure is *skill-optional* play (MINI-10 mash, MINI-11 abandon-retry), and the best-liked modes (Rooftop Chase, the crawlers) all layer **resource decisions on execution**. Phase B therefore treats heat as a spendable resource with three competing verbs — light strike, heavy strike, re-stoke — instead of a bare tap-timing test.
 
@@ -147,16 +170,27 @@ An oscillating needle sweeps a horizontal bar left↔right; a moving sweet-zone 
 | Verb | Input | Effect |
 |---|---|---|
 | **Light strike** | tap hammer (release before `CHARGE_TIME_S`) | `progress += strikeAccuracy × strikePower(ST)` |
-| **Heavy strike** | hold hammer ≥ `CHARGE_TIME_S`, then release | `progress += strikeAccuracy × strikePower(ST) × CHARGE_MULT` (×1.9), but the sweet-zone **shrinks up to 25% while charging**, and heat keeps draining during the hold |
-| **Re-stoke** | hold bellows | heat regains at the rise rate; **can't strike while stoking**; forge-progress slowly cools (`PROGRESS_COOL_RATE`); each re-stoke session applies **metal fatigue** — max heat drops by `RESTOKE_FATIGUE` (15%), so ~3 re-stokes is the practical ceiling |
+| **Heavy strike** | hold hammer ≥ `CHARGE_TIME_S`, then release | `progress += strikeAccuracy × strikePower(ST) × CHARGE_MULT` (×1.7), but the sweet-zone **shrinks up to 25% while charging**, and heat keeps draining during the hold |
+| **Re-stoke** | hold bellows | heat regains at the rise rate; **can't strike while stoking**; forge-progress slowly cools (`PROGRESS_COOL_RATE`); each re-stoke session applies **metal fatigue** — max heat drops by `RESTOKE_FATIGUE` (10%) |
+
+**Layered on the strike phase (rev 3, as shipped):**
+
+- **Tempo meter** — landed blows spaced inside the on-beat window (`0.7–1.6 s`) build tempo; tempo multiplies progress ×0.75→×1.25. A gap under `0.55 s` (mashing) or a whiff resets it. The hammer never refuses input — a mashed strike just lands weak.
+- **Perfect-strike crits** — accuracy ≥ `0.92` rings true: ×1.25 bonus progress.
+- **Forge events** — a schedule rolled once at `initForge` (injectable rng; deterministic in tests): **Ember Surge** (2.5 s, zone ×1.5 wider, progress ×1.3 — strike now!) and **Cold Snap** (2 s, heat decay ×2.5 — stoke or push through).
+- **Metal temperaments** — the recipe's material family sets the run's personality (`recipeTemperament`, `crafting.ts`): crystalline → **fickle** (twitchy needle, restless zone, fast heat bleed), metal bars → **stubborn** (slow needle, tight zone, harder-hitting blows), soft goods → **supple** (forgiving heat, cheap re-stokes). Different recipes *play* differently, not just cost differently.
+
+### Phase C — Quench (finisher)
+
+When progress reaches 1.0 the piece goes to the slack tub: a bar falls 1 → 0 (`QUENCH_FALL_RATE = 0.45`/s, ~2.2 s window) and the player taps once to plunge as it crosses the quench band (centre `0.55`, half-width `0.12` + DX + flux). One timed beat worth `0.10` of the score — a botched quench can drop a Masterwork-grade run to Fine, but never below what the strikes earned. If heat dies before progress fills, the run skips the quench and scores what was banked.
 
 This mirrors proven mechanics: the heavy strike is the mine's charged swing translated to the anvil (`CHARGE_SWING_COUNT`/`CHARGE_DAMAGE_MULT = 2.25`, `src/engine/crawl.ts:303-306` — hold costs time and demands precision, but honestly out-performs mashing), and re-stoke-with-fatigue is the recover-verb-with-diminishing-returns pattern from Rooftop Chase's lead economy.
 
 **Moment-to-moment decisions:** strike light and safe? risk a heavy while the zone shrinks? spend runway re-stoking (and bleed progress) to buy more strikes? The optimal line depends on remaining heat, current accuracy, and ST — there is no zero-skill dominant strategy: spam is punished by the accuracy blend (below), pure heavies by the shrunken zone, and infinite stoking by fatigue + progress cooling.
 
-- **DX** widens the sweet-zone (and Phase A band).
+- **DX** widens the sweet-zone (and Phase A band, and the quench band). The Homestead Smithy's `forge_focus` perk adds +0.03 to the strike-zone half-width (`sweetBonus`, additive before the cap).
 - **ST** increases `strikePower` (high-ST characters need fewer good strikes).
-- Phase ends when progress reaches 1.0 **or** heat hits zero.
+- Strike phase ends when progress reaches 1.0 (→ quench) **or** heat hits zero (→ done, quench skipped, `quench01 = 0`).
 
 ### Scoring
 
@@ -165,12 +199,12 @@ Each strike records `{ acc, weight }` where `weight` is its progress multiplier 
 ```
 meanAcc  = Σ(acc·w) / Σw
 strike01 = √(progressFilled × meanAcc)      // spam can't max it: needs fill AND accuracy
-score01  = clamp(0.35 × heat01 + 0.65 × strike01, 0, 1)
+score01  = clamp(0.32 × heat01 + 0.58 × strike01 + 0.10 × quench01, 0, 1)
 ```
 
-→ tier lookup → item quality stored. A perfect Phase A is worth 0.35, so Masterwork (≥0.75) is unreachable with a botched stoke — heat always matters.
+→ tier lookup → item quality stored. A perfect stoke is worth 0.32 and a perfect quench 0.10, so Masterwork (≥0.75) is unreachable with a botched stoke (cap 0.68) — heat always matters — and strikes alone can't carry a run. `forgeScoreParts` exposes the three components for the result panel's breakdown.
 
-### Constants (starting values, tuned in M6)
+### Constants (as shipped — `src/engine/crafting/forge.ts:21-66` is the source of truth)
 
 ```ts
 export const HEAT_RISE_RATE   = 0.25;  // Phase A fill + Phase B re-stoke, per second
@@ -179,31 +213,36 @@ export const HEAT_DECAY_RATE  = 0.125; // Phase B passive drain (8 s runway at f
 export const HEAT_BAND_START  = 0.62;
 export const HEAT_BAND_WIDTH_BASE = 0.16;  // widened by DX
 export const NEEDLE_PERIOD_S  = 2.0;
-export const SWEET_HALF_BASE  = 0.10;  // widened by DX
+export const SWEET_HALF_BASE  = 0.10;  // widened by DX (+0.03 forge_focus perk)
+export const ZONE_DRIFT_FRAC  = 0.35;  // zone drifts at 0.35× needle speed (no beat lock)
 export const CHARGE_TIME_S    = 0.9;   // hammer hold to prime a heavy strike
-export const CHARGE_MULT      = 1.9;   // heavy strike progress multiplier
+export const CHARGE_MULT      = 1.7;   // heavy strike multiplier (rev 3: was 1.9 — tempo/crit raise a good blow's real value)
 export const CHARGE_ZONE_SHRINK = 0.75; // sweet-zone half-width factor at full charge
-export const RESTOKE_FATIGUE  = 0.15;  // max-heat loss per re-stoke session
+export const RESTOKE_FATIGUE  = 0.10;  // max-heat loss per re-stoke session (rev 3: was 0.15 — longer runs mean more re-stokes)
 export const PROGRESS_COOL_RATE = 0.04; // progress drain per second while stoking
+// Tempo: TEMPO_SPAM_S 0.55 / window 0.7–1.6 s / GAIN 0.25 / DECAY 0.08 / mult 0.75–1.25
+// Crits: CRIT_ACC 0.92 / CRIT_BONUS 1.25
+// Events: EMBER 2.5 s (zone ×1.5, prog ×1.3) / SNAP 2.0 s (decay ×2.5)
+// Quench: FALL_RATE 0.45 / BAND_CENTRE 0.55 / HALF_BASE 0.12
 ```
 
-**Stat scaling formulas** (same shape as revision 1):
+**Stat scaling formulas** (as shipped):
 
 ```ts
-heatBandWidth(dx)  = min(0.40, 0.16 + dx * 0.008)
-strikeSweetHalf(dx) = min(0.35, 0.10 + dx * 0.006)
-strikePower(st)     = min(0.40, 0.20 * (1 + st * 0.015))
+heatBandWidth(dx)          = min(0.40, 0.16 + dx * 0.008)
+strikeSweetHalf(dx, perk)  = min(0.35, 0.10 + perk + dx * 0.006)   // perk = forge_focus 0 | 0.03
+strikePower(st)            = min(0.26, 0.13 * (1 + st * 0.015))    // rev 3: base 0.20→0.13 (tempo/crit compensate)
 ```
 
-**Tuning anchor:** stats hard-cap at **25** (`STAT_CAP`, `src/engine/progression.ts:22`), so the real ranges are band width 0.16→0.36, sweet half 0.10→0.25, strikePower 0.20→0.275 — the `min()` ceilings above are unreachable and exist only as safety rails. A focused build reaches DX or ST ~12–16 by character level 5 and caps ~25 by level 15–20; tune M6 difficulty against stat levels **1 / 8 / 16 / 25**, not against the ceilings. This matches the codebase idiom: stats widen tolerances/add power, always capped, never trivializing (Armory Break `ST_ZONE_WIDEN_PER_LEVEL`, Lockpicking DX tolerance, Last Stand HP window).
+**Tuning anchor:** stats hard-cap at **25** (`STAT_CAP`, `src/engine/progression.ts:22`), so the real ranges are band width 0.16→0.36, sweet half 0.10→0.25 (+0.03 perk), strikePower 0.13→0.18 — the `min()` ceilings above are unreachable and exist only as safety rails. A focused build reaches DX or ST ~12–16 by character level 5 and caps ~25 by level 15–20; tune M6 difficulty against stat levels **1 / 8 / 16 / 25**, not against the ceilings. This matches the codebase idiom: stats widen tolerances/add power, always capped, never trivializing (Armory Break `ST_ZONE_WIDEN_PER_LEVEL`, Lockpicking DX tolerance, Last Stand HP window).
 
-**Sanity math:** at ST 0, a perfect light strike fills 0.20 → 5 perfect lights (or ~3 heavies) fill the meter inside the 8 s base runway; at ST 25 a heavy fills ~0.52. With 3 re-stokes total runway is ~15–20 s.
+**Sanity math (rev 3):** at ST 0, a perfect on-tempo light fills ~0.13–0.16 (tempo ×0.75→1.25) and a critted heavy ~0.28; intended play lands a finished piece in the **12–25 s** band (asserted by the bot sims in `forge.test.ts` "run economy"). Re-stoking extends runway at 0.10 max-heat per session.
 
 ### Controls
 
-- **Keyboard:** tap `Space` = light strike; hold+release `Space` = heavy; hold `Shift` (or `B`) = bellows. Phase A: hold/release `Space`.
-- **Pointer (mobile):** two on-screen buttons — **hammer** (tap = light, hold = charge) and **bellows** (hold). Phase A: hold/release anywhere on the bar panel.
-- Both phases fully playable with either input alone (bellows key optional in a no-re-stoke run).
+- **Keyboard:** tap `Space` = light strike; hold+release `Space` = heavy; hold `Shift` (or `B`) = bellows. Phase A: hold/release `Space`. Phase C: tap `Space` to plunge.
+- **Pointer (mobile):** two on-screen buttons — **hammer** (tap = light, hold = charge; tap = plunge in the quench) and **bellows** (hold). Phase A: hold/release anywhere on the bar panel. Haptic buzz on strikes/crits/quench (coarse-pointer only, `src/lib/haptics.ts`).
+- All phases fully playable with either input alone (bellows key optional in a no-re-stoke run).
 
 ---
 
@@ -241,7 +280,7 @@ Optional pre-run panel shown before Phase A (skippable — "Just forge"):
 | Slot | Cost | Effect (one run) | Source of material |
 |---|---|---|---|
 | **Fuel: Seasoned Wood** | 2 wood | heat decay ×0.7 (longer runway) | forest chopping (`src/engine/forest.ts:1091`) |
-| **Fuel: Firebrick** | 2 stone | re-stoke fatigue 0.15 → 0.08 (more recoveries) | mine rubble (`src/engine/mining.ts:1023`) |
+| **Fuel: Firebrick** | 2 stone | re-stoke fatigue 0.10 → 0.05 (more recoveries) *(rev 3 values)* | mine rubble (`src/engine/mining.ts:1023`) |
 | **Flux: Gemstone** | 1 gemstone | both sweet zones ×1.25 wider | mine floor 10+ node, dungeon encounters |
 
 - One fuel + one flux max per run; the two fuels are mutually exclusive.
@@ -257,7 +296,7 @@ Build in strict order. Do not start the next milestone until the previous one's 
 
 ---
 
-### M1 — Quality data model & plumbing (invisible to users)
+### M1 — Quality data model & plumbing (invisible to users) — ✅ shipped 2026-07-08
 
 **Goal:** land the save-format and combat-pipeline changes first, behind a default that changes nothing visible. Every existing test must still pass at the end of M1.
 
@@ -326,7 +365,7 @@ One-click craft still works (no `score01` ⇒ Normal). Nothing visibly different
 
 ---
 
-### M2 — Forge engine (pure reducer & tests)
+### M2 — Forge engine (pure reducer & tests) — ✅ shipped 2026-07-08 (extended: tempo/crits/events/quench/temperaments)
 
 **Goal:** the complete mechanic as a pure, framework-free engine, fully tested.
 
@@ -378,7 +417,7 @@ Cover:
 
 ---
 
-### M3 — Forge minigame UI wired to craft
+### M3 — Forge minigame UI wired to craft — ✅ shipped 2026-07-08 (split into `forge/` subcomponents)
 
 **Goal:** clicking "Craft" opens the interactive Forge modal; on completion the item is written to the store with its earned tier.
 
@@ -426,7 +465,7 @@ Implementation notes:
 
 ---
 
-### M4 — Tier display & visual feedback
+### M4 — Tier display & visual feedback — ✅ shipped 2026-07-08 (incl. BattleScene weapon label)
 
 **Goal:** quality is visible everywhere items appear.
 
@@ -439,7 +478,7 @@ Never colour-only: tier is always name + glyph + colour (matches the trials' a11
 
 ---
 
-### M5 — Re-forge & Fuel/Flux (economy features)
+### M5 — Re-forge & Fuel/Flux (economy features) — ✅ shipped 2026-07-08
 
 **Goal:** ship §5 and §6 on top of the working minigame.
 
@@ -461,7 +500,7 @@ Never colour-only: tier is always name + glyph + colour (matches the trials' a11
 
 ---
 
-### M6 — Balance, polish & accessibility
+### M6 — Balance, polish & accessibility — ✅ code complete 2026-07-08; human playtest-tuning pass still open (plan3 8.3)
 
 **Goal:** the minigame feels good at all stat levels, looks polished, and is accessible.
 
@@ -554,20 +593,25 @@ Never colour-only: tier is always name + glyph + colour (matches the trials' a11
 
 ## 11. Verification Checklist
 
+*Ticked 2026-07-08 against the code + test-suite audit (85 forge engine tests, `forgeQuality`
+store suite, full suite green, typecheck clean). The remaining human pass is the M6
+playtest-tuning grid (plan3 8.3).*
+
 At each milestone:
-- [ ] `npm run typecheck` — no type errors.
-- [ ] `npm run test` — all existing tests still green.
-- [ ] New milestone-specific unit tests pass.
+- [x] `npm run typecheck` — no type errors.
+- [x] `npm run test` — all existing tests still green (1860+).
+- [x] New milestone-specific unit tests pass.
 
 End-to-end (after M3+):
-- [ ] Craft an affordable recipe → modal opens; stat chips show real DX/ST-derived numbers.
-- [ ] Phase A hold/release; commit inside band → Phase B opens at committed heat.
-- [ ] Phase B: light taps, a charged heavy (zone visibly shrinks), a re-stoke (heat up, progress bleeds, ceiling marker drops).
-- [ ] Deliberately bad play → **Crude stored and displayed** (not silently Normal). Good play → Masterwork.
-- [ ] Item shows tier prefix/badge in inventory, recipe row, and paper doll (M4).
-- [ ] Equip → combat stats reflect `scaleTierStat`; on a +3 trinket all four tiers show **different** integers.
-- [ ] Old save loads → everything Normal, stats identical to pre-Forge.
-- [ ] Re-forge (M5): cheaper cost shown honestly; worse run keeps tier; Masterwork item offers no re-forge.
-- [ ] Fuel/flux (M5): consumed only on Continue; cancel refunds; effects observable in-run.
-- [ ] `prefers-reduced-motion` → slower needle/decay, wider bands; fully playable.
-- [ ] `grep -r "getWeapon" src/store src/hooks` → only the `equippedWeaponDef` seam (`commit.ts`) resolves the equipped weapon for combat (`dungeonSlice.ts:258` reads `attackStat` only — allowed).
+- [x] Craft an affordable recipe → modal opens; stat chips show real DX/ST-derived numbers.
+- [x] Phase A hold/release; commit inside band → Phase B opens at committed heat.
+- [x] Phase B: light taps, a charged heavy (zone visibly shrinks), a re-stoke (heat up, progress bleeds, ceiling marker drops). Quench plunge scores the finisher.
+- [x] Deliberately bad play → **Crude stored and displayed** (not silently Normal). Good play → Masterwork. (Bot sims: intended play ≥0.75; mashing can never fake Masterwork; re-stoke marathon loses to a clean run.)
+- [x] Item shows tier prefix/badge in inventory, recipe row, and paper doll (M4).
+- [x] Equip → combat stats reflect `scaleTierStat`; on a +3 trinket all four tiers show **different** integers (distinctness property test over all craftables).
+- [x] Old save loads → everything Normal, stats identical to pre-Forge (absent-key ⇒ Normal at read; persist v33 defaults).
+- [x] Re-forge (M5): cheaper cost shown honestly; worse run keeps tier; Masterwork item offers no re-forge.
+- [x] Fuel/flux (M5): consumed only on Continue; cancel refunds; effects observable in-run (engine-level mod tests).
+- [x] `prefers-reduced-motion` → slower needle/decay, wider bands; fully playable (bot sim: same tier earned under RM mods).
+- [x] `grep -r "getWeapon" src/store src/hooks` → only the `equippedWeaponDef` seam (`commit.ts`) resolves the equipped weapon for combat (`dungeonSlice.ts` reads `attackStat` only — allowed).
+- [ ] **M6 human playtest-tuning** (Orion): DX×ST grid at 1/8/16/25; re-forge Masterwork chase on obsidian_plate sinks ≥500g without feeling like a decoy; revisit retuned constants against real play.

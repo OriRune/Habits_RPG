@@ -42,11 +42,11 @@ import {
   type MineState,
   MINE_DEATH_KEEP,
   MINE_STASH_KEEP,
+  MINE_TOMBSTONE_RECOVER_KEEP,
   isMineSafeBankTile,
 } from '@/engine/mining';
 import {
   type ForestState,
-  splitHaul,
   FOREST_DEATH_KEEP,
   FOREST_STASH_KEEP,
   isForestSafeBankTile,
@@ -57,7 +57,7 @@ import {
   damageProgress,
 } from '@/engine/arena';
 import { type HexBattleState, tacticsReward } from '@/engine/hexBattle';
-import { dungeonStamina } from '@/engine/crawl';
+import { dungeonStamina, splitHaul } from '@/engine/crawl';
 import { getBiome, bossFor } from '@/engine/biomes';
 import { getEncounter, startEncounter } from '@/engine/encounters';
 import { enemyFor } from '@/engine/enemies';
@@ -582,23 +582,53 @@ export function maxEnergyFor(s: Pick<GameState, 'town'>): number {
 // Per-mode commit wrappers — compute mode-specific opts and delegate to commitRun
 // ---------------------------------------------------------------------------
 
+/** The first N floors reached each calendar day pay a gold bonus (3.8). */
+export const MINE_DAILY_BONUS_FLOORS = 10;
+/** Gold multiplier applied while the day's bonus-floor budget isn't exhausted. */
+export const MINE_DAILY_BONUS_MULT = 1.5;
+
+/**
+ * The first MINE_DAILY_BONUS_FLOORS floors reached each calendar day pay
+ * MINE_DAILY_BONUS_MULT× gold (3.8) — an early-play nudge that tapers off across the day,
+ * not a permanent multiplier. "Floors reached" is approximated by the run's ending depth
+ * (`run.deepest`) rather than a precise per-descent ledger — simple and store-only, and
+ * good enough for a soft engagement nudge rather than a hard economy lever.
+ */
+function applyMineDailyBonus(
+  state: GameState,
+  run: MineState,
+  reward: Reward,
+): { reward: Reward; mineDailyBonus: { date: string; floorsUsed: number } } {
+  const today = toISODate();
+  const current = state.mineDailyBonus?.date === today ? state.mineDailyBonus : { date: today, floorsUsed: 0 };
+  const bonused: Reward = current.floorsUsed < MINE_DAILY_BONUS_FLOORS
+    ? { ...reward, gold: Math.round((reward.gold ?? 0) * MINE_DAILY_BONUS_MULT) }
+    : reward;
+  return {
+    reward: bonused,
+    mineDailyBonus: { date: today, floorsUsed: Math.min(MINE_DAILY_BONUS_FLOORS, current.floorsUsed + run.deepest) },
+  };
+}
+
 /** Bank a finished mine run's haul into the economy, clear the run, and reconcile level. */
 export function commitMining(state: GameState, run: MineState): GameState {
   // Full 1.0 payout only on a safe tile (the entrance); banking off-tile keeps MINE_STASH_KEEP
   // so a full-value end-bank is worth trekking back for (BAL-12). Mirrors commitMineDeath's split.
-  const reward = isMineSafeBankTile(run.tiles[run.player.r]?.[run.player.c]?.kind)
+  const rawReward = isMineSafeBankTile(run.tiles[run.player.r]?.[run.player.c]?.kind)
     ? run.haul
     : splitHaul(run.haul, MINE_STASH_KEEP).kept;
+  const { reward, mineDailyBonus } = applyMineDailyBonus(state, run, rawReward);
   // Include gold haul in the final score so resource-gathering builds score alongside kills.
   const finalScore = run.score + (reward.gold ?? 0);
   // Trickle is split across both trained stats so total stat-XP stays modest (§5.4).
   const trickle = CRAWLER_XP_BASE + CRAWLER_XP_PER_DEPTH * run.deepest;
-  return commitRun(state, {
+  const banked = commitRun(state, {
     runField: 'mining', reward,
     statXp: { ST: Math.ceil(trickle / 2), EN: Math.floor(trickle / 2) },
     deepestField: 'deepestMineFloor', deepestValue: run.deepest,
     scoreField: 'bestMineScore', scoreValue: finalScore, cloneMaterials: true, source: 'mine',
   });
+  return { ...banked, mineDailyBonus };
 }
 
 /**
@@ -608,19 +638,26 @@ export function commitMining(state: GameState, run: MineState): GameState {
  */
 export function commitMineDeath(state: GameState, run: MineState): GameState {
   const { kept, lost } = splitHaul(run.haul, MINE_DEATH_KEEP);
+  const { reward, mineDailyBonus } = applyMineDailyBonus(state, run, kept);
   // Include kept gold in the final score even on death (mirrors commitMining).
-  const finalScore = run.score + (kept.gold ?? 0);
+  const finalScore = run.score + (reward.gold ?? 0);
   const trickle = CRAWLER_XP_BASE + CRAWLER_XP_PER_DEPTH * run.deepest;
   const banked = commitRun(state, {
-    runField: 'mining', reward: kept,
+    runField: 'mining', reward,
     statXp: { ST: Math.ceil(trickle / 2), EN: Math.floor(trickle / 2) },
     deepestField: 'deepestMineFloor', deepestValue: run.deepest,
     scoreField: 'bestMineScore', scoreValue: finalScore, cloneMaterials: true, source: 'mine',
   });
-  // Record the tombstone if there is actually anything to recover (a zero-haul death leaves
-  // no tombstone). A new death before recovery replaces the previous tombstone.
-  const hasLoss = (lost.gold ?? 0) > 0 || Object.keys(lost.materials ?? {}).length > 0;
-  return { ...banked, mineTombstone: hasLoss ? { floor: run.deepest, haul: lost } : banked.mineTombstone };
+  // Only MINE_TOMBSTONE_RECOVER_KEEP of the lost half is actually recoverable — a full
+  // 100%-recoverable tombstone would make death's eventual total (kept + all of lost)
+  // beat the free, immediate MINE_STASH_KEEP hurry-bank, inverting the risk ladder (0.2).
+  const recoverable = splitHaul(lost, MINE_TOMBSTONE_RECOVER_KEEP).kept;
+  const hasRecoverable = (recoverable.gold ?? 0) > 0 || Object.keys(recoverable.materials ?? {}).length > 0;
+  return {
+    ...banked,
+    mineDailyBonus,
+    mineTombstone: hasRecoverable ? { floor: run.deepest, haul: recoverable } : banked.mineTombstone,
+  };
 }
 
 /** Bank a finished forest run's haul into the economy, clear the run, and reconcile level. */

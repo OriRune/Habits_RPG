@@ -211,6 +211,7 @@ export const createCoreSlice: StateCreator<
       earnings: freshEarningsLedger(),
       energyLog: {},
       mineTombstone: null,
+      mineDailyBonus: null,
       claimedPartyQuests: [],
       gearQuality: {},
       weaponQuality: {},

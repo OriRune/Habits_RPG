@@ -138,6 +138,16 @@ body {
   .text-on-wood-mid { color: rgb(var(--c-on-wood) / 0.70); }
   .text-on-wood-hi  { color: rgb(var(--c-on-wood) / 0.82); }
   .text-on-wood     { color: rgb(var(--c-on-wood) / 1.00); }
+
+  /* Pointer-type gating for the run overlays — Tailwind 3.4 has no pointer-*
+     variants, so these are hand-rolled. Touch-only controls (d-pad, MINE/DASH)
+     hide on mouse/trackpad devices; keyboard hint lines hide on touch. */
+  @media (pointer: fine) {
+    .pointer-coarse-only { display: none; }
+  }
+  @media (pointer: coarse) {
+    .pointer-fine-only { display: none; }
+  }
 }
 
 @keyframes mine-pop {
@@ -239,6 +249,15 @@ body {
 @keyframes crawler-leg-b {
   0%, 100% { transform: rotate(26deg); }
   50%      { transform: rotate(-26deg); }
+}
+/* Crawl avatar — one-shot tool swing, triggered imperatively on strike (4.2). */
+@keyframes crawler-swing {
+  0%   { transform: rotate(0deg); }
+  35%  { transform: rotate(-55deg); }
+  100% { transform: rotate(0deg); }
+}
+.crawler-swing-anim {
+  animation: crawler-swing 0.18s ease-out;
 }
 
 /* Mine: a slow vignette pulse so the torchlight feels alive. */
@@ -415,6 +434,126 @@ body {
   0%   { opacity: 0; transform: rotate(var(--a, 0deg)) translateX(3px) scale(0.4); }
   25%  { opacity: 1; }
   100% { opacity: 0; transform: rotate(var(--a, 0deg)) translateX(28px) scale(1); }
+}
+
+/* ── The Forge — smithy scene (ForgeScene.tsx) ────────────────────────────────
+   Persistent ambience lives under `.forge-ambient` (frozen by the reduced-motion
+   block below); transient bursts (rings, sparks, steam) are spawned in JS and
+   already gated on the component's reducedMotion flag. Everything animates
+   transform/opacity only — compositor-friendly. */
+
+/* Embers drifting up from the coal bed. Per-span --dur/--delay vary the field. */
+@keyframes forge-ember-rise {
+  0%   { opacity: 0; transform: translateY(0) scale(0.7); }
+  15%  { opacity: 0.9; }
+  70%  { opacity: 0.5; }
+  100% { opacity: 0; transform: translateY(-52px) scale(1.05); }
+}
+.forge-ember-mote {
+  animation: forge-ember-rise var(--dur, 2.6s) linear var(--delay, 0s) infinite;
+}
+
+/* The fire glow breathes — a slow scale/opacity pulse over the coals. */
+@keyframes forge-fire-breathe {
+  0%, 100% { opacity: 0.85; transform: scale(1); }
+  50%      { opacity: 1;    transform: scale(1.06); }
+}
+.forge-fire-glow { animation: forge-fire-breathe 2.8s ease-in-out infinite; }
+
+/* Heat shimmer strip above the coals (visible only while the fire is hot). */
+@keyframes forge-shimmer {
+  0%, 100% { transform: skewX(0deg) translateY(0); opacity: 0.10; }
+  50%      { transform: skewX(6deg) translateY(-2px); opacity: 0.22; }
+}
+.forge-shimmer-strip { animation: forge-shimmer 2.1s ease-in-out infinite; }
+
+/* Hammer wind-up tremble while a heavy charge builds. */
+@keyframes forge-hammer-charge {
+  0%, 100% { transform: rotate(-38deg) translateY(0); }
+  50%      { transform: rotate(-42deg) translateY(-1.5px); }
+}
+.forge-hammer-charging { animation: forge-hammer-charge 0.4s ease-in-out infinite; }
+
+/* Hammer swing — a fast committed arc into the anvil, then it snaps back via JS. */
+@keyframes forge-hammer-swing {
+  0%   { transform: rotate(-38deg); }
+  55%  { transform: rotate(16deg); }
+  100% { transform: rotate(10deg); }
+}
+.forge-hammer-swinging { animation: forge-hammer-swing 0.14s cubic-bezier(0.7, 0, 0.9, 1) forwards; }
+
+/* Impact ring expanding from the struck workpiece (scaled per weight in JS). */
+@keyframes forge-impact-ring {
+  0%   { opacity: 0.8; transform: translate(-50%, -50%) scale(0.3); }
+  100% { opacity: 0;   transform: translate(-50%, -50%) scale(1.6); }
+}
+
+/* Crit — a white-hot flash over the whole scene. */
+@keyframes forge-crit-flash {
+  0%   { opacity: 0.75; }
+  100% { opacity: 0; }
+}
+
+/* Steam puffs rising off the slack tub during the quench. */
+@keyframes forge-steam-rise {
+  0%   { opacity: 0;    transform: translateY(4px) scale(0.6); }
+  25%  { opacity: 0.55; }
+  100% { opacity: 0;    transform: translateY(-34px) scale(1.5); }
+}
+
+/* Water ripple ring where the piece plunges. */
+@keyframes forge-quench-ripple {
+  0%   { opacity: 0.7; transform: translate(-50%, -50%) scale(0.4); }
+  100% { opacity: 0;   transform: translate(-50%, -50%) scale(2.2); }
+}
+
+/* Ember Surge — the coal bed flares white-hot. */
+@keyframes forge-event-flare {
+  0%, 100% { opacity: 0; }
+  30%      { opacity: 0.85; }
+  60%      { opacity: 0.55; }
+}
+
+/* Event banner drifting up off the scene (self-removing on animationend). */
+@keyframes forge-float {
+  0%   { opacity: 0; transform: translate(-50%, 8px); }
+  20%  { opacity: 1; }
+  80%  { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%, -14px); }
+}
+
+/* Tempo meter pulses gold once the rhythm is locked in (≥ 0.75). */
+@keyframes forge-tempo-pulse {
+  0%, 100% { box-shadow: 0 0 4px 0 rgba(230, 193, 88, 0.35); }
+  50%      { box-shadow: 0 0 12px 2px rgba(230, 193, 88, 0.75); }
+}
+.forge-tempo-hot { animation: forge-tempo-pulse 1.1s ease-in-out infinite; }
+
+/* Result ceremony — the finished piece rises out of the quench, glow cooling. */
+@keyframes forge-reveal-rise {
+  0%   { opacity: 0; transform: translateY(10px) scale(0.92); filter: brightness(2.2); }
+  45%  { opacity: 1; filter: brightness(1.5); }
+  100% { opacity: 1; transform: translateY(0) scale(1); filter: brightness(1); }
+}
+
+/* Result ceremony — Crude's sad little smoke puff. */
+@keyframes forge-smoke-puff {
+  0%   { opacity: 0;   transform: translateY(2px) scale(0.5); }
+  30%  { opacity: 0.5; }
+  100% { opacity: 0;   transform: translateY(-22px) scale(1.6); }
+}
+
+/* Reduced motion: freeze the smithy ambience and collapse forge one-shots.
+   (Transient JS spawns are additionally gated on the component's flag.) */
+@media (prefers-reduced-motion: reduce) {
+  .forge-ambient *,
+  .forge-fire-glow,
+  .forge-shimmer-strip,
+  .forge-hammer-charging,
+  .forge-hammer-swinging,
+  .forge-tempo-hot {
+    animation: none !important;
+  }
 }
 
 /* Lockpicking — pick-snap violent jolt */

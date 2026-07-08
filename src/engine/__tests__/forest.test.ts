@@ -10,7 +10,6 @@ import {
   coopClientStep,
   reveal,
   nodeYield,
-  splitHaul,
   activateShrine,
   isWalkable,
   isOnShrine,
@@ -28,7 +27,7 @@ import {
   FOREST_WINDUP_MS,
 } from '../forest';
 import { getWeapon, STARTER_WEAPON } from '@/engine/weapons';
-import { manhattan, STA_REGEN_MS, MP_REGEN_MS, lateDepthDamageScale } from '@/engine/crawl';
+import { manhattan, CRAWL_SPAWN_SAFE_RADIUS, STA_REGEN_MS, MP_REGEN_MS, lateDepthDamageScale, splitHaul } from '@/engine/crawl';
 import { FOREST_BEASTS } from '@/content/forest';
 
 const WEAPON = getWeapon(STARTER_WEAPON);
@@ -887,5 +886,31 @@ describe('deep-stage difficulty (MINI-20)', () => {
     expect(lateDepthDamageScale(-3)).toBe(1);
     expect(lateDepthDamageScale(5)).toBeCloseTo(1.2, 5);
     expect(lateDepthDamageScale(1000)).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Spawn safety (2026-07 UX audit): a fresh stage must never open with a beast
+// already within CRAWL_SPAWN_SAFE_RADIUS of the player's spawn tile — clearing
+// rooms carved beside the entrance used to seed ambush beasts adjacent to it.
+// ---------------------------------------------------------------------------
+
+describe('beast spawn safety (CRAWL_SPAWN_SAFE_RADIUS)', () => {
+  it('never places a stage-1 beast within the safety radius of the player spawn (50 seeds)', () => {
+    for (let seed = 1; seed <= 50; seed++) {
+      const forest = generateForest(1, SNAP, rngFrom(seed));
+      for (const b of forest.beasts) {
+        expect(manhattan({ r: b.r, c: b.c }, forest.player)).toBeGreaterThan(CRAWL_SPAWN_SAFE_RADIUS);
+      }
+    }
+  });
+
+  it('holds on a guardian stage too (stage 4, 50 seeds)', () => {
+    for (let seed = 1; seed <= 50; seed++) {
+      const forest = generateForest(4, SNAP, rngFrom(seed));
+      for (const b of forest.beasts) {
+        expect(manhattan({ r: b.r, c: b.c }, forest.player)).toBeGreaterThan(CRAWL_SPAWN_SAFE_RADIUS);
+      }
+    }
   });
 });

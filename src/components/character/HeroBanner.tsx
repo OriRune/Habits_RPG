@@ -23,15 +23,17 @@ export function HeroBanner() {
   const spriteKey = `avatar:${character.classId ?? 'adventurer'}`;
 
   return (
-    <Panel tone="wood" className="flex items-center gap-4 p-4">
+    <Panel tone="wood" frame="gold" className="flex items-center gap-4 p-4">
       <Frame tone="parchment" className="shrink-0">
         <Sprite spriteKey={spriteKey} look={crest} size="xl" alt={`${title} avatar`} />
       </Frame>
 
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <h1 className="truncate font-display text-2xl font-bold text-gold-bright">{name}</h1>
-          <span className="font-display text-sm text-on-wood-mid">
+          {/* text-xl (not 2xl): at narrow widths Cinzel bold 2xl truncates even
+              10-char names; the Lv chip must never shrink or "Lv 1" wraps mid-token. */}
+          <h1 className="min-w-0 truncate font-display text-xl font-bold text-gold-bright">{name}</h1>
+          <span className="shrink-0 whitespace-nowrap font-display text-sm text-on-wood-mid">
             Lv {character.level}
             {character.level >= MAX_LEVEL && <span className="ml-1 text-gold-bright">MAX</span>}
           </span>

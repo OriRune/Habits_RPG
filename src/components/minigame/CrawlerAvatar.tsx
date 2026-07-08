@@ -14,7 +14,19 @@ export interface CrawlerAvatarProps {
   dead?: boolean;
   /** Pixel size of the bounding cell; the avatar is drawn ~80% of this. */
   cell: number;
+  /** Equipped tool tier (4.2) — recolors the tool head; omit for the default look. */
+  toolTier?: 'stone' | 'iron' | 'mithril';
+  /** Attached to the tool group so a caller can imperatively trigger the swing
+   *  keyframe (`.crawler-swing-anim`) on strike, without a React re-render. */
+  toolRef?: React.Ref<HTMLDivElement>;
 }
+
+/** Tool-head color by tier (4.2) — falls back to the variant's default when tier is unknown. */
+const TOOL_HEAD_COLOR: Record<'stone' | 'iron' | 'mithril', string> = {
+  stone: '#9a9a94',
+  iron: '#d8dce2',
+  mithril: '#9fe8ff',
+};
 
 /** Per-variant palette so the forager reads green/leather and the miner reads earthy/steel. */
 const PALETTE = {
@@ -46,8 +58,9 @@ const PALETTE = {
   },
 } as const;
 
-export function CrawlerAvatar({ variant, facing, moving, dead, cell }: CrawlerAvatarProps) {
+export function CrawlerAvatar({ variant, facing, moving, dead, cell, toolTier, toolRef }: CrawlerAvatarProps) {
   const p = PALETTE[variant];
+  const toolHead = toolTier ? TOOL_HEAD_COLOR[toolTier] : p.toolHead;
   // Base sprite is authored at 24×34; scale to fit ~80% of the cell.
   const scale = (cell * 0.82) / 34;
   const faceLeft = facing === 'left';
@@ -96,29 +109,32 @@ export function CrawlerAvatar({ variant, facing, moving, dead, cell }: CrawlerAv
           position: 'absolute', bottom: 9, left: 1, width: 20, height: 19,
           background: p.cloak, borderRadius: '3px 3px 9px 7px',
         }} />
-        {/* Tool — handle + head, slung over the shoulder */}
-        <div style={{
-          position: 'absolute', bottom: 6, left: 17, width: 3, height: 26,
-          backgroundColor: p.toolHandle, borderRadius: 2,
-          transform: 'rotate(18deg)', transformOrigin: 'bottom center',
-        }} />
-        {variant === 'miner' ? (
-          // Pick head — a thin angled bar with two tips
+        {/* Tool — handle + head, slung over the shoulder. Grouped so a caller can
+            imperatively trigger the swing keyframe on the whole assembly (4.2). */}
+        <div ref={toolRef} style={{ position: 'absolute', inset: 0, transformOrigin: '18px 4px' }}>
           <div style={{
-            position: 'absolute', bottom: 27, left: 14, width: 14, height: 3,
-            backgroundColor: p.toolHead, borderRadius: 2,
-            transform: 'rotate(-24deg)',
-            boxShadow: 'inset 0 -1px 0 rgba(0,0,0,0.35)',
+            position: 'absolute', bottom: 6, left: 17, width: 3, height: 26,
+            backgroundColor: p.toolHandle, borderRadius: 2,
+            transform: 'rotate(18deg)', transformOrigin: 'bottom center',
           }} />
-        ) : (
-          // Axe head — a small wedge
-          <div style={{
-            position: 'absolute', bottom: 25, left: 19, width: 7, height: 8,
-            backgroundColor: p.toolHead, borderRadius: '2px 4px 4px 1px',
-            transform: 'rotate(12deg)',
-            boxShadow: 'inset -1px 0 0 rgba(0,0,0,0.3)',
-          }} />
-        )}
+          {variant === 'miner' ? (
+            // Pick head — a thin angled bar with two tips
+            <div style={{
+              position: 'absolute', bottom: 27, left: 14, width: 14, height: 3,
+              backgroundColor: toolHead, borderRadius: 2,
+              transform: 'rotate(-24deg)',
+              boxShadow: 'inset 0 -1px 0 rgba(0,0,0,0.35)',
+            }} />
+          ) : (
+            // Axe head — a small wedge
+            <div style={{
+              position: 'absolute', bottom: 25, left: 19, width: 7, height: 8,
+              backgroundColor: toolHead, borderRadius: '2px 4px 4px 1px',
+              transform: 'rotate(12deg)',
+              boxShadow: 'inset -1px 0 0 rgba(0,0,0,0.3)',
+            }} />
+          )}
+        </div>
         {/* Torso / tabard */}
         <div style={{
           position: 'absolute', bottom: 13, left: 5, width: 14, height: 14,

@@ -8,30 +8,31 @@ import {
   isVisible,
   sightRadiusFor,
   pendingActKind,
-  splitHaul,
   FOREST_DEATH_KEEP,
   FOREST_STASH_KEEP,
   FOREST_WINDUP_MS,
   type ForestTile,
   type PendingActKind,
 } from '@/engine/forest';
-import { cameraWindow, VIEW } from '@/engine/crawl';
+import { cameraWindow, VIEW, splitHaul } from '@/engine/crawl';
 import { useSmoothCamera, type SmoothCameraLayout } from '@/hooks/useSmoothCamera';
 import { bandForStage, type ForestBandId } from '@/engine/crawlBiomes';
-import type { Reward } from '@/engine/challenges';
 import { FOREST_NODES, FOREST_BEASTS, SHRINE_EVENTS, type ShrineEventKind } from '@/content/forest';
 import { BOONS } from '@/content/boons';
-import { forestThicketTree, forestFloorTile, forestNodeSprite } from '@/lib/minigameArt';
+import { forestThicketTree, forestFloorTile, forestNodeSprite, cellHash as tileJitter } from '@/lib/minigameArt';
 import { getMaterial } from '@/engine/materials';
 import { Button } from '@/components/ui/Button';
+import { Divider } from '@/components/ui/Divider';
 import { FitToWidth } from '@/components/ui/FitToWidth';
 import { cn } from '@/lib/cn';
+import type { Reward } from '@/engine/challenges';
 import { ForestControls } from './ForestControls';
 import { CrawlerAvatar } from '@/components/minigame/CrawlerAvatar';
 import { CrawlGauge } from '@/components/minigame/CrawlGauge';
 import { RemoteCrawlers } from '@/components/minigame/RemoteCrawlers';
 import { BoonChoicePanel } from '@/components/minigame/BoonChoicePanel';
 import { useCrawlRunFx } from '@/components/minigame/useCrawlRunFx';
+import { rewardChips } from '@/components/minigame/HaulChips';
 import { CrawlSpellBar } from '@/components/minigame/CrawlSpellBar';
 import { StreakBonusChip } from '@/components/character/StreakBonusChip';
 import { useCoopStore } from '@/net/coop/session';
@@ -41,7 +42,6 @@ import { CoopToasts } from '@/components/minigame/CoopToasts';
 import * as sfx from '@/lib/sfx';
 
 const CELL = 52; // px per tile
-const BOARD_PX = VIEW * CELL; // 572px
 /** Extra border cells rendered around the viewport to fill gaps during smooth scroll. */
 const MARGIN = 1;
 const RENDER_VIEW = VIEW + 2 * MARGIN; // 13 rendered rows/cols
@@ -97,12 +97,6 @@ function tintForBand(bandId: ForestBandId, rgb: [number, number, number]): [numb
 }
 
 /** Deterministic 0..1 hash for a cell — stable across renders. */
-function tileJitter(r: number, c: number): number {
-  let h = (Math.imul(r, 73856093) ^ Math.imul(c, 19349663)) >>> 0;
-  h ^= h >>> 13;
-  return (h % 1000) / 1000;
-}
-
 /** Per-cell floor background — richer than a flat colour. Band tints the base palette. */
 function floorStyle(kind: ForestTile['kind'], r: number, c: number, bandId: ForestBandId): React.CSSProperties {
   const [R0, G0, B0] = tintForBand(bandId, TILE_BG[kind]);
@@ -172,24 +166,47 @@ function floorStyle(kind: ForestTile['kind'], r: number, c: number, bandId: Fore
 }
 
 
-function rewardChips(reward: Reward): Array<{ label: string; color: string }> {
-  const out: Array<{ label: string; color: string }> = [];
-  if (reward.gold) out.push({ label: `${reward.gold} gold`, color: '#e8c860' });
-  for (const [key, n] of Object.entries(reward.materials ?? {})) {
-    if (!n) continue;
-    const mat = getMaterial(key);
-    out.push({ label: `${n} ${mat?.name ?? key}`, color: mat?.color ?? '#f3e7c9' });
-  }
-  return out;
+/**
+ * End-of-run summary card — a parchment scroll floating over the dimmed canvas
+ * (the board stays visible behind so the player can see where the run ended).
+ * accent 'gold' frames the voluntary bank; 'ember' frames a death. Mirrors the
+ * same structure in MineRunOverlay so both crawlers end on the same beat.
+ */
+function EndOfRunPanel({ accent, children }: { accent: 'gold' | 'ember'; children: React.ReactNode }) {
+  return (
+    <div className="pointer-events-auto absolute inset-0 z-40 flex items-center justify-center rounded-md bg-black/60 p-4">
+      <div
+        className={cn(
+          'texture-parchment flex w-full max-w-xs flex-col items-center gap-2.5 rounded-md border-2 p-4 text-center',
+          accent === 'ember'
+            ? 'border-ember/80 shadow-[0_0_24px_rgba(156,58,37,0.45),0_8px_28px_rgba(0,0,0,0.65)]'
+            : 'border-gold-deep/80 shadow-[0_0_24px_rgba(201,162,39,0.35),0_8px_28px_rgba(0,0,0,0.65)]',
+        )}
+      >
+        {children}
+      </div>
+    </div>
+  );
 }
 
-function HaulChips({ reward, empty }: { reward: Reward; empty: string }) {
+/** One side of the kept/lost ledger — material-colored dots with ink labels, readable on parchment. */
+function HaulLedger({ reward, empty, lost }: { reward: Reward; empty: string; lost?: boolean }) {
   const chips = rewardChips(reward);
-  if (chips.length === 0) return <span className="text-parchment-300/50">{empty}</span>;
+  if (chips.length === 0) return <span className="text-sm italic text-ink-light">{empty}</span>;
   return (
     <>
       {chips.map((chip) => (
-        <span key={chip.label} style={{ color: chip.color }}>
+        <span
+          key={chip.label}
+          className={cn(
+            'flex items-center gap-1.5 whitespace-nowrap text-sm',
+            lost ? 'text-ink-light line-through' : 'text-ink',
+          )}
+        >
+          <span
+            className="inline-block h-2 w-2 shrink-0 rounded-full ring-1 ring-black/25"
+            style={{ backgroundColor: chip.color }}
+          />
           {chip.label}
         </span>
       ))}
@@ -323,6 +340,11 @@ export function ForestRunOverlay() {
   const baseR0 = Math.max(0, r0 - MARGIN);
   const baseC0 = Math.max(0, c0 - MARGIN);
 
+  // Board size — clamped to the map when it's smaller than the fixed view window,
+  // so a small stage doesn't leave a dead black band inside the canvas.
+  const boardW = Math.min(VIEW, forest.cols) * CELL;
+  const boardH = Math.min(VIEW, forest.rows) * CELL;
+
   const vr = (worldR: number) => worldR - baseR0;
   const vc = (worldC: number) => worldC - baseC0;
   const inView = (worldR: number, worldC: number) => {
@@ -360,12 +382,13 @@ export function ForestRunOverlay() {
   const death = dead ? splitHaul(forest.haul, FOREST_DEATH_KEEP) : null;
 
   return (
-    <div className="texture-wood fixed inset-0 z-50 flex flex-col items-center gap-3 overflow-auto px-4 py-4">
+    <div className="texture-wood fixed inset-0 z-50 flex flex-col items-center gap-2 overflow-auto px-4 py-3">
       <CoopToasts />
       {/* HUD */}
       <div className="flex w-full max-w-[600px] items-center justify-between gap-3">
         <span className="font-display text-sm font-bold text-gold-bright">
-          The Wild Forest · Depth {forest.stage}
+          {/* Keep "Depth N" atomic so a narrow HUD never wraps between label and number */}
+          The Wild Forest · <span className="whitespace-nowrap">Depth {forest.stage}</span>
           <span className="ml-2 text-[11px] font-normal opacity-70">{band.name}</span>
           {forest.beasts.some((b) => FOREST_BEASTS[b.key]?.isGuardian) && (
             <span className="ml-2 rounded px-1 py-0.5 text-[10px] font-bold text-amber-300 bg-amber-900/40 border border-amber-600/50">
@@ -423,13 +446,19 @@ export function ForestRunOverlay() {
         )}
       </div>
 
-      {/* Forest board — wrapped in FitToWidth so it scales down on narrow screens */}
-      <FitToWidth contentWidth={BOARD_PX} contentHeight={BOARD_PX}>
+      {/* Forest board — FitToWidth scales it down on narrow screens; the dvh cap
+          shrinks it on short desktop viewports so the action row stays above the fold
+          (~300px is the HUD + haul + spells + buttons + hints budget). */}
+      <div
+        className="flex w-full shrink-0 justify-center"
+        style={{ maxWidth: `min(${boardW}px, max(280px, calc((100dvh - 300px) * ${boardW / boardH})))` }}
+      >
+      <FitToWidth contentWidth={boardW} contentHeight={boardH}>
       <div
         className="relative shrink-0 overflow-hidden rounded-md border-2 border-gold-deep/60"
         style={{
-          width: BOARD_PX,
-          height: BOARD_PX,
+          width: boardW,
+          height: boardH,
           boxShadow: 'inset 0 0 48px rgba(0,0,0,0.85), 0 0 0 1px rgba(0,0,0,0.5)',
         }}
       >
@@ -963,10 +992,10 @@ export function ForestRunOverlay() {
         )}
         {guardianAlert > 0 && (
           <div key={`ga-${guardianAlert}`}
-            className="pointer-events-none absolute inset-x-0 top-8 z-[59] flex justify-center"
+            className="pointer-events-none absolute inset-x-0 top-8 z-[59] flex justify-center px-3"
             style={{ animation: 'boon-deal-in 0.28s ease-out both' }}
           >
-            <span className="rounded-md border border-amber-600/60 bg-amber-900/90 px-3 py-1 font-display text-xs font-bold text-amber-300">
+            <span className="max-w-full rounded-md border border-amber-600/60 bg-amber-900/90 px-3 py-1 text-center font-display text-xs font-bold text-amber-300">
               ⚔ A guardian prowls this depth
             </span>
           </div>
@@ -974,62 +1003,72 @@ export function ForestRunOverlay() {
 
         {/* Banking summary (voluntary leave) */}
         {forest.status === 'banking' && (
-          <div className="pointer-events-auto absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 rounded-md bg-black/80 p-4 text-center">
-            <Trees className="h-9 w-9 text-emerald-300" />
-            <p className="font-display text-lg font-bold text-parchment-100">Haul Secured</p>
-            <p className="font-display text-sm text-parchment-300">
+          <EndOfRunPanel accent="gold">
+            <Trees className="h-9 w-9 text-emerald-700" />
+            <p className="font-display text-xl font-bold leading-tight text-ink">Haul Secured</p>
+            <p className="font-display text-[11px] uppercase tracking-[0.14em] text-ink-muted">
               {forest.deepest > 1 ? `Reached Depth ${forest.deepest}` : 'Depth 1 explored'}
             </p>
             {forest.score > 0 && (
-              <p className="font-display text-xs text-gold-bright">Score {forest.score.toLocaleString()}</p>
+              <p className="font-display text-xs font-bold text-gold-deep">Score {forest.score.toLocaleString()}</p>
             )}
-            <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs">
-              <HaulChips
+            <Divider className="w-full" />
+            <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
+              <HaulLedger
                 reward={{ ...forest.haul, gold: Math.round((forest.haul.gold ?? 0) * habitBonus) }}
                 empty="nothing gathered"
               />
             </div>
-            <StreakBonusChip className="text-[11px]" />
-            <Button variant="primary" onClick={endForest} className="mt-1 px-4 py-2 text-sm">
+            <div className="empty:hidden rounded-full bg-wood-800/90 px-2.5 py-1">
+              <StreakBonusChip className="text-[11px]" />
+            </div>
+            <Button variant="primary" onClick={endForest} className="mt-1 w-full px-4 py-2 text-sm">
               Bank &amp; Leave
             </Button>
-          </div>
+          </EndOfRunPanel>
         )}
 
         {/* Death summary */}
         {dead && (
-          <div className="pointer-events-auto absolute inset-0 z-40 flex flex-col items-center justify-center gap-2 rounded-md bg-black/85 p-4 text-center">
-            <Skull className="h-9 w-9 text-ember-bright" />
-            <p className="font-display text-lg font-bold text-parchment-100">Overcome by the Wild</p>
-            <p className="font-display text-xs text-parchment-300">Felled at Depth {forest.deepest}</p>
+          <EndOfRunPanel accent="ember">
+            <Skull className="h-9 w-9 text-ember" />
+            <p className="font-display text-xl font-bold leading-tight text-ember">Overcome by the Wild</p>
+            <p className="font-display text-[11px] uppercase tracking-[0.14em] text-ink-muted">
+              Felled at Depth {forest.deepest}
+            </p>
             {forest.score > 0 && (
-              <p className="font-display text-xs text-gold-bright">Score {forest.score.toLocaleString()}</p>
+              <p className="font-display text-xs font-bold text-gold-deep">Score {forest.score.toLocaleString()}</p>
             )}
-            <div className="space-y-1.5">
-              <div>
-                <div className="font-display text-[10px] uppercase tracking-wider text-parchment-300/70">Carried home</div>
-                <div className="flex flex-wrap items-center justify-center gap-x-2.5 gap-y-0.5 text-xs">
-                  <HaulChips
-                    reward={death?.kept ? { ...death.kept, gold: Math.round((death.kept.gold ?? 0) * habitBonus) } : {}}
-                    empty="nothing made it out"
-                  />
-                </div>
+            <Divider className="w-full" />
+            <div className="flex w-full items-stretch justify-center gap-3">
+              <div className="flex flex-1 flex-col items-center gap-1">
+                <span className="font-display text-[10px] font-bold uppercase tracking-wider text-emerald-700">
+                  Carried home
+                </span>
+                <HaulLedger
+                  reward={death?.kept ? { ...death.kept, gold: Math.round((death.kept.gold ?? 0) * habitBonus) } : {}}
+                  empty="nothing made it out"
+                />
               </div>
-              <div>
-                <div className="font-display text-[10px] uppercase tracking-wider text-ember-bright/80">Lost to the wild</div>
-                <div className="flex flex-wrap items-center justify-center gap-x-2.5 gap-y-0.5 text-xs opacity-80">
-                  <HaulChips reward={death?.lost ?? {}} empty="nothing lost" />
-                </div>
+              <div className="w-px bg-ink/15" />
+              <div className="flex flex-1 flex-col items-center gap-1">
+                <span className="font-display text-[10px] font-bold uppercase tracking-wider text-ember">
+                  Lost to the wild
+                </span>
+                <HaulLedger reward={death?.lost ?? {}} empty="nothing lost" lost />
               </div>
             </div>
-            <StreakBonusChip className="text-[11px]" />
-            <Button variant="primary" onClick={endForest} className="mt-1 px-4 py-2 text-sm">
+            <div className="empty:hidden rounded-full bg-wood-800/90 px-2.5 py-1">
+              <StreakBonusChip className="text-[11px]" />
+            </div>
+            <Button variant="primary" onClick={endForest} className="mt-1 w-full px-4 py-2 text-sm">
               Retrieve Haul &amp; Leave
             </Button>
-          </div>
+          </EndOfRunPanel>
         )}
       </div>
       </FitToWidth>
+      </div>
 
       {/* Spell ability bar — violet accent, always shown (buttons disable off-active), 3-line cards. */}
       <CrawlSpellBar
@@ -1095,12 +1134,13 @@ export function ForestRunOverlay() {
         )}
       </div>
 
-      {/* Touch controls */}
-      <div className="w-full max-w-[600px]">
+      {/* Touch controls — coarse-pointer devices only; desktop plays on the keyboard */}
+      <div className="pointer-coarse-only w-full max-w-[600px]">
         <ForestControls controls={controls} />
       </div>
 
-      <p className="text-center text-[10px] text-parchment-300/50">
+      {/* Keyboard hints — fine-pointer devices only (noise on phones) */}
+      <p className="pointer-fine-only text-center text-[10px] text-parchment-300/50">
         Move: arrows/WASD · Act (slash/gather/chop): space · Spells: [1-4] · Reach the{' '}
         <Trees className="inline h-3 w-3 text-emerald-300" /> tree line to push deeper.
       </p>

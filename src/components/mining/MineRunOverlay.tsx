@@ -1,26 +1,44 @@
 import { useState, useEffect, useRef } from 'react';
-import { Heart, Zap, Coins, ChevronsDown, LogOut, Gem, Sparkles } from 'lucide-react';
+import { Heart, Flame, Coins, ChevronsDown, LogOut, Gem, Sparkles } from 'lucide-react';
 import { useGameStore } from '@/store/useGameStore';
 import { useMiningLoop } from '@/hooks/useMiningLoop';
-import { canDescend, facedCell, findTombstone, sightRadiusFor, MINE_DEATH_KEEP } from '@/engine/mining';
-import { splitHaul } from '@/engine/forest';
-import { cameraWindow, VIEW } from '@/engine/crawl';
+import {
+  canDescend,
+  facedCell,
+  findTombstone,
+  sightRadiusFor,
+  isMineSafeBankTile,
+  MINE_DEATH_KEEP,
+  MINE_STASH_KEEP,
+  MINE_TOMBSTONE_RECOVER_KEEP,
+  MINE_ARCHETYPE_NAMES,
+  RICH_VEIN_WINDOW_MS,
+  GUARDIAN_SPECIAL_BLAST_RADIUS,
+  type MineTileKind,
+} from '@/engine/mining';
+import { cameraWindow, VIEW, splitHaul } from '@/engine/crawl';
 import { bandForFloor, type CrawlPalette } from '@/engine/crawlBiomes';
 import { useSmoothCamera, type SmoothCameraLayout } from '@/hooks/useSmoothCamera';
-import { MINE_ORES, MINE_MONSTERS } from '@/content/mining';
+import { MINE_ORES, MINE_MONSTERS, MINE_AFFIXES } from '@/content/mining';
 import { BOONS } from '@/content/boons';
-import { mineRockSprite, mineFloorTile, mineOreSprite, mineMaterialIcon } from '@/lib/minigameArt';
+import { mineRockSprite, mineFloorTile, mineOreSprite, mineMaterialIcon, cellHash } from '@/lib/minigameArt';
 import { getMaterial } from '@/engine/materials';
+import { toISODate } from '@/engine/date';
+import { MINE_DAILY_BONUS_FLOORS, MINE_DAILY_BONUS_MULT } from '@/store/commit';
 import * as sfx from '@/lib/sfx';
 import { Button } from '@/components/ui/Button';
+import { Divider } from '@/components/ui/Divider';
 import { FitToWidth } from '@/components/ui/FitToWidth';
 import { cn } from '@/lib/cn';
+import type { Reward } from '@/engine/challenges';
 import { MineControls } from './MineControls';
+import { guardianArt } from './GuardianArt';
 import { CrawlerAvatar } from '@/components/minigame/CrawlerAvatar';
 import { CrawlGauge } from '@/components/minigame/CrawlGauge';
 import { RemoteCrawlers } from '@/components/minigame/RemoteCrawlers';
 import { BoonChoicePanel } from '@/components/minigame/BoonChoicePanel';
 import { useCrawlRunFx } from '@/components/minigame/useCrawlRunFx';
+import { rewardChips } from '@/components/minigame/HaulChips';
 import { CrawlSpellBar } from '@/components/minigame/CrawlSpellBar';
 import { StreakBonusChip } from '@/components/character/StreakBonusChip';
 import { useCoopStore } from '@/net/coop/session';
@@ -29,16 +47,8 @@ import { usePartyStore } from '@/hooks/useParty';
 import { CoopToasts } from '@/components/minigame/CoopToasts';
 
 const CELL = 52;
-const BOARD_PX = VIEW * CELL;
 const MARGIN = 1;
 const RENDER_VIEW = VIEW + 2 * MARGIN;
-
-/** Deterministic 0..1 hash for a cell — stable across renders. */
-function cellHash(r: number, c: number): number {
-  let h = (Math.imul(r, 73856093) ^ Math.imul(c, 19349663)) >>> 0;
-  h ^= h >>> 13;
-  return (h % 1000) / 1000;
-}
 
 /** Per-cell floor background with decal variety. Palette drives the base colour. */
 function floorStyle(r: number, c: number, palette: CrawlPalette): React.CSSProperties {
@@ -96,10 +106,84 @@ function rockStyle(r: number, c: number, palette: CrawlPalette): React.CSSProper
   };
 }
 
+/**
+ * Tile-kind render registry (2.2) — kinds with a simple band-tinted-but-otherwise-static
+ * background read from here instead of a `tile.kind === 'x' ? ... : tile.kind === 'y' ...`
+ * chain, so a new tile kind (hazard tiles, a mother-lode vault — Phase 3) is one entry here
+ * instead of an edit threaded through the chain. `floor`/`ore` stay bespoke below — they
+ * need extra per-cell context (sprite lookups, the ore def) beyond just (r, c, palette).
+ */
+const MINE_TILE_STYLE: Partial<Record<MineTileKind, (r: number, c: number, palette: CrawlPalette) => React.CSSProperties>> = {
+  bedrock: () => ({
+    backgroundColor: '#0c0803',
+    backgroundImage:
+      'repeating-linear-gradient(45deg, rgba(255,255,255,0.025) 0px, rgba(255,255,255,0.025) 1px, transparent 1px, transparent 8px)',
+  }),
+  rock: rockStyle,
+  shaft: (_r, _c, palette) => ({
+    backgroundColor: '#0d1e28',
+    backgroundImage: `radial-gradient(circle at 50% 50%, ${palette.accent}55 0%, rgba(0,200,230,0.10) 55%, transparent 80%), repeating-linear-gradient(45deg, rgba(0,180,210,0.06) 0px, rgba(0,180,210,0.06) 1px, transparent 1px, transparent 6px)`,
+  }),
+  boon: () => ({
+    backgroundColor: '#3a2a00',
+    backgroundImage: 'radial-gradient(circle at 50% 45%, rgba(255,215,0,0.28) 0%, transparent 65%)',
+    animation: 'mine-boon-pulse 2s ease-in-out infinite',
+  }),
+  tombstone: () => ({
+    backgroundColor: '#1c1c2e',
+    backgroundImage: 'radial-gradient(circle at 50% 45%, rgba(180,160,255,0.22) 0%, transparent 65%)',
+    animation: 'mine-boon-pulse 2.8s ease-in-out infinite',
+  }),
+  // 3.3 band hazard tiles — frozen band's ice_slide, magma band's lava_dot.
+  ice_slide: () => ({
+    backgroundColor: '#0e2c3e',
+    backgroundImage:
+      'linear-gradient(120deg, rgba(180,235,255,0.30) 0%, transparent 35%, transparent 65%, rgba(180,235,255,0.20) 100%), radial-gradient(circle at 50% 50%, rgba(140,220,255,0.18) 0%, transparent 70%)',
+  }),
+  lava_dot: () => ({
+    backgroundColor: '#3a0e02',
+    backgroundImage: 'radial-gradient(circle at 50% 55%, rgba(255,110,20,0.45) 0%, rgba(255,60,0,0.18) 55%, transparent 80%)',
+    animation: 'mine-boon-pulse 1.4s ease-in-out infinite',
+  }),
+  // 3.4 mother lode vault — a rare high-durability node, glows to read as special at a glance.
+  vault: () => ({
+    backgroundColor: '#2a1c3a',
+    backgroundImage: 'radial-gradient(circle at 50% 45%, rgba(200,120,255,0.40) 0%, rgba(140,60,255,0.16) 55%, transparent 78%)',
+    animation: 'mine-boon-pulse 1.8s ease-in-out infinite',
+  }),
+  // 3.5 timed rich vein — urgent green glow, pulses faster than the other specials to
+  // read as "grab this now" at a glance.
+  rich_vein: () => ({
+    backgroundColor: '#0e3a1c',
+    backgroundImage: 'radial-gradient(circle at 50% 45%, rgba(120,255,150,0.40) 0%, rgba(60,220,110,0.18) 55%, transparent 78%)',
+    animation: 'mine-boon-pulse 0.9s ease-in-out infinite',
+  }),
+};
+
+/** Static per-kind icon (no ore/rock sprite lookup involved). Paired with MINE_TILE_STYLE. */
+const MINE_TILE_ICON: Partial<Record<MineTileKind, React.ReactNode>> = {
+  shaft: <ChevronsDown className="h-7 w-7 text-cyan-300" style={{ animation: 'mine-shaft-pulse 1.6s ease-in-out infinite' }} />,
+  entrance: <span className="text-[20px] text-gold-bright">◇</span>,
+  boon: <span className="text-[22px] leading-none" style={{ filter: 'drop-shadow(0 0 6px rgba(255,200,0,0.9))' }}>🎁</span>,
+  tombstone: <span className="text-[22px] leading-none" style={{ filter: 'drop-shadow(0 0 8px rgba(180,140,255,0.85))' }}>🪦</span>,
+  ice_slide: <span className="text-[16px] leading-none" style={{ filter: 'drop-shadow(0 0 4px rgba(160,225,255,0.8))' }}>❄</span>,
+  lava_dot: <Flame className="h-5 w-5 text-orange-400" style={{ filter: 'drop-shadow(0 0 5px rgba(255,100,0,0.8))' }} />,
+  vault: <Gem className="h-6 w-6 text-fuchsia-300" style={{ filter: 'drop-shadow(0 0 7px rgba(220,140,255,0.9))' }} />,
+  rich_vein: <Sparkles className="h-6 w-6 text-emerald-300" style={{ filter: 'drop-shadow(0 0 7px rgba(120,255,150,0.9))' }} />,
+};
+
+/** Equipped pickaxe tier (4.2) — mirrors src/content/gear.ts's mining.power values
+ *  (stone_pickaxe 1, iron_pickaxe 2, mithril_pickaxe 3) for the avatar's tool color. */
+function pickaxeTier(power: number): 'stone' | 'iron' | 'mithril' | undefined {
+  if (power >= 3) return 'mithril';
+  if (power === 2) return 'iron';
+  if (power === 1) return 'stone';
+  return undefined;
+}
 
 function OreIcon({ oreKey, color }: { oreKey: string; color: string }) {
   if (oreKey === 'gold_vein') return <Coins className="h-6 w-6" style={{ color }} />;
-  if (oreKey === 'energy_gem') return <Zap className="h-6 w-6" style={{ color }} />;
+  if (oreKey === 'vigor_crystal') return <Flame className="h-6 w-6" style={{ color }} />;
   if (oreKey === 'crystal_node' || oreKey === 'gemstone_node') return <Gem className="h-6 w-6" style={{ color }} />;
   const ore = MINE_ORES[oreKey];
   return <span style={{ color }}>{ore?.glyph ?? '?'}</span>;
@@ -124,6 +208,54 @@ function HaulMat({ matKey, qty }: { matKey: string; qty: number }) {
   );
 }
 
+/**
+ * End-of-run summary card — a parchment scroll floating over the dimmed canvas
+ * (the board stays visible behind so the player can see where the run ended).
+ * accent 'gold' frames the voluntary bank; 'ember' frames a death. Mirrors the
+ * same structure in ForestRunOverlay so both crawlers end on the same beat.
+ */
+function EndOfRunPanel({ accent, children }: { accent: 'gold' | 'ember'; children: React.ReactNode }) {
+  return (
+    <div className="pointer-events-auto absolute inset-0 z-40 flex items-center justify-center rounded-md bg-black/60 p-4">
+      <div
+        className={cn(
+          'texture-parchment flex w-full max-w-xs flex-col items-center gap-2.5 rounded-md border-2 p-4 text-center',
+          accent === 'ember'
+            ? 'border-ember/80 shadow-[0_0_24px_rgba(156,58,37,0.45),0_8px_28px_rgba(0,0,0,0.65)]'
+            : 'border-gold-deep/80 shadow-[0_0_24px_rgba(201,162,39,0.35),0_8px_28px_rgba(0,0,0,0.65)]',
+        )}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** One side of the kept/lost ledger — material-colored dots with ink labels, readable on parchment. */
+function HaulLedger({ reward, empty, lost }: { reward: Reward; empty: string; lost?: boolean }) {
+  const chips = rewardChips(reward);
+  if (chips.length === 0) return <span className="text-sm italic text-ink-light">{empty}</span>;
+  return (
+    <>
+      {chips.map((chip) => (
+        <span
+          key={chip.label}
+          className={cn(
+            'flex items-center gap-1.5 whitespace-nowrap text-sm',
+            lost ? 'text-ink-light line-through' : 'text-ink',
+          )}
+        >
+          <span
+            className="inline-block h-2 w-2 shrink-0 rounded-full ring-1 ring-black/25"
+            style={{ backgroundColor: chip.color }}
+          />
+          {chip.label}
+        </span>
+      ))}
+    </>
+  );
+}
+
 export function MineRunOverlay() {
   const controls = useMiningLoop();
   const mine = useGameStore((s) => s.mining);
@@ -132,9 +264,11 @@ export function MineRunOverlay() {
   const mineDescend = useGameStore((s) => s.mineDescend);
   const chooseMineBoon = useGameStore((s) => s.chooseMineBoon);
   const skipMineBoon = useGameStore((s) => s.skipMineBoon);
-  const isFirstRun = useGameStore((s) => s.deepestMineFloor === 0);
+  const deepestMineFloor = useGameStore((s) => s.deepestMineFloor);
+  const isFirstRun = deepestMineFloor === 0;
   const habitBonus = useGameStore((s) => s.character.habitBonus);
   const mineTombstone = useGameStore((s) => s.mineTombstone);
+  const mineDailyBonus = useGameStore((s) => s.mineDailyBonus);
   const remotePlayers = useCoopStore((s) => s.remotePlayers);
   const coopSession = useCoopStore((s) => s.session);
   const coopJoined = useCoopStore((s) => s.joined);
@@ -160,6 +294,9 @@ export function MineRunOverlay() {
 
   // Charge bar — updated imperatively each rAF frame to avoid React re-renders + layout shift.
   const chargeBarRef = useRef<HTMLDivElement>(null);
+  // Avatar tool group — 4.2's swing keyframe is toggled on this directly (no re-render).
+  const toolRef = useRef<HTMLDivElement>(null);
+  const lastSwingSeenRef = useRef(0);
   useEffect(() => {
     let rafId: number;
     const tick = () => {
@@ -169,6 +306,16 @@ export function MineRunOverlay() {
         const p = c.active && c.max > 0 ? c.swings / c.max : 0;
         el.style.width = `${Math.round(p * 100)}%`;
         el.style.opacity = c.active && p > 0.04 ? '1' : '0';
+      }
+      const swingAt = controls.swingAtRef.current;
+      if (swingAt > lastSwingSeenRef.current) {
+        lastSwingSeenRef.current = swingAt;
+        const toolEl = toolRef.current;
+        if (toolEl) {
+          toolEl.classList.remove('crawler-swing-anim');
+          void toolEl.offsetWidth; // reflow — restarts the keyframe on rapid re-swings
+          toolEl.classList.add('crawler-swing-anim');
+        }
       }
       rafId = requestAnimationFrame(tick);
     };
@@ -181,6 +328,8 @@ export function MineRunOverlay() {
   const hintFiredRef = useRef<Set<string>>(new Set());
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shaftWasOffscreenRef = useRef(false);
+  /** Gates the shaft compass badge (0.11) — no arrow to a shaft the player hasn't seen yet. */
+  const shaftSightedRef = useRef(false);
 
   const [wipeAt, setWipeAt] = useState(0);
   const floorMountRef = useRef(false);
@@ -224,6 +373,22 @@ export function MineRunOverlay() {
     setWipeAt(Date.now());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mine?.floor]);
+
+  // 0.11: a new floor's shaft hasn't been seen yet — the compass badge stays hidden
+  // until the player actually spots it, rather than pointing at it from the start.
+  useEffect(() => {
+    shaftSightedRef.current = false;
+  }, [mine?.floor]);
+
+  useEffect(() => {
+    if (!mine || shaftSightedRef.current) return;
+    const sp = mine.shaftPos;
+    if (!sp) return;
+    const { r0, c0 } = cameraWindow(mine.player, mine.rows, mine.cols);
+    const inViewport = sp.r >= r0 && sp.r < r0 + VIEW && sp.c >= c0 && sp.c < c0 + VIEW;
+    if (inViewport) shaftSightedRef.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mine?.player.r, mine?.player.c, mine?.floor]);
 
   // Shaft visibility hint — fires once when the shaft first enters the viewport.
   // Can't use the shaftDir derived variable (declared after the mine null-guard),
@@ -286,6 +451,11 @@ export function MineRunOverlay() {
   const baseR0 = Math.max(0, r0 - MARGIN);
   const baseC0 = Math.max(0, c0 - MARGIN);
 
+  // Board size — clamped to the map when it's smaller than the fixed view window,
+  // so a small floor doesn't leave a dead black band inside the canvas.
+  const boardW = Math.min(VIEW, mine.cols) * CELL;
+  const boardH = Math.min(VIEW, mine.rows) * CELL;
+
   // Directional compass — an 8-way arrow to an off-screen point of interest (null when on-screen).
   const compassTo = (target: { r: number; c: number } | null | undefined) => {
     if (!target) return null;
@@ -300,8 +470,9 @@ export function MineRunOverlay() {
     if (dr < 0 && dc > 0) return '↗';
     return '↖';
   };
-  // Shaft directional indicator — show an arrow when the shaft is off-screen.
-  const shaftDir = compassTo(mine.shaftPos);
+  // Shaft directional indicator — show an arrow when the shaft is off-screen, but only
+  // once the player has actually seen it at least once this floor (0.11).
+  const shaftDir = shaftSightedRef.current ? compassTo(mine.shaftPos) : null;
   // MINI-31: tombstone compass — points back to a dropped tombstone so recovery isn't a blind sweep.
   const tombDir = compassTo(findTombstone(mine));
 
@@ -335,13 +506,16 @@ export function MineRunOverlay() {
   const lightY = (mine.player.r - baseR0) * CELL + CELL / 2;
 
   return (
-    <div className="texture-wood fixed inset-0 z-50 flex flex-col items-center gap-3 overflow-auto px-4 py-4">
+    <div className="texture-wood fixed inset-0 z-50 flex flex-col items-center gap-2 overflow-auto px-4 py-3">
       <CoopToasts />
       {/* HUD */}
       <div className="flex w-full max-w-lg items-center justify-between gap-3">
         <span className="font-display text-sm font-bold text-gold-bright">
-          The Deep Mine · Floor {mine.floor}
-          <span className="ml-2 text-[11px] font-normal opacity-70">{band.name}</span>
+          {/* Keep "Floor N" atomic so a narrow HUD never wraps between label and number */}
+          The Deep Mine · <span className="whitespace-nowrap">Floor {mine.floor}</span>
+          <span className="ml-2 text-[11px] font-normal opacity-70">
+            {band.name} · {MINE_ARCHETYPE_NAMES[mine.archetype ?? 'sprawl']}
+          </span>
           {mine.monsters.some((m) => MINE_MONSTERS[m.key]?.isGuardian) && (
             <span className="ml-2 rounded px-1 py-0.5 text-[10px] font-bold text-amber-300 bg-amber-900/40 border border-amber-600/50">
               ⚔ Guardian
@@ -378,7 +552,7 @@ export function MineRunOverlay() {
         </span>
         <div className="flex flex-col items-end gap-1">
           <CrawlGauge icon={<Heart className="h-3.5 w-3.5 text-stat-HP" />} value={mine.hp} max={mine.maxHp} fill="#2e8a5e" />
-          <CrawlGauge icon={<Zap className="h-3.5 w-3.5 text-stat-AG" />} value={mine.sta} max={mine.maxSta} fill="#b8860b" />
+          <CrawlGauge icon={<Flame className="h-3.5 w-3.5 text-stat-AG" />} value={mine.sta} max={mine.maxSta} fill="#b8860b" />
           {mine.maxMp > 0 && (
             <CrawlGauge icon={<Sparkles className="h-3.5 w-3.5 text-blue-400" />} value={mine.mp} max={mine.maxMp} fill="#4f7ed4" />
           )}
@@ -446,13 +620,19 @@ export function MineRunOverlay() {
         </div>
       )}
 
-      {/* Cavern viewport — wrapped in FitToWidth so it scales down on narrow screens */}
-      <FitToWidth contentWidth={BOARD_PX} contentHeight={BOARD_PX}>
+      {/* Cavern viewport — FitToWidth scales it down on narrow screens; the dvh cap
+          shrinks it on short desktop viewports so the action row stays above the fold
+          (~300px is the HUD + haul + spells + buttons + hints budget). */}
+      <div
+        className="flex w-full shrink-0 justify-center"
+        style={{ maxWidth: `min(${boardW}px, max(280px, calc((100dvh - 300px) * ${boardW / boardH})))` }}
+      >
+      <FitToWidth contentWidth={boardW} contentHeight={boardH}>
       <div
         className="relative shrink-0 overflow-hidden rounded-md border-2 border-gold-deep/60"
         style={{
-          width: BOARD_PX,
-          height: BOARD_PX,
+          width: boardW,
+          height: boardH,
           boxShadow: 'inset 0 0 56px rgba(0,0,0,0.92), 0 0 0 1px rgba(0,0,0,0.5)',
         }}
       >
@@ -488,17 +668,10 @@ export function MineRunOverlay() {
             const px = vj * CELL;
             const py = vi * CELL;
 
+            const registryStyleFn = MINE_TILE_STYLE[tile.kind];
             const tileStyleProp: React.CSSProperties =
-              tile.kind === 'bedrock'
-                ? {
-                    backgroundColor: '#0c0803',
-                    backgroundImage:
-                      'repeating-linear-gradient(45deg, rgba(255,255,255,0.025) 0px, rgba(255,255,255,0.025) 1px, transparent 1px, transparent 8px)',
-                  }
-                : tile.kind === 'rock'
-                ? rockStyle(r, c, band.palette)
-                : tile.kind === 'shaft'
-                ? { backgroundColor: '#0d1e28', backgroundImage: `radial-gradient(circle at 50% 50%, ${band.palette.accent}55 0%, rgba(0,200,230,0.10) 55%, transparent 80%), repeating-linear-gradient(45deg, rgba(0,180,210,0.06) 0px, rgba(0,180,210,0.06) 1px, transparent 1px, transparent 6px)` }
+              registryStyleFn
+                ? registryStyleFn(r, c, band.palette)
                 : isFloor
                 ? floorImg
                   ? {
@@ -511,10 +684,6 @@ export function MineRunOverlay() {
                   : floorStyle(r, c, band.palette)
                 : tile.kind === 'ore'
                 ? { backgroundColor: '#3a2c1c', backgroundImage: ore ? `radial-gradient(circle at 55% 42%, ${ore.color}22 0%, transparent 60%)` : undefined }
-                : tile.kind === 'boon'
-                ? { backgroundColor: '#3a2a00', backgroundImage: 'radial-gradient(circle at 50% 45%, rgba(255,215,0,0.28) 0%, transparent 65%)', animation: 'mine-boon-pulse 2s ease-in-out infinite' }
-                : tile.kind === 'tombstone'
-                ? { backgroundColor: '#1c1c2e', backgroundImage: 'radial-gradient(circle at 50% 45%, rgba(180,160,255,0.22) 0%, transparent 65%)', animation: 'mine-boon-pulse 2.8s ease-in-out infinite' }
                 : { backgroundColor: '#2a1e12' };
 
             return (
@@ -543,18 +712,22 @@ export function MineRunOverlay() {
                   <img src={oreImg} alt={ore?.name} title={ore?.name} className="pointer-events-none absolute inset-0 h-full w-full object-contain image-pixel" />
                 ) : ore ? (
                   <OreIcon oreKey={tile.oreKey!} color={ore.color} />
-                ) : tile.kind === 'shaft' ? (
-                  <ChevronsDown className="h-7 w-7 text-cyan-300" style={{ animation: 'mine-shaft-pulse 1.6s ease-in-out infinite' }} />
-                ) : tile.kind === 'entrance' ? (
-                  <span className="text-[20px] text-gold-bright">◇</span>
-                ) : tile.kind === 'boon' ? (
-                  <span className="text-[22px] leading-none" style={{ filter: 'drop-shadow(0 0 6px rgba(255,200,0,0.9))' }}>🎁</span>
-                ) : tile.kind === 'tombstone' ? (
-                  <span className="text-[22px] leading-none" style={{ filter: 'drop-shadow(0 0 8px rgba(180,140,255,0.85))' }}>🪦</span>
-                ) : null}
+                ) : (
+                  MINE_TILE_ICON[tile.kind] ?? null
+                )}
                 {tile.maxDurability != null && tile.durability != null && tile.durability < tile.maxDurability && (
                   <div className="absolute bottom-1 left-1 right-1 h-[3px] overflow-hidden rounded-full bg-black/60">
                     <div className="h-full rounded-full bg-red-400" style={{ width: `${(tile.durability / tile.maxDurability) * 100}%` }} />
+                  </div>
+                )}
+                {tile.kind === 'rich_vein' && mine.richVein && mine.richVein.r === r && mine.richVein.c === c && (
+                  <div className="absolute top-1 left-1 right-1 h-[3px] overflow-hidden rounded-full bg-black/60">
+                    <div
+                      className="h-full rounded-full bg-emerald-300"
+                      style={{
+                        width: `${Math.max(0, Math.min(100, ((mine.richVein.expiresAtMs - performance.now()) / RICH_VEIN_WINDOW_MS) * 100))}%`,
+                      }}
+                    />
                   </div>
                 )}
               </div>
@@ -711,8 +884,48 @@ export function MineRunOverlay() {
           );
         })}
 
+        {/* 3.7 guardian special telegraph — a ground-target zone marking where the slam lands */}
+        {mine.monsters.flatMap((m) => {
+          if (!m.special) return [];
+          const { targetR, targetC } = m.special;
+          const cells: Array<[number, number]> = [];
+          for (let dr = -GUARDIAN_SPECIAL_BLAST_RADIUS; dr <= GUARDIAN_SPECIAL_BLAST_RADIUS; dr++) {
+            for (let dc = -GUARDIAN_SPECIAL_BLAST_RADIUS; dc <= GUARDIAN_SPECIAL_BLAST_RADIUS; dc++) {
+              if (Math.abs(dr) + Math.abs(dc) > GUARDIAN_SPECIAL_BLAST_RADIUS) continue;
+              cells.push([targetR + dr, targetC + dc]);
+            }
+          }
+          return cells.map(([r, c]) => {
+            const vj = c - baseC0;
+            const vi = r - baseR0;
+            if (vi < 0 || vi >= RENDER_VIEW || vj < 0 || vj >= RENDER_VIEW) return null;
+            return (
+              <div
+                key={`${m.id}-telegraph-${r}-${c}`}
+                className="pointer-events-none absolute z-[7]"
+                style={{
+                  left: vj * CELL,
+                  top: vi * CELL,
+                  width: CELL,
+                  height: CELL,
+                  backgroundColor: 'rgba(255,60,20,0.30)',
+                  boxShadow: 'inset 0 0 0 2px rgba(255,110,50,0.85)',
+                  animation: 'mine-boon-pulse 0.5s ease-in-out infinite',
+                }}
+              />
+            );
+          });
+        })}
+
         {/* Monsters — rAF drives position; fog culls those outside the sight radius */}
         {mine.monsters.map((m) => {
+          const affixRing = m.affix
+            ? {
+                armored: 'ring-2 ring-slate-300',
+                swift: 'ring-2 ring-yellow-300',
+                venomous: 'ring-2 ring-emerald-400',
+              }[m.affix]
+            : undefined;
           const vj = m.c - baseC0;
           const vi = m.r - baseR0;
           if (vi < 0 || vi >= RENDER_VIEW || vj < 0 || vj >= RENDER_VIEW) return null;
@@ -721,6 +934,7 @@ export function MineRunOverlay() {
           const mdc = m.c - mine.player.c;
           if (mdr * mdr + mdc * mdc > (sightR + 0.5) * (sightR + 0.5)) return null;
           const def = MINE_MONSTERS[m.key];
+          const art = guardianArt(m.key);
           return (
             <div
               key={m.id}
@@ -728,11 +942,15 @@ export function MineRunOverlay() {
                 if (el) moverRefs.current.set(m.id, el);
                 else moverRefs.current.delete(m.id);
               }}
-              className="pointer-events-none absolute z-[8] flex items-center justify-center"
+              className={cn('pointer-events-none absolute z-[8] flex items-center justify-center', affixRing && `${affixRing} rounded-full`)}
               style={{ width: CELL, height: CELL, transform: `translate(${vj * CELL}px, ${vi * CELL}px)` }}
-              title={def?.name}
+              title={m.affix ? `${def?.name} (${MINE_AFFIXES[m.affix].name})` : def?.name}
             >
-              <span className="text-[28px] leading-none drop-shadow">{def?.glyph ?? '?'}</span>
+              {art ? (
+                <div className="h-[85%] w-[85%] drop-shadow">{art}</div>
+              ) : (
+                <span className="text-[28px] leading-none drop-shadow">{def?.glyph ?? '?'}</span>
+              )}
               {m.hp < m.maxHp && (
                 <div className="absolute -top-1.5 left-0 right-0 h-[3px] overflow-hidden rounded-full bg-black/60">
                   <div className="h-full rounded-full bg-red-400" style={{ width: `${(m.hp / m.maxHp) * 100}%` }} />
@@ -754,6 +972,12 @@ export function MineRunOverlay() {
               )}
               {(m.frozenUntilMs ?? 0) > performance.now() && (
                 <div className="absolute inset-0 rounded bg-blue-400/25 ring-1 ring-blue-300" />
+              )}
+              {m.special && (
+                <div
+                  className="absolute inset-0 rounded-full ring-2 ring-orange-400"
+                  style={{ animation: 'mine-boon-pulse 0.5s ease-in-out infinite' }}
+                />
               )}
             </div>
           );
@@ -789,6 +1013,8 @@ export function MineRunOverlay() {
             moving={moving}
             dead={dead}
             cell={CELL}
+            toolTier={pickaxeTier(mine.pickaxePower)}
+            toolRef={toolRef}
           />
         </div>
 
@@ -819,10 +1045,10 @@ export function MineRunOverlay() {
         {guardianAlertAt > 0 && (
           <div
             key={guardianAlertAt}
-            className="pointer-events-none absolute inset-x-0 top-[30%] z-[58] flex items-center justify-center"
+            className="pointer-events-none absolute inset-x-0 top-[30%] z-[58] flex items-center justify-center px-3"
           >
             <span
-              className="rounded-md border border-amber-500/70 bg-black/75 px-4 py-2 font-display text-base font-bold text-amber-300"
+              className="max-w-full rounded-md border border-amber-500/70 bg-black/75 px-4 py-2 text-center font-display text-base font-bold text-amber-300"
               style={{ animation: 'tactics-floater 3s ease-out forwards', textShadow: '0 0 12px rgba(251,191,36,0.8)' }}
             >
               ⚔ A guardian stirs…
@@ -830,11 +1056,11 @@ export function MineRunOverlay() {
           </div>
         )}
 
-        {/* First-run contextual hints */}
+        {/* First-run contextual hints — max-w-full keeps long tips wrapping inside the canvas */}
         {activeHint && (
           <div className="pointer-events-none absolute inset-x-0 bottom-[12%] z-[58] flex items-center justify-center px-3">
             <span
-              className="rounded-md border border-sky-500/60 bg-black/80 px-4 py-2 font-display text-sm text-sky-200"
+              className="max-w-full rounded-md border border-sky-500/60 bg-black/80 px-4 py-2 text-center font-display text-sm text-sky-200"
               style={{ animation: 'crawl-wipe 0.3s ease-out forwards, tactics-floater 5.5s 0.3s ease-out forwards' }}
             >
               💡 {activeHint}
@@ -895,30 +1121,69 @@ export function MineRunOverlay() {
         )}
 
         {/* Banking overlay */}
-        {mine.status === 'banking' && (
-          <div className="pointer-events-auto absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 rounded-md bg-black/80 p-4 text-center">
-            <span className="text-4xl leading-none">⛏️</span>
-            <p className="font-display text-lg font-bold text-parchment-100">Haul Secured</p>
-            <p className="font-display text-sm text-parchment-300">
-              {mine.deepest > 1 ? `Reached floor ${mine.deepest}` : 'Floor 1 cleared'}
-            </p>
-            <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-parchment-200">
-              <span className="flex items-center gap-1 text-gold-bright">
-                <Coins className="h-3.5 w-3.5" /> {Math.round((mine.haul.gold ?? 0) * habitBonus)}
-              </span>
-              {haulMats.map(([key, n]) => (
-                <HaulMat key={key} matKey={key} qty={n} />
-              ))}
-              {haulMats.length === 0 && (mine.haul.gold ?? 0) === 0 && (
-                <span className="text-parchment-300/50">nothing gathered</span>
+        {mine.status === 'banking' && (() => {
+          const onSafe = isMineSafeBankTile(mine.tiles[mine.player.r]?.[mine.player.c]?.kind);
+          const { kept, lost } = splitHaul(mine.haul, onSafe ? 1 : MINE_STASH_KEEP);
+          // 3.8: the daily first-descent bonus is applied at commit time in store/commit.ts —
+          // mirror that math here so the preview matches what actually gets banked.
+          const dailyFloorsUsed = mineDailyBonus?.date === toISODate() ? mineDailyBonus.floorsUsed : 0;
+          const dailyBonusActive = dailyFloorsUsed < MINE_DAILY_BONUS_FLOORS;
+          const goldMult = habitBonus * (dailyBonusActive ? MINE_DAILY_BONUS_MULT : 1);
+          const newRecord = mine.deepest > deepestMineFloor;
+          return (
+            <EndOfRunPanel accent="gold">
+              <span className="text-4xl leading-none">⛏️</span>
+              <p className="font-display text-xl font-bold leading-tight text-ink">Haul Secured</p>
+              <p className="font-display text-[11px] uppercase tracking-[0.14em] text-ink-muted">
+                {mine.deepest > 1 ? `Reached floor ${mine.deepest}` : 'Floor 1 cleared'}
+              </p>
+              {newRecord && (
+                <span className="rounded-full border border-gold-deep/60 bg-gold/15 px-2.5 py-0.5 font-display text-[11px] font-bold text-gold-deep">
+                  ✦ New depth record
+                </span>
               )}
-            </div>
-            <StreakBonusChip className="text-[11px]" />
-            <Button variant="primary" onClick={endMining} className="mt-1 px-4 py-2 text-sm">
-              Bank &amp; Leave
-            </Button>
-          </div>
-        )}
+              {dailyBonusActive && (
+                <span className="rounded-full border border-amber-700/40 bg-amber-500/15 px-2.5 py-0.5 font-display text-[11px] font-bold text-amber-800">
+                  🎉 Daily bonus ×{MINE_DAILY_BONUS_MULT} gold
+                </span>
+              )}
+              <Divider className="w-full" />
+              {onSafe ? (
+                <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
+                  <HaulLedger
+                    reward={{ ...kept, gold: Math.round((kept.gold ?? 0) * goldMult) }}
+                    empty="nothing gathered"
+                  />
+                </div>
+              ) : (
+                <div className="flex w-full items-stretch justify-center gap-3">
+                  <div className="flex flex-1 flex-col items-center gap-1">
+                    <span className="font-display text-[10px] font-bold uppercase tracking-wider text-emerald-700">
+                      Kept ({Math.round(MINE_STASH_KEEP * 100)}%)
+                    </span>
+                    <HaulLedger
+                      reward={{ ...kept, gold: Math.round((kept.gold ?? 0) * goldMult) }}
+                      empty="nothing"
+                    />
+                  </div>
+                  <div className="w-px bg-ink/15" />
+                  <div className="flex flex-1 flex-col items-center gap-1">
+                    <span className="font-display text-[10px] font-bold uppercase tracking-wider text-ember">
+                      Forfeit ({Math.round((1 - MINE_STASH_KEEP) * 100)}%)
+                    </span>
+                    <HaulLedger reward={lost} empty="nothing" lost />
+                  </div>
+                </div>
+              )}
+              <div className="empty:hidden rounded-full bg-wood-800/90 px-2.5 py-1">
+                <StreakBonusChip className="text-[11px]" />
+              </div>
+              <Button variant="primary" onClick={endMining} className="mt-1 w-full px-4 py-2 text-sm">
+                {onSafe ? 'Bank & Leave' : `Bank ${Math.round(MINE_STASH_KEEP * 100)}% & Leave`}
+              </Button>
+            </EndOfRunPanel>
+          );
+        })()}
 
         {/* Boon choice panel (pauses the run while the player picks). Mine plays a sound
             on pick and shows the cards statically (no stagger animation). */}
@@ -932,48 +1197,56 @@ export function MineRunOverlay() {
         {/* Death overlay */}
         {mine.status === 'ended' && (() => {
           const death = splitHaul(mine.haul, MINE_DEATH_KEEP);
-          const keptGold = death.kept.gold ?? 0;
-          const lostGold = death.lost.gold ?? 0;
-          const keptMats = Object.entries(death.kept.materials ?? {}).filter(([, n]) => n > 0);
-          const lostMats = Object.entries(death.lost.materials ?? {}).filter(([, n]) => n > 0);
+          const hasLost = rewardChips(death.lost).length > 0;
+          const newRecord = mine.deepest > deepestMineFloor;
           return (
-            <div className="pointer-events-auto absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 rounded-md bg-black/80 p-4 text-center">
+            <EndOfRunPanel accent="ember">
               <span className="text-4xl leading-none">💀</span>
-              <p className="font-display text-lg font-bold text-parchment-100">Fallen in the Deep</p>
-              <p className="font-display text-sm text-parchment-300">Reached floor {mine.deepest}</p>
-              <div className="flex gap-4 text-xs">
-                <div className="flex flex-col items-center gap-1">
-                  <span className="font-display text-[10px] uppercase tracking-wider text-emerald-400/80">Kept (50%)</span>
-                  <div className="flex flex-wrap justify-center gap-x-2 gap-y-0.5 text-parchment-200">
-                    <span className="flex items-center gap-1 text-gold-bright"><Coins className="h-3 w-3" /> {Math.round(keptGold * habitBonus)}</span>
-                    {keptMats.map(([key, n]) => <HaulMat key={key} matKey={key} qty={n} />)}
-                    {keptGold === 0 && keptMats.length === 0 && <span className="text-parchment-300/50">nothing</span>}
-                  </div>
+              <p className="font-display text-xl font-bold leading-tight text-ember">Fallen in the Deep</p>
+              <p className="font-display text-[11px] uppercase tracking-[0.14em] text-ink-muted">
+                Reached floor {mine.deepest}
+              </p>
+              {newRecord && (
+                <span className="rounded-full border border-gold-deep/60 bg-gold/15 px-2.5 py-0.5 font-display text-[11px] font-bold text-gold-deep">
+                  ✦ New depth record
+                </span>
+              )}
+              <Divider className="w-full" />
+              <div className="flex w-full items-stretch justify-center gap-3">
+                <div className="flex flex-1 flex-col items-center gap-1">
+                  <span className="font-display text-[10px] font-bold uppercase tracking-wider text-emerald-700">
+                    Kept ({Math.round(MINE_DEATH_KEEP * 100)}%)
+                  </span>
+                  <HaulLedger
+                    reward={{ ...death.kept, gold: Math.round((death.kept.gold ?? 0) * habitBonus) }}
+                    empty="nothing"
+                  />
                 </div>
-                <div className="w-px bg-parchment-300/20" />
-                <div className="flex flex-col items-center gap-1">
-                  <span className="font-display text-[10px] uppercase tracking-wider text-red-400/80">Lost (50%){lostGold > 0 || lostMats.length > 0 ? ' — recoverable' : ''}</span>
-                  <div className="flex flex-wrap justify-center gap-x-2 gap-y-0.5 text-parchment-300/60 line-through">
-                    <span className="flex items-center gap-1"><Coins className="h-3 w-3" /> {lostGold}</span>
-                    {lostMats.map(([key, n]) => <HaulMat key={key} matKey={key} qty={n} />)}
-                    {lostGold === 0 && lostMats.length === 0 && <span className="no-underline text-parchment-300/40">nothing</span>}
-                  </div>
-                  {(lostGold > 0 || lostMats.length > 0) && (
-                    <span className="mt-0.5 text-[10px] text-violet-400/70 no-underline">
-                      🪦 Find your tombstone to recover it
+                <div className="w-px bg-ink/15" />
+                <div className="flex flex-1 flex-col items-center gap-1">
+                  <span className="font-display text-[10px] font-bold uppercase tracking-wider text-ember">
+                    Lost ({Math.round((1 - MINE_DEATH_KEEP) * 100)}%)
+                  </span>
+                  <HaulLedger reward={death.lost} empty="nothing" lost />
+                  {hasLost && (
+                    <span className="mt-0.5 text-[10px] text-violet-700/80">
+                      🪦 ~{Math.round(MINE_TOMBSTONE_RECOVER_KEEP * 100)}% recoverable at your tombstone
                     </span>
                   )}
                 </div>
               </div>
-              <StreakBonusChip className="text-[11px]" />
-              <Button variant="primary" onClick={endMining} className="mt-1 px-4 py-2 text-sm">
+              <div className="empty:hidden rounded-full bg-wood-800/90 px-2.5 py-1">
+                <StreakBonusChip className="text-[11px]" />
+              </div>
+              <Button variant="primary" onClick={endMining} className="mt-1 w-full px-4 py-2 text-sm">
                 Retrieve Haul &amp; Leave
               </Button>
-            </div>
+            </EndOfRunPanel>
           );
         })()}
       </div>
       </FitToWidth>
+      </div>
 
       {/* Spell ability bar — blue accent, hidden while not active, 2-line cards. */}
       <CrawlSpellBar
@@ -1012,12 +1285,13 @@ export function MineRunOverlay() {
         )}
       </div>
 
-      {/* Touch controls */}
-      <div className="w-full max-w-lg">
+      {/* Touch controls — coarse-pointer devices only; desktop plays on the keyboard */}
+      <div className="pointer-coarse-only w-full max-w-lg">
         <MineControls controls={controls} />
       </div>
 
-      <p className="text-center text-[10px] text-parchment-300/50">
+      {/* Keyboard hints — fine-pointer devices only (noise on phones) */}
+      <p className="pointer-fine-only text-center text-[10px] text-parchment-300/50">
         Move: arrow keys / WASD · Mine/Attack: space · Spells: 1–4 or tap above · Stand on{' '}
         <ChevronsDown className="inline h-3 w-3 text-cyan-300" /> shaft to descend.
       </p>

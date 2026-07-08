@@ -65,6 +65,16 @@ export function TrialsView() {
   const unlocked = level >= TRIALS_UNLOCK_LEVEL;
   const canAfford = unlimitedEnergy || energy >= TRIAL_ENERGY_COST;
 
+  // Locked trials (level gate, or stat habit not completed within 7 days) collapse
+  // to compact rows; cleared-today trials keep the full card so that state is unchanged.
+  const isLockedRow = (trial: (typeof TRIALS)[number]): boolean => {
+    if (!unlocked) return true;
+    if (!repeatMinigames && trialsClearedOn[trial.id] === today) return false;
+    return !(repeatMinigames || statCompletedWithin(habits, trial.stat, today, 7));
+  };
+  const playableTrials = TRIALS.filter((t) => !isLockedRow(t));
+  const lockedTrials = TRIALS.filter(isLockedRow);
+
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
       <SectionTitle tone="wood">Skill Trials</SectionTitle>
@@ -72,8 +82,9 @@ export function TrialsView() {
       <Panel tone="parchment" className="p-4 space-y-2">
         <div className="flex items-center gap-2">
           <Target className="h-5 w-5 text-gold-deep" />
-          <p className="font-display text-sm text-ink">
-            Eight daily challenges — one for each stat. Each trial costs <span className="font-semibold">⚡ {TRIAL_ENERGY_COST}</span> and is playable once per day, rewarding stat XP and gold scaled by your score. Complete a habit of the matching stat within 7 days to unlock each trial.
+          {/* Body copy, not display caps — the Cinzel face is unreadable at paragraph length. */}
+          <p className="text-sm text-ink-muted tracking-normal">
+            Eight daily challenges — one for each stat. Each trial costs <span className="font-semibold text-ink">⚡ {TRIAL_ENERGY_COST}</span> and is playable once per day, rewarding stat XP and gold scaled by your score. Complete a habit of the matching stat within 7 days to unlock each trial.
           </p>
         </div>
         {!unlocked && (
@@ -83,96 +94,122 @@ export function TrialsView() {
         )}
       </Panel>
 
-      <div className="grid grid-cols-2 gap-3">
-        {TRIALS.map((trial) => {
-          const stat = getStat(trial.stat);
-          const clearedToday = !repeatMinigames && trialsClearedOn[trial.id] === today;
-          const best = bestTrialScore[trial.id] ?? 0;
-          const bestStars = best > 0 ? scoreToStars(best) : 0;
-          // Stat gate: must have a habit of this stat completed within 7 days (§4.4).
-          const statReady = repeatMinigames || statCompletedWithin(habits, trial.stat, today, 7);
-          const blocked = !unlocked || clearedToday || !statReady || !canAfford;
+      {playableTrials.length > 0 && (
+        <div className="grid grid-cols-2 gap-3">
+          {playableTrials.map((trial) => {
+            const stat = getStat(trial.stat);
+            const clearedToday = !repeatMinigames && trialsClearedOn[trial.id] === today;
+            const best = bestTrialScore[trial.id] ?? 0;
+            const bestStars = best > 0 ? scoreToStars(best) : 0;
+            const blocked = clearedToday || !canAfford;
 
-          return (
-            <button
-              key={trial.id}
-              onClick={() => {
-                if (blocked) return;
-                if (showAdventureRitual) { setPendingTrialId(trial.id); } else { setOpenTrial(trial.id); }
-              }}
-              disabled={blocked}
-              className={`relative rounded-md border-2 p-3 text-left transition-all ${
-                !unlocked
-                  ? 'border-gold-deep/20 bg-parchment-300/30 opacity-50 cursor-not-allowed'
-                  : clearedToday
+            return (
+              <button
+                key={trial.id}
+                onClick={() => {
+                  if (blocked) return;
+                  if (showAdventureRitual) { setPendingTrialId(trial.id); } else { setOpenTrial(trial.id); }
+                }}
+                disabled={blocked}
+                className={`relative rounded-md border-2 p-3 text-left transition-all ${
+                  clearedToday
                     ? 'border-emerald-500/40 bg-emerald-50/30 cursor-default'
-                    : !statReady
+                    : !canAfford
                       ? 'border-ink-light/30 bg-parchment-300/30 opacity-60 cursor-not-allowed'
-                      : !canAfford
-                        ? 'border-ink-light/30 bg-parchment-300/30 opacity-60 cursor-not-allowed'
-                        : 'border-gold-deep/40 bg-parchment-100/80 hover:border-gold-bright hover:shadow-gold active:scale-95 cursor-pointer'
-              }`}
-            >
-              {/* Status badge — priority: done → locked → no-stat → no-energy → ready */}
-              <div className="absolute right-2 top-2">
-                {clearedToday ? (
-                  <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-display font-bold text-emerald-700 whitespace-nowrap">
-                    {(() => { const { h, m } = timeUntilMidnight(nowTick); return `↺ ${h}h ${m}m`; })()}
-                  </span>
-                ) : !unlocked ? (
-                  <span className="text-[10px] text-ink-muted">🔒</span>
-                ) : !statReady ? (
-                  <span className="rounded-full bg-ink-light/10 px-1.5 py-0.5 text-[10px] font-display font-bold text-ink-muted">
-                    Need {stat.name}
-                  </span>
-                ) : !canAfford ? (
-                  <span className="rounded-full bg-ink-light/10 px-1.5 py-0.5 text-[10px] font-display font-bold text-ink-muted">
-                    Need ⚡
-                  </span>
-                ) : (
-                  <span className="rounded-full bg-gold-bright/20 px-1.5 py-0.5 text-[10px] font-display font-bold text-gold-deep">
-                    ⚡ {TRIAL_ENERGY_COST}
-                  </span>
-                )}
-              </div>
+                      : 'border-gold-deep/40 bg-parchment-100/80 hover:border-gold-bright hover:shadow-gold active:scale-95 cursor-pointer'
+                }`}
+              >
+                {/* Status badge — priority: done → no-energy → ready */}
+                <div className="absolute right-2 top-2">
+                  {clearedToday ? (
+                    <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-display font-bold text-emerald-700 whitespace-nowrap">
+                      {(() => { const { h, m } = timeUntilMidnight(nowTick); return `↺ ${h}h ${m}m`; })()}
+                    </span>
+                  ) : !canAfford ? (
+                    <span className="rounded-full bg-ink-light/10 px-1.5 py-0.5 text-[10px] font-display font-bold text-ink-muted">
+                      Need ⚡
+                    </span>
+                  ) : (
+                    <span className="rounded-full bg-gold-bright/20 px-1.5 py-0.5 text-[10px] font-display font-bold text-gold-deep">
+                      ⚡ {TRIAL_ENERGY_COST}
+                    </span>
+                  )}
+                </div>
 
-              {/* Icon + name */}
-              <div className="flex items-center gap-2 mb-1.5">
-                <span className="text-xl">{trial.glyph}</span>
-                <div>
-                  <div className="font-display text-sm font-bold text-ink leading-tight">{trial.name}</div>
-                  <div className="text-[11px] font-display font-semibold" style={{ color: stat.color }}>
-                    {stat.name}
+                {/* Icon + name */}
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="text-xl">{trial.glyph}</span>
+                  <div>
+                    <div className="font-display text-sm font-bold text-ink leading-tight">{trial.name}</div>
+                    <div className="text-[11px] font-display font-semibold" style={{ color: stat.color }}>
+                      {stat.name}
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              {/* Blurb */}
-              <p className="text-[11px] text-ink-muted leading-snug mb-2">{trial.blurb}</p>
+                {/* Blurb */}
+                <p className="text-[11px] text-ink-muted leading-snug mb-2">{trial.blurb}</p>
 
-              {/* Best score stars + percentage */}
-              {bestStars > 0 ? (
-                <div className="flex items-center gap-2">
-                  <StarRow count={bestStars as 1 | 2 | 3} />
-                  <span className="text-[10px] text-ink-muted font-display">{Math.round(best * 100)}%</span>
+                {/* Best score stars + percentage */}
+                {bestStars > 0 ? (
+                  <div className="flex items-center gap-2">
+                    <StarRow count={bestStars as 1 | 2 | 3} />
+                    <span className="text-[10px] text-ink-muted font-display">{Math.round(best * 100)}%</span>
+                  </div>
+                ) : (
+                  <div className="text-[10px] text-ink-muted/60 font-display">No record yet</div>
+                )}
+                {/* Governing stat level — bridges minigame and RPG progression */}
+                <div className="text-[10px] text-ink-muted font-display mt-0.5">
+                  Lv {statLevels[trial.stat] ?? 0} {trial.stat}
                 </div>
-              ) : (
-                <div className="text-[10px] text-ink-muted/60 font-display">No record yet</div>
-              )}
-              {/* Governing stat level — bridges minigame and RPG progression */}
-              <div className="text-[10px] text-ink-muted font-display mt-0.5">
-                Lv {statLevels[trial.stat] ?? 0} {trial.stat}
+                {/* Last-cleared date (shown when cleared on a previous day) */}
+                {trialsClearedOn[trial.id] && !clearedToday && (
+                  <div className="text-[10px] text-ink-muted/50 font-display mt-0.5">
+                    Last: {formatShortDate(trialsClearedOn[trial.id])}
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Locked trials — compact rows (icon + name + unlock condition), not full cards */}
+      {lockedTrials.length > 0 && (
+        <div className="space-y-2">
+          {lockedTrials.map((trial) => {
+            const stat = getStat(trial.stat);
+            return (
+              <div
+                key={trial.id}
+                className="texture-parchment flex items-center gap-3 rounded-md border border-gold-deep/30 px-3 py-2"
+              >
+                <span
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-md text-lg"
+                  style={{ backgroundColor: `${stat.color}1f`, color: stat.color }}
+                >
+                  {trial.glyph}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="font-display text-sm font-bold text-ink leading-tight">
+                    {trial.name}
+                    <span className="ml-1.5 text-[11px] font-semibold" style={{ color: stat.color }}>
+                      {stat.name}
+                    </span>
+                  </div>
+                  <p className="truncate text-xs text-ink-muted">
+                    {!unlocked
+                      ? `Unlocks at Level ${TRIALS_UNLOCK_LEVEL}`
+                      : `Complete a ${stat.name} habit this week to unlock`}
+                  </p>
+                </div>
+                <span className="shrink-0 text-sm text-ink-muted/60" aria-hidden>🔒</span>
               </div>
-              {/* Last-cleared date (shown when cleared on a previous day) */}
-              {trialsClearedOn[trial.id] && !clearedToday && (
-                <div className="text-[10px] text-ink-muted/50 font-display mt-0.5">
-                  Last: {formatShortDate(trialsClearedOn[trial.id])}
-                </div>
-              )}
-            </button>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Adventure ritual gate */}
       {pendingTrialId && (

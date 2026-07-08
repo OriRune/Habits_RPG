@@ -1,19 +1,11 @@
-// The only real-time code in the app. It holds no game state — it just decides *when*
-// to fire the store's discrete mining actions (move / strike / cast / monster tick) based on a
-// requestAnimationFrame clock and which keys/buttons are held. All rules live in the pure
-// engine (src/engine/mining.ts); this is purely the "when".
-import { useEffect, useRef, type MutableRefObject } from 'react';
+// Thin Deep Mine instantiation of the shared real-time crawler loop (5.1). All the
+// actual "when do we move/strike/dash/tick" logic lives in useCrawlLoop.ts; this file
+// just wires the mine's store actions and run-state accessors into a CrawlLoopCaps.
 import { useGameStore } from '@/store/useGameStore';
-import { canDescend, facedCell, facedMonsterId, type Dir } from '@/engine/mining';
-import { CHARGE_SWING_COUNT, DASH_BASE_CD_MS, CHARGE_DAMAGE_MULT } from '@/engine/crawl';
-import { boonChargeReduce } from '@/engine/crawl';
+import { canDescend, facedCell, facedMonsterId, type Dir, type MineState } from '@/engine/mining';
 import { useCoopStore } from '@/net/coop/session';
 import { useAuthStore } from '@/net/auth';
-
-const KEY_DIRS: Record<string, Dir> = {
-  ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
-  w: 'up', s: 'down', a: 'left', d: 'right',
-};
+import { useCrawlLoop, type CrawlLoopCaps, type CrawlLoopControls } from './useCrawlLoop';
 
 /** Fallback move cadence when run state has no moveIntervalMs (old saves). */
 const MOVE_INTERVAL_MS = 150;
@@ -22,261 +14,48 @@ const SWING_INTERVAL_MS = 240;
 /** How often we advance the monster clock (ms). */
 const MONSTER_TICK_MS = 120;
 
-export interface MiningControls {
-  /** Begin holding a direction (on-screen D-pad press). */
-  press: (dir: Dir) => void;
-  /** Release a held direction. */
-  release: (dir: Dir) => void;
-  /** Queue a single pick swing. */
-  swing: () => void;
-  /** Release a held charge (touch pointer-up/leave/cancel) — mirrors the keyboard keyup reset so
-   *  touch players can deliberately charge instead of firing one phantom heavy swing (MINI-18). */
-  releaseCharge: () => void;
-  /** Queue a dash in the currently-faced direction. */
-  dash: () => void;
-  /** Cast a spell by key (from ability bar buttons). */
-  castSpell: (key: string) => void;
-  /** Live charge progress for the overlay's charge-pip indicator. Read-only ref, updated every rAF frame. */
-  chargeRef: MutableRefObject<{ active: boolean; swings: number; max: number }>;
-}
+export type MiningControls = CrawlLoopControls;
+
+const mineCaps: CrawlLoopCaps<MineState> = {
+  getRun: () => useGameStore.getState().mining,
+  isActive: (run) => run.status === 'active',
+  player: (run) => run.player,
+  knownSpells: (run) => run.knownSpells,
+  activeBoons: (run) => run.activeBoons ?? [],
+  dashCooldownMs: (run) => run.dashCooldownMs,
+  lastDashMs: (run) => run.lastDashMs,
+  moveIntervalMs: (run) => run.moveIntervalMs,
+  weaponAttackStat: (run) => run.weapon.attackStat,
+  meleePower: (run) => run.meleePower,
+  rangedPower: (run) => run.rangedPower,
+  floor: (run) => run.floor,
+  tileAt: (run, r, c) => run.tiles[r]?.[c],
+
+  canDescend,
+  facedCell,
+  facedTargetId: facedMonsterId,
+
+  move: (dir: Dir) => useGameStore.getState().mineMove(dir),
+  strike: () => useGameStore.getState().mineStrike(),
+  strikeCharged: (nowMs) => useGameStore.getState().mineStrikeCharged(nowMs),
+  dash: (dir: Dir, nowMs) => useGameStore.getState().mineDash(dir, nowMs),
+  cast: (spellKey, nowMs) => useGameStore.getState().mineCast(spellKey, nowMs),
+  tick: (nowMs, coPlayers) => useGameStore.getState().mineTick(nowMs, coPlayers),
+  coopClientTick: (nowMs) => useGameStore.getState().coopClientTick(nowMs),
+  descend: () => useGameStore.getState().mineDescend(),
+
+  broadcastTile: (floor, r, c, tile) => {
+    const coop = useCoopStore.getState();
+    const myId = useAuthStore.getState().session?.user?.id;
+    coop.send?.({ type: 'tile', userId: myId ?? 'anon', floor, r, c, tile: tile as never });
+  },
+
+  moveIntervalFallbackMs: MOVE_INTERVAL_MS,
+  swingIntervalMs: SWING_INTERVAL_MS,
+  monsterTickMs: MONSTER_TICK_MS,
+};
 
 /** Drives an active Deep Mine run. Mount once inside the run overlay. */
 export function useMiningLoop(): MiningControls {
-  const held = useRef<Set<Dir>>(new Set());
-  const lastDir = useRef<Dir | null>(null);
-  const strikeQueued = useRef(false);
-  const dashQueued = useRef(false);
-  const spellQueue = useRef<string | null>(null);
-  // Charge tracking: timestamp when Space was first pressed (reset on each new press).
-  const spaceDownAt = useRef<number | null>(null);
-  const chargeConsumed = useRef(false);
-  // Exposed to the overlay for the charge-progress indicator.
-  const chargeProgressRef = useRef<{ active: boolean; swings: number; max: number }>({ active: false, swings: 0, max: 2 });
-
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      const dir = KEY_DIRS[e.key];
-      if (dir) {
-        held.current.add(dir);
-        lastDir.current = dir;
-        e.preventDefault();
-        return;
-      }
-      if (e.key === ' ' || e.key === 'Enter') {
-        if (spaceDownAt.current === null) {
-          // First press this hold: record timestamp and queue a normal swing.
-          spaceDownAt.current = performance.now();
-          chargeConsumed.current = false;
-          strikeQueued.current = true;
-        }
-        e.preventDefault();
-        return;
-      }
-      // Shift + held direction → dash
-      if (e.key === 'Shift') {
-        dashQueued.current = true;
-        e.preventDefault();
-        return;
-      }
-      // Number keys 1-4 cast spell slots
-      if (e.key >= '1' && e.key <= '4') {
-        const store = useGameStore.getState();
-        const run = store.mining;
-        if (run) {
-          const idx = parseInt(e.key, 10) - 1;
-          const spell = run.knownSpells[idx];
-          if (spell) spellQueue.current = spell;
-        }
-        e.preventDefault();
-      }
-    };
-    const onKeyUp = (e: KeyboardEvent) => {
-      const dir = KEY_DIRS[e.key];
-      if (dir) { held.current.delete(dir); return; }
-      if (e.key === ' ' || e.key === 'Enter') {
-        spaceDownAt.current = null;
-        chargeConsumed.current = false;
-      }
-    };
-    // Alt-tab/window blur can drop a keyup, leaving a direction stuck held (auto-walk on return).
-    const onBlur = () => { held.current.clear(); lastDir.current = null; };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    window.addEventListener('blur', onBlur);
-
-    let raf = 0;
-    let lastMove = 0;
-    let lastSwing = 0;
-    let lastTick = 0;
-    const loop = (now: number) => {
-      raf = requestAnimationFrame(loop);
-      const store = useGameStore.getState();
-      const run = store.mining;
-      if (!run || run.status !== 'active' || document.hidden) {
-        chargeProgressRef.current = { active: false, swings: 0, max: 2 };
-        return;
-      }
-
-      // Spell cast (instant, gated by spell's own SPELL_CD_MS in the engine)
-      if (spellQueue.current) {
-        store.mineCast(spellQueue.current, now);
-        spellQueue.current = null;
-      }
-
-      // Dash — fires once on Shift press in the currently-held direction, falling back to facing.
-      // Manual-QA: holding a direction + Shift dashes that way; nothing held dashes toward facing.
-      if (dashQueued.current) {
-        dashQueued.current = false;
-        const heldDir =
-          lastDir.current && held.current.has(lastDir.current)
-            ? lastDir.current
-            : held.current.size > 0
-              ? [...held.current][0]
-              : null;
-        const dir = heldDir ?? run.player.facing;
-        const cd = run.dashCooldownMs ?? DASH_BASE_CD_MS;
-        const lastDash = run.lastDashMs ?? -cd;
-        if (now - lastDash >= cd) {
-          store.mineDash(dir, now);
-        }
-      }
-
-      // Co-op role for this frame (solo when not joined to a session).
-      const coop = useCoopStore.getState();
-      const inCoop = coop.joined && !!coop.session;
-      const myId = useAuthStore.getState().session?.user?.id;
-      const isHost = inCoop && coop.session!.host_id === myId;
-      const isGuest = inCoop && !isHost;
-
-      // Charge detection: if Space is still held for effectiveChargeCount intervals, fire a charged swing.
-      // The Overcharge boon reduces the required hold count by 1 (minimum 1).
-      const chargeReduce = run.activeBoons ? boonChargeReduce(run.activeBoons) : 0;
-      const effectiveChargeCount = Math.max(1, CHARGE_SWING_COUNT - chargeReduce);
-
-      // Update charge-progress ref for the overlay indicator.
-      {
-        const chargeActive = spaceDownAt.current !== null && !chargeConsumed.current;
-        chargeProgressRef.current = {
-          active: chargeActive,
-          swings: chargeActive
-            ? Math.min(effectiveChargeCount, Math.floor((now - (spaceDownAt.current ?? now)) / SWING_INTERVAL_MS))
-            : 0,
-          max: effectiveChargeCount,
-        };
-      }
-      if (
-        spaceDownAt.current !== null &&
-        !chargeConsumed.current &&
-        now - spaceDownAt.current >= effectiveChargeCount * SWING_INTERVAL_MS &&
-        now - lastSwing >= SWING_INTERVAL_MS
-      ) {
-        chargeConsumed.current = true;
-        lastSwing = now;
-        if (canDescend(run) && (!inCoop || isHost)) {
-          store.mineDescend();
-        } else if (isGuest && facedMonsterId(run)) {
-          const dmg = (run.weapon.attackStat === 'DX' ? run.rangedPower : run.meleePower) * CHARGE_DAMAGE_MULT;
-          coop.send?.({ type: 'attack', userId: myId ?? 'anon', monsterId: facedMonsterId(run)!, dmg });
-        } else {
-          const { r, c } = facedCell(run);
-          const before = run.tiles[r]?.[c];
-          store.mineStrikeCharged(now);
-          if (inCoop) {
-            const after = useGameStore.getState().mining?.tiles[r]?.[c];
-            if (after && after !== before) {
-              coop.send?.({ type: 'tile', userId: myId ?? 'anon', floor: run.floor, r, c, tile: after });
-            }
-          }
-        }
-      }
-
-      if (strikeQueued.current && now - lastSwing >= SWING_INTERVAL_MS) {
-        strikeQueued.current = false;
-        lastSwing = now;
-        // The host leads the descent in co-op (guests follow via the world slice);
-        // solo descends freely. A guest can never change the floor itself.
-        const monsterId = isGuest ? facedMonsterId(run) : null;
-        if (canDescend(run) && (!inCoop || isHost)) {
-          store.mineDescend();
-        } else if (monsterId) {
-          // A guest doesn't damage its local monster copy; it sends a melee intent
-          // the host resolves (so a kill + loot happen exactly once).
-          const dmg = run.weapon.attackStat === 'DX' ? run.rangedPower : run.meleePower;
-          coop.send?.({ type: 'attack', userId: myId ?? 'anon', monsterId, dmg });
-        } else {
-          // Mining a rock/ore (or host/solo hitting a monster). Mine locally, then
-          // broadcast the changed cell so the node disappears for the whole party.
-          const { r, c } = facedCell(run);
-          const before = run.tiles[r]?.[c];
-          store.mineStrike();
-          if (inCoop) {
-            const after = useGameStore.getState().mining?.tiles[r]?.[c];
-            if (after && after !== before) {
-              coop.send?.({ type: 'tile', userId: myId ?? 'anon', floor: run.floor, r, c, tile: after });
-            }
-          }
-        }
-      }
-
-      // AG-scaled move interval from run state (falls back to constant for old saves).
-      const moveMs = run.moveIntervalMs ?? MOVE_INTERVAL_MS;
-      if (held.current.size && now - lastMove >= moveMs) {
-        // Favour the most recently pressed direction when several are held.
-        const dir =
-          lastDir.current && held.current.has(lastDir.current)
-            ? lastDir.current
-            : [...held.current][0];
-        store.mineMove(dir);
-        lastMove = now;
-      }
-      if (now - lastTick >= MONSTER_TICK_MS) {
-        if (isHost) {
-          // Host simulates monsters against all players on this floor (nearest-target).
-          const coPlayers = Object.values(coop.remotePlayers)
-            .filter((p) => p.floor === run.floor)
-            .map((p) => ({ r: p.r, c: p.c }));
-          store.mineTick(now, coPlayers);
-        } else if (isGuest) {
-          // Guest advances only its own body; the host owns monster movement.
-          store.coopClientTick(now);
-        } else {
-          store.mineTick(now);
-        }
-        lastTick = now;
-      }
-    };
-    raf = requestAnimationFrame(loop);
-
-    return () => {
-      cancelAnimationFrame(raf);
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-      window.removeEventListener('blur', onBlur);
-      held.current.clear();
-    };
-  }, []);
-
-  return {
-    press: (dir) => {
-      held.current.add(dir);
-      lastDir.current = dir;
-    },
-    release: (dir) => held.current.delete(dir),
-    swing: () => {
-      strikeQueued.current = true;
-      if (spaceDownAt.current === null) {
-        spaceDownAt.current = performance.now();
-        chargeConsumed.current = false;
-      }
-    },
-    releaseCharge: () => {
-      spaceDownAt.current = null;
-      chargeConsumed.current = false;
-    },
-    dash: () => { dashQueued.current = true; },
-    castSpell: (key) => {
-      spellQueue.current = key;
-    },
-    chargeRef: chargeProgressRef,
-  };
+  return useCrawlLoop(mineCaps);
 }

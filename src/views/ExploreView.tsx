@@ -1,5 +1,10 @@
 import { Component, Suspense, lazy, useState, type ReactNode } from 'react';
-import { DoorOpen, Pickaxe, Trees, Home } from 'lucide-react';
+import { DoorOpen, Pickaxe, Trees, Home, Zap, Hammer } from 'lucide-react';
+import { useGameStore } from '@/store/useGameStore';
+import { DUNGEON_ENERGY_COST } from '@/engine/dungeon';
+import { MINE_ENERGY_COST } from '@/engine/mining';
+import { FOREST_ENERGY_COST } from '@/engine/forest';
+import { cn } from '@/lib/cn';
 import { HubGrid, type HubCard } from '@/components/layout/HubGrid';
 import { SubModeFrame } from '@/components/layout/SubModeFrame';
 import { DungeonView } from '@/views/DungeonView';
@@ -38,6 +43,37 @@ class DungeonErrorBoundary extends Component<
 }
 
 type ExploreMode = 'delve' | 'mine' | 'forest' | 'town';
+
+/** Entry cost per mode — null for the Homestead, which is labor-funded (not a run). */
+const ENERGY_COSTS: Record<ExploreMode, number | null> = {
+  delve: DUNGEON_ENERGY_COST,
+  mine: MINE_ENERGY_COST,
+  forest: FOREST_ENERGY_COST,
+  town: null,
+};
+
+/** Small cost chip on a hub card; ember-toned when the player can't afford entry. */
+function costBadge(id: ExploreMode, energy: number): ReactNode {
+  const cost = ENERGY_COSTS[id];
+  if (cost === null) {
+    return (
+      <span className="flex items-center gap-1 font-display text-xs text-ink-muted">
+        <Hammer className="h-3.5 w-3.5" /> No energy — powered by labor
+      </span>
+    );
+  }
+  const short = energy < cost;
+  return (
+    <span
+      className={cn(
+        'flex items-center gap-1 font-display text-xs',
+        short ? 'text-ember' : 'text-ink-muted',
+      )}
+    >
+      <Zap className={cn('h-3.5 w-3.5', short ? 'text-ember' : 'text-stat-AG')} /> {cost} energy
+    </span>
+  );
+}
 
 const CARDS: HubCard<ExploreMode>[] = [
   {
@@ -100,13 +136,14 @@ const CARDS: HubCard<ExploreMode>[] = [
 
 export function ExploreView() {
   const [mode, setMode] = useState<ExploreMode | null>(null);
+  const energy = useGameStore((s) => s.character.energy);
 
   if (!mode) {
     return (
       <HubGrid
         title="Explore"
         description="Venture into the world — dungeons, mines, and the wild forest await."
-        cards={CARDS}
+        cards={CARDS.map((card) => ({ ...card, badge: costBadge(card.id, energy) }))}
         onPick={setMode}
       />
     );

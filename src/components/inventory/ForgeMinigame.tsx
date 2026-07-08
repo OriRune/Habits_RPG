@@ -1,41 +1,44 @@
-// The Forge — crafting minigame modal (M3). A full-screen overlay that plays the
-// two-phase heat economy from engine/crafting/forge.ts and, on completion, writes the
-// earned quality tier by calling craft(recipeKey, score01).
+// The Forge — crafting minigame modal. A full-screen overlay that plays the three-phase
+// heat economy from engine/crafting/forge.ts (stoke → strike → quench) over a living
+// smithy scene (ForgeScene) and, on completion, writes the earned quality tier by calling
+// craft/reforge(recipeKey, score01, boosts).
 //
 // UI discipline follows ArmoryBreak.tsx: a single rAF loop reads REFS (never React state)
-// each frame, calls the pure reducer, and writes heat/needle/zone/progress straight to DOM
-// element styles (MineRunOverlay charge-bar pattern) — React state only flips at phase
-// transitions. Hammer releases use the projectReleasePower idea (armoryBreak.ts): one
-// sub-frame stepForge from the last frame to the true pointer-up instant so strike accuracy
-// isn't quantized to frame boundaries.
-
-import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react';
+// each frame, calls the pure reducer, and writes gauge styles + three scene CSS variables
+// imperatively — React state only flips at phase/event transitions. Hammer releases and
+// quench plunges use the projectReleasePower idea (armoryBreak.ts): one sub-frame
+// stepForge from the last frame to the true pointer instant so timing isn't quantized to
+// frame boundaries.
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useGameStore } from '@/store/useGameStore';
 import {
   getRecipe,
   scoreToTier,
   reforgeCost,
   reforgeAnchorOf,
+  recipeTemperament,
   asCraftTier,
   CRAFT_TIERS,
-  FINE,
   MASTERWORK,
-  type CraftTier,
 } from '@/engine/crafting';
 import {
   initForge,
   stepForge,
   commitStoke,
-  forgeScore,
+  forgeScoreParts,
   heatBandWidth,
   strikeSweetHalf,
   strikePower,
   effectiveStrikeHalf,
+  activeZoneMult,
+  quenchHalf,
+  applyTemperament,
   boostMods,
-  HEAT_BAND_START,
+  QUENCH_BAND_CENTRE,
   type ForgeRunState,
   type ForgeMods,
   type ForgeBoosts,
+  type ForgeEventKind,
 } from '@/engine/crafting/forge';
 import { shakeOffset } from '@/engine/crawl';
 import { townPerks } from '@/engine/town';
@@ -44,32 +47,18 @@ import { getWeapon } from '@/engine/weapons';
 import { getMaterial } from '@/engine/materials';
 import { gearCrest, weaponCrest, type CrestLook } from '@/lib/sprites';
 import * as sfx from '@/lib/sfx';
+import { buzz } from '@/lib/haptics';
+import { useIsCoarsePointer } from '@/hooks/useIsCoarsePointer';
 import { Panel } from '@/components/ui/Panel';
-import { Button } from '@/components/ui/Button';
-import { Sprite } from '@/components/ui/Sprite';
-import { SceneArt } from '@/components/ui/SceneArt';
+import { ForgeScene, type ForgeSceneHandle } from './forge/ForgeScene';
+import { ForgeBoostPanel } from './forge/ForgeBoostPanel';
+import { ForgeResultPanel, type ForgeResult } from './forge/ForgeResultPanel';
 
 interface ForgeMinigameProps {
   recipeKey: string;
-  /** Unused in M3 — 'reforge' is wired in M5. Stored so the signature is stable. */
   mode?: 'craft' | 'reforge';
   onClose: () => void;
 }
-
-interface ForgeResult {
-  score01: number;
-  tier: CraftTier;
-  heat01: number;
-  strikes: number;
-}
-
-/** Per-tier flavour so a Crude reads as an honest outcome, not a bug (§7 M6 accessibility). */
-const TIER_FLAVOUR: Record<CraftTier, string> = {
-  0: 'The tempering went poorly — a rough but serviceable piece.',
-  1: 'A sound, honest piece — struck true to spec.',
-  2: 'Clean lines and a keen temper — fine work.',
-  3: 'Flawless balance and a mirror finish — a masterwork.',
-};
 
 /** Sprite key + crest for a recipe's gear/weapon result. */
 function resultArt(kind: string, key: string): { spriteKey: string; look: CrestLook; name: string } {
@@ -79,48 +68,6 @@ function resultArt(kind: string, key: string): { spriteKey: string; look: CrestL
   }
   const g = getGear(key);
   return { spriteKey: `gear:${key}`, look: gearCrest(g?.name ?? key, g?.slot), name: g?.name ?? key };
-}
-
-/** One Fuel & Flux slot (§6): toggle button, disabled + dimmed when the player can't pay. */
-function BoostSlot({
-  label,
-  desc,
-  count,
-  need,
-  selected,
-  onToggle,
-}: {
-  label: string;
-  desc: string;
-  count: number;
-  need: number;
-  selected: boolean;
-  onToggle: () => void;
-}) {
-  const affordable = count >= need;
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      disabled={!affordable}
-      aria-pressed={selected}
-      className={
-        'flex w-full items-center justify-between gap-2 rounded-md border px-3 py-2 text-left ' +
-        (selected
-          ? 'border-gold-bright bg-gold-bright/20'
-          : 'border-gold-deep/30 bg-parchment-100/60') +
-        (affordable ? '' : ' cursor-not-allowed opacity-40')
-      }
-    >
-      <div className="min-w-0">
-        <div className="text-sm font-semibold text-ink">{label}</div>
-        <div className="text-[11px] text-ink-muted">{desc}</div>
-      </div>
-      <span className={'shrink-0 text-[11px] ' + (affordable ? 'text-ink-muted' : 'text-ember')}>
-        have {count}/{need}
-      </span>
-    </button>
-  );
 }
 
 /**
@@ -153,6 +100,11 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
     sfx.setMuted(!soundEnabled);
   }, [soundEnabled]);
 
+  // Haptics only make sense on touch devices; mirror into a ref for stable callbacks.
+  const coarse = useIsCoarsePointer();
+  const coarseRef = useRef(coarse);
+  coarseRef.current = coarse;
+
   // Snapshot the combat stat levels once at mount (§4: chips + true zone widths).
   const dxRef = useRef(useGameStore.getState().character.statLevels?.DX ?? 0);
   const stRef = useRef(useGameStore.getState().character.statLevels?.ST ?? 0);
@@ -162,10 +114,14 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
 
   // Reduced motion: scale the WHOLE sim dt by 1/1.5 (slower needle + decay) and widen both
   // sweet zones ×1.5 via mods.zoneMult. Baking zoneMult into initForge widens the Phase A
-  // band too (commitStoke reads the seeded zoneMult). First gameplay-affecting a11y accom.
+  // band too (commitStoke reads the seeded zoneMult).
   const reducedMotion = useRef(
     typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   ).current;
+
+  // The metal's temperament — folded into the run mods at start so THIS recipe plays
+  // like itself (needle pace, band position, heat economy).
+  const temperamentId = recipe ? recipeTemperament(recipe) : undefined;
 
   // Fuel & Flux selection (§6). One fuel + one flux max. The pre-run panel gates the sim start.
   const [started, setStarted] = useState(false);
@@ -173,11 +129,12 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
   const [fuel, setFuel] = useState<'wood' | 'stone' | null>(null);
   const [flux, setFlux] = useState(false);
   const boosts: ForgeBoosts = fuel ? { fuel, flux } : { flux };
-  // Final mods = selected boosts, then the reduced-motion widening. Set at start into the ref.
+  // Final mods = boosts × temperament × reduced-motion widening. Set at start into the ref.
   const modsRef = useRef<ForgeMods>(runMods({ flux: false }, reducedMotion));
 
-  const [phase, setPhase] = useState<'stoke' | 'strike' | 'done'>('stoke');
+  const [phase, setPhase] = useState<'stoke' | 'strike' | 'quench' | 'done'>('stoke');
   const [result, setResult] = useState<ForgeResult | null>(null);
+  const [eventBanner, setEventBanner] = useState<ForgeEventKind | null>(null);
 
   // Live run state + inputs live in refs so the rAF loop and pointer/key callbacks never
   // read stale React state.
@@ -188,6 +145,7 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
   const rafRef = useRef<number | null>(null);
 
   // DOM targets updated imperatively each frame.
+  const sceneRef = useRef<ForgeSceneHandle>(null);
   const heatBarFillRef = useRef<HTMLDivElement>(null); // Phase A fill
   const heatFillRef = useRef<HTMLDivElement>(null); // Phase B heat gauge
   const heatCeilRef = useRef<HTMLDivElement>(null); // Phase B fatigue ceiling
@@ -195,6 +153,9 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
   const zoneRef = useRef<HTMLDivElement>(null);
   const progressFillRef = useRef<HTMLDivElement>(null);
   const strikeBadgeRef = useRef<HTMLSpanElement>(null);
+  const tempoFillRef = useRef<HTMLDivElement>(null);
+  const tempoWrapRef = useRef<HTMLDivElement>(null); // pulses gold when the rhythm locks
+  const quenchFillRef = useRef<HTMLDivElement>(null); // Phase C falling bar
   const contentRef = useRef<HTMLDivElement>(null); // shake target (whole play area)
   const strikeBarRef = useRef<HTMLDivElement>(null); // hit-flash target on strike
 
@@ -217,9 +178,15 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
     if (heatCeilRef.current) heatCeilRef.current.style.bottom = `${s.heatMax * 100}%`;
     if (needleRef.current) needleRef.current.style.left = `${s.needlePos * 100}%`;
     if (zoneRef.current) {
-      // Render the sweet-zone at its TRUE size (DX/flux widening, a11y floor, in-charge
-      // shrink) via the same engine helper stepForge scores with — no twin drift.
-      const halfW = effectiveStrikeHalf(dxRef.current, modsRef.current.zoneMult, s.chargeT, forgeSweetRef.current);
+      // Render the sweet-zone at its TRUE size (DX/flux/temperament widening, the a11y
+      // floor, the in-charge shrink, AND an active Ember Surge) via the same engine
+      // helpers stepForge scores with — no twin drift.
+      const halfW = effectiveStrikeHalf(
+        dxRef.current,
+        activeZoneMult(s, modsRef.current.zoneMult),
+        s.chargeT,
+        forgeSweetRef.current,
+      );
       const left = Math.max(0, s.zoneCentre - halfW);
       const right = Math.min(1, s.zoneCentre + halfW);
       zoneRef.current.style.left = `${left * 100}%`;
@@ -227,19 +194,63 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
     }
     if (progressFillRef.current) progressFillRef.current.style.width = `${Math.min(1, s.progress) * 100}%`;
     if (strikeBadgeRef.current) strikeBadgeRef.current.textContent = String(s.strikes.length);
+    if (tempoFillRef.current) tempoFillRef.current.style.width = `${s.tempo * 100}%`;
+    if (tempoWrapRef.current) tempoWrapRef.current.classList.toggle('forge-tempo-hot', s.tempo >= 0.75);
+    if (quenchFillRef.current) quenchFillRef.current.style.height = `${s.quenchBar * 100}%`;
+    // The scene derives everything (fire, embers, workpiece glow, temper line) from
+    // three CSS variables; the forecast is the real score of the state so far.
+    sceneRef.current?.update(s, forgeScoreParts(s).score01);
   }, []);
 
   const finishRun = useCallback((s: ForgeRunState) => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     if (contentRef.current) contentRef.current.style.transform = ''; // clear any residual shake
-    const score = forgeScore(s);
-    setResult({ score01: score, tier: scoreToTier(score), heat01: s.heat01, strikes: s.strikes.length });
+    sfx.stopDrone();
+    const { strike01, score01 } = forgeScoreParts(s);
+    setResult({
+      score01,
+      tier: scoreToTier(score01),
+      heat01: s.heat01,
+      strike01,
+      quench01: s.quench01,
+      strikes: s.strikes.length,
+      crits: s.strikes.filter((x) => x.crit).length,
+      fireDied: s.progress < 1,
+    });
     setPhase('done');
+    setEventBanner(null);
     sfx.play('forgeComplete');
   }, []);
 
-  // Single rAF loop for the whole run — stoke fill + strike sim. Stops at 'done'.
-  // Gated on `started` so the Fuel & Flux panel can be reviewed before the fire is lit.
+  /**
+   * Shared post-step bookkeeping for the loop AND the sub-frame handlers: forge-event
+   * start/end FX + banner, and phase transitions (strike→quench chime, done→result).
+   */
+  const afterStep = useCallback(
+    (prev: ForgeRunState, next: ForgeRunState) => {
+      if ((next.event?.kind ?? null) !== (prev.event?.kind ?? null)) {
+        const kind = next.event?.kind ?? null;
+        sceneRef.current?.eventFx(kind);
+        setEventBanner(kind);
+        if (kind === 'ember') sfx.play('forgeEmber');
+        else if (kind === 'snap') sfx.play('forgeSnap');
+      }
+      if (next.phase !== prev.phase) {
+        if (next.phase === 'done') {
+          finishRun(next);
+        } else if (next.phase === 'quench') {
+          setPhase('quench');
+          sfx.playNote(740, 260); // ready ping — the piece is forged, to the tub!
+        } else if (next.phase === 'strike') {
+          setPhase('strike');
+        }
+      }
+    },
+    [finishRun],
+  );
+
+  // Single rAF loop for the whole run — stoke fill, strike sim, quench fall. Stops at
+  // 'done'. Gated on `started` so the Fuel & Flux panel can be reviewed first.
   useEffect(() => {
     if (!started) return;
     const loop = (ts: number) => {
@@ -260,32 +271,40 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
       );
       stateRef.current = next;
       writeDom(next);
+      // The forge roar rises and falls with the fire (and surges on an ember event).
+      sfx.setDroneIntensity(
+        0.12 + 0.55 * Math.max(0, next.heat) + (next.event?.kind === 'ember' ? 0.25 : 0),
+      );
       // Decaying strike shake — zero offset under reduced motion (mag stays 0).
       if (contentRef.current) {
         const sh = shakeRef.current;
         const { sx, sy } = shakeOffset(sh.mag, ts - sh.t0, sh.dur, Math.random(), Math.random());
         contentRef.current.style.transform = sx || sy ? `translate3d(${sx}px,${sy}px,0)` : '';
       }
-      if (next.phase === 'done') {
-        finishRun(next);
-        return;
-      }
-      rafRef.current = requestAnimationFrame(loop);
+      afterStep(s, next);
+      if (next.phase !== 'done') rafRef.current = requestAnimationFrame(loop);
     };
     rafRef.current = requestAnimationFrame(loop);
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [started, reducedMotion, writeDom, finishRun]);
+  }, [started, reducedMotion, writeDom, afterStep]);
 
-  // Light the fire: bake the chosen boosts (+ reduced motion) into mods, seed the run, go.
+  // The drone is shared module-level audio: stop it on ANY exit path (finish handles the
+  // normal case; this cleanup covers closing the modal mid-run).
+  useEffect(() => () => sfx.stopDrone(), []);
+
+  // Light the fire: bake boosts × temperament (+ reduced motion) into mods, seed the run
+  // (Math.random rolls this run's event schedule), start the roar.
   const startForge = useCallback(() => {
-    modsRef.current = runMods(boosts, reducedMotion);
-    stateRef.current = initForge(dxRef.current, stRef.current, modsRef.current);
+    modsRef.current = applyTemperament(runMods(boosts, reducedMotion), temperamentId);
+    stateRef.current = initForge(dxRef.current, stRef.current, modsRef.current, Math.random);
     lastFrameRef.current = null;
     startedRef.current = true;
+    void sfx.resume();
+    sfx.startDrone();
     setStarted(true);
-  }, [boosts, reducedMotion]);
+  }, [boosts, reducedMotion, temperamentId]);
 
   // ── Phase A (stoke): hold to fill, release to commit ───────────────────────────
   const onStokePress = useCallback(() => {
@@ -330,19 +349,27 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
     lastFrameRef.current = releaseTs; // so the next rAF frame doesn't double-count this dt
     stateRef.current = next;
     writeDom(next);
-    // A strike fired this release → audio + shake + hit-flash keyed to accuracy/weight.
+    // A strike fired this release → audio + shake + scene FX keyed to weight/accuracy/crit.
     if (next.strikes.length > s.strikes.length) {
-      const { acc, weight } = next.strikes[next.strikes.length - 1];
-      sfx.play(acc > 0.5 ? 'forgeStrikeGood' : 'forgeStrikeMiss');
-      triggerShake(weight > 1 ? 8 : 4); // heavy strikes shake harder
+      const { acc, weight, crit } = next.strikes[next.strikes.length - 1];
+      if (weight > 1) {
+        sfx.play('forgeStrikeHeavy');
+        sfx.spikeDrone();
+      } else {
+        sfx.play(acc > 0.5 ? 'forgeStrikeGood' : 'forgeStrikeMiss');
+      }
+      if (crit) sfx.play('forgeCrit'); // rings over the clang
+      triggerShake(weight > 1 ? (crit ? 10 : 8) : crit ? 6 : 4);
+      sceneRef.current?.strike(acc, weight, crit);
+      if (coarseRef.current && acc > 0) buzz(crit ? [10, 30, 20] : weight > 1 ? 25 : 10);
       const bar = strikeBarRef.current;
       if (bar) {
         bar.classList.add('crawler-hit-flash');
         setTimeout(() => bar.classList.remove('crawler-hit-flash'), 220);
       }
     }
-    if (next.phase === 'done') finishRun(next);
-  }, [reducedMotion, writeDom, finishRun, triggerShake]);
+    afterStep(s, next);
+  }, [reducedMotion, writeDom, afterStep, triggerShake]);
 
   const onBellowsPress = useCallback(() => {
     if (stateRef.current.phase !== 'strike') return;
@@ -354,13 +381,45 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
     bellowsRef.current = false;
   }, []);
 
-  // Keyboard: Space = stoke-hold / hammer; Shift or B = bellows. Registers once (stable deps).
+  // ── Phase C (quench): one timed plunge as the bar falls ────────────────────────
+  const onQuenchPress = useCallback(() => {
+    const s = stateRef.current;
+    if (s.phase !== 'quench') return;
+    // Same sub-frame projection as strikes: the plunge lands at the true press instant.
+    const pressTs = performance.now();
+    const dt = lastFrameRef.current == null ? 0 : Math.max(0, (pressTs - lastFrameRef.current) / 1000);
+    const eff = reducedMotion ? dt / 1.5 : dt;
+    const next = stepForge(
+      s,
+      { hammerHeld: true, bellowsHeld: false },
+      eff,
+      dxRef.current,
+      stRef.current,
+      modsRef.current,
+      forgeSweetRef.current,
+    );
+    lastFrameRef.current = pressTs;
+    stateRef.current = next;
+    writeDom(next);
+    if (next.phase === 'done') {
+      sfx.play(next.quench01 > 0.4 ? 'forgeQuench' : 'forgeQuenchWeak');
+      sceneRef.current?.quenchFx(next.quench01);
+      if (coarseRef.current) buzz(30);
+      // Let the steam rise before the result panel swaps in (instant under reduced motion).
+      if (reducedMotion) finishRun(next);
+      else setTimeout(() => finishRun(next), 550);
+    }
+  }, [reducedMotion, writeDom, finishRun]);
+
+  // Keyboard: Space = stoke-hold / hammer / quench; Shift or B = bellows.
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       if (e.repeat || !startedRef.current) return;
       if (e.code === 'Space') {
         e.preventDefault();
-        if (stateRef.current.phase === 'stoke') onStokePress();
+        const p = stateRef.current.phase;
+        if (p === 'stoke') onStokePress();
+        else if (p === 'quench') onQuenchPress();
         else onHammerPress();
       } else if (e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyB') {
         e.preventDefault();
@@ -384,7 +443,7 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
       window.removeEventListener('keydown', down);
       window.removeEventListener('keyup', up);
     };
-  }, [onStokePress, commit, onHammerPress, onHammerRelease, onBellowsPress, onBellowsRelease]);
+  }, [onStokePress, commit, onHammerPress, onHammerRelease, onBellowsPress, onBellowsRelease, onQuenchPress]);
 
   if (!recipe) return null;
 
@@ -395,8 +454,12 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
   const zonePct = Math.round((strikeSweetHalf(dx, forgeSweetRef.current) / strikeSweetHalf(0) - 1) * 100);
   const powerPct = Math.round((strikePower(st) / strikePower(0) - 1) * 100);
   const art = resultArt(recipe.result.kind, recipe.result.key);
-  // Phase A band drawn at its true DX/flux-scaled size (matches commitStoke's scoring band).
+  // Phase A band drawn at its true DX/flux-scaled size and temperament-shifted position
+  // (matches commitStoke's scoring band — it reads the same seeded state).
   const bandWidth = heatBandWidth(dx) * modsRef.current.zoneMult;
+  const bandStart = stateRef.current.bandStart;
+  // Phase C band, same widening levers as the strike zone.
+  const qHalf = quenchHalf(dx, modsRef.current.zoneMult);
 
   // Re-forge (§5): honest cost copy + current→target tier. Anchor material shown by name.
   const isReforge = mode === 'reforge';
@@ -469,8 +532,32 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
       {/* Body */}
       <div className="flex-1 flex flex-col items-center justify-center p-4">
         <div ref={contentRef} className="w-full max-w-sm space-y-4">
-          {/* Anvil scene banner (art seam — swaps to a real PNG via resolveSceneImage). */}
-          <SceneArt sceneKey="forge:anvil" size="sm" />
+          {/* The living smithy — fire, embers, workpiece glow, and hammer all track the run. */}
+          <div className="relative">
+            <ForgeScene
+              ref={sceneRef}
+              workpiece={recipe.result.kind === 'weapon' ? 'blade' : 'plate'}
+              reducedMotion={reducedMotion}
+            />
+            {eventBanner && (
+              <div
+                className={
+                  'pointer-events-none absolute left-1/2 top-3 rounded-full border px-3 py-1 font-display text-xs font-bold ' +
+                  (eventBanner === 'ember'
+                    ? 'border-gold-bright bg-wood-900/85 text-gold-bright'
+                    : 'border-sky-300/60 bg-wood-900/85 text-sky-200')
+                }
+                style={
+                  reducedMotion
+                    ? { transform: 'translate(-50%, 0)' }
+                    : { animation: 'forge-float 2.6s ease-out both' }
+                }
+                role="status"
+              >
+                {eventBanner === 'ember' ? '🔥 Ember surge — strike now!' : '❄️ The coals dim — bellows!'}
+              </div>
+            )}
+          </div>
 
           {/* Stat chips — real numbers from the engine helpers (§4). */}
           <div className="flex flex-wrap justify-center gap-2">
@@ -482,46 +569,18 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
             </span>
           </div>
 
-          {!started && (
-            <Panel tone="parchment" className="p-5">
-              <div className="mb-3 text-center">
-                <div className="font-display text-sm font-bold text-ink">Fuel &amp; Flux</div>
-                <p className="text-[11px] text-ink-muted">
-                  Optional — spend spare materials to make the forge more forgiving. Consumed only
-                  if you finish the piece.
-                </p>
-              </div>
-              <div className="space-y-2">
-                {/* One fuel max (mutually exclusive), one flux max. */}
-                <BoostSlot
-                  label="Seasoned Wood"
-                  desc="2× Wood → slower heat decay"
-                  count={woodHave}
-                  need={2}
-                  selected={fuel === 'wood'}
-                  onToggle={() => setFuel((f) => (f === 'wood' ? null : 'wood'))}
-                />
-                <BoostSlot
-                  label="Firebrick"
-                  desc="2× Stone → less re-stoke fatigue"
-                  count={stoneHave}
-                  need={2}
-                  selected={fuel === 'stone'}
-                  onToggle={() => setFuel((f) => (f === 'stone' ? null : 'stone'))}
-                />
-                <BoostSlot
-                  label="Gemstone Flux"
-                  desc="1× Gemstone → both zones ×1.25 wider"
-                  count={gemHave}
-                  need={1}
-                  selected={flux}
-                  onToggle={() => setFlux((v) => !v)}
-                />
-              </div>
-              <Button onClick={startForge} className="mt-4 w-full py-3">
-                {fuel || flux ? 'Continue' : 'Just forge'}
-              </Button>
-            </Panel>
+          {!started && temperamentId && (
+            <ForgeBoostPanel
+              temperament={temperamentId}
+              woodHave={woodHave}
+              stoneHave={stoneHave}
+              gemHave={gemHave}
+              fuel={fuel}
+              flux={flux}
+              onFuel={(f) => setFuel((cur) => (cur === f ? null : f))}
+              onFlux={() => setFlux((v) => !v)}
+              onStart={startForge}
+            />
           )}
 
           {started && phase === 'stoke' && (
@@ -540,15 +599,15 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
                   onPointerUp={commit}
                   onPointerCancel={commit}
                 >
-                  {/* DX-scaled sweet band at its true position/size */}
+                  {/* DX-scaled sweet band at its true (temperament-shifted) position/size */}
                   <div
                     className="absolute w-full border-y border-gold-bright/60 bg-gold-bright/30"
-                    style={{ bottom: `${HEAT_BAND_START * 100}%`, height: `${bandWidth * 100}%` }}
+                    style={{ bottom: `${bandStart * 100}%`, height: `${bandWidth * 100}%` }}
                   />
                   {/* Fill (imperative height) */}
                   <div
                     ref={heatBarFillRef}
-                    className="absolute bottom-0 w-full bg-ember/60"
+                    className="absolute bottom-0 w-full bg-gradient-to-t from-ember to-gold-bright/80"
                     style={{ height: '0%' }}
                   />
                 </div>
@@ -563,7 +622,11 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
                 <div className="flex flex-col items-center gap-1">
                   <div className="font-display text-[10px] text-ink-muted">Heat</div>
                   <div className="relative h-48 w-8 overflow-hidden rounded-md border border-gold-deep/50 bg-parchment-300/50">
-                    <div ref={heatFillRef} className="absolute bottom-0 w-full bg-ember/70" style={{ height: '0%' }} />
+                    <div
+                      ref={heatFillRef}
+                      className="absolute bottom-0 w-full bg-gradient-to-t from-ember to-gold-bright/80"
+                      style={{ height: '0%' }}
+                    />
                     {/* Fatigue ceiling — drops after re-stokes */}
                     <div
                       ref={heatCeilRef}
@@ -574,7 +637,7 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
                 </div>
 
                 <div className="flex-1 space-y-3">
-                  {/* Needle bar + moving sweet-zone (shrinks while charging) */}
+                  {/* Needle bar + moving sweet-zone (shrinks while charging, flares on an ember surge) */}
                   <div>
                     <div className="mb-1 font-display text-[10px] text-ink-muted">Strike timing</div>
                     <div
@@ -590,10 +653,28 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
                     </div>
                   </div>
 
+                  {/* Rhythm meter — spaced, landed blows build a progress multiplier */}
+                  <div>
+                    <div className="mb-1 flex items-center justify-between font-display text-[10px] text-ink-muted">
+                      <span>Rhythm</span>
+                      <span>steady blows hit harder</span>
+                    </div>
+                    <div
+                      ref={tempoWrapRef}
+                      className="relative h-2 overflow-hidden rounded-full border border-gold-deep/40 bg-parchment-300/50"
+                    >
+                      <div
+                        ref={tempoFillRef}
+                        className="absolute left-0 top-0 h-full bg-gold-bright/80"
+                        style={{ width: '0%' }}
+                      />
+                    </div>
+                  </div>
+
                   {/* Forge progress + strike badge */}
                   <div>
                     <div className="mb-1 flex items-center justify-between font-display text-[10px] text-ink-muted">
-                      <span>Forge progress</span>
+                      <span>Forging</span>
                       <span>
                         <span ref={strikeBadgeRef}>0</span> strikes
                       </span>
@@ -638,59 +719,50 @@ export function ForgeMinigame({ recipeKey, mode = 'craft', onClose }: ForgeMinig
             </Panel>
           )}
 
-          {phase === 'done' && result && (
+          {phase === 'quench' && (
             <Panel tone="parchment" className="p-5">
-              <div className="space-y-4 text-center">
-                {/* Result art + tiny CSS spark burst on Fine/Masterwork (skipped under reduced motion). */}
-                <div className="relative mx-auto w-fit">
-                  <Sprite spriteKey={art.spriteKey} look={art.look} size="lg" className="mx-auto" />
-                  {result.tier >= FINE && !reducedMotion && (
-                    <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                      {Array.from({ length: 8 }).map((_, i) => (
-                        <span
-                          key={i}
-                          className="absolute h-1 w-1 rounded-full bg-gold-bright"
-                          style={
-                            {
-                              '--a': `${i * 45}deg`,
-                              animation: `forge-spark 0.65s ease-out ${i * 0.03}s forwards`,
-                            } as CSSProperties
-                          }
-                        />
-                      ))}
-                    </div>
-                  )}
+              <p className="mb-3 text-center text-sm text-ink">
+                <strong className="text-ink">The piece is forged!</strong> Plunge it as the metal
+                falls through the blue band.
+              </p>
+              <div className="flex items-center justify-center gap-6">
+                {/* Falling quench bar with the water band at its true position/size */}
+                <div className="relative h-48 w-14 overflow-hidden rounded-md border border-gold-deep/50 bg-parchment-300/50">
+                  <div
+                    className="absolute w-full border-y border-sky-500/70 bg-sky-400/30"
+                    style={{
+                      bottom: `${Math.max(0, QUENCH_BAND_CENTRE - qHalf) * 100}%`,
+                      height: `${Math.min(1, qHalf * 2) * 100}%`,
+                    }}
+                  />
+                  <div
+                    ref={quenchFillRef}
+                    className="absolute bottom-0 w-full border-t-2 border-parchment-100 bg-gradient-to-t from-ember to-gold-bright/80"
+                    style={{ height: '100%' }}
+                  />
                 </div>
-                {/* Tier badge — name + glyph + colour, never colour-only (a11y). */}
-                <div
-                  className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 font-display text-sm font-bold"
-                  style={{ color: CRAFT_TIERS[result.tier].color, borderColor: CRAFT_TIERS[result.tier].color }}
+                <button
+                  className="select-none touch-none rounded-md border-2 border-sky-700 bg-gradient-to-b from-sky-400 to-sky-700 px-4 py-6 font-display text-sm font-bold text-wood-900 active:scale-95"
+                  onPointerDown={(e) => {
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                    onQuenchPress();
+                  }}
                 >
-                  <span>{CRAFT_TIERS[result.tier].glyph}</span>
-                  {CRAFT_TIERS[result.tier].name} {art.name}
-                </div>
-                <p className="text-sm text-ink-muted italic leading-snug">{TIER_FLAVOUR[result.tier]}</p>
-
-                {/* Score breakdown (heat / strikes) so a near-miss reads honestly (§4). */}
-                <div className="mx-auto max-w-[16rem] rounded-md border border-gold-deep/20 bg-parchment-100/60 p-3 text-sm">
-                  <div className="flex items-center justify-between text-ink">
-                    <span>Heat</span>
-                    <span className="font-bold">{Math.round(0.35 * result.heat01 * 100)}%</span>
-                  </div>
-                  <div className="flex items-center justify-between text-ink">
-                    <span>Strikes</span>
-                    <span className="font-bold">{Math.round(Math.max(0, result.score01 - 0.35 * result.heat01) * 100)}%</span>
-                  </div>
-                  <div className="mt-1 flex items-center justify-between border-t border-gold-deep/20 pt-1 text-ink">
-                    <span className="font-display font-bold">Quality</span>
-                    <span className="font-bold text-gold-deep">{Math.round(result.score01 * 100)}%</span>
-                  </div>
-                </div>
+                  🌊 Quench!
+                  <span className="block text-[10px] font-normal opacity-80">one shot — time it</span>
+                </button>
               </div>
-              <Button onClick={handleContinue} className="mt-4 w-full py-3">
-                Continue
-              </Button>
+              <p className="mt-2 text-center text-[10px] text-ink-muted">Space = quench</p>
             </Panel>
+          )}
+
+          {phase === 'done' && result && (
+            <ForgeResultPanel
+              result={result}
+              art={art}
+              reducedMotion={reducedMotion}
+              onContinue={handleContinue}
+            />
           )}
         </div>
       </div>

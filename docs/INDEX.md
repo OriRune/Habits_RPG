@@ -74,10 +74,10 @@ Improvement plan archived — see [`archived/forest-improvement-plan.md`](./arch
 |---|---|
 | [`arena-minigame-analysis-2.md`](./arena-minigame-analysis-2.md) | **Current** analysis of the Arena (updated through Phase D: boss glyphs, minion variants, authored layouts). |
 
-### The Forge (planned, not yet built)
+### The Forge
 | File | Description |
 |---|---|
-| [`forge-minigame-development-plan.md`](./forge-minigame-development-plan.md) | Design/build plan (revision 2, 2026-07-07; not started) to turn the existing one-click Forge crafting screen (`src/components/inventory/ForgeSection.tsx`, `src/engine/crafting.ts`) into a two-phase DX/ST-driven hammering minigame with a heat economy (light/heavy strikes, re-stoking) that sets item quality tiers (Crude/Normal/Fine/Masterwork), plus a Re-forge gold sink and a Fuel & Flux slot for BAL-16 dead-end materials. None of the proposed engine/UI machinery exists yet. |
+| [`forge-minigame-development-plan.md`](./forge-minigame-development-plan.md) | Design/build plan, **all milestones M1–M6 shipped** (revision 3, 2026-07-08; human playtest-tuning pass still open, plan3 8.3). The one-click Forge crafting screen is now a three-phase DX/ST-driven hammering minigame — heat economy (light/heavy strikes, re-stoking with fatigue, tempo meter, crits, forge events, metal temperaments, quench finisher) that sets item quality tiers (Crude/Normal/Fine/Masterwork) — plus a Re-forge gold sink and a Fuel & Flux slot for BAL-16 dead-end materials. Engine: `src/engine/crafting/forge.ts` (pure reducer) + `src/engine/crafting.ts` (tiers); store: `economySlice` (`craft`/`reforge`, quality maps) + `commit.ts` seams; UI: `src/components/inventory/ForgeMinigame.tsx` + `forge/` subcomponents. |
 
 ### The Homestead (town-builder)
 | File | Description |

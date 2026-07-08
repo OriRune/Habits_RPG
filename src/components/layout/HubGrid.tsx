@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { type LucideIcon, ChevronDown, BookOpen } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
@@ -19,6 +19,8 @@ export interface HubCard<T extends string> {
   label: string;
   icon: LucideIcon;
   blurb: string;
+  /** Optional small chip under the blurb (e.g. energy cost). */
+  badge?: ReactNode;
   /** Optional inline how-to guide shown via an expandable toggle below the card. */
   guide?: MinigameGuide;
 }
@@ -49,10 +51,10 @@ export function HubGrid<T extends string>({
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {cards.map(({ id, label, icon: Icon, blurb, guide }) => (
+        {cards.map(({ id, label, icon: Icon, blurb, badge, guide }) => (
           <div
             key={id}
-            className="rounded-lg texture-parchment shadow-gold transition-shadow hover:shadow-glow"
+            className="rounded-lg texture-parchment border border-gold-deep/50 shadow-[0_3px_10px_rgba(0,0,0,0.35)] transition-shadow hover:shadow-glow"
           >
             {/* Main entry button — click to enter the minigame */}
             <button
@@ -70,6 +72,7 @@ export function HubGrid<T extends string>({
 
               <div className="font-display text-base font-bold text-ink">{label}</div>
               <p className="mt-1 text-sm leading-snug text-ink-muted">{blurb}</p>
+              {badge && <div className="mt-2">{badge}</div>}
 
               {/* Subtle chevron */}
               <span className="absolute bottom-3 right-4 font-display text-sm text-gold-deep/40">
@@ -100,7 +103,7 @@ export function HubGrid<T extends string>({
                   <div className="space-y-3 pb-4 pt-0.5">
                     {guide.sections.map((section) => (
                       <div key={section.heading}>
-                        <div className="mb-1 font-display text-[10px] uppercase tracking-widest text-gold-bright">
+                        <div className="mb-1 font-display text-[10px] uppercase tracking-widest text-gold-deep">
                           {section.heading}
                         </div>
                         {section.items && section.items.length > 0 && (

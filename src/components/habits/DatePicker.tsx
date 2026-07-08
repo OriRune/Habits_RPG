@@ -53,6 +53,7 @@ export function DatePicker({ value, onChange, minISO, maxISO, hasActivity }: Dat
         }}
         className="flex h-9 items-center justify-center rounded-md border border-gold-deep/70 px-2.5 text-on-wood texture-wood transition-colors hover:border-gold"
         aria-label="Pick a day"
+        title="Pick a day"
       >
         <CalendarDays className="h-4 w-4" />
       </button>

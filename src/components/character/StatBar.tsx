@@ -20,7 +20,9 @@ export function StatBar({ stat, level, xp, nextGain, hint }: StatBarProps) {
   return (
     <div className="flex items-center gap-3">
       <div className="w-10 shrink-0 font-display text-xs font-semibold text-ink-muted" title={tooltip}>{meta.short}</div>
-      <div className="h-3.5 flex-1 overflow-hidden rounded-full border border-gold-deep/50 bg-wood-900">
+      {/* Recessed parchment track — a near-black bar on a parchment panel reads
+          as a foreign element and swallows low-level fills. */}
+      <div className="h-3.5 flex-1 overflow-hidden rounded-full border border-gold-deep/40 bg-parchment-400/70 shadow-[inset_0_1px_3px_rgba(90,64,30,0.35)]">
         <div
           className="h-full rounded-full transition-all"
           style={{

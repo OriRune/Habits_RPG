@@ -27,6 +27,8 @@
 //  bounty        Gold dropped on death (random within [min, max]).
 // ============================================================================
 
+import type { MonsterCombatStats } from '@/engine/crawl';
+
 export interface ForestNodeDef {
   key: string;
   name: string;
@@ -45,7 +47,7 @@ export interface ForestNodeDef {
   band?: import('@/engine/crawlBiomes').ForestBandId;
 }
 
-export interface ForestBeastDef {
+export interface ForestBeastDef extends MonsterCombatStats {
   key: string;
   name: string;
   glyph: string;
@@ -56,12 +58,6 @@ export interface ForestBeastDef {
   moveCadenceMs: number;
   aggroRadius: number;
   bounty: [number, number];
-  /** Physical/magical mitigation. */
-  defense?: number;
-  /** Stats this beast is vulnerable to (higher damage). */
-  weakTo?: string[];
-  /** Stats this beast resists (lower damage). */
-  resistTo?: string[];
   /** Prey that flee from the player instead of chasing; deal no contact damage. */
   flees?: boolean;
   /** Override the default 'leather' drop material. */

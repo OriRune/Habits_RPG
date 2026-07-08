@@ -59,7 +59,7 @@ export function LoginView({ onGuest }: { onGuest?: () => void }) {
           </p>
         </header>
 
-        <Panel tone="parchment" className="space-y-4 p-5">
+        <Panel tone="parchment" frame="gold" className="space-y-4 p-5">
           <SectionTitle>{mode === 'signIn' ? 'Sign In' : 'Create Account'}</SectionTitle>
 
           <form onSubmit={submit} className="space-y-3">

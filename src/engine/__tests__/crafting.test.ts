@@ -13,12 +13,14 @@ import {
   scoreToTier,
   asCraftTier,
   tierLabel,
+  recipeTemperament,
   CRUDE,
   NORMAL,
   FINE,
   MASTERWORK,
   type CraftTier,
 } from '../crafting';
+import { TEMPERAMENTS } from '../crafting/forge';
 import { type Habit } from '../habits';
 
 function makeHabit(over: Partial<Habit> = {}): Habit {
@@ -193,5 +195,26 @@ describe('scaleGearDef / scaleWeaponDef', () => {
     expect(mw.staminaCost).toBe(mace.staminaCost);
     expect(mw.attackStat).toBe(mace.attackStat);
     expect(mw.range).toBe(mace.range);
+  });
+});
+
+describe('recipeTemperament (materials → forging personality)', () => {
+  it('metal bars forge stubborn, crystalline materials fickle, soft goods supple', () => {
+    expect(recipeTemperament(getRecipe('iron_kettle_bell')!)).toBe('stubborn');
+    expect(recipeTemperament(getRecipe('bronze_plate')!)).toBe('stubborn');
+    expect(recipeTemperament(getRecipe('obsidian_plate')!)).toBe('fickle'); // obsidian outranks its iron
+    expect(recipeTemperament(getRecipe('mithril_pickaxe')!)).toBe('fickle');
+    expect(recipeTemperament(getRecipe('bards_cloak')!)).toBe('supple');
+    expect(recipeTemperament(getRecipe('adventurers_bedroll')!)).toBe('supple');
+  });
+
+  it('crystalline materials take priority over metal (scholars_lantern is fickle)', () => {
+    expect(recipeTemperament(getRecipe('scholars_lantern')!)).toBe('fickle');
+  });
+
+  it('every recipe maps to a defined temperament', () => {
+    for (const recipe of Object.values(RECIPES)) {
+      expect(TEMPERAMENTS[recipeTemperament(recipe)]).toBeDefined();
+    }
   });
 });

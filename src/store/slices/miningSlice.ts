@@ -10,14 +10,13 @@ import {
   descend,
   castSpell as minecastSpellFn,
   applyBoonChoice as applyMineBoonChoice,
+  pickupBoonCache,
   placeTombstone,
   unlockedStartFloor,
   MINE_ENERGY_COST,
 } from '@/engine/mining';
-import { boonConsolation } from '@/engine/crawl';
 import { mulberry32, floorSeed } from '@/engine/rng';
 import { getGear } from '@/engine/gear';
-import { rollBoonChoices } from '@/engine/crawl';
 import {
   type WorldSliceInput,
   applyMineWorldSlice,
@@ -38,6 +37,8 @@ export interface MiningSlice {
   bestMineScore: number;
   /** Lost haul from the most recent death — recovered by reaching the tombstone tile. */
   mineTombstone: { floor: number; haul: Reward } | null;
+  /** Per-day first-descent bonus counter (3.8) — see GameState.mineDailyBonus doc. */
+  mineDailyBonus: { date: string; floorsUsed: number } | null;
 
   /** `startFloor` (co-op) pins the run to a shared floor; omitted = solo deeper-start (BAL-25). */
   beginMining: (seed?: number, startFloor?: number) => void;
@@ -73,6 +74,7 @@ export const createMiningSlice: StateCreator<
   deepestMineFloor: 0,
   bestMineScore: 0,
   mineTombstone: null,
+  mineDailyBonus: null,
 
   beginMining: (seed, startFloor) =>
     set((s) => {
@@ -121,6 +123,9 @@ export const createMiningSlice: StateCreator<
           agLevel,
           // Homestead Watchtower (sight perk): +1 sight radius, snapshotted at run start (co-op-safe).
           sightBonus: townPerks(s.town).sightBonus,
+          // Cross-run best floor — lets generateMine tell a genuine first guardian kill
+          // from a restart-farmed re-kill (0.5).
+          deepestMineFloor: s.deepestMineFloor,
         },
         // The start floor from the per-floor seed (co-op) so every client matches; solo
         // falls back to the live mine RNG (Math.random).
@@ -168,19 +173,7 @@ export const createMiningSlice: StateCreator<
       // panel instead of swinging. This makes pickup intentional, preventing accidental
       // triggers when sprinting through corridors mid-combat.
       if (run.tiles[r]?.[c]?.kind === 'boon') {
-        const tiles = run.tiles.map((row) => row.slice());
-        tiles[r][c] = { kind: 'floor' };
-        const choices = rollBoonChoices('mine', run.activeBoons, getMineRng());
-        // Exhausted pool rolls [] — consolation instead of an unpickable panel.
-        if (choices.length === 0) return { mining: boonConsolation({ ...run, tiles }) };
-        return {
-          mining: {
-            ...run,
-            tiles,
-            pendingBoonChoice: choices,
-            status: 'choosing' as const,
-          },
-        };
+        return { mining: pickupBoonCache(run, r, c, getMineRng()) };
       }
       return { mining: strike(run, getMineRng()) };
     }),

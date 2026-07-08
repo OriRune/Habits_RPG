@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useGameStore } from '@/store/useGameStore';
 import { selectNextStatGains } from '@/store/selectors';
 import { STATS } from '@/engine/stats';
@@ -13,6 +14,7 @@ import { Panel } from '@/components/ui/Panel';
 import { Sprite } from '@/components/ui/Sprite';
 import { SectionTitle } from '@/components/ui/Divider';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { Button } from '@/components/ui/Button';
 import { Trophy, TrendingUp } from 'lucide-react';
 
 // All discoverable classes (unique names from the chart) for the Codex.
@@ -31,6 +33,10 @@ export function CharacterView() {
   const bestForestScore = useGameStore((s) => s.bestForestScore);
   const deepestArenaTier = useGameStore((s) => s.deepestArenaTier);
   const deepestTacticsTier = useGameStore((s) => s.deepestTacticsTier);
+  const [codexExpanded, setCodexExpanded] = useState(false);
+
+  const discoveredClasses = ALL_CLASSES.filter((name) => codex.includes(name));
+  const undiscoveredClasses = ALL_CLASSES.filter((name) => !codex.includes(name));
 
   const hasAnyRecord = deepestFloor > 0 || deepestMineFloor > 0 || deepestForestStage > 0 || deepestArenaTier > 0 || deepestTacticsTier > 0;
 
@@ -52,16 +58,17 @@ export function CharacterView() {
           <TrendingUp className="h-4 w-4 text-gold-deep" />
         </div>
 
-        {/* Training XP explanation */}
-        <div className="mb-3 rounded-md border border-gold-deep/30 bg-wood-800/30 px-3 py-2 text-[11px] text-ink-muted space-y-0.5">
+        {/* Training XP explanation — parchment inset (a grey wash here muddies the
+            panel and drops ink text below readable contrast in light mode). */}
+        <div className="mb-3 rounded-md border border-gold-deep/30 bg-parchment-300/60 px-3 py-2 text-[11px] text-ink-muted space-y-0.5">
           <p>
-            <span className="font-semibold text-ink-light">Habits</span> grant{' '}
-            <span className="font-semibold text-gold-bright">Training XP</span> — the <span className="italic">xp</span> shown on each row.
+            <span className="font-semibold text-ink">Habits</span> grant{' '}
+            <span className="font-semibold text-gold-deep">Training XP</span> — the <span className="italic">xp</span> shown on each row.
           </p>
           <p>
             Training XP drives your{' '}
-            <span className="font-semibold text-ink-light">Hero Level</span>. When you level up,{' '}
-            <span className="font-semibold text-gold-bright">Hero Stats</span> (the <span className="italic">Lv</span> values) increase based on which habits you trained most.
+            <span className="font-semibold text-ink">Hero Level</span>. When you level up,{' '}
+            <span className="font-semibold text-gold-deep">Hero Stats</span> (the <span className="italic">Lv</span> values) increase based on which habits you trained most.
           </p>
           {Object.values(nextGains).some((v) => v > 0) && (
             <p className="text-gold-deep font-semibold">
@@ -148,21 +155,47 @@ export function CharacterView() {
             {codex.length} / {ALL_CLASSES.length}
           </span>
         </div>
-        <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
-          {ALL_CLASSES.map((name) => {
-            const found = codex.includes(name);
-            const adv = ADVANCED_CLASSES[name];
-            return (
-              <div key={name} className="flex flex-col items-center gap-1.5 text-center">
-                <Sprite spriteKey={`class:${name}`} look={classCrest(name)} size="md" shrouded={!found} label={found ? name : undefined} />
-                <div className={`text-xs font-semibold ${found ? 'text-ink' : 'text-ink-light'}`}>
-                  {found ? name : '???'}
-                </div>
-                {found && adv && <div className="text-[10px] text-gold-deep">→ {adv}</div>}
+        {discoveredClasses.length === 0 ? (
+          // Nothing discovered yet — a short teaser instead of a 64-shield wall of "???".
+          <div className="space-y-2">
+            <div className="flex items-center gap-3">
+              {ALL_CLASSES.slice(0, 4).map((name) => (
+                <Sprite key={name} spriteKey={`class:${name}`} look={classCrest(name)} size="md" shrouded />
+              ))}
+            </div>
+            <p className="text-sm text-ink-muted">Win battles and complete trials to discover classes.</p>
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
+              {[...discoveredClasses, ...(codexExpanded ? undiscoveredClasses : [])].map((name) => {
+                const found = codex.includes(name);
+                const adv = ADVANCED_CLASSES[name];
+                return (
+                  <div key={name} className="flex flex-col items-center gap-1.5 text-center">
+                    <Sprite spriteKey={`class:${name}`} look={classCrest(name)} size="md" shrouded={!found} label={found ? name : undefined} />
+                    <div className={`text-xs font-semibold ${found ? 'text-ink' : 'text-ink-light'}`}>
+                      {found ? name : '???'}
+                    </div>
+                    {found && adv && <div className="text-[10px] text-gold-deep">→ {adv}</div>}
+                  </div>
+                );
+              })}
+            </div>
+            {undiscoveredClasses.length > 0 && (
+              <div className="mt-3 flex items-center justify-between">
+                <span className="text-xs text-ink-muted">{undiscoveredClasses.length} more undiscovered…</span>
+                <Button
+                  variant="secondary"
+                  className="px-3 py-1 text-xs"
+                  onClick={() => setCodexExpanded((v) => !v)}
+                >
+                  {codexExpanded ? 'Hide' : 'Show'}
+                </Button>
               </div>
-            );
-          })}
-        </div>
+            )}
+          </>
+        )}
       </Panel>
     </div>
   );

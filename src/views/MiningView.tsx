@@ -37,7 +37,7 @@ export function MiningView() {
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
       <SectionTitle tone="wood">The Deep Mine</SectionTitle>
-      <Panel tone="parchment" className="space-y-4 p-5">
+      <Panel tone="parchment" frame="gold" className="space-y-4 p-5">
         <div className="flex items-center gap-3">
           <span className="flex h-12 w-12 items-center justify-center rounded-md texture-wood border border-gold-deep/60 text-gold-bright">
             <Pickaxe className="h-6 w-6" />
@@ -104,15 +104,16 @@ export function MiningView() {
 
         <Button
           onClick={() => canEnter && showAdventureRitual ? setShowRitual(true) : (void sfx.resume(), beginMining())}
-          disabled={!canEnter || coarse}
+          disabled={!canEnter}
           className="w-full py-2.5"
         >
-          {coarse
-            ? 'Best played on desktop'
-            : canEnter
-              ? 'Enter the Mine'
-              : `Need ${MINE_ENERGY_COST} energy (complete habits)`}
+          {canEnter ? 'Enter the Mine' : `Need ${MINE_ENERGY_COST} energy (complete habits)`}
         </Button>
+        {coarse && canEnter && (
+          <p className="text-center text-[11px] text-ink-muted">
+            Full touch controls included — best with two thumbs.
+          </p>
+        )}
         {showRitual && (
           <AdventureRitualModal
             energyCost={MINE_ENERGY_COST}

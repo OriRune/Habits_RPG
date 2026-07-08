@@ -11,6 +11,8 @@
 //  ----------------
 //  glyph/color   Stand-in crest until real art exists.
 //  floorMin      Earliest mine floor this vein can appear on.
+//  floorMax      Optional latest floor this vein can appear on (rubble/bronze_vein/
+//                stone_lode stop past floor 12 so a new band feels materially different).
 //  weight        Relative spawn chance among eligible veins (higher = commoner).
 //  durability    Pick swings needed to break it.
 //  grants        What breaking it drops: gold, or a crafting material (random
@@ -22,7 +24,16 @@
 //  touchDamage   HP you lose when it reaches you (subject to a brief i-frame).
 //  moveCadenceMs How often it steps toward you (lower = faster/nastier).
 //  bounty        Gold dropped on death (random within [min, max]).
+//  weight        Relative spawn chance among eligible monsters. Default 1 — band-native
+//                monsters are weighted 3 so their band doesn't just look different.
+//
+//  ELITE AFFIXES (MINE_AFFIXES)
+//  ----------------------------
+//  Rolled onto at most one non-guardian spawn per floor past floor 10 (3.6) — see
+//  engine/mining.ts. Not a per-monster field; a table keyed by MineAffix.
 // ============================================================================
+
+import type { MonsterCombatStats } from '@/engine/crawl';
 
 export interface MineOreDef {
   key: string;
@@ -35,15 +46,18 @@ export interface MineOreDef {
   grants:
     | { kind: 'gold'; amount: [number, number] }
     | { kind: 'material'; material: string; amount: [number, number] }
-    | { kind: 'stamina'; amount: [number, number] };
+    | { kind: 'stamina'; amount: [number, number]; /** Optional HP restore alongside the stamina (cave_mushroom). */ hpAmount?: [number, number] };
   /**
    * If set, this vein only spawns in the named biome band.
    * Omit for band-agnostic ores (eligible in any band at or above floorMin).
    */
   band?: import('@/engine/crawlBiomes').MineBandId;
+  /** If set, this vein stops spawning past this floor (3.1 — keeps floor-1 filler ore
+   *  from crowding out band-native veins once you're deep into a later band). */
+  floorMax?: number;
 }
 
-export interface MineMonsterDef {
+export interface MineMonsterDef extends MonsterCombatStats {
   key: string;
   name: string;
   glyph: string;
@@ -53,12 +67,6 @@ export interface MineMonsterDef {
   touchDamage: number;
   moveCadenceMs: number;
   bounty: [number, number];
-  /** Physical defense (reduces weapon damage). Default 0. */
-  defense?: number;
-  /** Stats this monster takes bonus damage from (×1.25). */
-  weakTo?: string[];
-  /** Stats this monster resists (×0.6). */
-  resistTo?: string[];
   /**
    * If set, this monster only spawns in the named biome band.
    * Omit for band-agnostic monsters (eligible in any band at or above floorMin).
@@ -71,20 +79,50 @@ export interface MineMonsterDef {
   isGuardian?: true;
   /** The exact floor this guardian appears on (required when isGuardian is set). */
   guardianFloor?: number;
+  /** Relative spawn chance among eligible monsters (higher = commoner). Default 1 when
+   *  omitted — band-native monsters set this higher so their own band feels different
+   *  from a re-skinned rocky floor, not just visually (3.1). */
+  weight?: number;
 }
+
+/**
+ * Elite monster affix (3.6) — rolled onto at most one non-guardian spawn per floor past
+ * ELITE_MIN_FLOOR (see engine/mining.ts). `hpMult` applies on top of the monster's base
+ * HP (and any late-depth scaling); the other fields are consulted by the matching combat
+ * code path in engine/mining.ts (strike() for defenseBonus, stepMonsters() for
+ * moveCadenceMult and poisonOnContact).
+ */
+export type MineAffix = 'armored' | 'swift' | 'venomous';
+
+export interface MineAffixDef {
+  name: string;
+  hpMult: number;
+  /** Armored: added straight onto the monster's defense for melee attack rolls. */
+  defenseBonus?: number;
+  /** Swift: multiplies moveCadenceMs (lower = faster steps). */
+  moveCadenceMult?: number;
+  /** Venomous: poison applied to the player on a landed contact hit. */
+  poisonOnContact?: { magnitude: number; durationMs: number };
+}
+
+export const MINE_AFFIXES: Record<MineAffix, MineAffixDef> = {
+  armored: { name: 'Armored', hpMult: 1.3, defenseBonus: 4 },
+  swift: { name: 'Swift', hpMult: 1.1, moveCadenceMult: 0.6 },
+  venomous: { name: 'Venomous', hpMult: 1.15, poisonOnContact: { magnitude: 2, durationMs: 4500 } },
+};
 
 export const MINE_ORES: Record<string, MineOreDef> = {
   rubble: {
     key: 'rubble', name: 'Loose Rubble', glyph: '▪', color: '#8a7a6a',
-    floorMin: 1, weight: 3, durability: 1, grants: { kind: 'gold', amount: [1, 4] },
+    floorMin: 1, floorMax: 12, weight: 3, durability: 1, grants: { kind: 'gold', amount: [1, 4] },
   },
   bronze_vein: {
     key: 'bronze_vein', name: 'Bronze Vein', glyph: '⛏', color: '#a06a3a',
-    floorMin: 1, weight: 3, durability: 2, grants: { kind: 'material', material: 'bronze_bar', amount: [1, 2] },
+    floorMin: 1, floorMax: 12, weight: 3, durability: 2, grants: { kind: 'material', material: 'bronze_bar', amount: [1, 2] },
   },
   stone_lode: {
     key: 'stone_lode', name: 'Stone Lode', glyph: '▪', color: '#8a8a8a',
-    floorMin: 1, weight: 3, durability: 2, grants: { kind: 'material', material: 'stone', amount: [1, 2] },
+    floorMin: 1, floorMax: 12, weight: 3, durability: 2, grants: { kind: 'material', material: 'stone', amount: [1, 2] },
   },
   iron_vein: {
     key: 'iron_vein', name: 'Iron Vein', glyph: '⛏', color: '#7a8590',
@@ -102,35 +140,37 @@ export const MINE_ORES: Record<string, MineOreDef> = {
     key: 'gemstone_node', name: 'Gemstone Node', glyph: '◆', color: '#b8487f',
     floorMin: 10, weight: 0.8, durability: 5, grants: { kind: 'material', material: 'gemstone', amount: [1, 1] },
   },
-  energy_gem: {
+  vigor_crystal: {
     // weight: 0 excludes this from the weighted ore pool. It is placed by a dedicated
     // generation step (generateMine step 7) at fixed density (1 per ENERGY_GEM_INTERVAL
     // open floor cells). Any ore with special placement logic should use weight: 0.
-    key: 'energy_gem', name: 'Energy Gem', glyph: '⚡', color: '#22d3ee',
+    // Restores STAMINA, not the energy currency — named to avoid confusion with it (0.10).
+    key: 'vigor_crystal', name: 'Vigor Crystal', glyph: '◈', color: '#22d3ee',
     floorMin: 1, weight: 0, durability: 1, grants: { kind: 'stamina', amount: [11, 11] },
   },
   cave_mushroom: {
     // weight: 0 excludes this from the weighted ore pool. It is placed by a dedicated
     // generation step (generateMine step 7b) at ~1 per 3 floors. Breaking it restores
-    // a significant chunk of stamina — giving players a reason to explore every floor.
+    // a significant chunk of stamina (and a smaller chunk of HP) — giving players a
+    // reason to explore every floor.
     key: 'cave_mushroom', name: 'Cave Mushroom', glyph: '🍄', color: '#d97706',
-    floorMin: 1, weight: 0, durability: 1, grants: { kind: 'stamina', amount: [30, 30] },
+    floorMin: 1, weight: 0, durability: 1, grants: { kind: 'stamina', amount: [30, 30], hpAmount: [15, 15] },
   },
-  // --- Frozen Depths band (floors 7–14) ---
+  // --- Frozen Depths band (floors 7–14) — band-native weight tripled (3.1) ---
   frost_quartz_vein: {
     key: 'frost_quartz_vein', name: 'Frost Quartz Vein', glyph: '❄', color: '#60c8e8',
-    floorMin: 7, weight: 2, durability: 3, band: 'frozen',
+    floorMin: 7, weight: 6, durability: 3, band: 'frozen',
     grants: { kind: 'material', material: 'frost_quartz', amount: [1, 2] },
   },
-  // --- Magma Core band (floors 15+) ---
+  // --- Magma Core band (floors 15+) — band-native weight tripled (3.1) ---
   obsidian_vein: {
     key: 'obsidian_vein', name: 'Obsidian Vein', glyph: '▲', color: '#5a3a7a',
-    floorMin: 15, weight: 1.5, durability: 5, band: 'magma',
+    floorMin: 15, weight: 4.5, durability: 5, band: 'magma',
     grants: { kind: 'material', material: 'obsidian', amount: [1, 2] },
   },
   magma_geode: {
     key: 'magma_geode', name: 'Magma Geode', glyph: '◈', color: '#ff6a00',
-    floorMin: 15, weight: 1.2, durability: 4, band: 'magma',
+    floorMin: 15, weight: 3.6, durability: 4, band: 'magma',
     grants: { kind: 'gold', amount: [25, 50] },
   },
 };
@@ -162,24 +202,27 @@ export const MINE_MONSTERS: Record<string, MineMonsterDef> = {
     floorMin: 4, hp: 14, touchDamage: 8, moveCadenceMs: 400, bounty: [5, 12],
     weakTo: ['DX', 'WI'],
   },
-  // --- Frozen Depths band (floors 7–14) ---
+  // --- Frozen Depths band (floors 7–14) — band-native weight tripled (3.1) ---
   ice_crawler: {
     key: 'ice_crawler', name: 'Ice Crawler', glyph: '🦞', color: '#60c8e8',
     floorMin: 7, hp: 22, touchDamage: 9, moveCadenceMs: 450, bounty: [8, 16],
-    band: 'frozen', weakTo: ['ST'], resistTo: ['WI'],
+    band: 'frozen', weakTo: ['ST'], resistTo: ['WI'], weight: 3,
   },
-  // --- Magma Core band (floors 15+) ---
+  // --- Magma Core band (floors 15+) — band-native weight tripled (3.1) ---
   magma_hound: {
     key: 'magma_hound', name: 'Magma Hound', glyph: '🐕', color: '#ff6a00',
     floorMin: 15, hp: 38, touchDamage: 16, moveCadenceMs: 580, bounty: [20, 38],
-    defense: 3, band: 'magma', resistTo: ['ST'], weakTo: ['WI'],
+    defense: 3, band: 'magma', resistTo: ['ST'], weakTo: ['WI'], weight: 3,
   },
   // Deep-magma sprinter (floors 20+): sub-300ms cadence outruns the player, so
   // deep floors can no longer be strolled through untouched.
   cinder_wisp: {
     key: 'cinder_wisp', name: 'Cinder Wisp', glyph: '🔥', color: '#ff9a2a',
     floorMin: 20, hp: 30, touchDamage: 14, moveCadenceMs: 250, bounty: [55, 90],
-    band: 'magma', resistTo: ['ST'], weakTo: ['WI'],
+    // No resistTo — magma_hound and the colossus keep resisting ST so the band still
+    // has real texture, but the band-wide 100% counter to the mine's own trained
+    // stat is gone (0.4).
+    band: 'magma', weakTo: ['WI'], weight: 3,
   },
   // --- Band-gate guardians (placed once per run; excluded from random pool) ---
   magma_colossus: {

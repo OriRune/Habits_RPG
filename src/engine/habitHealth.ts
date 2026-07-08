@@ -276,6 +276,11 @@ const STRUGGLE_RATE = 0.3;
  * Pure — based only on habit logs and today's date.
  */
 export function recoveryState(habits: Habit[], today: string): RecoveryState {
+  // Evidence gate: the recovery flow needs proof of an actual miss. Without it a
+  // brand-new account could be flagged (e.g. a perfect 4/4 first day used to trip
+  // low_weekly_rate because pre-creation days counted as scheduled-and-missed).
+  if (!missedRecentScheduledDay(habits, today)) return { struggling: false };
+
   // Long absence: no completion at all in the last ABSENCE_DAYS days
   const absenceCutoff = addDays(today, -(ABSENCE_DAYS - 1));
   const hasRecentCompletion = habits.some((h) =>
@@ -298,6 +303,7 @@ export function recoveryState(habits: Habit[], today: string): RecoveryState {
     for (let d = 0; d < 14; d++) {
       const day = addDays(window14, d);
       if (day > today) break;
+      if (day < h.createdISO) continue; // days before the habit existed aren't obligations
       if (h.frequency === 'times_per_week') continue; // skip for simplicity
       if (isScheduledOn(h, day) && effectiveStatus(h, day) === 'active') {
         scheduled14++;

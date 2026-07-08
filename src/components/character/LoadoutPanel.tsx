@@ -16,7 +16,8 @@ function CombatStatBar({ label, xp, color }: { label: string; xp: number; color:
   return (
     <div className="flex items-center gap-3">
       <div className="w-16 shrink-0 font-display text-xs font-semibold text-ink-muted">{label}</div>
-      <div className="h-3 flex-1 overflow-hidden rounded-full border border-gold-deep/50 bg-wood-900">
+      {/* Recessed parchment track (matches StatBar) — dark tracks jar on parchment. */}
+      <div className="h-3 flex-1 overflow-hidden rounded-full border border-gold-deep/40 bg-parchment-400/70 shadow-[inset_0_1px_3px_rgba(90,64,30,0.35)]">
         <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: color }} />
       </div>
       <div className="w-14 shrink-0 text-right text-xs text-ink">

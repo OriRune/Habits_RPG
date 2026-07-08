@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { framedSvg } from '../placeholderArt';
-import { placeholderImage, resolveSpriteImage, statCrest, weaponCrest } from '../sprites';
+import { framedSvg, ITEM_ART_FAMILIES } from '../placeholderArt';
+import {
+  gearCrest, itemCrest, materialCrest, placeholderImage, resolveSpriteImage, statCrest, weaponCrest,
+} from '../sprites';
 import { scenePlaceholderImage, getScene, resolveSceneImage } from '../scenes';
 
 function decode(uri: string): string {
@@ -57,6 +59,52 @@ describe('placeholder helpers', () => {
     const svg = decode(scenePlaceholderImage(getScene('room:treasure')));
     expect(svg).toContain('viewBox="0 0 320 120"');
     expect(svg).toContain('A glittering hoard');
+  });
+});
+
+describe('item silhouettes', () => {
+  it('every mapped key renders its silhouette family', () => {
+    expect(Object.keys(ITEM_ART_FAMILIES).length).toBeGreaterThan(10);
+    for (const [key, family] of Object.entries(ITEM_ART_FAMILIES)) {
+      const svg = decode(framedSvg({ glyph: 'X', color: '#123456', entityKey: key, label: key }));
+      expect(svg, key).toContain(`data-item="${family}"`);
+    }
+  });
+
+  it('crest builders forward mapped catalog keys as art (names → keys)', () => {
+    expect(gearCrest('Mithril Toolkit', 'tool').art).toBe('mithril_pickaxe');
+    expect(gearCrest('Stone Toolkit', 'tool').art).toBe('stone_pickaxe');
+    expect(gearCrest('Obsidian Plate', 'armor').art).toBe('obsidian_plate');
+    expect(gearCrest('Amber Charm', 'trinket').art).toBe('resin_trinket');
+    expect(weaponCrest('Hunting Bow', 'DX').art).toBe('hunting_bow');
+    expect(materialCrest('frost_quartz').art).toBe('frost_quartz');
+    expect(materialCrest('amber_resin').art).toBe('amber_resin');
+  });
+
+  it('mapped crests render the silhouette instead of the letter glyph, keeping the label band', () => {
+    const svg = decode(placeholderImage(gearCrest('Mithril Toolkit', 'tool'), 'Mithril Toolkit'));
+    expect(svg).toContain('data-item="pickaxe"');
+    expect(svg).not.toContain('>M</text>');
+    expect(svg).toContain('MITHRIL TOOLKIT');
+  });
+
+  it('unmapped keys still fall back to the letter tile', () => {
+    expect(gearCrest('Leather Vest', 'armor').art).toBeUndefined();
+    expect(materialCrest('iron_bar').art).toBeUndefined();
+    const svg = decode(placeholderImage(itemCrest('Healing Potion', 'potion'), 'Healing Potion'));
+    expect(svg).not.toContain('data-item=');
+    expect(svg).toContain('>H<');
+  });
+
+  it('monster entity keys still route to the monster silhouettes', () => {
+    const svg = decode(framedSvg({ glyph: 'S', color: '#111111', entityKey: 'skeleton' }));
+    expect(svg).not.toContain('data-item=');
+  });
+
+  it('is deterministic', () => {
+    const a = framedSvg({ glyph: 'X', color: '#123456', entityKey: 'obsidian', label: 'Obsidian' });
+    const b = framedSvg({ glyph: 'X', color: '#123456', entityKey: 'obsidian', label: 'Obsidian' });
+    expect(a).toBe(b);
   });
 });
 

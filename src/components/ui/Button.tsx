@@ -29,7 +29,10 @@ export function Button({ variant = 'primary', className, ...props }: ButtonProps
       {...props}
       className={cn(
         'rounded-md px-4 py-2 font-display text-sm font-semibold tracking-wide transition-colors',
-        'disabled:cursor-not-allowed disabled:opacity-40',
+        // Disabled: flatten to an inert recessed plaque. Plain opacity keeps the
+        // gold gradient and reads as "shiny but faded" — barely distinguishable
+        // from enabled on parchment surfaces.
+        'disabled:cursor-not-allowed disabled:border-ink-light/30 disabled:bg-none disabled:bg-parchment-300/70 disabled:text-ink-light disabled:shadow-none',
         VARIANTS[variant],
         className,
       )}

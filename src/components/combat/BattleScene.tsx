@@ -6,6 +6,8 @@ import { selectTopStats } from '@/store/selectors';
 import { getItem } from '@/engine/items';
 import { getSpell } from '@/engine/spells';
 import { getWeapon } from '@/engine/weapons';
+import { CRAFT_TIERS, NORMAL, asCraftTier } from '@/engine/crafting';
+import { tierPrefix } from '@/components/inventory/GearSection';
 import { getStat } from '@/engine/stats';
 import { type BattleState, type CombatAction, type StatusEffect } from '@/engine/combat';
 import { enemyCrest, avatarCrest } from '@/lib/sprites';
@@ -250,6 +252,7 @@ export function BattleScene({
   const character = useGameStore((s) => s.character);
   const knownSpells = useGameStore((s) => s.knownSpells);
   const equippedWeapon = useGameStore((s) => s.equippedWeapon);
+  const weaponQuality = useGameStore((s) => s.weaponQuality);
   const topStat = useGameStore(selectTopStats)[0];
   const soundEnabled = useGameStore((s) => s.settings.soundEnabled);
   const updateSettings = useGameStore((s) => s.updateSettings);
@@ -492,6 +495,7 @@ export function BattleScene({
   const isLost = battle.status === 'lost';
 
   const weapon    = getWeapon(equippedWeapon);
+  const weaponTier = asCraftTier(weaponQuality[equippedWeapon]);
   const latest    = battle.log[battle.log.length - 1];
   const prevLog   = battle.log[battle.log.length - 2];
 
@@ -810,7 +814,10 @@ export function BattleScene({
               </Button>
             )}
             <div className="text-center font-display text-[11px] uppercase tracking-wider text-parchment-300/60">
-              {weapon.name} · {weapon.attackStat === 'DX' ? 'Dexterity' : 'Strength'}
+              <span style={weaponTier !== NORMAL ? { color: CRAFT_TIERS[weaponTier].color } : undefined}>
+                {tierPrefix(weapon.name, weaponQuality[equippedWeapon])}
+              </span>{' '}
+              · {weapon.attackStat === 'DX' ? 'Dexterity' : 'Strength'}
             </div>
           </div>
         ) : menu === 'spell' ? (
