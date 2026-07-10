@@ -46,7 +46,7 @@ export function deriveCombatant(
   buffs: Partial<Record<StatId, number>> = {},
 ): Combatant {
   const p = (s: StatId) => statLevels[s] + (buffs[s] ?? 0);
-  return {
+  return clampCombatant({
     maxHp: 50 + p('HP') * 7 + charLevel * 3,
     maxMp: 8 + p('KN') * 3,
     maxSta: 12 + p('EN'),
@@ -59,7 +59,29 @@ export function deriveCombatant(
     illusionPower: p('CH'),
     defense: mitigation(combat.defenseXp),
     ward: mitigation(combat.wardXp),
-  };
+  });
+}
+
+/**
+ * Floor (and re-cap) every derived value so stacked negative modifiers — duplicate curses
+ * stack by design — can never produce a nonsensical fighter: at least 1 max HP, non-negative
+ * pools and powers, and a real escape chance. Mutates and returns `c`. Must be re-applied
+ * after any post-derivation adjustment (relic/gear aggregates in `fighterFor`).
+ */
+export function clampCombatant(c: Combatant): Combatant {
+  c.maxHp = Math.max(1, c.maxHp);
+  c.maxMp = Math.max(0, c.maxMp);
+  c.maxSta = Math.max(0, c.maxSta);
+  c.meleePower = Math.max(0, c.meleePower);
+  c.rangedPower = Math.max(0, c.rangedPower);
+  c.damageSpell = Math.max(0, c.damageSpell);
+  c.supportSpell = Math.max(0, c.supportSpell);
+  c.illusionPower = Math.max(0, c.illusionPower);
+  c.defense = Math.max(0, c.defense);
+  c.ward = Math.max(0, c.ward);
+  c.dodge = Math.max(0, Math.min(0.4, c.dodge));
+  c.flee = Math.max(0.05, Math.min(0.9, c.flee));
+  return c;
 }
 
 export type CombatAction =

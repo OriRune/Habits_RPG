@@ -23,7 +23,7 @@ import {
   type Reward,
 } from '@/engine/challenges';
 import { type WeeklyReport } from '@/engine/weekly';
-import { type DungeonRun } from '@/engine/dungeonTypes';
+import { type DungeonRun, type DungeonEndReason } from '@/engine/dungeonTypes';
 import { type MineState, type MineTile, type Dir } from '@/engine/mining';
 import { type ForestState, type ForestTile } from '@/engine/forest';
 import { type ArenaState, type ArenaSpeed } from '@/engine/arena';
@@ -142,9 +142,14 @@ export interface DungeonRunSummary {
   depth: number;
   cleared: boolean;
   defeated: boolean;
+  /** Why the run ended. Absent on entries recorded before this field existed —
+   *  fall back to `cleared`/`defeated`. */
+  endReason?: DungeonEndReason;
   date: string;
-  /** Rooms entered during this run (for the history list). */
+  /** Rooms successfully resolved during this run. On old entries this counted entries. */
   roomsCleared: number;
+  /** Rooms entered (including the room the player fled or fell in). Absent on old entries. */
+  roomsEntered?: number;
   /** Number of relics (boons + curses) held at run end. */
   relicCount: number;
   /** Gold banked (post habit-streak multiplier). */

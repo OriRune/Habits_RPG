@@ -1,9 +1,53 @@
 // Dungeon-run room lifecycle — pure transforms over a DungeonRun (design brief: Dungeon Delve).
 // No React, no store imports. The store-side `enterRoom` (which needs GameState) lives in the
 // store layer and calls `currentRoom` from here.
-import { type DungeonRun } from './dungeonTypes';
+import { type DungeonRun, type DungeonEndReason } from './dungeonTypes';
+import { type Reward } from './challenges';
 import { mergeReward, scaleReward } from './dungeon';
 import { rollBoons } from './relics';
+
+/**
+ * Retention policy for runs that end early: the share of the *current floor's* gold and
+ * material quantities kept (floored per `scaleReward`; small stacks can round to zero).
+ * The current floor's discrete drops (items/weapons/gear) are always lost. Loot banked at
+ * prior checkpoints is never touched. All player-facing copy must render from these values
+ * (via `previewRetainedReward`), never from hard-coded numbers.
+ */
+export const DUNGEON_RETENTION: Record<Exclude<DungeonEndReason, 'banked'>, number> = {
+  fled: 0.6,
+  defeated: 0.25,
+};
+
+/** The run's end reason, deriving a fallback for saves that predate `endReason`. */
+export function runEndReason(run: Pick<DungeonRun, 'endReason' | 'cleared' | 'hp'>): DungeonEndReason {
+  return run.endReason ?? (run.cleared ? 'banked' : run.hp <= 0 ? 'defeated' : 'fled');
+}
+
+/**
+ * Exact kept/lost split of the current floor's loot if the run ended now for `reason`.
+ * `kept` is computed with the same `scaleReward` used by `finishRun`, so this preview can
+ * never drift from the real outcome — including `Math.floor` zeroing small material stacks.
+ */
+export function previewRetainedReward(
+  run: Pick<DungeonRun, 'floorReward'>,
+  reason: Exclude<DungeonEndReason, 'banked'>,
+): { kept: Reward; lost: Reward } {
+  const floor = run.floorReward;
+  const kept = scaleReward(floor, DUNGEON_RETENTION[reason]);
+  const lostMaterials: Record<string, number> = {};
+  for (const [k, v] of Object.entries(floor.materials ?? {})) {
+    const lost = v - (kept.materials?.[k] ?? 0);
+    if (lost > 0) lostMaterials[k] = lost;
+  }
+  const lost: Reward = {
+    gold: (floor.gold ?? 0) - (kept.gold ?? 0),
+    materials: lostMaterials,
+    items: [...(floor.items ?? [])],
+    weapons: [...(floor.weapons ?? [])],
+    gear: [...(floor.gear ?? [])],
+  };
+  return { kept, lost };
+}
 
 /** Boon tiers unlock with how deep you've gone: tier 2 from depth 4, tier 3 from depth 10. */
 export function boonMaxTier(depth: number, deepest: number): number {
@@ -38,6 +82,8 @@ export function resolveCurrentNode(run: DungeonRun, hp: number, mp: number, sta:
     encounter: null,
     roomLoot: null,
     merchant: null,
+    // Reaching here means the room resolved successfully (flee/defeat go through finishRun).
+    ...(node ? { roomsCleared: (run.roomsCleared ?? 0) + 1 } : {}),
   };
   if (!node || node.to.length === 0) {
     // Floor cleared → checkpoint. HP carries over (attrition); the Rest/Press-On/Bank choice and
@@ -57,14 +103,21 @@ export function currentRoom(run: DungeonRun) {
   return run.nodeId ? run.map.nodes[run.nodeId]?.room ?? null : null;
 }
 
-/** Finalize an ended run: bank the survivable share of floor loot (keepFactor 1 = all). */
-export function finishRun(run: DungeonRun, cleared: boolean, hp: number, keepFactor: number): DungeonRun {
-  const kept = keepFactor >= 1 ? run.floorReward : scaleReward(run.floorReward, keepFactor);
+/** Finalize a run that ended early (fled or defeated): bank the retained share of the
+ *  current floor's loot per `DUNGEON_RETENTION` and stamp the end reason. Banking safely
+ *  goes through `dungeonBank` in the store, not here. */
+export function finishRun(
+  run: DungeonRun,
+  reason: Exclude<DungeonEndReason, 'banked'>,
+  hp: number,
+): DungeonRun {
+  const kept = scaleReward(run.floorReward, DUNGEON_RETENTION[reason]);
   return {
     ...run,
     hp,
     status: 'ended',
-    cleared,
+    cleared: false,
+    endReason: reason,
     bankedReward: mergeReward(run.bankedReward, kept),
     floorReward: {},
     battle: null,

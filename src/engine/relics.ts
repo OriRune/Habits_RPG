@@ -92,7 +92,9 @@ export function rollBoons(count: number, owned: string[], maxTier: number, rng: 
   return pool.slice(0, count);
 }
 
-/** Pick a single random curse (shrine failures). */
+/** Pick a single random curse (shrine failures / encounter penalties). Unlike `rollBoons`,
+ *  held curses are NOT excluded — duplicate curses stack by design (the UI shows ×N, and
+ *  `clampCombatant` floors the derived stats so stacking can't break a fighter). */
 export function rollCurse(rng: RNG = Math.random): string | undefined {
   const curses = Object.values(RELICS).filter((r) => r.curse).map((r) => r.key);
   return curses.length ? curses[Math.floor(rng() * curses.length)] : undefined;

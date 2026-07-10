@@ -26,6 +26,7 @@ import {
   type CombatAction,
   type Fighter,
   deriveCombatant,
+  clampCombatant,
   createBattle,
   playerAction,
 } from '@/engine/combat';
@@ -149,6 +150,8 @@ export function fighterFor(state: GameState, buffs: Partial<Record<StatId, numbe
   c.defense += gear.defense + relicAgg.defense + lowHpDefense;
   c.ward += gear.ward + relicAgg.ward;
   c.maxHp += relicAgg.maxHp;
+  // Re-clamp: relicAgg.maxHp is negative under stacked curses and must not sink below the floors.
+  clampCombatant(c);
   return { c, weapon: equippedWeaponDef(state) };
 }
 

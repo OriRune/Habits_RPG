@@ -5,9 +5,10 @@ import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal
 import { useGameStore } from '@/store/useGameStore';
 import { selectDungeonMilestone } from '@/store/selectors';
 import { ROOM_META, DUNGEON_ENERGY_COST } from '@/engine/dungeon';
+import { DUNGEON_RETENTION, runEndReason } from '@/engine/dungeonRun';
 import { getBiome } from '@/engine/biomes';
 import { getEncounter, checkChance, choiceAvailable, encounterDepthTier } from '@/engine/encounters';
-import { runStatBonuses } from '@/store/shared';
+import { runStatBonuses, fighterFor } from '@/store/shared';
 import { getRelic } from '@/engine/relics';
 import { type Reward } from '@/engine/challenges';
 import { getMaterial } from '@/engine/materials';
@@ -16,6 +17,7 @@ import { getWeapon } from '@/engine/weapons';
 import { getGear } from '@/engine/gear';
 import { getStat } from '@/engine/stats';
 import { DUNGEON_UNLOCK_LEVEL } from '@/engine/progression';
+import { townPerks } from '@/engine/town';
 import { materialCrest } from '@/lib/sprites';
 import { cn } from '@/lib/cn';
 import { Panel } from '@/components/ui/Panel';
@@ -57,6 +59,10 @@ function RunGauge({
     </div>
   );
 }
+
+// Player-facing retention copy renders from the engine policy — never hard-code these numbers.
+const FLEE_KEEP_PCT = Math.round(DUNGEON_RETENTION.fled * 100);
+const FALL_KEEP_PCT = Math.round(DUNGEON_RETENTION.defeated * 100);
 
 function rewardIsEmpty(reward: Reward): boolean {
   const mats = Object.values(reward.materials ?? {}).filter((n) => n > 0);
@@ -104,6 +110,7 @@ export function DungeonView() {
   const soundEnabled = useGameStore((s) => s.settings.soundEnabled);
   useDungeonAudio(dungeon ?? null, soundEnabled);
   const energy = useGameStore((s) => s.character.energy);
+  const unlimitedEnergy = useGameStore((s) => s.settings.unlimitedEnergy);
   const level = useGameStore((s) => s.character.level);
   const habitBonus = useGameStore((s) => s.character.habitBonus);
   const deepestFloor = useGameStore((s) => s.deepestFloor);
@@ -122,7 +129,7 @@ export function DungeonView() {
   // --- Entrance (no active run) ---
   if (!dungeon) {
     const unlocked = level >= DUNGEON_UNLOCK_LEVEL;
-    const canEnter = unlocked && energy >= DUNGEON_ENERGY_COST;
+    const canEnter = unlocked && (unlimitedEnergy || energy >= DUNGEON_ENERGY_COST);
     return (
       <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
         <SectionTitle tone="wood">Dungeon Expeditions</SectionTitle>
@@ -135,9 +142,10 @@ export function DungeonView() {
               reach a checkpoint, then choose: <span className="text-ink">Bank &amp; Leave</span> with your
               spoils, or <span className="text-ink">Descend Deeper</span> for richer loot and tougher danger.
               Every fifth floor, a boss guards the way to a new region.{' '}
-              <span className="text-ink">Fleeing combat</span> ends the run but keeps everything you
-              gathered. <span className="text-ember">Dying mid-floor</span> costs 75% of that floor's
-              gold and all its items — so know when to retreat.
+              <span className="text-ink">Fleeing combat</span> ends the run: you keep everything
+              banked plus {FLEE_KEEP_PCT}% of that floor's gold and materials, but the floor's item
+              drops are lost. <span className="text-ember">Dying mid-floor</span> keeps only{' '}
+              {FALL_KEEP_PCT}% of that floor's gold and materials — so know when to retreat.
             </div>
           </div>
 
@@ -166,15 +174,18 @@ export function DungeonView() {
             <div className="rounded-md border border-gold-deep/20 bg-parchment-100/50 p-3">
               <div className="mb-2 font-display text-xs uppercase tracking-wider text-ink-muted">Recent Runs</div>
               <div className="space-y-1">
-                {dungeonHistory.slice(0, 5).map((run, i) => (
+                {dungeonHistory.slice(0, 5).map((run, i) => {
+                  const reason = run.endReason ?? (run.cleared ? 'banked' : run.defeated ? 'defeated' : 'fled');
+                  return (
                   <div key={i} className="flex items-center justify-between text-xs">
-                    <span className={run.cleared ? 'text-stat-HP' : run.defeated ? 'text-ember' : 'text-ink-muted'}>
-                      {run.cleared ? 'Banked' : run.defeated ? 'Fallen' : 'Fled'}
+                    <span className={reason === 'banked' ? 'text-stat-HP' : reason === 'defeated' ? 'text-ember' : 'text-ink-muted'}>
+                      {reason === 'banked' ? 'Banked' : reason === 'defeated' ? 'Fallen' : 'Fled'}
                     </span>
                     <span className="text-ink">Floor {run.depth}</span>
                     <span className="text-ink-light">{run.date}</span>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -211,17 +222,23 @@ export function DungeonView() {
 
   // --- Run summary (ended) --- (checked before dereferencing the current room).
   if (dungeon.status === 'ended') {
+    const reason = runEndReason(dungeon);
     return (
       <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
-        <SectionTitle tone="wood">{dungeon.cleared ? 'Spoils Banked!' : 'You Fall...'}</SectionTitle>
+        <SectionTitle tone="wood">
+          {reason === 'banked' ? 'Spoils Banked!' : reason === 'fled' ? 'You Escape' : 'You Fall...'}
+        </SectionTitle>
         <Panel tone="parchment" className="space-y-4 p-5">
-          <SceneArt sceneKey={dungeon.cleared ? 'dungeon:cleared' : 'dungeon:retreat'} size="lg" />
+          <SceneArt
+            sceneKey={reason === 'banked' ? 'dungeon:cleared' : reason === 'fled' ? 'dungeon:retreat' : 'combat:defeat'}
+            size="lg"
+          />
           <p className="text-sm text-ink-muted">
-            {dungeon.cleared
+            {reason === 'banked'
               ? `You climb out at depth ${dungeon.depth}, laden with everything you banked.`
-              : dungeon.hp > 0
-                ? `You retreat from depth ${dungeon.depth} with all your gathered spoils intact.`
-                : `You fall at depth ${dungeon.depth}. Your banked spoils are safe, but 75% of that floor's gold is lost and all its items are left behind.`}
+              : reason === 'fled'
+                ? `You retreat from depth ${dungeon.depth}. Everything you banked is safe, plus ${FLEE_KEEP_PCT}% of the final floor's gold and materials — its item drops were left behind.`
+                : `You fall at depth ${dungeon.depth}. Your banked spoils are safe, but only ${FALL_KEEP_PCT}% of the final floor's gold and materials came with you, and its item drops were lost.`}
           </p>
           {/* Per-run stat highlights */}
           <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 rounded-md border border-gold-deep/30 bg-wood-900/40 px-3 py-2.5 text-xs">
@@ -300,7 +317,8 @@ export function DungeonView() {
 
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <Button variant="secondary" onClick={() => dungeonDescend('rest')} className="flex items-center justify-center gap-1.5 py-2.5">
-              <Heart className="h-4 w-4" /> Rest (+{Math.round(dungeon.maxHp * 0.4)} HP)
+              {/* Show the clamped actual gain, not the nominal 40%, so Rest vs. boon is an exact choice. */}
+              <Heart className="h-4 w-4" /> Rest (+{Math.min(Math.round(dungeon.maxHp * 0.4), dungeon.maxHp - dungeon.hp)} HP)
             </Button>
             <Button onClick={() => dungeonDescend('pressOn')} className="flex items-center justify-center gap-1.5 py-2.5">
               <ChevronsDown className="h-4 w-4" /> Press On{nextIsBoss ? ' (Boss!)' : ''} — take a boon
@@ -310,7 +328,9 @@ export function DungeonView() {
             <DoorOpen className="h-4 w-4" /> Bank &amp; Leave
           </Button>
           <p className="text-center text-[11px] text-ink-light">
-            Dying on the next floor forfeits 75% of its gold and all its items — fleeing always keeps everything. What's banked here is always safe.
+            If you fall on the next floor you keep {FALL_KEEP_PCT}% of its gold and materials; fleeing
+            keeps {FLEE_KEEP_PCT}%. Item drops found mid-floor are lost either way. What's banked here
+            is always safe.
           </p>
         </Panel>
       </div>
@@ -331,7 +351,7 @@ export function DungeonView() {
           Depth {dungeon.depth} · {biome.name}
         </SectionTitle>
         <span className="shrink-0 font-display text-xs text-parchment-300">
-          {dungeon.path.length} room{dungeon.path.length === 1 ? '' : 's'} cleared
+          {dungeon.path.length} room{dungeon.path.length === 1 ? '' : 's'} explored
         </span>
       </div>
 
@@ -352,7 +372,14 @@ export function DungeonView() {
       {/* key on nodeId so every room entry triggers the fade-in animation */}
       <div key={dungeon.nodeId ?? 'path'} className="animate-fade-in">
       {choosingPath ? (
-        <FloorMap map={dungeon.map} choices={dungeon.choices} path={dungeon.path} depth={dungeon.depth} onChoose={dungeonChoosePath} />
+        <FloorMap
+          map={dungeon.map}
+          choices={dungeon.choices}
+          path={dungeon.path}
+          depth={dungeon.depth}
+          merchantDiscount01={townPerks(useGameStore.getState().town).merchantDiscount01}
+          onChoose={dungeonChoosePath}
+        />
       ) : inBattle ? (
         <Panel tone="wood" className="p-4">
           {room!.type === 'boss' && dungeon.battle && dungeon.battle.phases.length > 1 && (
@@ -368,6 +395,7 @@ export function DungeonView() {
               resolveLostLabel="You fall — gather your spoils"
               resolveFledLabel="Retreat from the dungeon"
               allowFlee
+              fleeChance={fighterFor(useGameStore.getState()).c.flee}
               foeSize={room!.type === 'boss' ? 'xl' : 'lg'}
             />
           )}

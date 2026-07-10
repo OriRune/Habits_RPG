@@ -6,8 +6,8 @@ import { relicCrest } from '@/lib/sprites';
 
 const TIER_LABEL: Record<number, string> = { 1: 'Common', 2: 'Uncommon', 3: 'Rare' };
 
-/** Inline detail card shown inside the modal for one relic. */
-function RelicDetail({ relic }: { relic: RelicDef }) {
+/** Inline detail card shown inside the modal for one relic (stacked duplicates show ×N). */
+function RelicDetail({ relic, count = 1 }: { relic: RelicDef; count?: number }) {
   const isCurse = relic.curse === true;
   return (
     <div className="flex items-start gap-3">
@@ -18,7 +18,10 @@ function RelicDetail({ relic }: { relic: RelicDef }) {
       />
       <div className="min-w-0">
         <div className="flex items-center gap-2">
-          <span className="font-display text-sm font-bold text-ink">{relic.name}</span>
+          <span className="font-display text-sm font-bold text-ink">
+            {relic.name}
+            {count > 1 ? <span className="ml-1 text-ink-muted">×{count}</span> : null}
+          </span>
           <span
             className={`rounded px-1.5 py-0.5 font-display text-[10px] uppercase tracking-wider ${
               isCurse
@@ -66,8 +69,13 @@ export function RelicTray({ relics }: { relics: string[] }) {
       {open && (
         <Modal title={`Relics (${defs.length})`} onClose={() => setOpen(false)}>
           <div className="space-y-4">
-            {defs.map((relic) => (
-              <RelicDetail key={relic.key} relic={relic} />
+            {/* Curses stack by design — collapse duplicates into one ×N row (also keeps keys unique). */}
+            {[...new Map(defs.map((r) => [r.key, r])).values()].map((relic) => (
+              <RelicDetail
+                key={relic.key}
+                relic={relic}
+                count={defs.filter((d) => d.key === relic.key).length}
+              />
             ))}
           </div>
         </Modal>

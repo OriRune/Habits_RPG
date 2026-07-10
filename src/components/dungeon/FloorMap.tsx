@@ -31,6 +31,7 @@ export function FloorMap({
   choices,
   path,
   depth,
+  merchantDiscount01 = 0,
   onChoose,
 }: {
   map: FloorMapData;
@@ -38,6 +39,8 @@ export function FloorMap({
   path: string[];
   /** Current floor depth — used to price merchant previews. */
   depth: number;
+  /** Homestead Trading Post discount — must match what the merchant room itself charges. */
+  merchantDiscount01?: number;
   onChoose: (nodeId: string) => void;
 }) {
   const visited = new Set(path);
@@ -181,7 +184,7 @@ export function FloorMap({
       </div>
       {/* Merchant price preview — shown when a merchant is among the current choices */}
       {choices.some((id) => map.nodes[id]?.room.type === 'merchant') && (() => {
-        const offers = merchantOffers(depth);
+        const offers = merchantOffers(depth, merchantDiscount01);
         return (
           <div className="rounded-md border border-gold-deep/40 bg-parchment-100/60 p-2.5 text-[11px]">
             <div className="mb-1 font-display font-bold text-gold-deep">Merchant wares this floor</div>

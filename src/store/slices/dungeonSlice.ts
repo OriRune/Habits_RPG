@@ -28,10 +28,9 @@ import {
   resolveCurrentNode,
   currentRoom,
   finishRun,
+  runEndReason,
 } from '@/engine/dungeonRun';
 import { freshEarningsLedger } from '@/engine/balance';
-
-const FLOOR_LOSS_KEEP = 0.25;
 
 export interface DungeonSlice {
   combatStats: CombatStats;
@@ -118,7 +117,8 @@ export const createDungeonSlice: StateCreator<
         nodeId,
         choices: [],
         path: [...run.path, nodeId],
-        roomsCleared: (run.roomsCleared ?? 0) + 1,
+        // Seed from roomsCleared on old saves, whose roomsCleared counted entries.
+        roomsEntered: (run.roomsEntered ?? run.roomsCleared ?? 0) + 1,
       };
       enterRoom(next, s);
       return { dungeon: next };
@@ -158,8 +158,16 @@ export const createDungeonSlice: StateCreator<
       const statXpPatch = xpGrant ? grantStatXp(s, { [checkedStat!]: xpGrant }) : null;
 
       if (hp <= 0) {
-        // Fell during the encounter — forfeit most of the floor's loot.
-        return { dungeon: finishRun({ ...run, encounter: encState, mp, sta, floorReward }, false, 0, FLOOR_LOSS_KEEP) };
+        // Fell during the encounter — forfeit most of the floor's loot. The XP from this
+        // final check is still applied: dungeon XP banks immediately at resolution time.
+        return {
+          dungeon: finishRun(
+            { ...run, encounter: encState, mp, sta, floorReward, earnedXp: (run.earnedXp ?? 0) + xpGrant },
+            'defeated',
+            0,
+          ),
+          ...(statXpPatch ?? {}),
+        };
       }
 
       // Apply boon / curse signals from the encounter step.
@@ -176,7 +184,8 @@ export const createDungeonSlice: StateCreator<
           next.relics = [...next.relics, curse];
           const newMax = fighterFor({ ...s, dungeon: next }).c.maxHp;
           next.maxHp = newMax;
-          next.hp = Math.min(hp, newMax);
+          // A curse weakens — it never kills outright (clampCombatant floors newMax at 1).
+          next.hp = Math.max(1, Math.min(hp, newMax));
         }
       }
 
@@ -217,18 +226,18 @@ export const createDungeonSlice: StateCreator<
         if (!b || b.status === 'active') return s; // can't leave mid-fight
         if (b.status === 'fled') {
           // Escaped alive — but a retreat leaves some of the floor's loot behind.
-          return { dungeon: finishRun(run, false, b.playerHp, 0.6) };
+          return { dungeon: finishRun(run, 'fled', b.playerHp) };
         }
         if (b.status === 'lost') {
           if (room.type === 'boss') {
             // Count the loss so the retry earns anti-frustration HP relief (via enterRoom → lossesBefore).
             const key = b.bossId;
             return {
-              dungeon: finishRun(run, false, 0, FLOOR_LOSS_KEEP),
+              dungeon: finishRun(run, 'defeated', 0),
               dungeonBossLosses: { ...s.dungeonBossLosses, [key]: (s.dungeonBossLosses[key] ?? 0) + 1 },
             };
           }
-          return { dungeon: finishRun(run, false, 0, FLOOR_LOSS_KEEP) };
+          return { dungeon: finishRun(run, 'defeated', 0) };
         }
         // Won: carry HP/MP/Sta forward and train a combat stat (caster → Ward, else Defense).
         hp = b.playerHp;
@@ -293,7 +302,7 @@ export const createDungeonSlice: StateCreator<
       const run = s.dungeon;
       if (!run || run.status !== 'active' || !run.atCheckpoint) return s;
       // Floor loot was locked into bankedReward at the checkpoint; just end safely.
-      return { dungeon: { ...run, status: 'ended', cleared: true } };
+      return { dungeon: { ...run, status: 'ended', cleared: true, endReason: 'banked' } };
     }),
 
   dungeonDescend: (mode) =>
@@ -348,12 +357,15 @@ export const createDungeonSlice: StateCreator<
       if (!run || run.status !== 'ended') return s;
       // Compute final gold once — used in both the summary record and the actual reward.
       const finalGold = Math.round((run.bankedReward.gold ?? 0) * s.character.habitBonus);
+      const endReason = runEndReason(run);
       const summary: DungeonRunSummary = {
         depth: run.depth,
         cleared: run.cleared,
-        defeated: !run.cleared && run.hp <= 0,
+        defeated: endReason === 'defeated',
+        endReason,
         date: toISODate(),
         roomsCleared: run.roomsCleared ?? 0,
+        roomsEntered: run.roomsEntered ?? run.roomsCleared ?? 0,
         relicCount: run.relics.length,
         goldBanked: finalGold,
       };
@@ -418,7 +430,8 @@ export const createDungeonSlice: StateCreator<
             next.relics = [...run.relics, curse];
             const newMax = fighterFor({ ...s, dungeon: next }).c.maxHp;
             next.maxHp = newMax;
-            next.hp = Math.min(next.hp, newMax);
+            // A curse weakens — it never kills outright (clampCombatant floors newMax at 1).
+            next.hp = Math.max(1, Math.min(next.hp, newMax));
           }
         }
       } else if (choice === 'offer') {

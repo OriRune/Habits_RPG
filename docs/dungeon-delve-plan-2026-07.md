@@ -30,10 +30,10 @@ Expanded from the implementation-plan outline in `docs/dungeon-delve-audit-2026-
 
 Goal: what the UI says is exactly what the store does, and the engine can no longer enter nonsensical states. All items are S except 0.2 and 0.4.
 
-### [ ] 0.1 Land the uncommitted scene-art work (S)
+### [x] 0.1 Land the uncommitted scene-art work (S)
 The DUN-13 scene system exists only in the working tree (`src/components/dungeon/DungeonSceneArt.tsx`, `src/components/dungeon/__tests__/`, small `SceneArt.tsx` + `index.css` edits). Run its tests + typecheck, commit as its own commit before anything else builds on these files.
 
-### [ ] 0.2 `DungeonEndReason` as the single source of truth (M) — DUN-03
+### [x] 0.2 `DungeonEndReason` as the single source of truth (M) — DUN-03
 - `src/engine/dungeonTypes.ts`: add `endReason?: 'banked' | 'fled' | 'defeated'` to `DungeonRun` (optional for save-compat; treat absence via the backfill derivation).
 - `src/engine/dungeonRun.ts:61-73`: `finishRun` takes a reason instead of a raw factor and stamps `endReason`; `dungeonBank` stamps `'banked'`.
 - `src/store/gameState.ts:141-152`: add `endReason` to `DungeonRunSummary`; keep `defeated` populated for old readers; `collectDungeon` (`dungeonSlice.ts:353-354`) copies the run's reason instead of re-deriving from `hp`.
@@ -41,35 +41,35 @@ The DUN-13 scene system exists only in the working tree (`src/components/dungeon
 - Persist migrate: backfill per the cross-cutting rule (suspended active run + history entries).
 - Tests: store tests asserting each of bank / combat-flee / combat-death / encounter-death / boss-loss stamps the right reason; migration test for a v34 save with a suspended run.
 
-### [ ] 0.3 Centralize retention policy + exact preview (M) — DUN-01, DUN-09
+### [x] 0.3 Centralize retention policy + exact preview (M) — DUN-01, DUN-09
 - `src/engine/dungeonRun.ts`: export `DUNGEON_RETENTION = { fled: 0.6, defeated: 0.25 }`; replace the `0.6` literal (`dungeonSlice.ts:220`) and `FLOOR_LOSS_KEEP` (`dungeonSlice.ts:34`, used `:162/:227/:231`) with it.
 - New pure helper `previewRetainedReward(run, reason)` returning `{ kept, lost }` per category (gold, each material, items, weapons, gear) with **exact** quantities. Implement by calling the same `scaleReward` (`src/engine/dungeon.ts:118-132`) that `finishRun` uses, so preview and outcome cannot drift — including `Math.floor` rounding small stacks to zero.
 - Tests: property-style test that `previewRetainedReward(...).kept` equals the `floorReward` actually merged by `finishRun` for both reasons, across gold/materials/items/weapons/gear, including a 1-quantity material that floors to 0.
 
-### [ ] 0.4 Truthful copy everywhere + flee odds (M) — DUN-01, DUN-03, DUN-09
+### [x] 0.4 Truthful copy everywhere + flee odds (M) — DUN-01, DUN-03, DUN-09
 - Replace the three "keeps everything" passages in `DungeonView.tsx` (entrance, checkpoint, escaped summary) with copy rendered from 0.3's helper, e.g. "Flee: keep all banked loot + 60% of this floor's gold and materials; this floor's items are lost." Show exact per-category totals at checkpoint and in the combat-flee context (the HUD loss panel is Phase 4 polish; the numbers land now).
 - Summary heading by `endReason`: `banked` → "Spoils Banked!" (`dungeon:cleared` art), `fled` → "You Escape" (`dungeon:retreat` art), `defeated` → "You Fall..." (`combat:defeat` art); distinct accent colors.
 - Combat flee button in dungeon battles shows live odds from `deriveCombatant().flee` (`src/engine/combat.ts:56`), e.g. "Flee (72%)", plus one line: "If it fails, the enemy attacks." (`BattleScene.tsx:811-814` currently shows a bare label; thread as a prop so Arena/boss battles can opt in later.)
 - Fix checkpoint heal label to show clamped actual healing ("+12 HP", not "+40%") — DUN-17.
 - Tests: component tests asserting copy contains the engine-derived numbers (not literals); heading/art per reason.
 
-### [ ] 0.5 Engine clamps + curse-safety (M) — DUN-18, DUN-22
+### [x] 0.5 Engine clamps + curse-safety (M) — DUN-18, DUN-22
 - New `clampCombatant(c)` in `src/engine/combat.ts`, applied at the end of `deriveCombatant` (`:50-62`) and after the relic adjustments in `fighterFor` (`src/store/commit.ts:148-152`): `maxHp ≥ 1`, `maxMp ≥ 0`, `maxSta ≥ 0`, attack/spell powers ≥ 0, `defense`/`ward` ≥ 0, `dodge ∈ [0, cap]`, `flee ∈ [0.05, 0.9]`.
 - Post-curse application (`dungeonSlice.ts:173-181`, `:416-422`): after recompute, floor `maxHp` at 1 and `hp` at 1 per D3.
 - Fix the relic modal key: `RelicTray.tsx:70` → `key={`${relic.key}:${i}`}` (matches `:56` and `RunBuffs.tsx:67`); render stacked duplicates as one row with `×N`.
 - Document curse stacking in `src/content/relics.ts` (D3); leave `rollCurse` (`src/engine/relics.ts:96-99`) non-excluding on purpose, with a comment saying so.
 - Tests: repeated `brittle_bones` through shrine and encounter paths keeps `maxHp ≥ 1` and the run alive; flee floor with stacked AG curses; duplicate-curse render test on the modal.
 
-### [ ] 0.6 Encounter-death XP consistency (S) — DUN-21
+### [x] 0.6 Encounter-death XP consistency (S) — DUN-21
 `dungeonSlice.ts:162`: spread `...(statXpPatch ?? {})` into the death early-return, matching the surviving path (`:183-186`), per D4. Test: a fatal encounter check still grants the checked stat's XP and can trigger a level-up.
 
-### [ ] 0.7 `roomsEntered` vs `roomsCleared` (S) — DUN-05
+### [x] 0.7 `roomsEntered` vs `roomsCleared` (S) — DUN-05
 Add `roomsEntered` (incremented where `roomsCleared` is today, `dungeonSlice.ts:121`); move the `roomsCleared` increment to successful resolution (combat win, encounter resolved, treasure/shrine/rest/merchant completed). Fix the comment at `dungeonTypes.ts:60`. Migrate: `roomsEntered = roomsCleared`. Tests: flee/death leaves `roomsCleared` behind `roomsEntered`.
 
-### [ ] 0.8 Honor `unlimitedEnergy` at the entrance (S) — DUN-06
+### [x] 0.8 Honor `unlimitedEnergy` at the entrance (S) — DUN-06
 `DungeonView.tsx:125`: `canEnter = unlocked && (unlimitedEnergy || energy >= DUNGEON_ENERGY_COST)` — matching `AdventureRitualModal.tsx:37` and `startDungeon`. Test: 0-energy + dev flag renders an enabled button.
 
-### [ ] 0.9 Merchant preview parity (S) — DUN-07
+### [x] 0.9 Merchant preview parity (S) — DUN-07
 Pass `townPerks(state.town).merchantDiscount01` into `FloorMap` (`FloorMap.tsx:184`), same as `commit.ts:417`. **Investigate first:** if `merchantOffers` stock is RNG-dependent, the preview's *items* can differ from the room's roll even with matching prices — in that case label the preview "sample stock" (or show a price range) rather than implying a promise. Test: preview prices equal room prices at a fixed depth/discount.
 
 ### Phase 0 acceptance

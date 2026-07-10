@@ -228,6 +228,8 @@ interface BattleSceneProps {
   resolveFledLabel?: string;
   fullscreen?: boolean;
   allowFlee?: boolean;
+  /** The player's derived flee chance (0-1) — shown on the Flee button so the odds are honest. */
+  fleeChance?: number;
   /** Optional biome key — when set, themes the battlefield gradient + shows a faint biome motif. */
   biomeKey?: string;
   /** Size of the foe sprite. Bosses (multi-phase) should be 'xl'; regular mobs 'lg'. Default 'xl'. */
@@ -245,6 +247,7 @@ export function BattleScene({
   resolveFledLabel = 'Leave',
   fullscreen = false,
   allowFlee = false,
+  fleeChance,
   biomeKey,
   foeSize = 'xl',
 }: BattleSceneProps) {
@@ -809,8 +812,13 @@ export function BattleScene({
               </Button>
             </div>
             {allowFlee && (
-              <Button variant="secondary" onClick={() => act({ kind: 'flee' })} className="flex w-full items-center justify-center gap-1.5 py-2">
-                <Wind className="h-4 w-4" /> Flee
+              <Button
+                variant="secondary"
+                onClick={() => act({ kind: 'flee' })}
+                title="If the escape fails, the foe attacks."
+                className="flex w-full items-center justify-center gap-1.5 py-2"
+              >
+                <Wind className="h-4 w-4" /> Flee{fleeChance != null ? ` (${Math.round(fleeChance * 100)}%)` : ''}
               </Button>
             )}
             <div className="text-center font-display text-[11px] uppercase tracking-wider text-parchment-300/60">
