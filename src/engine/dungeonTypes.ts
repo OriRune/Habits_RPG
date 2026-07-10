@@ -90,4 +90,12 @@ export interface DungeonRun {
   damageDealt?: number;
   /** Total HP damage taken by the player during this run — summed from battle outcomes. */
   damageTaken?: number;
+  /** Floor the expedition began on (decision D6). Absent on old saves — read as 1.
+   *  Deep starts (6, 11, …) unlock by slaying the previous biome's boss; only
+   *  floor-1 starts update the deepestFloor record. */
+  startDepth?: number;
+  /** Boss fights this run that reached an outcome (win, loss, or flee) — plan 3.1. */
+  bossesFought?: number;
+  /** Boss fights this run that were won — with bossesFought, drives the win-rate readout. */
+  bossesSlain?: number;
 }

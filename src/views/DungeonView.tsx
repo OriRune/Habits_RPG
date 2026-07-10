@@ -4,10 +4,10 @@ import { Heart, Sparkles, Coins, Zap, Wind, ChevronsDown, DoorOpen, Clock, Flag 
 import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
 import { useGameStore } from '@/store/useGameStore';
 import { selectDungeonMilestone } from '@/store/selectors';
-import { ROOM_META, DUNGEON_ENERGY_COST, DUNGEON_FREE_FLOORS, DUNGEON_DESCENT_COST, mergeReward } from '@/engine/dungeon';
+import { ROOM_META, DUNGEON_ENERGY_COST, DUNGEON_FREE_FLOORS, DUNGEON_DESCENT_COST, mergeReward, expeditionStarts, descentCharged } from '@/engine/dungeon';
 import { now } from '@/engine/date';
 import { DUNGEON_RETENTION, runEndReason, previewRetainedReward } from '@/engine/dungeonRun';
-import { getBiome } from '@/engine/biomes';
+import { getBiome, biomeForDepth, cycleMutator } from '@/engine/biomes';
 import { getEncounter, checkChance, choiceAvailable, encounterDepthTier } from '@/engine/encounters';
 import { runStatBonuses, fighterFor } from '@/store/shared';
 import { getRelic } from '@/engine/relics';
@@ -66,6 +66,9 @@ function RunGauge({
 const FLEE_KEEP_PCT = Math.round(DUNGEON_RETENTION.fled * 100);
 const FALL_KEEP_PCT = Math.round(DUNGEON_RETENTION.defeated * 100);
 
+// Stable fallback for pre-D6 saves — a fresh [] per snapshot would loop the selector.
+const EMPTY_BOSSES: number[] = [];
+
 function fmtDuration(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -114,6 +117,7 @@ function RewardLine({ reward, empty = 'No spoils.' }: { reward: Reward; empty?: 
 export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}) {
   const [showRitual, setShowRitual] = useState(false);
   const [confirmRetreat, setConfirmRetreat] = useState(false);
+  const [startAt, setStartAt] = useState(1);
   const dungeon = useGameStore((s) => s.dungeon);
   const soundEnabled = useGameStore((s) => s.settings.soundEnabled);
   useDungeonAudio(dungeon ?? null, soundEnabled);
@@ -122,6 +126,7 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
   const level = useGameStore((s) => s.character.level);
   const habitBonus = useGameStore((s) => s.character.habitBonus);
   const deepestFloor = useGameStore((s) => s.deepestFloor);
+  const dungeonBossesSlain = useGameStore((s) => s.dungeonBossesSlain ?? EMPTY_BOSSES);
   const nextMilestone = useGameStore(selectDungeonMilestone).nextMilestone;
   const showAdventureRitual = useGameStore((s) => s.settings.showAdventureRitual);
   const dungeonHistory = useGameStore((s) => s.dungeonHistory ?? []);
@@ -139,6 +144,9 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
   if (!dungeon) {
     const unlocked = level >= DUNGEON_UNLOCK_LEVEL;
     const canEnter = unlocked && (unlimitedEnergy || energy >= DUNGEON_ENERGY_COST);
+    // Biome starts (D6): floor 1 always; a biome's first floor once its previous boss fell.
+    const starts = expeditionStarts(deepestFloor, dungeonBossesSlain);
+    const startDepth = starts.includes(startAt) ? startAt : 1;
     return (
       <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
         <SectionTitle tone="wood">Dungeon Expeditions</SectionTitle>
@@ -158,6 +166,36 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
             </div>
           </div>
 
+          {/* Expedition start selector (plan 3.2 / D6) — shown once a deep start is unlocked. */}
+          {starts.length > 1 && (
+            <div className="space-y-1.5 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3">
+              <div className="font-display text-xs uppercase tracking-wider text-ink-muted">
+                Start the expedition at
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {starts.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setStartAt(s)}
+                    className={cn(
+                      'rounded-md border px-2.5 py-1 text-xs transition-colors',
+                      s === startDepth
+                        ? 'border-gold-bright bg-gold/15 font-bold text-ink shadow-glow'
+                        : 'border-gold-deep/30 text-ink-muted hover:border-gold-deep/60',
+                    )}
+                  >
+                    Floor {s} · {biomeForDepth(s).name}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-ink-muted">
+                {startDepth > 1
+                  ? 'Deep starts begin with one boon pick. Depth records only count from Floor 1.'
+                  : 'The full descent — the only start that can set a depth record.'}
+              </p>
+            </div>
+          )}
+
           <div className="space-y-1 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3">
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-1.5 text-sm text-ink">
@@ -166,8 +204,8 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
               <span className="text-sm text-ink-muted">You have {energy} ⚡</span>
             </div>
             <div className="text-[11px] text-ink-muted">
-              Covers floors 1–{DUNGEON_FREE_FLOORS}; each deeper floor costs {DUNGEON_DESCENT_COST}⚡
-              more. Banked gold collects with your streak bonus.
+              Covers floors {startDepth}–{startDepth + DUNGEON_FREE_FLOORS - 1}; each deeper floor
+              costs {DUNGEON_DESCENT_COST}⚡ more. Banked gold collects with your streak bonus.
             </div>
             <StreakBonusChip className="text-[11px] text-amber-600" />
           </div>
@@ -207,7 +245,7 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
           )}
 
           <Button
-            onClick={() => canEnter && showAdventureRitual ? setShowRitual(true) : startDungeon()}
+            onClick={() => canEnter && showAdventureRitual ? setShowRitual(true) : startDungeon(startDepth)}
             disabled={!canEnter}
             className="w-full py-2.5"
           >
@@ -220,7 +258,7 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
           {showRitual && (
             <AdventureRitualModal
               energyCost={DUNGEON_ENERGY_COST}
-              onConfirm={() => { setShowRitual(false); startDungeon(); }}
+              onConfirm={() => { setShowRitual(false); startDungeon(startDepth); }}
               onCancel={() => setShowRitual(false)}
             />
           )}
@@ -235,6 +273,8 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
   }
 
   const biome = getBiome(dungeon.biomeKey);
+  // Cycle mutator (plan 3.4): floors 16+ revisit biomes harder — name it in the header.
+  const mutator = cycleMutator(dungeon.depth);
 
   // --- Run summary (ended) --- (checked before dereferencing the current room).
   if (dungeon.status === 'ended') {
@@ -342,7 +382,8 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
     const nextIsBoss = nextDepth % 5 === 0;
     // The descent contract (plan D1): floors past the covered ones cost energy, and the
     // store refuses a descent it can't charge — mirror that here instead of a dead tap.
-    const chargeNext = nextDepth > DUNGEON_FREE_FLOORS && !unlimitedEnergy;
+    // Coverage counts from the expedition's start floor (D6 biome starts).
+    const chargeNext = descentCharged(nextDepth, dungeon.startDepth ?? 1) && !unlimitedEnergy;
     const canDescend = !chargeNext || energy >= DUNGEON_DESCENT_COST;
     const costTag = chargeNext ? ` · ${DUNGEON_DESCENT_COST}⚡` : '';
     const bankedGold = dungeon.bankedReward.gold ?? 0;
@@ -351,7 +392,10 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
         className="mx-auto max-w-2xl space-y-4 px-4 py-5"
         style={{ '--biome-tint': biome.tint } as CSSProperties}
       >
-        <SectionTitle tone="wood">Depth {dungeon.depth} · {biome.name}</SectionTitle>
+        <SectionTitle tone="wood">
+          Depth {dungeon.depth} · {biome.name}
+          {mutator && <span title={mutator.blurb}> · {mutator.name}</span>}
+        </SectionTitle>
         <Panel tone="parchment" className="space-y-4 p-5">
           <SceneArt sceneKey="dungeon:checkpoint" size="lg" caption="Floor cleared" />
           <div>
@@ -428,6 +472,7 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
       <div className="flex items-center justify-between gap-2">
         <SectionTitle tone="wood" className="flex-1">
           Depth {dungeon.depth} · {biome.name}
+          {mutator && <span title={mutator.blurb}> · {mutator.name}</span>}
         </SectionTitle>
         <span className="shrink-0 font-display text-xs text-parchment-300">
           {dungeon.path.length} room{dungeon.path.length === 1 ? '' : 's'} explored

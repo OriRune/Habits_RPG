@@ -4,6 +4,7 @@
 import type { StatId } from './stats';
 import type { BossDef, EnemyMove } from './bosses';
 import type { RNG } from './combat';
+import { cycleMutator } from './biomes';
 
 export interface EnemyTemplate {
   id: string;
@@ -246,12 +247,16 @@ export function enemyFor(
   const id = pool.length ? pool[Math.floor(rng() * pool.length)] : FALLBACK.id;
   const t = ENEMIES[id] ?? FALLBACK;
   const scale = (1 + (level - 1) * 0.07 + (depth - 1) * 0.14) * (elite ? 1.45 : 1);
+  // Cycle mutators (plan 3.4): repeat visits to a biome (floors 16+) spawn harder foes.
+  const mutator = cycleMutator(depth);
+  const hpScale = scale * (mutator?.enemyHp ?? 1);
+  const atkScale = (elite ? scale * 0.9 : scale) * (mutator?.enemyAttack ?? 1);
   return {
     id: `${t.id}_d${depth}${elite ? '_elite' : ''}`,
     name: elite ? `Elite ${t.name}` : t.name,
     flavor: t.flavor,
-    baseHp: Math.round(t.hp * scale),
-    attack: Math.round(t.attack * (elite ? scale * 0.9 : scale)),
+    baseHp: Math.round(t.hp * hpScale),
+    attack: Math.round(t.attack * atkScale),
     defense: t.defense + Math.floor(depth / 4) + Math.floor(level / 8) + (elite ? 1 : 0),
     ward: t.ward + Math.floor(depth / 5),
     attackSchool: t.attackSchool,

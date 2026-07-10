@@ -60,7 +60,7 @@ import {
 } from '@/engine/arena';
 import { type HexBattleState, tacticsReward } from '@/engine/hexBattle';
 import { dungeonStamina, splitHaul } from '@/engine/crawl';
-import { getBiome, bossFor } from '@/engine/biomes';
+import { getBiome, bossFor, cycleMutator } from '@/engine/biomes';
 import { getEncounter, startEncounter } from '@/engine/encounters';
 import { enemyFor } from '@/engine/enemies';
 import { toISODate } from '@/engine/date';
@@ -416,8 +416,13 @@ export function enterRoom(run: DungeonRun, state: GameState): void {
     }
     // Route pricing (D2): treasure gold pays by the danger realized on this floor's path so
     // far — grabbed before the fights it's lean, after them it's full. Materials and discrete
-    // drops stay unscaled (they're all-or-nothing in the retention model already).
-    loot.gold = Math.round((loot.gold ?? 0) * dangerRewardFactor(routeDanger(run.map, run.path)));
+    // drops stay unscaled (they're all-or-nothing in the retention model already). Cycle
+    // mutators (plan 3.4) add their gold premium on top.
+    loot.gold = Math.round(
+      (loot.gold ?? 0) *
+        dangerRewardFactor(routeDanger(run.map, run.path)) *
+        (cycleMutator(run.depth)?.goldBonus ?? 1),
+    );
     run.roomLoot = loot;
     run.floorReward = mergeReward(run.floorReward, loot);
   } else if (room.type === 'merchant') {

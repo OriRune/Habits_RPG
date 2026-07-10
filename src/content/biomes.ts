@@ -183,3 +183,49 @@ export const BIOMES: Record<string, BiomeDef> = {
 
 /** Descent order — region N (0-based) covers depths N*5+1 .. N*5+5, boss on the 5th. */
 export const BIOME_ORDER = ['catacombs', 'ruins', 'frozen'];
+
+/**
+ * Cycle mutators (plan 3.4 / DUN-15, design: docs/dungeon-biome-mutators-2026-07.md).
+ * Once every biome has been seen (floors 1–15), the descent loops back mutated: cycle N
+ * (floors 16–30, 31–45, …) applies CYCLE_MUTATORS[N-1] — enemies hit harder and hold more
+ * HP, and floor gold pays a premium on top of route pricing. Depths past the table clamp
+ * to the last entry (depth scaling in enemyFor/bossFor keeps rising regardless).
+ */
+export interface BiomeMutator {
+  key: string;
+  /** Shown beside the biome name in the depth header ("The Catacombs · Sunless"). */
+  name: string;
+  blurb: string;
+  /** Multipliers applied to enemy/boss HP and attack at spawn. */
+  enemyHp: number;
+  enemyAttack: number;
+  /** Multiplier on floor gold rolls (treasure + combat wins), stacking with route pricing. */
+  goldBonus: number;
+}
+
+export const CYCLE_MUTATORS: BiomeMutator[] = [
+  {
+    key: 'sunless',
+    name: 'Sunless',
+    blurb: 'The dark below the dark — every foe is heavier with it.',
+    enemyHp: 1.25,
+    enemyAttack: 1.12,
+    goldBonus: 1.25,
+  },
+  {
+    key: 'echoing',
+    name: 'Echoing',
+    blurb: 'Your own footsteps hunt you here.',
+    enemyHp: 1.5,
+    enemyAttack: 1.25,
+    goldBonus: 1.5,
+  },
+  {
+    key: 'hollow',
+    name: 'Hollow',
+    blurb: 'The world thins; what remains is all teeth.',
+    enemyHp: 1.75,
+    enemyAttack: 1.4,
+    goldBonus: 1.75,
+  },
+];

@@ -15,6 +15,35 @@ export const DUNGEON_ENERGY_COST = 3; // brief §7.2: "Dungeon entry = 3 Energy"
 export const DUNGEON_FREE_FLOORS = 3;
 export const DUNGEON_DESCENT_COST = 1;
 
+/** Floors between region bosses — a boss every 5th floor caps its biome. */
+const BIOME_SPAN = 5;
+
+/**
+ * Does descending TO `nextDepth` cost energy? Entry covers the run's first
+ * `DUNGEON_FREE_FLOORS` floors *counting from where the expedition started* (decision D6:
+ * a floor-6 start covers 6–8), so deep starts keep the same contract as floor-1 runs.
+ */
+export function descentCharged(nextDepth: number, startDepth: number = 1): boolean {
+  return nextDepth - startDepth + 1 > DUNGEON_FREE_FLOORS;
+}
+
+/**
+ * Expedition start floors unlocked (plan 3.2, decision D6): floor 1 always; each biome's
+ * first floor (6, 11, 16…) once that biome's *previous* boss (5, 10, 15…) has been slain.
+ * `deepestFloor >= start` grants legacy credit — saves from before boss-kill tracking
+ * proved the kill by descending past it. Unlocks are contiguous by construction (you
+ * cannot fight boss 10 without passing boss 5).
+ */
+export function expeditionStarts(deepestFloor: number, bossesSlain: number[]): number[] {
+  const starts = [1];
+  for (let bossDepth = BIOME_SPAN; ; bossDepth += BIOME_SPAN) {
+    const start = bossDepth + 1;
+    if (bossesSlain.includes(bossDepth) || deepestFloor >= start) starts.push(start);
+    else break;
+  }
+  return starts;
+}
+
 /** Gold paid for a plain combat win — ≈ half a treasure room's base (resolveTreasure: 60+depth*10). */
 export function combatRoomGold(depth: number): number {
   return 30 + depth * 5;

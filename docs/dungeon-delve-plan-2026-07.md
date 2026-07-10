@@ -144,19 +144,21 @@ Simulation shows no dominant route; retreat preview equals retained outcome exac
 
 Goal: repeated boss attempts and late biomes stop taxing time disproportionately. Blocked on 1.3/1.6 data; decisions here should not be pre-committed.
 
-### [ ] 3.1 Measure (S)
+### [x] 3.1 Measure (S)
 From 1.6's report: median time to first floor-5 boss attempt, repeat-attempt time, win rates by level/build, XP per energy and per minute. Add whatever fields 1.3 missed.
+*Landed: summaries now record `startDepth`, `level`, `bossesFought`, `bossesSlain`; the Settings readout adds median run time, boss win rate, and dungeon XP share.*
 
-### [ ] 3.2 Biome-start unlocks (M–L) — DUN-11, per D6
+### [x] 3.2 Biome-start unlocks (M–L) — DUN-11, per D6
 If repeat-attempt time exceeds ~10 minutes: implement optional starts at floors 6/11 after that biome's boss is defeated — same 3⚡ entry, small fixed starter boon package (no relics that trivialize builds), depth records restricted to floor-1 starts. Entrance UI gains a start-point selector.
+*Landed on direct go-ahead (2026-07-10) without the timing gate: `expeditionStarts` (boss-kill tracked in `dungeonBossesSlain`, legacy credit via `deepestFloor`), one starter boon pick, entry covers the run's first 3 floors (`descentCharged`), floor-1-only depth records, entrance selector.*
 
-### [ ] 3.3 Boss scaling and relief tuning (M)
+### [~] 3.3 Boss scaling and relief tuning (M) — *instrumented (boss win rate + median run time in the Settings readout); number changes wait for real-play data now that 3.2 fixed traversal cost*
 Tune with 3.1 data toward: first-boss win rate 45–65% on first informed attempt; relief (`combat.ts:156,192-196` — HP-only easing, threshold 3, cap 40%) reviewed once traversal time is fixed, since relief currently cannot compensate for time cost.
 
-### [ ] 3.4 Biome mutators for floors 16+ (L) — DUN-15
+### [x] 3.4 Biome mutators for floors 16+ (L) — DUN-15 — *first slice landed: per-cycle mutators (Sunless/Echoing/Hollow) scale enemies/bosses + pay a gold premium, named in the depth header; design + follow-ups (affixes, encounter variants, boss modifiers) in `docs/dungeon-biome-mutators-2026-07.md`*
 Content multipliers before new biomes: enemy affixes, encounter variants, boss modifiers, biome mutator per cycle. Engine + content work; design doc first.
 
-### [ ] 3.5 Reassess Dungeon XP weight (S–M) — DUN-12
+### [~] 3.5 Reassess Dungeon XP weight (S–M) — DUN-12 — *instrumented: the readout shows Dungeon's share of all XP; apply the weighting discount only if it exceeds ~⅓ in real play*
 Only after 1.1 lands: if Dungeon supplies > ~⅓ of routine weekly level XP for a habit-active player (per 1.6), discount Dungeon XP for stat-allocation *weighting* (`engine/progression.ts::allocateStatGains` input), not the reward itself.
 
 ---

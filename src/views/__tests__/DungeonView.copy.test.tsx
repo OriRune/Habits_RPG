@@ -188,6 +188,57 @@ describe('checkpoint energy contract (DUN-02 / plan 1.2)', () => {
   });
 });
 
+describe('biome starts at the entrance (plan 3.2 / D6)', () => {
+  it('offers no selector before any deep start is unlocked', () => {
+    expect(renderHtml()).not.toContain('Start the expedition at');
+  });
+
+  it('lists unlocked start floors and shifts the cost copy to the selection', () => {
+    useGameStore.setState({ deepestFloor: 7 });
+    const { container, getByText } = render(<DungeonView />);
+    expect(container.textContent).toContain('Start the expedition at');
+    expect(container.textContent).toContain('Covers floors 1–3');
+    fireEvent.click(getByText(/Floor 6 · /));
+    expect(container.textContent).toContain('Covers floors 6–8');
+    expect(container.textContent).toContain('Depth records only count from Floor 1');
+  });
+});
+
+describe('start-relative checkpoint charging (D1 × D6)', () => {
+  it('keeps the third floor of a deep start free and charges the fourth', () => {
+    useGameStore.setState({
+      character: { ...get().character, energy: 0 },
+      dungeon: makeRun({ atCheckpoint: true, depth: 7, startDepth: 6 }),
+    });
+    const { container } = render(<DungeonView />);
+    const pressOn = [...container.querySelectorAll('button')].find((b) =>
+      /Press On/.test(b.textContent ?? ''),
+    )!;
+    expect(pressOn.disabled).toBe(false); // depth 8 is still covered by the floor-6 entry
+    cleanup();
+
+    useGameStore.setState({
+      character: { ...get().character, energy: 0 },
+      dungeon: makeRun({ atCheckpoint: true, depth: 8, startDepth: 6 }),
+    });
+    const paid = render(<DungeonView />);
+    const pressOn2 = [...paid.container.querySelectorAll('button')].find((b) =>
+      /Press On/.test(b.textContent ?? ''),
+    )!;
+    expect(pressOn2.disabled).toBe(true); // depth 9 is the expedition's first paid floor
+  });
+});
+
+describe('cycle mutators in the header (plan 3.4)', () => {
+  it('names the mutator on floors 16+ and stays silent on the first pass', () => {
+    useGameStore.setState({ dungeon: makeRun({ depth: 16, nodeId: null, choices: [] }) });
+    expect(render(<DungeonView />).container.textContent).toContain('Sunless');
+    cleanup();
+    useGameStore.setState({ dungeon: makeRun({ depth: 3, nodeId: null, choices: [] }) });
+    expect(render(<DungeonView />).container.textContent).not.toContain('Sunless');
+  });
+});
+
 describe('retreat (plan 2.4 / DUN-10)', () => {
   // A mid-floor path-choice state: active run, not at a checkpoint, no battle.
   const midFloor = () =>

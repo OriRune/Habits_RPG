@@ -186,6 +186,14 @@ export function selectDungeonEconomy(s: GameState): {
   xpPerEnergy: number;
   xpPerMinute: number;
   goldPerEnergy: number;
+  /** Median measured run length, ms — the plan 3.1/3.2 attempt-time instrument. */
+  medianDurationMs: number;
+  /** Boss fights won / fought across measured runs; null until one has been fought.
+   *  Plan 3.3's target band is a 45–65% win rate on the first informed attempt. */
+  bossWinRate01: number | null;
+  /** Dungeon's share of ALL stat XP ever earned (earnings ledger). Plan 3.5 (DUN-12):
+   *  above ~1/3 for a habit-active player, discount Dungeon XP in stat weighting. */
+  dungeonXpShare01: number | null;
 } | null {
   const runs = (s.dungeonHistory ?? []).filter(
     (r) => r.energySpent != null && r.durationMs != null,
@@ -196,12 +204,23 @@ export function selectDungeonEconomy(s: GameState): {
   const xp = sum((r) => r.xpGranted ?? 0);
   const gold = sum((r) => r.goldBanked);
   const minutes = sum((r) => (r.durationMs ?? 0) / 60_000);
+  const durations = runs.map((r) => r.durationMs ?? 0).sort((a, b) => a - b);
+  const mid = Math.floor(durations.length / 2);
+  const medianDurationMs =
+    durations.length % 2 ? durations[mid] : (durations[mid - 1] + durations[mid]) / 2;
+  const bossesFought = sum((r) => r.bossesFought ?? 0);
+  const bossesSlain = sum((r) => r.bossesSlain ?? 0);
+  const xpBySource = s.earnings?.xp;
+  const totalXp = xpBySource ? Object.values(xpBySource).reduce((a, b) => a + b, 0) : 0;
   return {
     measuredRuns: runs.length,
     avgFloors: sum((r) => r.depth) / runs.length,
     xpPerEnergy: energy > 0 ? xp / energy : 0,
     xpPerMinute: minutes > 0 ? xp / minutes : 0,
     goldPerEnergy: energy > 0 ? gold / energy : 0,
+    medianDurationMs,
+    bossWinRate01: bossesFought > 0 ? bossesSlain / bossesFought : null,
+    dungeonXpShare01: totalXp > 0 ? (xpBySource!.dungeon ?? 0) / totalXp : null,
   };
 }
 

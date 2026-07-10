@@ -7,14 +7,15 @@ import type { StatId } from '@/engine/stats';
 import {
   mergeReward,
   DUNGEON_ENERGY_COST,
-  DUNGEON_FREE_FLOORS,
   DUNGEON_DESCENT_COST,
+  descentCharged,
+  expeditionStarts,
   combatRoomGold,
   bossRoomGold,
 } from '@/engine/dungeon';
 import { generateFloorMap, routeDanger, dangerRewardFactor } from '@/engine/dungeonMap';
 import { type DungeonRun } from '@/engine/dungeonTypes';
-import { biomeForDepth } from '@/engine/biomes';
+import { biomeForDepth, cycleMutator } from '@/engine/biomes';
 import { getEncounter, chooseEncounter, checkChance, encounterDepthTier } from '@/engine/encounters';
 import { DUNGEON_UNLOCK_LEVEL } from '@/engine/progression';
 import { toISODate, now } from '@/engine/date';
@@ -43,9 +44,10 @@ export interface DungeonSlice {
   combatStats: CombatStats;
   dungeon: DungeonRun | null;
   deepestFloor: number;
+  dungeonBossesSlain: number[];
   dungeonHistory: DungeonRunSummary[];
 
-  startDungeon: () => void;
+  startDungeon: (startDepth?: number) => void;
   dungeonChoosePath: (nodeId: string) => void;
   dungeonEncounterChoose: (choiceIndex: number) => void;
   dungeonBattleAction: (action: CombatAction) => void;
@@ -71,18 +73,21 @@ export const createDungeonSlice: StateCreator<
   combatStats: emptyCombatStats(),
   dungeon: null,
   deepestFloor: 0,
+  dungeonBossesSlain: [],
   dungeonHistory: [],
 
-  startDungeon: () =>
+  startDungeon: (startDepth = 1) =>
     set((s) => {
       const freeEnergy = s.settings.unlimitedEnergy;
       if (s.dungeon || s.character.level < DUNGEON_UNLOCK_LEVEL) return s;
       if (!freeEnergy && s.character.energy < DUNGEON_ENERGY_COST) return s;
+      // Biome starts (D6): only floor 1 or an unlocked biome first-floor is a legal start.
+      if (!expeditionStarts(s.deepestFloor, s.dungeonBossesSlain ?? []).includes(startDepth)) return s;
       const { c } = fighterFor(s);
-      const biome = biomeForDepth(1);
-      const map = generateFloorMap(1, biome, Math.random, { deepest: s.deepestFloor });
+      const biome = biomeForDepth(startDepth);
+      const map = generateFloorMap(startDepth, biome, Math.random, { deepest: s.deepestFloor });
       const run: DungeonRun = {
-        depth: 1,
+        depth: startDepth,
         biomeKey: biome.key,
         map,
         nodeId: null,
@@ -108,7 +113,11 @@ export const createDungeonSlice: StateCreator<
         earnedXp: 0,
         startedAt: now().getTime(),
         energySpent: freeEnergy ? 0 : DUNGEON_ENERGY_COST,
+        startDepth,
       };
+      // A deep start ships with one starter boon pick (D6: small and fixed — floor-1 runs
+      // stay the build-crafting mode; this only softens the cold open).
+      if (startDepth > 1) offerBoon(run, boonMaxTier(startDepth, s.deepestFloor));
       return {
         character: {
           ...s.character,
@@ -235,16 +244,19 @@ export const createDungeonSlice: StateCreator<
       if (room.type === 'combat' || room.type === 'boss' || room.type === 'elite') {
         const b = run.battle;
         if (!b || b.status === 'active') return s; // can't leave mid-fight
+        // Boss attempts that reach an outcome (win/loss/flee) feed the win-rate readout (plan 3.1).
+        const bossFought =
+          room.type === 'boss' ? { bossesFought: (run.bossesFought ?? 0) + 1 } : {};
         if (b.status === 'fled') {
           // Escaped alive — but a retreat leaves some of the floor's loot behind.
-          return { dungeon: finishRun(run, 'fled', b.playerHp) };
+          return { dungeon: finishRun({ ...run, ...bossFought }, 'fled', b.playerHp) };
         }
         if (b.status === 'lost') {
           if (room.type === 'boss') {
             // Count the loss so the retry earns anti-frustration HP relief (via enterRoom → lossesBefore).
             const key = b.bossId;
             return {
-              dungeon: finishRun(run, 'defeated', 0),
+              dungeon: finishRun({ ...run, ...bossFought }, 'defeated', 0),
               dungeonBossLosses: { ...s.dungeonBossLosses, [key]: (s.dungeonBossLosses[key] ?? 0) + 1 },
             };
           }
@@ -276,7 +288,10 @@ export const createDungeonSlice: StateCreator<
         workingRun = { ...workingRun, earnedXp: (workingRun.earnedXp ?? 0) + atkShare + hpShare };
         // Route pricing (D2): win gold scales by the danger realized on this floor's path so
         // far — the current fight counts, so back-to-back danger rooms pay progressively more.
-        const dangerFactor = dangerRewardFactor(routeDanger(run.map, run.path));
+        // Cycle mutators (plan 3.4) pay a gold premium for their harder foes on top.
+        const dangerFactor =
+          dangerRewardFactor(routeDanger(run.map, run.path)) *
+          (cycleMutator(run.depth)?.goldBonus ?? 1);
         if (room.type === 'elite') {
           // Elites drop bonus gold and guarantee a boon.
           eliteWin = true;
@@ -284,7 +299,12 @@ export const createDungeonSlice: StateCreator<
         } else if (room.type === 'boss') {
           // A floor boss is the marquee payout — well above a plain combat room.
           wonBossId = b.bossId;
-          workingRun = { ...workingRun, floorReward: mergeReward(workingRun.floorReward, { gold: Math.round(bossRoomGold(run.depth) * dangerFactor) }) };
+          workingRun = {
+            ...workingRun,
+            ...bossFought,
+            bossesSlain: (run.bossesSlain ?? 0) + 1,
+            floorReward: mergeReward(workingRun.floorReward, { gold: Math.round(bossRoomGold(run.depth) * dangerFactor) }),
+          };
         } else {
           // Plain combat wins pay depth-scaled gold (≈ half a treasure room).
           workingRun = { ...workingRun, floorReward: mergeReward(workingRun.floorReward, { gold: Math.round(combatRoomGold(run.depth) * dangerFactor) }) };
@@ -306,8 +326,16 @@ export const createDungeonSlice: StateCreator<
         dungeon: next,
         ...(combatStats ? { combatStats } : {}),
         ...(statXpPatch ?? {}),
-        // Beating the boss clears its loss tally so a fresh future attempt starts at full difficulty.
-        ...(wonBossId ? { dungeonBossLosses: { ...s.dungeonBossLosses, [wonBossId]: 0 } } : {}),
+        // Beating the boss clears its loss tally so a fresh future attempt starts at full
+        // difficulty, and records the slain depth — this is what unlocks biome starts (D6).
+        ...(wonBossId
+          ? {
+              dungeonBossLosses: { ...s.dungeonBossLosses, [wonBossId]: 0 },
+              dungeonBossesSlain: (s.dungeonBossesSlain ?? []).includes(run.depth)
+                ? s.dungeonBossesSlain
+                : [...(s.dungeonBossesSlain ?? []), run.depth],
+            }
+          : {}),
       };
     }),
 
@@ -325,10 +353,13 @@ export const createDungeonSlice: StateCreator<
       if (!run || run.status !== 'active' || !run.atCheckpoint) return s;
       const depth = run.depth + 1;
       // Descending past the covered floors costs energy — and requires actually having it
-      // (plan D1). The UI disables both descent buttons at zero; Bank & Leave stays open.
-      const chargeEnergy = depth > DUNGEON_FREE_FLOORS && !s.settings.unlimitedEnergy;
+      // (plan D1). Coverage counts from the expedition's start floor (D6). The UI disables
+      // both descent buttons at zero; Bank & Leave stays open.
+      const chargeEnergy = descentCharged(depth, run.startDepth ?? 1) && !s.settings.unlimitedEnergy;
       if (chargeEnergy && s.character.energy < DUNGEON_DESCENT_COST) return s;
-      const deepestFloor = Math.max(s.deepestFloor, depth);
+      // Depth records only count from floor-1 starts (D6) — a floor-11 hop is not a descent record.
+      const deepestFloor =
+        (run.startDepth ?? 1) === 1 ? Math.max(s.deepestFloor, depth) : s.deepestFloor;
       const biome = biomeForDepth(depth);
       const map = generateFloorMap(depth, biome, Math.random, { deepest: s.deepestFloor });
       // Mana + Stamina reset between floors; HP is the run's attrition currency and carries.
@@ -402,6 +433,10 @@ export const createDungeonSlice: StateCreator<
         goldLost: run.lostReward?.gold ?? 0,
         materialsLost,
         durationMs: run.startedAt != null ? Math.max(0, now().getTime() - run.startedAt) : undefined,
+        startDepth: run.startDepth ?? 1,
+        level: s.character.level,
+        bossesFought: run.bossesFought ?? 0,
+        bossesSlain: run.bossesSlain ?? 0,
       };
       const baseEarnings = s.earnings ?? freshEarningsLedger();
       const next: GameState = {

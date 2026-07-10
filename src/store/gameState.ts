@@ -165,6 +165,13 @@ export interface DungeonRunSummary {
   materialsLost?: number;
   /** Wall-clock run length (engine/date now() at start vs. collection). */
   durationMs?: number;
+  /** Floor the expedition started on (D6 biome starts). Absent on old entries — read as 1. */
+  startDepth?: number;
+  /** Character level when the run was collected — win rates by level (plan 3.1). */
+  level?: number;
+  /** Boss fights that reached an outcome / were won this run (plan 3.1). */
+  bossesFought?: number;
+  bossesSlain?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -252,8 +259,12 @@ export interface GameState {
   bossLosses: Record<number, number>;
   /** Dungeon floor-boss losses keyed by boss id (`${baseId}_d${depth}`), drives per-fight relief. */
   dungeonBossLosses: Record<string, number>;
-  /** Deepest dungeon floor ever reached — a persistent record that gates content. */
+  /** Deepest dungeon floor ever reached — a persistent record that gates content.
+   *  Only floor-1 expeditions update it (D6). */
   deepestFloor: number;
+  /** Boss depths (5, 10, 15…) ever slain — unlocks biome expedition starts (D6).
+   *  Absent on old saves; `expeditionStarts` also grants legacy credit via deepestFloor. */
+  dungeonBossesSlain: number[];
   /** Last 10 completed Dungeon Delve runs — shown on the entrance screen. */
   dungeonHistory: DungeonRunSummary[];
   /** Date -> number of habit completions, powers mood + weekly views. */
@@ -339,7 +350,9 @@ export interface GameState {
   equipGear: (gearKey: string) => void;
   unequipGear: (slot: GearSlot) => void;
 
-  startDungeon: () => void;
+  /** Begin an expedition. `startDepth` defaults to 1; deeper starts (6, 11, …) must be
+   *  unlocked via `expeditionStarts` (D6) and grant one starter boon pick. */
+  startDungeon: (startDepth?: number) => void;
   /** Enter one of the offered next rooms on the floor map. */
   dungeonChoosePath: (nodeId: string) => void;
   dungeonEncounterChoose: (choiceIndex: number) => void;

@@ -608,6 +608,10 @@ function DungeonEconomyReadout() {
     ['XP / energy', economy.xpPerEnergy.toFixed(1)],
     ['XP / minute', economy.xpPerMinute.toFixed(1)],
     ['Gold / energy', economy.goldPerEnergy.toFixed(1)],
+    // Phase 3 instruments: attempt time (3.1/3.2), boss pacing (3.3), XP-weight check (3.5).
+    ['Median run', `${(economy.medianDurationMs / 60_000).toFixed(1)} min`],
+    ['Boss win rate', economy.bossWinRate01 != null ? `${Math.round(economy.bossWinRate01 * 100)}%` : '—'],
+    ['Dungeon XP share', economy.dungeonXpShare01 != null ? `${Math.round(economy.dungeonXpShare01 * 100)}%` : '—'],
   ];
   return (
     <div className="border-t border-gold-deep/20 pt-3">

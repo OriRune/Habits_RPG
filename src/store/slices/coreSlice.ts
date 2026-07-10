@@ -202,6 +202,7 @@ export const createCoreSlice: StateCreator<
       bossLosses: {},
       dungeonBossLosses: {},
       deepestFloor: 0,
+      dungeonBossesSlain: [],
       dungeonHistory: [],
       completionLog: {},
       lastActiveISO: toISODate(),
