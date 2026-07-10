@@ -220,15 +220,31 @@ Folder: `src/assets/sprites/relics/` → prefix `relic:`.
 | `relic:cracked_idol` | `cracked_idol.png` | ✅ |
 | `relic:leaden_weight` | `leaden_weight.png` | ✅ |
 | `relic:brittle_bones` | `brittle_bones.png` | ✅ |
-| `relic:padded_jerkin` | — | ❌ |
-| `relic:runed_band` | — | ❌ |
-| `relic:aegis_charm` | — | ❌ |
-| `relic:windrunner_sash` | — | ❌ |
-| `relic:gilded_mask` | — | ❌ |
-| `relic:worldroot_heart` | — | ❌ |
-| `relic:dragon_scale` | — | ❌ |
-| `relic:dull_blade` | — | ❌ (curse relic) |
-| `relic:clouded_mind` | — | ❌ (curse relic) |
+| `relic:padded_jerkin` | `padded_jerkin.png` | ✅ generated |
+| `relic:runed_band` | `runed_band.png` | ✅ generated |
+| `relic:aegis_charm` | `aegis_charm.png` | ✅ generated |
+| `relic:windrunner_sash` | `windrunner_sash.png` | ✅ generated |
+| `relic:gilded_mask` | `gilded_mask.png` | ✅ generated |
+| `relic:worldroot_heart` | `worldroot_heart.png` | ✅ generated |
+| `relic:dragon_scale` | `dragon_scale.png` | ✅ generated |
+| `relic:dull_blade` | `dull_blade.png` | ✅ generated (curse relic) |
+| `relic:clouded_mind` | `clouded_mind.png` | ✅ generated (curse relic) |
+| `relic:bone_ward` | `bone_ward.png` | ✅ generated |
+| `relic:frost_mantle` | `frost_mantle.png` | ✅ generated |
+| `relic:shadow_mantle` | `shadow_mantle.png` | ✅ generated |
+| `relic:verdant_sigil` | `verdant_sigil.png` | ✅ generated |
+| `relic:twin_sage` | `twin_sage.png` | ✅ generated |
+| `relic:bloodied_fang` | `bloodied_fang.png` | ✅ generated |
+| `relic:desperate_ward` | `desperate_ward.png` | ✅ generated |
+| `relic:shrine_stone` | `shrine_stone.png` | ✅ generated |
+| `relic:soulbound_crown` | `soulbound_crown.png` | ✅ generated |
+| `relic:frostbitten_edge` | `frostbitten_edge.png` | ✅ generated |
+
+> **Every relic in `content/relics.ts` now has art (38/38).** The 19 "generated" sprites
+> are rendered by `scripts/relic-sprites/gen.mjs` from hand-authored SVG in
+> `scripts/relic-sprites/art.mjs` (rasterized at 32px native, nearest-neighbor ×4 to
+> 128px to match the pixel style). Edit the SVG and re-run the script to revise one.
+> Coverage is pinned by `src/lib/__tests__/spriteRegistry.test.ts`.
 
 ---
 
@@ -276,7 +292,7 @@ bosses). No dedicated enemy-art folder exists. Enemy placeholder crests are gene
 | Materials | 6 of 14 | 14 | 43% |
 | Weapons | 3 of 4 | 4 | 75% |
 | Gear | 9 of 12 | 12 | 75% |
-| Relics | 19 of 28 | 28 | 68% |
+| Relics | 38 of 38 | 38 | 100% |
 | Minigame objects | 27 | 27 | 100% |
 | Minigame tiles | 11 | 11 | 100% |
 

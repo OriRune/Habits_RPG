@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { ITEMS } from '@/engine/items';
+import { RELICS } from '@/content/relics';
 import { resolveSpriteImage } from '../sprites';
 
 describe('SPRITE_REGISTRY', () => {
@@ -31,6 +32,12 @@ describe('SPRITE_REGISTRY', () => {
     expect(spellbooks.length).toBeGreaterThan(4);
     for (const book of spellbooks) {
       expect(resolveSpriteImage(`item:${book.key}`)).toBe(firebolt);
+    }
+  });
+
+  it('has real art for every relic in the catalog (plan 4.1 / DUN-14)', () => {
+    for (const relic of Object.values(RELICS)) {
+      expect(resolveSpriteImage(`relic:${relic.key}`), relic.key).toBeTruthy();
     }
   });
 

@@ -167,8 +167,9 @@ Only after 1.1 lands: if Dungeon supplies > ~⅓ of routine weekly level XP for 
 
 Goal: art and accessibility catch up to the rules. Independent of Phases 2–3 except 4.3 (needs 0.3).
 
-### [ ] 4.1 Remaining 19 relic sprites (L, batchable) — DUN-14
+### [x] 4.1 Remaining 19 relic sprites (L, batchable) — DUN-14
 Priority: curses first (`dull_blade`, `clouded_mind` — `brittle_bones`/`leaden_weight`/`cracked_idol` exist), then triggered/tier-3 (`worldroot_heart`, `dragon_scale`, `soulbound_crown`, `frostbitten_edge`, `desperate_ward`, `shrine_stone`, `bloodied_fang`, `twin_sage`), then tier-1/2 armor/trinkets (`padded_jerkin`, `runed_band`, `bone_ward`, `frost_mantle`, `aegis_charm`, `windrunner_sash`, `gilded_mask`, `shadow_mantle`, `verdant_sigil`). Match the existing PNG style in `src/assets/sprites/relics/`.
+*Landed: all 19 generated via `scripts/relic-sprites/` (SVG art → resvg at 32px native → NN ×4 to 128px, matching the pixel style); registry coverage pinned in `spriteRegistry.test.ts`; art-tracking docs updated to 38/38.*
 
 ### [ ] 4.2 Biome-distinct map treatment (M)
 Per-biome SVG frame/background for `FloorMap` beyond the translucent tint, consistent with the `DungeonSceneArt` language.
