@@ -11,10 +11,12 @@ import {
   moveBuilding,
   placeDecor,
   removeDecor,
-  prestigeOf,
+  buildingPrestigeOf,
+  deedCost,
+  deedPrestigeGate,
   type TownState,
 } from '@/engine/town';
-import { TOWN_BUILDINGS, TOWN_DEED_COSTS, TOWN_DEED_PRESTIGE } from '@/content/townBuildings';
+import { TOWN_BUILDINGS } from '@/content/townBuildings';
 import { TOWN_DECOR } from '@/content/townDecor';
 import type { GameState } from '../shared';
 import { uid } from '../gameState';
@@ -97,13 +99,14 @@ export const createTownSlice: StateCreator<
       return { town, materials: addMaterials(s.materials, refundMaterials) };
     }),
 
-  // Deeds are pure gold (the BAL-05 sink), gated on prestige and deeds < 3.
+  // Deeds are pure gold (the BAL-05 sink). The three land districts are gated on BUILDING
+  // prestige — zero-labor decor spam can't buy land (TOWN-17) — and past them the sink stays
+  // open forever as escalating land-free "charters" (TOWN-06). No upper deed count.
   townBuyDeed: () =>
     set((s) => {
       const deeds = s.town.deeds;
-      if (deeds >= 3) return s;
-      if (prestigeOf(s.town) < TOWN_DEED_PRESTIGE[deeds]) return s;
-      const cost = TOWN_DEED_COSTS[deeds];
+      if (buildingPrestigeOf(s.town) < deedPrestigeGate(deeds)) return s;
+      const cost = deedCost(deeds);
       const freeGold = s.settings.unlimitedGold;
       if (!freeGold && s.character.gold < cost) return s;
       const gold = freeGold ? s.character.gold : s.character.gold - cost;

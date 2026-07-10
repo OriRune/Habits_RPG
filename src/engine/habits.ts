@@ -64,6 +64,15 @@ export interface Habit {
    */
   lastLaborGrantISO?: string;
   /**
+   * The exact labor amount this habit's last live completion credited to the Homestead
+   * (post day-cap and bank-cap clamps). Lets uncomplete claw back precisely what was
+   * granted — the nominal `laborFor(difficulty)` desyncs when the daily cap clipped the
+   * grant or the difficulty was edited in between (TOWN-04). lastMilestoneGrant idiom;
+   * absent on saves from before this field, where clawback falls back to the nominal
+   * rate. Never cleared on uncomplete.
+   */
+  lastLaborGrant?: { dateISO: string; amount: number };
+  /**
    * The streak-milestone bonus last paid out for this habit (day-scheduled only). Lets
    * uncomplete claw back the exact gold/freezes and blocks a same-day re-mint of the
    * milestone (deferred from item 3.4). Never cleared on uncomplete.

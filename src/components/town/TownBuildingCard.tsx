@@ -11,7 +11,8 @@
 //
 //  Upgrade / demolish / cancel call the store directly (each is validate-then-commit
 //  and no-ops when invalid); Move hands control back to TownView, which owns the
-//  placement flow. Perk wiring lands in M5 — the perk row notes it comes online next.
+//  placement flow. Move and Demolish are both blocked while an upgrade targets the
+//  building (a demolish would orphan the queued project — TOWN-02).
 // ============================================================================
 import { useState } from 'react';
 import { useGameStore } from '@/store/useGameStore';
@@ -20,7 +21,7 @@ import { townPerks } from '@/engine/town';
 import { TOWN_BUILDINGS, KEEP_KEY } from '@/content/townBuildings';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
-import { CostRow, PERK_LABEL, canAfford } from './TownBuildPanel';
+import { CostRow, perkLabel, canAfford } from './TownBuildPanel';
 
 interface Props {
   buildingId: string;
@@ -62,21 +63,38 @@ export function TownBuildingCard({ buildingId, onMove, onClose }: Props) {
 
   const isKeep = building.key === KEEP_KEY;
 
+  // Success toasts compare state before/after (buyDeed's verify idiom) so a silently
+  // refused store action never toasts a lie (TOWN-14); an upgrade the banked labor
+  // finishes instantly celebrates as a completion (TOWN-13).
   function handleUpgrade() {
+    const tierBefore = building!.tier;
+    const queueBefore = useGameStore.getState().town.queue.length;
     townQueueUpgrade(buildingId);
-    pushToast({ text: `${def!.name} upgrade queued`, color: '#e8b923' });
+    const after = useGameStore.getState().town;
+    const upgraded = after.buildings.find((b) => b.id === buildingId);
+    if (upgraded && upgraded.tier > tierBefore) {
+      pushToast({ text: `🏗️ ${def!.name} complete!`, color: '#f59e0b', ttlMs: 5000 });
+    } else if (after.queue.length > queueBefore) {
+      pushToast({ text: `${def!.name} upgrade queued`, color: '#e8b923' });
+    }
     onClose();
   }
 
   function handleDemolish() {
+    const before = useGameStore.getState().town.buildings.length;
     townDemolish(buildingId);
-    pushToast({ text: `${def!.name} demolished`, color: '#c2683a' });
+    if (useGameStore.getState().town.buildings.length < before) {
+      pushToast({ text: `${def!.name} demolished`, color: '#c2683a' });
+    }
     onClose();
   }
 
   function handleCancel() {
+    const before = useGameStore.getState().town.queue.length;
     if (activeProject) townCancelProject(activeProject.id);
-    pushToast({ text: 'Project cancelled — materials returned', color: '#c2683a' });
+    if (useGameStore.getState().town.queue.length < before) {
+      pushToast({ text: 'Project cancelled — materials returned', color: '#c2683a' });
+    }
     setConfirm(null);
   }
 
@@ -89,7 +107,7 @@ export function TownBuildingCard({ buildingId, onMove, onClose }: Props) {
         </span>
         {def.perk && (
           <span className="text-ink-muted">
-            {PERK_LABEL[def.perk]} <span className="text-ink-light">· active</span>
+            {perkLabel(def, building.tier)} <span className="text-ink-light">· active</span>
           </span>
         )}
       </div>
@@ -125,6 +143,12 @@ export function TownBuildingCard({ buildingId, onMove, onClose }: Props) {
             </Button>
           </div>
           {nextCost && <CostRow w={wallet} gold={nextCost.gold} materials={nextCost.materials} />}
+          {/* Perk magnitudes scale with tier (TOWN-03) — show what the upgrade actually buys. */}
+          {def.perk && def.perkValues && building.tier < def.perkValues.length && (
+            <div className="mt-0.5 text-[10px] text-gold-deep">
+              Perk becomes: {perkLabel(def, building.tier + 1)}
+            </div>
+          )}
           {upgradeReason && <div className="mt-0.5 text-[10px] text-ember">{upgradeReason}</div>}
         </div>
       )}
@@ -149,6 +173,7 @@ export function TownBuildingCard({ buildingId, onMove, onClose }: Props) {
           <Button
             variant="secondary"
             className="min-h-[44px] flex-1 text-xs text-ember"
+            disabled={!!activeProject}
             onClick={() => setConfirm('demolish')}
           >
             Demolish
@@ -157,7 +182,7 @@ export function TownBuildingCard({ buildingId, onMove, onClose }: Props) {
       </div>
       {!!activeProject && (
         <div className="mt-1 text-center text-[10px] text-ink-light">
-          Cancel the upgrade before moving this building.
+          Cancel the upgrade before moving or demolishing this building.
         </div>
       )}
 

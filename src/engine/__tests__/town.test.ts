@@ -6,7 +6,12 @@ import {
   inUnlockedLand,
   occupancy,
   canPlace,
+  footprintDims,
   prestigeOf,
+  buildingPrestigeOf,
+  decorAdjacencyBonus,
+  deedCost,
+  deedPrestigeGate,
   townPerks,
   queueBuild,
   queueUpgrade,
@@ -16,7 +21,9 @@ import {
   settleProjects,
   demolish,
   moveBuilding,
+  canMoveBuilding,
   placeDecor,
+  canPlaceDecor,
   type TownState,
   type TownBuilding,
 } from '../town';
@@ -85,13 +92,64 @@ describe('canPlace', () => {
     expect(canPlace(town(), CHAPEL, 0, 0)).toEqual({ ok: false, reason: 'prestige' });
   });
 
-  it('rejects a deed-gated building below the deed requirement', () => {
+  it('rejects a deed-gated building below the deed requirement with the deed reason (TOWN-20)', () => {
     expect(canPlace(town({ deeds: 3 }), MANOR, 0, 0).ok).toBe(true);
-    expect(canPlace(town(), MANOR, 0, 0)).toEqual({ ok: false, reason: 'prestige' });
+    expect(canPlace(town(), MANOR, 0, 0)).toEqual({ ok: false, reason: 'deed' });
   });
 
   it('accepts a valid placement', () => {
     expect(canPlace(town(), WATCHTOWER, 3, 3)).toEqual({ ok: true });
+  });
+});
+
+// TOWN-01: the rot=1 mirror render lands art on the TRANSPOSED footprint, so every
+// logical footprint must swap w/h through footprintDims. These are the regression
+// tests for the live repro (a 1×1 placed "inside" a rotated 2×3's art, and a refusal
+// on grass the rotated building no longer occupies).
+describe('rotation footprints (footprintDims)', () => {
+  const YARD = TOWN_BUILDINGS['training_yard']; // 2×3, rotatable
+  const rotatedYard = () =>
+    town({ buildings: [bld({ id: 'y1', key: 'training_yard', r: 5, c: 6, tier: 1, rot: 1 })] });
+
+  it('footprintDims swaps w/h only for rot=1', () => {
+    expect(footprintDims(YARD, undefined)).toEqual({ w: 2, h: 3 });
+    expect(footprintDims(YARD, 0)).toEqual({ w: 2, h: 3 });
+    expect(footprintDims(YARD, 1)).toEqual({ w: 3, h: 2 });
+  });
+
+  it('occupancy of a rotated building covers the transposed cells and only those', () => {
+    const occ = occupancy(rotatedYard());
+    // transposed 3-wide × 2-tall: rows 5–6, cols 6–8
+    expect(occ.has('5,8')).toBe(true);
+    expect(occ.has('6,8')).toBe(true);
+    // the unrotated footprint's tail rows are NOT occupied
+    expect(occ.has('7,6')).toBe(false);
+    expect(occ.has('7,7')).toBe(false);
+  });
+
+  it('canPlace refuses the rotated art cells and frees the unrotated tail', () => {
+    const t = rotatedYard();
+    expect(canPlace(t, WATCHTOWER, 5, 8)).toEqual({ ok: false, reason: 'occupied' });
+    expect(canPlace(t, WATCHTOWER, 7, 6)).toEqual({ ok: true });
+  });
+
+  it('canPlace bounds-checks the rotated dimensions', () => {
+    // At c=22 on the deed-3 grid a 2-wide yard fits, but rotated (3-wide) it does not.
+    expect(canPlace(town({ deeds: 3 }), YARD, 0, 22, 0).ok).toBe(true);
+    expect(canPlace(town({ deeds: 3 }), YARD, 0, 22, 1)).toEqual({ ok: false, reason: 'bounds' });
+  });
+
+  it('a queued rotated build reserves the transposed footprint', () => {
+    const queued = queueBuild(town(), YARD, 5, 6, 1, 'p1')!;
+    const occ = occupancy(queued);
+    expect(occ.has('5,8')).toBe(true);
+    expect(occ.has('7,6')).toBe(false);
+  });
+
+  it('moveBuilding validates against the new rot', () => {
+    const t = town({ deeds: 3, buildings: [bld({ id: 'y1', key: 'training_yard', r: 0, c: 0, tier: 1 })] });
+    expect(moveBuilding(t, 'y1', 0, 22, 1)).toBeNull();            // 3-wide overflows col 24
+    expect(moveBuilding(t, 'y1', 0, 21, 1)).not.toBeNull();        // 21+3 = 24 fits
   });
 });
 
@@ -127,11 +185,16 @@ describe('queueBuild / queueUpgrade', () => {
     expect(t.queue[0].laborNeed).toBe(WATCHTOWER.tiers[0].labor); // 15
   });
 
-  it('applies the Mason discount at queue time (snapshotted)', () => {
-    // A completed Mason's Guild grants laborDiscount01 = 0.10.
-    const t = town({ buildings: [bld({ id: 'm', key: 'masons_guild', r: 0, c: 0, tier: 1 })] });
-    const queued = queueBuild(t, WATCHTOWER, 5, 5, undefined, 'p1')!;
-    expect(queued.queue[0].laborNeed).toBe(Math.ceil(15 * 0.9)); // 14
+  it('applies the tier-scaled Mason discount at queue time (snapshotted)', () => {
+    // Mason perkValues [0.05, 0.10, 0.15] (TOWN-07): the discount grows with tier.
+    const at = (tier: number) =>
+      queueBuild(
+        town({ buildings: [bld({ id: 'm', key: 'masons_guild', r: 0, c: 0, tier })] }),
+        WATCHTOWER, 5, 5, undefined, 'p1',
+      )!.queue[0].laborNeed;
+    expect(at(1)).toBe(Math.ceil(15 * 0.95)); // 15 — 5% rounds away on small tiers
+    expect(at(2)).toBe(Math.ceil(15 * 0.9));  // 14
+    expect(at(3)).toBe(Math.ceil(15 * 0.85)); // 13
   });
 
   it('queueUpgrade needs the building and stops at maxTier', () => {
@@ -271,6 +334,16 @@ describe('demolish', () => {
     expect(after).toBe(t); // unchanged
     expect(refundMaterials).toEqual({});
   });
+
+  // TOWN-02: demolishing the target of a queued upgrade would orphan the project
+  // (invisible, uncancellable, queue-slot lock) — it must no-op like the Keep guard.
+  it('never demolishes a building a queued upgrade targets', () => {
+    const base = town({ buildings: [bld({ id: 'w', key: 'watchtower', r: 0, c: 0, tier: 1 })] });
+    const withUpgrade = queueUpgrade(base, 'w', 'u1')!;
+    const { town: after, refundMaterials } = demolish(withUpgrade, 'w');
+    expect(after).toBe(withUpgrade); // unchanged — building and project both intact
+    expect(refundMaterials).toEqual({});
+  });
 });
 
 describe('moveBuilding', () => {
@@ -283,12 +356,50 @@ describe('moveBuilding', () => {
   });
 });
 
-describe('placeDecor', () => {
+describe('placeDecor / canPlaceDecor', () => {
   it('enforces the per-type cap', () => {
     let t = town();
     for (let i = 0; i < 10; i++) t = placeDecor(t, TOWN_DECOR['tree'], i, 0, 0)!;
     expect(t.decor).toHaveLength(10);
     expect(placeDecor(t, TOWN_DECOR['tree'], 11, 0, 0)).toBeNull(); // 11th tree refused
+    expect(canPlaceDecor(t, TOWN_DECOR['tree'], 11, 0)).toEqual({ ok: false, reason: 'type_cap' });
+  });
+
+  it('enforces the global 60-prop cap (TOWN-10)', () => {
+    // 6 types × 10 each = 60 props fills the global cap without tripping any per-type cap.
+    let t = town();
+    const types = ['tree', 'hedge', 'lamppost', 'flower_bed', 'banner', 'cobble_path'];
+    types.forEach((key, ti) => {
+      for (let i = 0; i < 10; i++) t = placeDecor(t, TOWN_DECOR[key], ti * 2, i, 0)!;
+    });
+    expect(t.decor).toHaveLength(60);
+    // A 7th type is refused on the GLOBAL cap, not its (untouched) per-type cap.
+    expect(canPlaceDecor(t, TOWN_DECOR['well'], 13, 0)).toEqual({ ok: false, reason: 'decor_cap' });
+    expect(placeDecor(t, TOWN_DECOR['well'], 13, 0, 0)).toBeNull();
+  });
+
+  it('reports footprint reasons: bounds, locked, occupied', () => {
+    const t = town({ decor: [{ key: 'well', r: 5, c: 5 }] });
+    expect(canPlaceDecor(t, TOWN_DECOR['tree'], -1, 0)).toEqual({ ok: false, reason: 'bounds' });
+    expect(canPlaceDecor(t, TOWN_DECOR['tree'], 14, 14)).toEqual({ ok: false, reason: 'locked' });
+    expect(canPlaceDecor(t, TOWN_DECOR['tree'], 5, 5)).toEqual({ ok: false, reason: 'occupied' });
+    expect(canPlaceDecor(t, TOWN_DECOR['tree'], 3, 3)).toEqual({ ok: true });
+  });
+});
+
+describe('canMoveBuilding', () => {
+  it('reports missing / busy / occupied and accepts a valid move', () => {
+    const base = town({
+      buildings: [
+        bld({ id: 'w', key: 'watchtower', r: 0, c: 0, tier: 1 }),
+        bld({ id: 'b', key: 'bathhouse', r: 5, c: 5, tier: 1 }),
+      ],
+    });
+    expect(canMoveBuilding(base, 'nope', 2, 2)).toEqual({ ok: false, reason: 'missing' });
+    expect(canMoveBuilding(base, 'w', 5, 5)).toEqual({ ok: false, reason: 'occupied' });
+    expect(canMoveBuilding(base, 'w', 2, 2)).toEqual({ ok: true });
+    const withUpgrade = queueUpgrade(base, 'w', 'u1')!;
+    expect(canMoveBuilding(withUpgrade, 'w', 2, 2)).toEqual({ ok: false, reason: 'busy' });
   });
 });
 
@@ -311,6 +422,57 @@ describe('prestigeOf / townPerks', () => {
     const perks = townPerks(t);
     expect(perks.queueSlots).toBe(2);
     expect(perks.sightBonus).toBe(1);
+  });
+
+  // TOWN-03: perk magnitudes scale with tier (perkValues) — every upgrade buys effect.
+  it('perk magnitudes follow perkValues by tier', () => {
+    const at = (key: string, tier: number) =>
+      townPerks(town({ buildings: [bld({ id: 'b', key, r: 0, c: 0, tier })] }));
+    expect(at('watchtower', 1).sightBonus).toBe(1);
+    expect(at('watchtower', 3).sightBonus).toBe(2);
+    expect(at('bathhouse', 1).staminaBonus).toBe(5);
+    expect(at('bathhouse', 2).staminaBonus).toBe(10);
+    expect(at('bathhouse', 3).staminaBonus).toBe(15);
+    expect(at('trading_post', 3).merchantDiscount01).toBeCloseTo(0.15, 10);
+    expect(at('granary', 2).maxEnergyBonus).toBe(2);
+    expect(at('smithy', 3).forgeSweetBonus).toBeCloseTo(0.04, 10);
+    expect(at('training_yard', 1).trialPractice).toBe(true); // boolean perk — no scaling
+  });
+
+  // TOWN-08: decor beside a completed building earns +1 prestige — placement matters.
+  it('prestigeOf grants +1 adjacency prestige per building-adjacent decor prop', () => {
+    const keep = bld({ id: 'k', key: 'keep', r: 0, c: 0, tier: 1 }); // 25, covers rows/cols 0–2
+    const beside = town({ buildings: [keep], decor: [{ key: 'lamppost', r: 3, c: 0 }] });   // touches row 2
+    const apart = town({ buildings: [keep], decor: [{ key: 'lamppost', r: 10, c: 10 }] });
+    expect(prestigeOf(beside)).toBe(25 + 1 + 1); // building + decor + adjacency
+    expect(prestigeOf(apart)).toBe(25 + 1);
+    expect(decorAdjacencyBonus(beside, 3, 0)).toBe(1);
+    expect(decorAdjacencyBonus(apart, 10, 10)).toBe(0);
+  });
+
+  // TOWN-17: deed gates read building prestige only — decor never buys land.
+  it('buildingPrestigeOf excludes decor, adjacency, and charters', () => {
+    const t = town({
+      deeds: 4, // one charter commissioned
+      buildings: [bld({ id: 'k', key: 'keep', r: 0, c: 0, tier: 2 })], // 25 + 40
+      decor: [{ key: 'statue', r: 3, c: 0 }], // +3, adjacent → +1
+    });
+    expect(buildingPrestigeOf(t)).toBe(65);
+    expect(prestigeOf(t)).toBe(65 + 3 + 1 + 40); // + decor + adjacency + charter
+  });
+});
+
+// TOWN-06: past the three land districts the deed sink continues as open-ended charters.
+describe('deedCost / deedPrestigeGate', () => {
+  it('land deeds follow the frozen tables, charters escalate without end', () => {
+    expect([deedCost(0), deedCost(1), deedCost(2)]).toEqual([500, 1500, 4000]);
+    expect([deedCost(3), deedCost(4), deedCost(5)]).toEqual([8000, 16000, 32000]);
+    expect([deedPrestigeGate(0), deedPrestigeGate(1), deedPrestigeGate(2)]).toEqual([100, 200, 320]);
+    expect([deedPrestigeGate(3), deedPrestigeGate(4)]).toEqual([440, 560]);
+  });
+
+  it('the grid never grows past the deed-3 square', () => {
+    expect(gridSizeFor(5)).toEqual({ rows: 24, cols: 24 }); // charters grant no land
   });
 });
 

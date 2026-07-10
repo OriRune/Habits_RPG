@@ -1,5 +1,12 @@
 # The Homestead — Town-Builder Development Plan
 
+> **Post-ship amendments (2026-07-10, from `homestead-audit-2026-07.md` / `homestead-plan-2026-07.md`):**
+> 1. **Perks scale with tier** (`perkValues` in the catalog: e.g. Bathhouse +5/+10/+15 stamina, Mason −5/−10/−15% labor) — upgrades buy real effect, not just prestige (TOWN-03/07).
+> 2. **Deeds are open-ended**: past the three land districts, land-free *charters* continue the pure-gold sink at doubling cost (8,000g, 16,000g, …) for +40 prestige each (TOWN-06).
+> 3. **Deed/charter gates read building prestige only** — decor prestige counts toward the Chapel gate and the displayed total, but never buys land (TOWN-17).
+> 4. **Decor adjacent to a completed building earns +1 prestige** — placement is a light puzzle (TOWN-08).
+> 5. Decor is removable in the UI (tap → card → 50% material refund), rotation footprints are transposed logically to match the mirrored art, and demolish is blocked while an upgrade targets the building (persist **v37** heals pre-guard orphaned projects).
+
 ## 1. Context & Goal
 
 The gold economy goes post-scarce in under a week (BAL-05: ~2,030g of reachable one-time sinks against 300–900g/day mid-game faucets), and the Phase 4 close-out recorded an accepted gap in plan3's deferred table: **no repeatable ≥500g pure-gold sink exists** — the "repeatable scaling sink, best fit for 'always something to want'" option was weighed and deferred. Separately, `stone` and `wood` are *doubly dead* materials: defined in `src/content/materials.ts:25-26` with **no source and no sink**, and the Forge (Phase 8) consumes the BAL-16 dead-end list but adds no scaling gold pit.
@@ -119,7 +126,7 @@ export const TOWN_DECOR_PER_TYPE_CAP = 10;
 
 | Building | Footprint | Tiers | Perk | Unlock |
 |---|---|---|---|---|
-| The Keep | 3×3 | I–IV | tier III: +1 project slot | none — **mandatory first project** (cheap tier I ≈ tutorial) |
+| The Keep | 3×3 | I–IV | tier III: +1 project slot | none — cheap tier I is the natural first pick (mandatory-first was cut in implementation) |
 | Watchtower | 1×1 | I–III | `sight` | — |
 | Bathhouse | 2×2 | I–III | `stamina` | — |
 | Trading Post | 2×2 | I–III | `haggle` | — |

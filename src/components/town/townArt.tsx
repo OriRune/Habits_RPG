@@ -97,7 +97,7 @@ function splitFill(fill: string): { cls?: string; attr?: string } {
  * the sunlit right face, and the lit top rhombus. Corners come from the footprint diamond so the
  * box tessellates with the ground grid.
  */
-export function isoBox(w: number, h: number, height: number, opts: BoxOpts = {}): ReactNode {
+function isoBox(w: number, h: number, height: number, opts: BoxOpts = {}): ReactNode {
   const {
     top = 'url(#town-wall)',
     right = 'fill-parchment-400',
@@ -131,7 +131,7 @@ export function isoBox(w: number, h: number, height: number, opts: BoxOpts = {})
  * grid. Half-widths rw (x) / rh (iso depth), `hgt` px tall. Used for chimneys, crates, posts,
  * anvils, plinths — anything placed on top of or beside a building.
  */
-export function prism(cx: number, cy: number, rw: number, rh: number, hgt: number, opts: BoxOpts = {}): ReactNode {
+function prism(cx: number, cy: number, rw: number, rh: number, hgt: number, opts: BoxOpts = {}): ReactNode {
   const { top = 'fill-parchment-300', right = 'fill-parchment-400', left = 'fill-wood-600' } = opts;
   const N = { x: cx, y: cy - rh }, E = { x: cx + rw, y: cy }, S = { x: cx, y: cy + rh }, W = { x: cx - rw, y: cy };
   const tN = up(N, hgt), tE = up(E, hgt), tS = up(S, hgt), tW = up(W, hgt);
@@ -147,7 +147,7 @@ export function prism(cx: number, cy: number, rw: number, rh: number, hgt: numbe
 }
 
 /** A simple gable roof cap sitting on top of a box `height` units up over a w×h footprint. */
-export function roofGable(w: number, h: number, height: number, fill: string, peak = 0.55): ReactNode {
+function roofGable(w: number, h: number, height: number, fill: string, peak = 0.55): ReactNode {
   const lift = height * LIFT_PER_UNIT;
   const [N, E, S, W] = diamondCorners(w, h);
   const apex = { x: (E.x + W.x) / 2, y: (E.y + W.y) / 2 - lift - peak * LIFT_PER_UNIT };
@@ -163,7 +163,7 @@ export function roofGable(w: number, h: number, height: number, fill: string, pe
 }
 
 /** A domed roof over a w×h footprint at `height` up — a front half-ellipse silhouette + finial. */
-export function dome(w: number, h: number, height: number, fill = 'url(#town-roofB)', rise = 0.9): ReactNode {
+function dome(w: number, h: number, height: number, fill = 'url(#town-roofB)', rise = 0.9): ReactNode {
   const lift = height * LIFT_PER_UNIT;
   const c = centerGround(w, h);
   const rx = Math.min(w, h) * HW * 0.72;
@@ -184,7 +184,7 @@ export function dome(w: number, h: number, height: number, fill = 'url(#town-roo
 }
 
 /** A tall pointed spire/steeple over a w×h footprint — two faces + a finial (chapel/watchtower). */
-export function spire(w: number, h: number, height: number, spireH: number, fill = 'url(#town-roofB)'): ReactNode {
+function spire(w: number, h: number, height: number, spireH: number, fill = 'url(#town-roofB)'): ReactNode {
   const lift = height * LIFT_PER_UNIT;
   const c = centerGround(w, h);
   const rw = Math.min(w, h) * HW * 0.5;
@@ -206,7 +206,7 @@ export function spire(w: number, h: number, height: number, spireH: number, fill
  * A polygon-approximated cylindrical silo standing at ground point (cx, cyBase): elliptical rim,
  * a vertical body with a hoop band and side shading, and a conical cap. Granary signature volume.
  */
-export function silo(cx: number, cyBase: number, rw: number, hgt: number, cap = 'url(#town-roofB)'): ReactNode {
+function silo(cx: number, cyBase: number, rw: number, hgt: number, cap = 'url(#town-roofB)'): ReactNode {
   const ry = rw * 0.42;
   const topY = cyBase - hgt;
   const { cls, attr } = splitFill(cap);
@@ -229,7 +229,7 @@ export function silo(cx: number, cyBase: number, rw: number, hgt: number, cap = 
 }
 
 /** A perimeter fence around a w×h footprint: corner + mid posts joined by a top rail. */
-export function fence(w: number, h: number, postH = 0.32): ReactNode {
+function fence(w: number, h: number, postH = 0.32): ReactNode {
   const [N, E, S, W] = diamondCorners(w, h);
   const lift = postH * LIFT_PER_UNIT;
   const edges: [Pt, Pt][] = [[N, E], [E, S], [S, W], [W, N]];

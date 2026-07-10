@@ -19,28 +19,35 @@ import {
   TOWN_DECOR_CAP,
   TOWN_DECOR_PER_TYPE_CAP,
   TOWN_DEED_COSTS,
-  TOWN_DEED_PRESTIGE,
   type TownBuildingDef,
-  type TownPerkId,
   type TownTierCost,
 } from '@/content/townBuildings';
 import { TOWN_DECOR, type TownDecorDef } from '@/content/townDecor';
-import { prestigeOf, townPerks, type TownState } from '@/engine/town';
+import { prestigeOf, buildingPrestigeOf, townPerks, deedCost, deedPrestigeGate, type TownState } from '@/engine/town';
 import { getMaterial } from '@/engine/materials';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/cn';
 
-/** Short, human perk labels for building rows and the building card. */
-export const PERK_LABEL: Record<TownPerkId, string> = {
-  sight: '+1 crawler sight radius',
-  stamina: '+10 crawler stamina',
-  haggle: '15% dungeon-merchant discount',
-  practice: 'Replay cleared skill trials',
-  granary: '+2 maximum energy',
-  mason: '−10% labor on new projects',
-  forge_focus: 'Wider Forge sweet zone',
-};
+/**
+ * Short, human perk label at a completed tier — perk magnitudes scale with tier
+ * (perkValues, TOWN-03), so the copy reads the catalog instead of hardcoding numbers.
+ * `tier` 0 (an unbuilt row) shows the tier-I value.
+ */
+export function perkLabel(def: TownBuildingDef, tier: number): string | null {
+  if (!def.perk) return null;
+  const values = def.perkValues ?? [];
+  const v = values[Math.max(0, Math.min(Math.max(tier, 1), values.length) - 1)] ?? 0;
+  switch (def.perk) {
+    case 'sight': return `+${v} crawler sight radius`;
+    case 'stamina': return `+${v} crawler stamina`;
+    case 'haggle': return `${Math.round(v * 100)}% dungeon-merchant discount`;
+    case 'practice': return 'Replay cleared skill trials';
+    case 'granary': return `+${v} maximum energy`;
+    case 'mason': return `−${Math.round(v * 100)}% labor on new projects`;
+    case 'forge_focus': return `+${Math.round(v * 100)}% Forge sweet zone`;
+  }
+}
 
 interface Wallet {
   gold: number;
@@ -95,6 +102,10 @@ export function TownBuildPanel({ town, wallet, onPickBuilding, onPickDecor, onBu
   const [tab, setTab] = useState<Tab>('buildings');
   const [confirmDeed, setConfirmDeed] = useState(false);
   const prestige = prestigeOf(town);
+  const buildingPrestige = buildingPrestigeOf(town);
+  // Past the three land districts, deeds continue as land-free charters (TOWN-06).
+  const charter = town.deeds >= TOWN_DEED_COSTS.length;
+  const nextDeedCost = deedCost(town.deeds);
 
   return (
     <div className="fixed inset-x-0 bottom-0 z-40 mx-auto max-w-3xl">
@@ -130,17 +141,27 @@ export function TownBuildPanel({ town, wallet, onPickBuilding, onPickDecor, onBu
           {tab === 'buildings' && <BuildingsTab town={town} wallet={wallet} prestige={prestige} onPick={onPickBuilding} />}
           {tab === 'decor' && <DecorTab town={town} wallet={wallet} onPick={onPickDecor} />}
           {tab === 'deeds' && (
-            <DeedsTab town={town} wallet={wallet} prestige={prestige} onBuy={() => setConfirmDeed(true)} />
+            <DeedsTab town={town} wallet={wallet} buildingPrestige={buildingPrestige} onBuy={() => setConfirmDeed(true)} />
           )}
         </div>
       </div>
 
       {confirmDeed && (
-        <Modal title="Purchase a Land Deed?" onClose={() => setConfirmDeed(false)}>
+        <Modal title={charter ? 'Commission a Town Charter?' : 'Purchase a Land Deed?'} onClose={() => setConfirmDeed(false)}>
           <p className="mb-4 text-sm text-ink-muted">
-            Buy district {town.deeds + 1} for{' '}
-            <span className="font-semibold text-gold-deep">{TOWN_DEED_COSTS[town.deeds]}g</span>. Gold stays sunk — deeds
-            never refund. The new land unfolds immediately.
+            {charter ? (
+              <>
+                Commission charter {town.deeds - TOWN_DEED_COSTS.length + 1} for{' '}
+                <span className="font-semibold text-gold-deep">{nextDeedCost}g</span>. Gold stays sunk — charters never
+                refund. No new land, but the town's renown grows (+prestige).
+              </>
+            ) : (
+              <>
+                Buy district {town.deeds + 1} for{' '}
+                <span className="font-semibold text-gold-deep">{nextDeedCost}g</span>. Gold stays sunk — deeds never
+                refund. The new land unfolds immediately.
+              </>
+            )}
           </p>
           <div className="flex gap-2">
             <Button variant="secondary" className="flex-1" onClick={() => setConfirmDeed(false)}>
@@ -153,7 +174,7 @@ export function TownBuildPanel({ town, wallet, onPickBuilding, onPickDecor, onBu
                 setConfirmDeed(false);
               }}
             >
-              Buy for {TOWN_DEED_COSTS[town.deeds]}g
+              Buy for {nextDeedCost}g
             </Button>
           </div>
         </Modal>
@@ -207,7 +228,14 @@ function BuildingsTab({
                   </span>
                 </div>
                 <div className="truncate text-[11px] text-ink-muted">{def.flavor}</div>
-                {def.perk && <div className="text-[10px] text-gold-deep">Perk: {PERK_LABEL[def.perk]}</div>}
+                {def.perk && (
+                  <div className="text-[10px] text-gold-deep">
+                    Perk: {perkLabel(def, 1)}
+                    {def.perkValues && def.perkValues.length > 1 && (
+                      <span className="text-ink-light"> · grows with tier</span>
+                    )}
+                  </div>
+                )}
               </div>
               <div className="shrink-0">
                 {built ? (
@@ -290,64 +318,64 @@ function DecorTab({ town, wallet, onPick }: { town: TownState; wallet: Wallet; o
 }
 
 // ---------------------------------------------------------------------------
-// Deeds tab — the pure-gold BAL-05 sink
+// Deeds tab — the pure-gold BAL-05 sink. Three land districts, then open-ended
+// land-free charters (TOWN-06). Gates read BUILDING prestige only (TOWN-17).
 // ---------------------------------------------------------------------------
 
 function DeedsTab({
   town,
   wallet,
-  prestige,
+  buildingPrestige,
   onBuy,
 }: {
   town: TownState;
   wallet: Wallet;
-  prestige: number;
+  buildingPrestige: number;
   onBuy: () => void;
 }) {
-  const fullyClaimed = town.deeds >= TOWN_DEED_COSTS.length;
-  const cost = fullyClaimed ? 0 : TOWN_DEED_COSTS[town.deeds];
-  const gate = fullyClaimed ? 0 : TOWN_DEED_PRESTIGE[town.deeds];
-  const prestigeMet = prestige >= gate;
+  const landDeeds = Math.min(town.deeds, TOWN_DEED_COSTS.length);
+  const charters = Math.max(0, town.deeds - TOWN_DEED_COSTS.length);
+  const isCharter = town.deeds >= TOWN_DEED_COSTS.length;
+  const cost = deedCost(town.deeds);
+  const gate = deedPrestigeGate(town.deeds);
+  const prestigeMet = buildingPrestige >= gate;
   const goldMet = wallet.unlimitedGold || wallet.gold >= cost;
   return (
     <div className="rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3">
       <div className="text-sm font-semibold text-ink">
-        {town.deeds} of {TOWN_DEED_COSTS.length} districts claimed
+        {landDeeds} of {TOWN_DEED_COSTS.length} districts claimed
+        {charters > 0 && <span className="text-gold-deep"> · {charters} charter{charters === 1 ? '' : 's'}</span>}
       </div>
-      {fullyClaimed ? (
-        <p className="mt-2 text-sm text-gold-deep">The town is fully claimed — every district is yours.</p>
-      ) : (
-        <>
-          <p className="mt-1 text-[11px] text-ink-muted">
-            Deeds expand the buildable land — a pure-gold sink that never refunds.
-          </p>
-          <div className="mt-2 flex items-center gap-3 text-xs">
-            <span className={cn('flex items-center gap-0.5', goldMet ? 'text-gold-deep' : 'text-ember')}>
-              <Coins className="h-3.5 w-3.5" /> {cost}
-              <span className="text-ink-light">({wallet.unlimitedGold ? '∞' : wallet.gold})</span>
-            </span>
-            <span className={cn(prestigeMet ? 'text-ink-muted' : 'text-ember')}>
-              Prestige {gate} <span className="text-ink-light">({prestige})</span>
-            </span>
-          </div>
-          <Button
-            onClick={onBuy}
-            disabled={!prestigeMet || !goldMet}
-            className="mt-3 min-h-[44px] w-full"
-          >
-            Buy district {town.deeds + 1}
-          </Button>
-          {!prestigeMet && (
-            <div className="mt-1 text-center text-[10px] text-ember">
-              Raise prestige to {gate} by building &amp; upgrading.
-            </div>
-          )}
-          {prestigeMet && !goldMet && (
-            <div className="mt-1 text-center text-[10px] text-ember">
-              Not enough gold — you need {cost}g for this deed.
-            </div>
-          )}
-        </>
+      <p className="mt-1 text-[11px] text-ink-muted">
+        {isCharter
+          ? 'Every district is yours — town charters carry the sink on: no land, pure prestige, ever-rising cost.'
+          : 'Deeds expand the buildable land — a pure-gold sink that never refunds.'}
+      </p>
+      <div className="mt-2 flex items-center gap-3 text-xs">
+        <span className={cn('flex items-center gap-0.5', goldMet ? 'text-gold-deep' : 'text-ember')}>
+          <Coins className="h-3.5 w-3.5" /> {cost}
+          <span className="text-ink-light">({wallet.unlimitedGold ? '∞' : wallet.gold})</span>
+        </span>
+        <span className={cn(prestigeMet ? 'text-ink-muted' : 'text-ember')}>
+          Building prestige {gate} <span className="text-ink-light">({buildingPrestige})</span>
+        </span>
+      </div>
+      <Button
+        onClick={onBuy}
+        disabled={!prestigeMet || !goldMet}
+        className="mt-3 min-h-[44px] w-full"
+      >
+        {isCharter ? `Commission charter ${charters + 1}` : `Buy district ${town.deeds + 1}`}
+      </Button>
+      {!prestigeMet && (
+        <div className="mt-1 text-center text-[10px] text-ember">
+          Raise building prestige to {gate} by building &amp; upgrading — decor doesn't count toward deeds.
+        </div>
+      )}
+      {prestigeMet && !goldMet && (
+        <div className="mt-1 text-center text-[10px] text-ember">
+          Not enough gold — you need {cost}g for this {isCharter ? 'charter' : 'deed'}.
+        </div>
       )}
     </div>
   );

@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { Heart, Sparkles, Coins, Zap, Wind, ChevronsDown, DoorOpen, Clock, Flag } from 'lucide-react';
 import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
 import { useGameStore } from '@/store/useGameStore';
-import { selectDungeonMilestone } from '@/store/selectors';
+import { selectDungeonMilestone, selectTownPerks } from '@/store/selectors';
 import { ROOM_META, DUNGEON_ENERGY_COST, DUNGEON_FREE_FLOORS, DUNGEON_DESCENT_COST, mergeReward, expeditionStarts, descentCharged } from '@/engine/dungeon';
 import { now } from '@/engine/date';
 import { DUNGEON_RETENTION, runEndReason, previewRetainedReward } from '@/engine/dungeonRun';
@@ -18,7 +18,6 @@ import { getWeapon } from '@/engine/weapons';
 import { getGear } from '@/engine/gear';
 import { getStat } from '@/engine/stats';
 import { DUNGEON_UNLOCK_LEVEL } from '@/engine/progression';
-import { townPerks } from '@/engine/town';
 import { materialCrest } from '@/lib/sprites';
 import { cn } from '@/lib/cn';
 import { Panel } from '@/components/ui/Panel';
@@ -129,6 +128,7 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
   const deepestFloor = useGameStore((s) => s.deepestFloor);
   const dungeonBossesSlain = useGameStore((s) => s.dungeonBossesSlain ?? EMPTY_BOSSES);
   const nextMilestone = useGameStore(selectDungeonMilestone).nextMilestone;
+  const merchantDiscount01 = useGameStore(selectTownPerks).merchantDiscount01;
   const showAdventureRitual = useGameStore((s) => s.settings.showAdventureRitual);
   const dungeonHistory = useGameStore((s) => s.dungeonHistory ?? []);
   const startDungeon = useGameStore((s) => s.startDungeon);
@@ -549,7 +549,7 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
           path={dungeon.path}
           depth={dungeon.depth}
           biomeKey={dungeon.biomeKey}
-          merchantDiscount01={townPerks(useGameStore.getState().town).merchantDiscount01}
+          merchantDiscount01={merchantDiscount01}
           onChoose={dungeonChoosePath}
         />
       ) : inBattle ? (

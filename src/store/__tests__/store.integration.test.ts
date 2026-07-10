@@ -1484,8 +1484,8 @@ describe('deep mine', () => {
     expect(get().deepestMineFloor).toBe(2);
   });
 
-  it('persists at version 36', () => {
-    expect(useGameStore.persist.getOptions().version).toBe(36);
+  it('persists at version 37', () => {
+    expect(useGameStore.persist.getOptions().version).toBe(37);
   });
 
   describe('3.8: daily first-descent bonus', () => {
@@ -2354,7 +2354,7 @@ describe('uncapped quantity XP cap at 10× (Stage 4.2)', () => {
 });
 
 describe('Homestead perks — live seams (10.5)', () => {
-  it('a completed Bathhouse adds +10 crawler stamina at run start (mine + forest)', () => {
+  it('a completed Bathhouse adds tier-scaled crawler stamina at run start (mine + forest)', () => {
     useGameStore.setState({ character: { ...get().character, energy: 10 } });
     const en = get().character.statLevels.EN;
     // Baseline (no buildings): maxSta == dungeonStamina(EN) — starter gear adds no EN.
@@ -2363,11 +2363,12 @@ describe('Homestead perks — live seams (10.5)', () => {
     useGameStore.setState({ mining: null });
     get().beginForest();
     expect(get().forest!.maxSta).toBe(dungeonStamina(en));
-    // Seed a completed Bathhouse (perks derive from buildings only — placement not needed).
+    // Seed a completed tier-II Bathhouse — perkValues [5,10,15], so tier II = +10
+    // (perks derive from buildings only — placement not needed).
     useGameStore.setState({
       mining: null, forest: null,
       character: { ...get().character, energy: 10 },
-      town: { ...get().town, buildings: [{ id: 'bh', key: 'bathhouse', r: 0, c: 0, tier: 1 }] },
+      town: { ...get().town, buildings: [{ id: 'bh', key: 'bathhouse', r: 0, c: 0, tier: 2 }] },
     });
     get().beginMining();
     expect(get().mining!.maxSta).toBe(dungeonStamina(en) + 10);
@@ -2399,7 +2400,8 @@ describe('Homestead perks — live seams (10.5)', () => {
     const id = get().habits[0].id;
     useGameStore.setState({
       character: { ...get().character, energy: MAX_ENERGY }, // 15 — the old ceiling
-      town: { ...get().town, buildings: [{ id: 'gr', key: 'granary', r: 0, c: 0, tier: 1 }] },
+      // Tier-II Granary — perkValues [1,2,3], so tier II = +2 cap.
+      town: { ...get().town, buildings: [{ id: 'gr', key: 'granary', r: 0, c: 0, tier: 2 }] },
     });
     expect(maxEnergyFor(get())).toBe(MAX_ENERGY + 2); // 17
     get().completeHabit(id);
@@ -2411,7 +2413,7 @@ describe('Homestead perks — live seams (10.5)', () => {
     const id = get().habits[0].id;
     useGameStore.setState({
       character: { ...get().character, energy: 99 }, // above any cap
-      town: { ...get().town, buildings: [{ id: 'gr', key: 'granary', r: 0, c: 0, tier: 1 }] },
+      town: { ...get().town, buildings: [{ id: 'gr', key: 'granary', r: 0, c: 0, tier: 2 }] },
     });
     get().completeHabit(id);
     expect(get().character.energy).toBe(MAX_ENERGY + 2); // clamped to 17, not 15

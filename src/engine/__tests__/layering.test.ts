@@ -146,25 +146,26 @@ describe('engine/ layering guard', () => {
 /**
  * Party-visit forward-compat freeze (plan3 10.6 / M6): the Homestead is solo in v1. The future
  * read-only party-visit is the ONLY sanctioned path to broadcast town state, and it doesn't
- * exist yet — so net/coop must not import engine/town today. This guard makes that a CI gate.
+ * exist yet — so the whole net/ layer must not import engine/town today. This guard makes that
+ * a CI gate.
  */
-const coopSources = import.meta.glob<string>(
-  '/src/net/coop/**/*.ts',
+const netSources = import.meta.glob<string>(
+  '/src/net/**/*.ts',
   { eager: true, query: '?raw', import: 'default' },
 );
 
-const COOP_TOWN_FORBIDDEN: RegExp[] = [
+const NET_TOWN_FORBIDDEN: RegExp[] = [
   /from\s+['"]@\/engine\/town['"]/,
   /from\s+['"][^'"]*\/town['"]/,
   /import\s*\(\s*['"]@\/engine\/town['"]/,
 ];
 
-describe('net/coop → town freeze guard', () => {
-  it('no net/coop file imports engine/town (v1 must not broadcast town state)', () => {
-    const violations = scan(coopSources, COOP_TOWN_FORBIDDEN);
+describe('net → town freeze guard', () => {
+  it('no net/ file imports engine/town (v1 must not broadcast town state)', () => {
+    const violations = scan(netSources, NET_TOWN_FORBIDDEN);
     if (violations.length > 0) {
       expect.fail(
-        'net/coop imports engine/town — the party-visit protocol is not built yet:\n\n' +
+        'net/ imports engine/town — the party-visit protocol is not built yet:\n\n' +
           violations.map((v) => `  ${v}`).join('\n') +
           '\n\nv1 is solo; town state must not be broadcast. See the TownState doc block.',
       );

@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useGameStore } from '../useGameStore';
 import { selectTownPerks } from '../selectors';
-import { freshTown, townPerks, type TownProject } from '@/engine/town';
+import { freshTown, townPerks, queueBuild, canPlace, type TownProject } from '@/engine/town';
+import { TOWN_BUILDINGS } from '@/content/townBuildings';
 import { toISODate, _setNow, _resetNow, addDays } from '@/engine/date';
 import { MAX_ENERGY, maxEnergyFor } from '../shared';
 import { merchantOffers } from '@/engine/dungeon';
@@ -108,6 +109,77 @@ describe('Homestead labor pipeline (M2)', () => {
   });
 });
 
+// TOWN-04: the clawback must remove EXACTLY what the completion credited — recomputing
+// laborFor(difficulty) at uncomplete time desyncs under the day cap and difficulty edits.
+describe('exact-amount labor clawback (TOWN-04)', () => {
+  it('uncomplete at the day cap claws back only what was credited', () => {
+    useGameStore.setState({
+      town: { ...freshTown(), laborISO: toISODate(), laborToday: 23, laborBank: 10 },
+    });
+    const epic = addHabit('epic'); // wants 6, but only 1 fits under the cap
+    get().completeHabit(epic);
+    expect(get().town.laborBank).toBe(11);
+
+    get().uncompleteHabit(epic);
+    expect(get().town.laborBank).toBe(10);  // exactly the 1 credited — never the nominal 6
+    expect(get().town.laborToday).toBe(23); // cap headroom restored exactly
+  });
+
+  it('a difficulty edit between complete and uncomplete cannot change the clawback', () => {
+    const easy = addHabit('easy'); // credits 1
+    get().completeHabit(easy);
+    expect(get().town.laborBank).toBe(1);
+    get().updateHabit(easy, { difficulty: 'epic' });
+    get().uncompleteHabit(easy);
+    expect(get().town.laborBank).toBe(0); // clawed exactly the 1 granted — no theft from others
+
+    const epic = addHabit('epic'); // credits 6
+    get().completeHabit(epic);
+    expect(get().town.laborBank).toBe(6);
+    get().updateHabit(epic, { difficulty: 'easy' });
+    get().uncompleteHabit(epic);
+    expect(get().town.laborBank).toBe(0); // clawed all 6 — nothing kept by the downgrade trick
+  });
+
+  it('legacy completions without a stored amount fall back to the nominal rate', () => {
+    const id = addHabit('normal'); // credits 2
+    get().completeHabit(id);
+    // Simulate a save written before lastLaborGrant existed: ISO marker only.
+    useGameStore.setState({
+      habits: get().habits.map((h) => (h.id === id ? { ...h, lastLaborGrant: undefined } : h)),
+    });
+    get().uncompleteHabit(id);
+    expect(get().town.laborBank).toBe(0); // nominal 2 clawed — the pre-fix behavior, unchanged
+  });
+
+  it('the first grant after a day rollover reports the true credited amount (TOWN-11)', () => {
+    _setNow(() => new Date(2025, 5, 10));
+    const id = addHabit('normal'); // credits 2
+    // Yesterday ended at the cap; the stale counter must not poison today's receipt.
+    useGameStore.setState({ town: { ...freshTown(), laborISO: '2025-06-09', laborToday: 24 } });
+    get().completeHabit(id);
+    expect(get().town.laborToday).toBe(2);
+    expect(get().town.laborBank).toBe(2);
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts[toasts.length - 1]?.text).toContain('+2 🔨');
+    _resetNow();
+  });
+
+  it('a grant at the full bank warns instead of over-reporting (TOWN-05)', () => {
+    useGameStore.setState({ town: { ...freshTown(), laborBank: 200 } }); // TOWN_LABOR_BANK_CAP
+    const epic = addHabit('epic');
+    get().completeHabit(epic);
+    expect(get().town.laborBank).toBe(200); // overflow lost
+    const toasts = useToastStore.getState().toasts;
+    const last = toasts[toasts.length - 1]?.text ?? '';
+    expect(last).toContain('bank full — start a project');
+    expect(last).not.toContain('🔨'); // no phantom "+6 🔨"
+
+    get().uncompleteHabit(epic); // credited 0 → nothing to claw
+    expect(get().town.laborBank).toBe(200);
+  });
+});
+
 // M5 (10.5): the plan-mandated guard — with zero buildings every wired seam must be
 // byte-identical to its pre-Homestead baseline. resetGame (beforeEach) seeds freshTown().
 describe('M5 perk wiring — zero-buildings regression guard (byte-identical baselines)', () => {
@@ -123,6 +195,18 @@ describe('M5 perk wiring — zero-buildings regression guard (byte-identical bas
     expect(merchantOffers(1).find((o) => o.kind === 'heal')?.cost).toBe(22);
     expect(strikeSweetHalf(0)).toBeCloseTo(0.1, 10);
     expect(strikeSweetHalf(10)).toBe(strikeSweetHalf(10, 0));
+  });
+
+  // TOWN-10: the two perks previously covered only by struct equality, exercised at
+  // their consuming seams with zero buildings.
+  it('labor-cost and queue-slot seams at zero buildings match raw catalog baselines', () => {
+    const t = freshTown();
+    // No Mason's Guild → laborNeed snapshots the raw catalog labor (no discount).
+    const queued = queueBuild(t, TOWN_BUILDINGS['watchtower'], 0, 0, undefined, 'p1')!;
+    expect(queued.queue[0].laborNeed).toBe(15); // watchtower tiers[0].labor, undiscounted
+    // No Keep tier III → queueSlots baseline is 1: a second concurrent project is refused.
+    expect(queueBuild(queued, TOWN_BUILDINGS['bathhouse'], 5, 5, undefined, 'p2')).toBeNull();
+    expect(canPlace(queued, TOWN_BUILDINGS['bathhouse'], 5, 5)).toEqual({ ok: false, reason: 'queue_full' });
   });
 
   it('crawler sight + stamina at run start match the pre-Homestead baselines', () => {

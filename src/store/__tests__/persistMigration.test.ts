@@ -219,6 +219,26 @@ describe('persist migrate (ARCH-08)', () => {
     expect(out2.town).toEqual(town);
   });
 
+  it('v37: drops orphaned upgrade projects and refunds their escrow materials (TOWN-02 heal)', () => {
+    const { migrate } = getPersistFns();
+    const town = {
+      ...freshTown(),
+      buildings: [{ id: 'b1', key: 'keep', r: 3, c: 3, tier: 1 }],
+      queue: [
+        // Orphan: upgrade whose target building no longer exists (pre-guard demolish).
+        { id: 'u1', kind: 'upgrade', key: 'watchtower', buildingId: 'gone', laborNeed: 30, laborApplied: 12 },
+        // Healthy upgrade (targets b1) and a healthy build — both must survive.
+        { id: 'u2', kind: 'upgrade', key: 'keep', buildingId: 'b1', laborNeed: 45, laborApplied: 0 },
+        { id: 'p1', kind: 'build', key: 'bathhouse', r: 8, c: 8, laborNeed: 15, laborApplied: 0 },
+      ],
+    };
+    const out = migrate({ habits: [], materials: { stone: 1 }, town: JSON.parse(JSON.stringify(town)) }, 36) as GameState;
+    expect(out.town.queue.map((q) => q.id)).toEqual(['u2', 'p1']);
+    // Watchtower tiers[0] escrow refunded best-effort: stone 4, wood 4 (on top of the existing 1 stone).
+    expect(out.materials.stone).toBe(5);
+    expect(out.materials.wood).toBe(4);
+  });
+
   it('is idempotent — running an already-migrated save through again changes nothing', () => {
     // migrate runs on EVERY version mismatch, so a double application must be
     // a no-op or veteran saves would drift on each bump.

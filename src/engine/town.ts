@@ -22,6 +22,11 @@ import {
   TOWN_LABOR_BANK_CAP,
   TOWN_DECOR_CAP,
   TOWN_DECOR_PER_TYPE_CAP,
+  TOWN_DEED_COSTS,
+  TOWN_DEED_PRESTIGE,
+  TOWN_CHARTER_PRESTIGE,
+  TOWN_CHARTER_COST_MULT,
+  TOWN_CHARTER_GATE_STEP,
   type TownBuildingDef,
 } from '@/content/townBuildings';
 import { TOWN_DECOR, type TownDecorDef } from '@/content/townDecor';
@@ -57,8 +62,9 @@ export interface TownProject {
  * PARTY-VISIT FORWARD-COMPAT FREEZE (plan3 10.6 / M6). The future read-only party-visit
  * payload is `TownState` verbatim — `v: 1` ships now as its shape marker, so a later version
  * bumps `v` and migrates rather than reshaping. Two invariants the visit feature relies on:
- *   1. v1 must NOT broadcast town state — there is no net/coop reference to this module today,
- *      and none may be added until the visit protocol lands (guarded in town.test.ts).
+ *   1. v1 must NOT broadcast town state — there is no net reference to this module today,
+ *      and none may be added until the visit protocol lands (source-scan guarded in
+ *      layering.test.ts; town.test.ts guards the payload's JSON round-trip).
  *   2. The renderer must read ONLY this payload — never character/gear/wallet state — because a
  *      visitor won't have the host's character. `TownCanvas` already takes town as its sole prop.
  * `TownState` must therefore stay a plain, JSON-serializable bag of ids/coords/counters with no
@@ -75,19 +81,27 @@ export interface TownState {
   laborToday: number;   // labor earned today (TOWN_LABOR_DAILY_CAP guard)
 }
 
+// Perk magnitudes scale with the building's tier (perkValues[tier-1] in the catalog —
+// TOWN-03): every upgrade buys a real effect, not just prestige.
 export interface TownPerks {
-  sightBonus: number;         // 0 | 1
-  staminaBonus: number;       // 0 | 10
-  merchantDiscount01: number; // 0 | 0.15
+  sightBonus: number;         // 0 | 1..2   (Watchtower tier)
+  staminaBonus: number;       // 0 | 5..15  (Bathhouse tier)
+  merchantDiscount01: number; // 0 | 0.05..0.15 (Trading Post tier)
   trialPractice: boolean;
-  maxEnergyBonus: number;     // 0 | 2
-  laborDiscount01: number;    // 0 | 0.10  (applied to laborNeed at queue time — snapshotted)
-  queueSlots: number;         // 1 | 2     (Keep tier ≥ III)
-  forgeSweetBonus: number;    // 0 | 0.03  (consumed by the Forge)
+  maxEnergyBonus: number;     // 0 | 1..3   (Granary tier)
+  laborDiscount01: number;    // 0 | 0.05..0.15 (Mason tier; applied to laborNeed at queue time — snapshotted)
+  queueSlots: number;         // 1 | 2      (Keep tier ≥ III)
+  forgeSweetBonus: number;    // 0 | 0.02..0.04 (Smithy tier; consumed by the Forge)
 }
 
-/** Placement failure reasons — see canPlace. */
-export type PlaceReason = 'bounds' | 'occupied' | 'locked' | 'unique' | 'prestige' | 'queue_full';
+/** Placement failure reasons — see canPlace. `deed` and `prestige` are distinct unlock gates (TOWN-20). */
+export type PlaceReason = 'bounds' | 'occupied' | 'locked' | 'unique' | 'deed' | 'prestige' | 'queue_full';
+
+/** Decor placement failure reasons — see canPlaceDecor. */
+export type DecorPlaceReason = 'bounds' | 'occupied' | 'locked' | 'decor_cap' | 'type_cap';
+
+/** Relocation failure reasons — see canMoveBuilding. `busy` = a queued upgrade targets it. */
+export type MoveReason = 'bounds' | 'occupied' | 'locked' | 'missing' | 'busy';
 
 // The buildable square grows with deeds; the absolute grid is the deed-3 square.
 const GRID_SIZES = [14, 18, 21, 24];
@@ -129,6 +143,16 @@ export function inUnlockedLand(deeds: number, r: number, c: number): boolean {
 // Footprint / occupancy helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Effective footprint of a (possibly rotated) building. `rot: 1` is rendered as a mirror
+ * about the anchor's base point, which in the diamond projection lands the art on the
+ * TRANSPOSED footprint (offset (dr,dc) → (dc,dr)) — so the logical footprint must swap
+ * w/h to match. Every footprint-derived check and overlay must go through this helper.
+ */
+export function footprintDims(def: { w: number; h: number }, rot?: 0 | 1): { w: number; h: number } {
+  return rot === 1 ? { w: def.h, h: def.w } : { w: def.w, h: def.h };
+}
+
 function footprintCells(r: number, c: number, w: number, h: number): string[] {
   const cells: string[] = [];
   for (let dr = 0; dr < h; dr++) {
@@ -151,13 +175,15 @@ export function occupancy(town: TownState, excludeBuildingId?: string): Set<stri
     if (b.id === excludeBuildingId) continue;
     const def = buildingDef(b.key);
     if (!def) continue;
-    for (const cell of footprintCells(b.r, b.c, def.w, def.h)) set.add(cell);
+    const { w, h } = footprintDims(def, b.rot);
+    for (const cell of footprintCells(b.r, b.c, w, h)) set.add(cell);
   }
   for (const p of town.queue) {
     if (p.kind !== 'build' || p.r === undefined || p.c === undefined) continue;
     const def = buildingDef(p.key);
     if (!def) continue;
-    for (const cell of footprintCells(p.r, p.c, def.w, def.h)) set.add(cell);
+    const { w, h } = footprintDims(def, p.rot);
+    for (const cell of footprintCells(p.r, p.c, w, h)) set.add(cell);
   }
   for (const d of town.decor) {
     const def = decorDef(d.key);
@@ -188,18 +214,99 @@ function overlaps(occ: Set<string>, r: number, c: number, w: number, h: number):
 // Prestige + perks (always derived)
 // ---------------------------------------------------------------------------
 
-export function prestigeOf(town: TownState): number {
+/**
+ * Prestige from completed buildings only — the labor-paced share. Deed/charter gates read
+ * THIS (not total prestige), so zero-labor decor spam can't buy land (TOWN-17); decor
+ * prestige still counts toward building unlocks (Chapel) and the displayed total.
+ */
+export function buildingPrestigeOf(town: TownState): number {
   let total = 0;
   for (const b of town.buildings) {
     const def = buildingDef(b.key);
     if (!def) continue;
     for (let t = 0; t < b.tier; t++) total += def.prestige[t] ?? 0;
   }
+  return total;
+}
+
+/** Every cell covered by a completed building (footprintDims-aware). */
+function buildingCells(town: TownState): Set<string> {
+  const set = new Set<string>();
+  for (const b of town.buildings) {
+    const def = buildingDef(b.key);
+    if (!def) continue;
+    const { w, h } = footprintDims(def, b.rot);
+    for (const cell of footprintCells(b.r, b.c, w, h)) set.add(cell);
+  }
+  return set;
+}
+
+/**
+ * +1 prestige when the decor prop at (r, c) sits orthogonally adjacent to (or touching)
+ * a completed building (TOWN-08) — placement becomes a light puzzle: props clustered
+ * around the town's structures are worth more than props scattered on empty grass.
+ */
+export function decorAdjacencyBonus(town: TownState, r: number, c: number): number {
+  const d = town.decor.find((x) => x.r === r && x.c === c);
+  const def = d ? decorDef(d.key) : undefined;
+  if (!d || !def) return 0;
+  return decorAdjacent(buildingCells(town), d.r, d.c, def.w, def.h) ? 1 : 0;
+}
+
+function decorAdjacent(cells: Set<string>, r: number, c: number, w: number, h: number): boolean {
+  for (let dr = 0; dr < h; dr++) {
+    for (let dc = 0; dc < w; dc++) {
+      const rr = r + dr;
+      const cc = c + dc;
+      if (
+        cells.has(`${rr - 1},${cc}`) || cells.has(`${rr + 1},${cc}`) ||
+        cells.has(`${rr},${cc - 1}`) || cells.has(`${rr},${cc + 1}`)
+      ) return true;
+    }
+  }
+  return false;
+}
+
+/** Total prestige: buildings + decor (+1 per building-adjacent prop) + commissioned charters. */
+export function prestigeOf(town: TownState): number {
+  let total = buildingPrestigeOf(town);
+  const cells = buildingCells(town);
   for (const d of town.decor) {
     const def = decorDef(d.key);
-    if (def) total += def.prestige;
+    if (!def) continue;
+    total += def.prestige;
+    if (decorAdjacent(cells, d.r, d.c, def.w, def.h)) total += 1;
   }
+  total += Math.max(0, town.deeds - TOWN_DEED_COSTS.length) * TOWN_CHARTER_PRESTIGE;
   return total;
+}
+
+// ---------------------------------------------------------------------------
+// Deeds & charters (TOWN-06) — the open-ended pure-gold sink
+// ---------------------------------------------------------------------------
+
+/**
+ * Gold cost of the next deed when `deeds` are already owned. The first three are the
+ * land districts (TOWN_DEED_COSTS); every deed past those is a land-free "town charter"
+ * at a doubling cost (8,000 / 16,000 / …) — the repeatable end-state sink.
+ */
+export function deedCost(deeds: number): number {
+  if (deeds < TOWN_DEED_COSTS.length) return TOWN_DEED_COSTS[deeds];
+  const last = TOWN_DEED_COSTS[TOWN_DEED_COSTS.length - 1];
+  return last * TOWN_CHARTER_COST_MULT ** (deeds - TOWN_DEED_COSTS.length + 1);
+}
+
+/** Building-prestige gate for the next deed/charter when `deeds` are already owned. */
+export function deedPrestigeGate(deeds: number): number {
+  if (deeds < TOWN_DEED_PRESTIGE.length) return TOWN_DEED_PRESTIGE[deeds];
+  const last = TOWN_DEED_PRESTIGE[TOWN_DEED_PRESTIGE.length - 1];
+  return last + TOWN_CHARTER_GATE_STEP * (deeds - TOWN_DEED_PRESTIGE.length + 1);
+}
+
+/** A building's current perk magnitude — perkValues indexed by completed tier, clamped. */
+function perkValueAt(def: TownBuildingDef, tier: number): number {
+  if (!def.perkValues || def.perkValues.length === 0) return 0;
+  return def.perkValues[Math.max(0, Math.min(tier, def.perkValues.length) - 1)];
 }
 
 /** Perks come from COMPLETED buildings only — a queued project grants nothing until it settles. */
@@ -217,14 +324,15 @@ export function townPerks(town: TownState): TownPerks {
   for (const b of town.buildings) {
     const def = buildingDef(b.key);
     if (!def) continue;
+    const v = perkValueAt(def, b.tier);
     switch (def.perk) {
-      case 'sight': perks.sightBonus = 1; break;
-      case 'stamina': perks.staminaBonus = 10; break;
-      case 'haggle': perks.merchantDiscount01 = 0.15; break;
+      case 'sight': perks.sightBonus = v; break;
+      case 'stamina': perks.staminaBonus = v; break;
+      case 'haggle': perks.merchantDiscount01 = v; break;
       case 'practice': perks.trialPractice = true; break;
-      case 'granary': perks.maxEnergyBonus = 2; break;
-      case 'mason': perks.laborDiscount01 = 0.1; break;
-      case 'forge_focus': perks.forgeSweetBonus = 0.03; break;
+      case 'granary': perks.maxEnergyBonus = v; break;
+      case 'mason': perks.laborDiscount01 = v; break;
+      case 'forge_focus': perks.forgeSweetBonus = v; break;
     }
     if (b.key === KEEP_KEY && b.tier >= 3) perks.queueSlots = 2;
   }
@@ -237,34 +345,29 @@ export function townPerks(town: TownState): TownPerks {
 
 /**
  * Can `def` be placed at (r, c)? Reasons, in check order: bounds → locked → occupied
- * → unique → prestige (unlock gate) → queue_full. A reserved queued-build footprint
- * counts as occupied, so a second build on the same cells is refused.
+ * → unique → deed/prestige (distinct unlock gates) → queue_full. A reserved queued-build
+ * footprint counts as occupied, so a second build on the same cells is refused.
  */
 export function canPlace(
   town: TownState,
   def: TownBuildingDef,
   r: number,
   c: number,
-  _rot?: 0 | 1,
+  rot?: 0 | 1,
 ): { ok: true } | { ok: false; reason: PlaceReason } {
-  if (!footprintInBounds(r, c, def.w, def.h)) return { ok: false, reason: 'bounds' };
-  if (!footprintUnlocked(town.deeds, r, c, def.w, def.h)) return { ok: false, reason: 'locked' };
-  if (overlaps(occupancy(town), r, c, def.w, def.h)) return { ok: false, reason: 'occupied' };
+  const { w, h } = footprintDims(def, rot);
+  if (!footprintInBounds(r, c, w, h)) return { ok: false, reason: 'bounds' };
+  if (!footprintUnlocked(town.deeds, r, c, w, h)) return { ok: false, reason: 'locked' };
+  if (overlaps(occupancy(town), r, c, w, h)) return { ok: false, reason: 'occupied' };
   if (def.unique && hasBuildingOrProject(town, def.key)) return { ok: false, reason: 'unique' };
-  if (!unlockMet(town, def)) return { ok: false, reason: 'prestige' };
+  if (def.unlock?.deed !== undefined && town.deeds < def.unlock.deed) return { ok: false, reason: 'deed' };
+  if (def.unlock?.prestige !== undefined && prestigeOf(town) < def.unlock.prestige) return { ok: false, reason: 'prestige' };
   if (town.queue.length >= townPerks(town).queueSlots) return { ok: false, reason: 'queue_full' };
   return { ok: true };
 }
 
 function hasBuildingOrProject(town: TownState, key: string): boolean {
   return town.buildings.some((b) => b.key === key) || town.queue.some((p) => p.kind === 'build' && p.key === key);
-}
-
-function unlockMet(town: TownState, def: TownBuildingDef): boolean {
-  if (!def.unlock) return true;
-  if (def.unlock.deed !== undefined && town.deeds < def.unlock.deed) return false;
-  if (def.unlock.prestige !== undefined && prestigeOf(town) < def.unlock.prestige) return false;
-  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -421,11 +524,13 @@ export function settleProjects(town: TownState): { town: TownState; completed: T
 
 /**
  * Demolish a building: refunds 50% of its CUMULATIVE tier materials (floored), 0% gold. The Keep
- * cannot be demolished (returns the town unchanged).
+ * cannot be demolished, and neither can a building a queued upgrade targets — demolishing it
+ * would orphan the project (queue-slot lock, labor sink, wrong cancel refund). Both no-op.
  */
 export function demolish(town: TownState, buildingId: string): { town: TownState; refundMaterials: Record<string, number> } {
   const building = town.buildings.find((b) => b.id === buildingId);
   if (!building || building.key === KEEP_KEY) return { town, refundMaterials: {} };
+  if (town.queue.some((p) => p.buildingId === buildingId)) return { town, refundMaterials: {} };
   const def = buildingDef(building.key);
   const cumulative: Record<string, number> = {};
   if (def) {
@@ -440,16 +545,32 @@ export function demolish(town: TownState, buildingId: string): { town: TownState
   return { town: { ...town, buildings: town.buildings.filter((b) => b.id !== buildingId) }, refundMaterials };
 }
 
+/**
+ * Can `buildingId` relocate to (r, c) with `rot`? The single validation path for moves —
+ * the ghost, the slice action, and moveBuilding itself all share it (TOWN-09).
+ */
+export function canMoveBuilding(
+  town: TownState,
+  buildingId: string,
+  r: number,
+  c: number,
+  rot?: 0 | 1,
+): { ok: true } | { ok: false; reason: MoveReason } {
+  const building = town.buildings.find((b) => b.id === buildingId);
+  if (!building) return { ok: false, reason: 'missing' };
+  if (town.queue.some((p) => p.buildingId === buildingId)) return { ok: false, reason: 'busy' };
+  const def = buildingDef(building.key);
+  if (!def) return { ok: false, reason: 'missing' };
+  const { w, h } = footprintDims(def, rot);
+  if (!footprintInBounds(r, c, w, h)) return { ok: false, reason: 'bounds' };
+  if (!footprintUnlocked(town.deeds, r, c, w, h)) return { ok: false, reason: 'locked' };
+  if (overlaps(occupancy(town, buildingId), r, c, w, h)) return { ok: false, reason: 'occupied' };
+  return { ok: true };
+}
+
 /** Relocate a building (free). Blocked while a project targets it; validates the new footprint. */
 export function moveBuilding(town: TownState, buildingId: string, r: number, c: number, rot?: 0 | 1): TownState | null {
-  const building = town.buildings.find((b) => b.id === buildingId);
-  if (!building) return null;
-  if (town.queue.some((p) => p.buildingId === buildingId)) return null; // an upgrade targets it
-  const def = buildingDef(building.key);
-  if (!def) return null;
-  if (!footprintInBounds(r, c, def.w, def.h)) return null;
-  if (!footprintUnlocked(town.deeds, r, c, def.w, def.h)) return null;
-  if (overlaps(occupancy(town, buildingId), r, c, def.w, def.h)) return null;
+  if (!canMoveBuilding(town, buildingId, r, c, rot).ok) return null;
   const buildings = town.buildings.map((b) => (b.id === buildingId ? { ...b, r, c, rot } : b));
   return { ...town, buildings };
 }
@@ -458,13 +579,30 @@ export function moveBuilding(town: TownState, buildingId: string, r: number, c: 
 // Decor
 // ---------------------------------------------------------------------------
 
+/**
+ * Can `def` decor be placed at (r, c)? The single validation path for decor — the ghost
+ * and placeDecor share it (TOWN-09). Checks caps first (global, then per-type), then the
+ * footprint (bounds → locked → occupied). Decor never rotates.
+ */
+export function canPlaceDecor(
+  town: TownState,
+  def: TownDecorDef,
+  r: number,
+  c: number,
+): { ok: true } | { ok: false; reason: DecorPlaceReason } {
+  if (town.decor.length >= TOWN_DECOR_CAP) return { ok: false, reason: 'decor_cap' };
+  if (town.decor.filter((d) => d.key === def.key).length >= TOWN_DECOR_PER_TYPE_CAP) {
+    return { ok: false, reason: 'type_cap' };
+  }
+  if (!footprintInBounds(r, c, def.w, def.h)) return { ok: false, reason: 'bounds' };
+  if (!footprintUnlocked(town.deeds, r, c, def.w, def.h)) return { ok: false, reason: 'locked' };
+  if (overlaps(occupancy(town), r, c, def.w, def.h)) return { ok: false, reason: 'occupied' };
+  return { ok: true };
+}
+
 /** Place a decor prop (global + per-type caps, footprint validation). `v` is rolled by the slice. */
 export function placeDecor(town: TownState, def: TownDecorDef, r: number, c: number, v: number): TownState | null {
-  if (town.decor.length >= TOWN_DECOR_CAP) return null;
-  if (town.decor.filter((d) => d.key === def.key).length >= TOWN_DECOR_PER_TYPE_CAP) return null;
-  if (!footprintInBounds(r, c, def.w, def.h)) return null;
-  if (!footprintUnlocked(town.deeds, r, c, def.w, def.h)) return null;
-  if (overlaps(occupancy(town), r, c, def.w, def.h)) return null;
+  if (!canPlaceDecor(town, def, r, c).ok) return null;
   return { ...town, decor: [...town.decor, { key: def.key, r, c, v }] };
 }
 

@@ -21,7 +21,7 @@
 //  never character/gear slices — so a future party-visit can reuse it verbatim.
 // ============================================================================
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type PointerEvent, type WheelEvent } from 'react';
-import { type TownState, gridSizeFor, inUnlockedLand } from '@/engine/town';
+import { type TownState, gridSizeFor, inUnlockedLand, footprintDims } from '@/engine/town';
 import { TOWN_BUILDINGS } from '@/content/townBuildings';
 import { TOWN_DECOR } from '@/content/townDecor';
 import { base, diamondCorners, cellFromPoint, isoBounds, sortKey, TOWN_TILE_W, TOWN_TILE_H, type Pt } from './iso';
@@ -49,6 +49,8 @@ interface TownCanvasProps {
   onCellTap?: (r: number, c: number) => void;
   /** A clean tap on a completed building's footprint (only when no ghost is active). */
   onBuildingTap?: (buildingId: string) => void;
+  /** A clean tap on a decor prop's footprint (only when no ghost is active); (r, c) is its anchor. */
+  onDecorTap?: (r: number, c: number) => void;
   /** The live placement ghost, rendered in the highlight layer. */
   ghost?: TownGhost | null;
 }
@@ -211,7 +213,7 @@ function ringOffset(w: number, h: number): Pt {
 // Canvas
 // ---------------------------------------------------------------------------
 
-export function TownCanvas({ town, onCellTap, onBuildingTap, ghost }: TownCanvasProps) {
+export function TownCanvas({ town, onCellTap, onBuildingTap, onDecorTap, ghost }: TownCanvasProps) {
   const bounds = useMemo(() => isoBounds(MAX_GRID.rows, MAX_GRID.cols, HEADROOM), []);
 
   const svgRef = useRef<SVGSVGElement>(null);
@@ -227,6 +229,8 @@ export function TownCanvas({ town, onCellTap, onBuildingTap, ghost }: TownCanvas
   cellTapRef.current = onCellTap;
   const buildingTapRef = useRef(onBuildingTap);
   buildingTapRef.current = onBuildingTap;
+  const decorTapRef = useRef(onDecorTap);
+  decorTapRef.current = onDecorTap;
   const ghostRef = useRef(ghost);
   ghostRef.current = ghost;
 
@@ -271,7 +275,18 @@ export function TownCanvas({ town, onCellTap, onBuildingTap, ghost }: TownCanvas
     for (const b of town.buildings) {
       const def = TOWN_BUILDINGS[b.key];
       if (!def) continue;
-      if (r >= b.r && r < b.r + def.h && c >= b.c && c < b.c + def.w) return b.id;
+      const { w, h } = footprintDims(def, b.rot);
+      if (r >= b.r && r < b.r + h && c >= b.c && c < b.c + w) return b.id;
+    }
+    return undefined;
+  };
+
+  /** Which decor prop (if any) owns the footprint cell (r,c) — returns its anchor. */
+  const decorAt = (r: number, c: number): { r: number; c: number } | undefined => {
+    for (const d of town.decor) {
+      const def = TOWN_DECOR[d.key];
+      if (!def) continue;
+      if (r >= d.r && r < d.r + def.h && c >= d.c && c < d.c + def.w) return { r: d.r, c: d.c };
     }
     return undefined;
   };
@@ -336,11 +351,13 @@ export function TownCanvas({ town, onCellTap, onBuildingTap, ghost }: TownCanvas
       if (tap) {
         const cell = cellAt(e.clientX, e.clientY);
         if (cell) {
-          // A building tap opens its card, but only when no ghost is being placed —
-          // during placement every tap moves the ghost.
+          // A building or decor tap opens its card, but only when no ghost is being
+          // placed — during placement every tap moves the ghost.
           if (!ghostRef.current) {
             const bid = buildingAt(cell.r, cell.c);
             if (bid) { buildingTapRef.current?.(bid); return; }
+            const dec = decorAt(cell.r, cell.c);
+            if (dec) { decorTapRef.current?.(dec.r, dec.c); return; }
           }
           cellTapRef.current?.(cell.r, cell.c);
         }
@@ -372,7 +389,8 @@ export function TownCanvas({ town, onCellTap, onBuildingTap, ghost }: TownCanvas
       const p = prev.get(b.id);
       if (p === undefined || b.tier > p) {
         const def = TOWN_BUILDINGS[b.key];
-        const off = ringOffset(def?.w ?? 1, def?.h ?? 1);
+        const dims = footprintDims(def ?? { w: 1, h: 1 }, b.rot);
+        const off = ringOffset(dims.w, dims.h);
         const pt = base(b.r, b.c);
         born.push({ key: Math.random(), x: pt.x + off.x, y: pt.y + off.y });
       }
@@ -412,11 +430,12 @@ export function TownCanvas({ town, onCellTap, onBuildingTap, ghost }: TownCanvas
       if (!def) continue;
       const p = base(b.r, b.c);
       const mirror = b.rot === 1 ? ' scale(-1,1)' : '';
+      const dims = footprintDims(def, b.rot);
       const ring = upgradeRing.get(b.id);
-      const off = ring !== undefined ? ringOffset(def.w, def.h) : null;
+      const off = ring !== undefined ? ringOffset(dims.w, dims.h) : null;
       items.push({
         key: `b-${b.id}`,
-        sort: sortKey(b.r, b.c, def.w, def.h),
+        sort: sortKey(b.r, b.c, dims.w, dims.h),
         node: (
           <g key={`b-${b.id}`}>
             <g transform={`translate(${p.x} ${p.y})${mirror}`}>
@@ -468,14 +487,15 @@ export function TownCanvas({ town, onCellTap, onBuildingTap, ghost }: TownCanvas
       const def = TOWN_BUILDINGS[proj.key];
       if (!def) continue;
       const p = base(proj.r, proj.c);
-      const off = ringOffset(def.w, def.h);
+      const dims = footprintDims(def, proj.rot);
+      const off = ringOffset(dims.w, dims.h);
       const frac = proj.laborApplied / Math.max(1, proj.laborNeed);
       items.push({
         key: `p-${proj.id}`,
-        sort: sortKey(proj.r, proj.c, def.w, def.h),
+        sort: sortKey(proj.r, proj.c, dims.w, dims.h),
         node: (
           <g key={`p-${proj.id}`} transform={`translate(${p.x} ${p.y})`}>
-            {scaffold(def.w, def.h)}
+            {scaffold(dims.w, dims.h)}
             <g transform={`translate(${off.x} ${off.y})`}>
               <ProgressRing frac={frac} />
             </g>

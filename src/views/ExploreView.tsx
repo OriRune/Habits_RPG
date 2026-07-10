@@ -110,7 +110,7 @@ const CARDS: HubCard<ExploreMode>[] = [
           items: [
             'Placing or upgrading a building charges gold + materials up front — the sink.',
             'Construction then completes with labor earned from your live habit completions (harder habits give more, capped at 24 🔨 a day).',
-            'Completed buildings raise your prestige and, in a later update, grant light perks.',
+            'Completed buildings raise your prestige and grant light perks — sharper sight in the mine, deeper dungeon stamina, merchant discounts, and more.',
           ],
         },
         {

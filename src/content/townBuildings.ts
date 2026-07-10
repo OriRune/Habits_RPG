@@ -45,7 +45,14 @@ export interface TownBuildingDef {
   h: number;                     // footprint in cells
   maxTier: number;
   tiers: TownTierCost[];         // tiers[0] = build cost; tiers[i] = upgrade to tier i+1
-  perk?: TownPerkId;             // active once tier 1 completes; flat across tiers
+  perk?: TownPerkId;             // active once tier 1 completes
+  /**
+   * Perk magnitude AT each completed tier (perkValues[tier-1]), in the unit the seam
+   * consumes (cells / stamina points / 0–1 fractions / energy). Scaling with tier makes
+   * every upgrade a real purchase, not a prestige tax (TOWN-03). `practice` is a boolean
+   * perk and has no values. Tier III stays within the "≤ one boon increment" power budget.
+   */
+  perkValues?: number[];
   prestige: number[];            // prestige granted per completed tier
   unlock?: { deed?: number; prestige?: number };
   artKey: string;
@@ -59,13 +66,19 @@ export const TOWN_DEED_COSTS = [500, 1500, 4000];   // pure gold — the BAL-05 
 // days (<1 week — too fast per the BAL-05 pacing target). Retuned so deed 1 lands ~week 2
 // (gate 100 ≈ a Keep + ~6 tier-I buildings), deed 2 ~week 4, deed 3 ~week 6-7. See report.
 export const TOWN_DEED_PRESTIGE = [100, 200, 320];  // prestige gate per deed
+// Deeds past the three land districts are open-ended "town charters" (TOWN-06): the
+// repeatable end-state gold sink. Each charter grants no land — only prestige — at a
+// doubling cost (8,000 / 16,000 / …) behind a +120-per-step building-prestige gate.
+export const TOWN_CHARTER_PRESTIGE = 40;  // prestige granted per commissioned charter
+export const TOWN_CHARTER_COST_MULT = 2;  // charter N costs the previous deed/charter × this
+export const TOWN_CHARTER_GATE_STEP = 120;
 export const TOWN_LABOR_DAILY_CAP = 24;             // BAL-22 guard
 export const TOWN_LABOR_BANK_CAP = 200;
 export const TOWN_LABOR_RATE: Record<Difficulty, number> = { easy: 1, normal: 2, hard: 4, epic: 6 };
 export const TOWN_DECOR_CAP = 60;
 export const TOWN_DECOR_PER_TYPE_CAP = 10;
 
-/** The Keep is the mandatory-first, undemolishable building; its tier III grants +1 queue slot. */
+/** The Keep is the undemolishable building; its tier III grants +1 queue slot. */
 export const KEEP_KEY = 'keep';
 
 export const TOWN_BUILDINGS: Record<string, TownBuildingDef> = {
@@ -83,6 +96,7 @@ export const TOWN_BUILDINGS: Record<string, TownBuildingDef> = {
   watchtower: {
     key: 'watchtower', name: 'Watchtower', flavor: 'A high perch. Sharpens your eye in the mine and forest.',
     w: 1, h: 1, maxTier: 3, artKey: 'watchtower', unique: true, perk: 'sight',
+    perkValues: [1, 1, 2], // +sight cells at tier I/II/III
     prestige: [10, 15, 25],
     tiers: [
       { gold: 150,  materials: { stone: 4,  wood: 4 },                labor: 15 },
@@ -93,6 +107,7 @@ export const TOWN_BUILDINGS: Record<string, TownBuildingDef> = {
   bathhouse: {
     key: 'bathhouse', name: 'Bathhouse', flavor: 'Warm springs restore the body. Deepens your stamina reserves.',
     w: 2, h: 2, maxTier: 3, artKey: 'bathhouse', unique: true, perk: 'stamina',
+    perkValues: [5, 10, 15], // +crawler max stamina at tier I/II/III
     prestige: [15, 25, 40],
     tiers: [
       { gold: 200,  materials: { stone: 6,  wood: 6 },                labor: 15 },
@@ -103,6 +118,7 @@ export const TOWN_BUILDINGS: Record<string, TownBuildingDef> = {
   trading_post: {
     key: 'trading_post', name: 'Trading Post', flavor: 'Merchants owe you favors. Sharpens your haggling in the dungeon.',
     w: 2, h: 2, maxTier: 3, artKey: 'trading_post', unique: true, perk: 'haggle',
+    perkValues: [0.05, 0.10, 0.15], // merchant discount (0–1) at tier I/II/III
     prestige: [15, 25, 40],
     tiers: [
       { gold: 200,  materials: { stone: 6,  wood: 6 },                labor: 15 },
@@ -123,6 +139,7 @@ export const TOWN_BUILDINGS: Record<string, TownBuildingDef> = {
   granary: {
     key: 'granary', name: 'Granary', flavor: 'Stored provisions. Raises your maximum energy cap.',
     w: 2, h: 2, maxTier: 3, artKey: 'granary', unique: true, perk: 'granary',
+    perkValues: [1, 2, 3], // +max energy at tier I/II/III
     prestige: [15, 25, 40],
     tiers: [
       { gold: 200,  materials: { stone: 6,  wood: 6 },                labor: 15 },
@@ -131,8 +148,11 @@ export const TOWN_BUILDINGS: Record<string, TownBuildingDef> = {
     ],
   },
   masons_guild: {
-    key: 'masons_guild', name: "Mason's Guild", flavor: 'Skilled builders. New projects cost 10% less labor.',
+    key: 'masons_guild', name: "Mason's Guild", flavor: 'Skilled builders. New projects cost less labor.',
     w: 2, h: 2, maxTier: 3, artKey: 'masons_guild', unique: true, perk: 'mason',
+    // 5/10/15% (TOWN-07): tier-I Mason is good but no longer the single dominant opener —
+    // rushing Mason III now competes with wanting the QoL perks early.
+    perkValues: [0.05, 0.10, 0.15],
     prestige: [15, 25, 40],
     tiers: [
       { gold: 200,  materials: { stone: 6,  wood: 6 },                labor: 15 },
@@ -143,6 +163,7 @@ export const TOWN_BUILDINGS: Record<string, TownBuildingDef> = {
   smithy: {
     key: 'smithy', name: 'Smithy', flavor: 'A hot forge stands ready. Widens the Forge sweet zone.',
     w: 2, h: 2, maxTier: 3, artKey: 'smithy', unique: true, perk: 'forge_focus',
+    perkValues: [0.02, 0.03, 0.04], // strike sweet-zone half-width bonus at tier I/II/III
     prestige: [15, 25, 40],
     tiers: [
       { gold: 200,  materials: { stone: 6,  wood: 6 },                labor: 15 },

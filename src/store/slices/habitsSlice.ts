@@ -175,6 +175,7 @@ export const createHabitsSlice: StateCreator<
           backdated: boolean;
           labor: number;
           townCapReached: boolean;
+          bankFull: boolean;
           color?: string;
         }
       | null = null;
@@ -244,6 +245,7 @@ export const createHabitsSlice: StateCreator<
         backdated: !isToday,
         labor: 0, // filled in by the labor block below (actual amount credited today)
         townCapReached: false,
+        bankFull: false,
         color: getStat(habit.stat).color,
       };
 
@@ -296,20 +298,30 @@ export const createHabitsSlice: StateCreator<
             (next.inventory['streak_freeze'] ?? 0) + milestoneReward.freezes;
         }
       }
-      // Grant habit-earned labor to the Homestead: bank + drain into the queue (day-capped), then
-      // settle any project the fresh labor completed. `laborToday` before/after the applyLabor is
-      // the amount actually credited (the daily cap can swallow part or all of it). The town rides
-      // the `...s` spread, so a plain `next.town` reassignment is enough.
+      // Grant habit-earned labor to the Homestead: bank + drain into the queue (day-capped,
+      // bank-capped), then settle any project the fresh labor completed. `credited` is the TRUE
+      // amount that landed — bank delta + project-progress delta, measured before settle — so it
+      // is correct across day rollovers and at the bank cap. It is stamped onto the habit
+      // (lastLaborGrant) so an uncomplete claws back exactly this amount, no more (TOWN-04).
+      // The town rides the `...s` spread, so a plain `next.town` reassignment is enough.
       if (grantLabor) {
-        const laborBefore = next.town.laborToday;
-        const { town, completed } = settleProjects(
-          applyLabor(next.town, laborFor(habit.difficulty), today),
-        );
+        const attempted = laborFor(habit.difficulty);
+        const bankBefore = next.town.laborBank;
+        const appliedBefore = next.town.queue.reduce((sum, p) => sum + p.laborApplied, 0);
+        const dayUsedBefore = next.town.laborISO === today ? next.town.laborToday : 0;
+        const applied = applyLabor(next.town, attempted, today);
+        // grantable = what survived the day cap; credited = what also survived the bank cap.
+        const grantable = applied.laborToday - dayUsedBefore;
+        const credited =
+          applied.laborBank - bankBefore +
+          (applied.queue.reduce((sum, p) => sum + p.laborApplied, 0) - appliedBefore);
+        const { town, completed } = settleProjects(applied);
         next.town = town;
-        const credited = town.laborToday - laborBefore;
+        updated.lastLaborGrant = { dateISO: day, amount: credited };
         if (receipt) {
           receipt.labor = credited;
-          receipt.townCapReached = credited === 0; // grant attempted, day cap swallowed it whole
+          receipt.townCapReached = grantable === 0;  // grant attempted, day cap swallowed it whole
+          receipt.bankFull = credited < grantable;   // bank cap ate some/all of what the day allowed
         }
         completedProjects = completed;
       }
@@ -329,6 +341,7 @@ export const createHabitsSlice: StateCreator<
         backdated: boolean;
         labor: number;
         townCapReached: boolean;
+        bankFull: boolean;
         color?: string;
       } = receipt;
       const parts = [`+${r.xp} XP`];
@@ -338,9 +351,12 @@ export const createHabitsSlice: StateCreator<
       if (r.energyGranted) parts.push('+1⚡');
       else if (r.backdated) parts.push('logged late — no energy');
       // Homestead labor: +N 🔨 when it banked; a fully day-capped grant says why not (mirrors
-      // the "logged late" copy). Backdated logs never grant labor, so this stays silent for them.
+      // the "logged late" copy), and a bank-capped grant gets the plan's promised nudge —
+      // labor evaporating at the 200 bank cap must never be silent (TOWN-05). Backdated logs
+      // never grant labor, so all of this stays silent for them.
       if (r.labor > 0) parts.push(`+${r.labor} 🔨`);
-      else if (r.townCapReached) parts.push('town cap reached');
+      if (r.townCapReached) parts.push('town cap reached');
+      else if (r.bankFull) parts.push('bank full — start a project');
       useToastStore.getState().pushToast({ text: parts.join(' · '), color: r.color });
     }
 
@@ -425,10 +441,18 @@ export const createHabitsSlice: StateCreator<
 
       // Claw back the Homestead labor this completion granted today (bank first, then the
       // least-progressed active project), all clamped at 0. Labor that already completed a project
-      // is an accepted, clamped leak (same philosophy as the milestone claw-back). The marker is
-      // intentionally NOT cleared, so a same-day re-completion won't re-mint labor (HABIT-04).
+      // is an accepted, clamped leak (same philosophy as the milestone claw-back). The amount is
+      // the EXACT credit stored at grant time (lastLaborGrant) — recomputing laborFor(difficulty)
+      // here over-claws when the day cap clipped the grant or the difficulty was edited since
+      // (TOWN-04); legacy completions without the stored amount fall back to the nominal rate.
+      // The marker is intentionally NOT cleared, so a same-day re-completion won't re-mint labor
+      // (HABIT-04).
       if (day === today && habit.lastLaborGrantISO === day) {
-        next.town = clawBackLabor(next.town, laborFor(habit.difficulty), today);
+        const amount =
+          habit.lastLaborGrant?.dateISO === day
+            ? habit.lastLaborGrant.amount
+            : laborFor(habit.difficulty);
+        if (amount > 0) next.town = clawBackLabor(next.town, amount, today);
       }
 
       // Claw back a streak-milestone bonus paid out for this day (gold + freezes), clamped at 0

@@ -8,6 +8,7 @@ import { rebaseMineRun } from '@/engine/mining';
 import { rebaseForestRun } from '@/engine/forest';
 import { rebaseArenaRun } from '@/engine/arena';
 import { freshTown } from '@/engine/town';
+import { TOWN_BUILDINGS } from '@/content/townBuildings';
 import type { Habit } from '@/engine/habits';
 import { statLevelsFromXp } from '@/engine/progression';
 import { ITEMS } from '@/engine/items';
@@ -176,7 +177,7 @@ export function createGameStore(bindGlobalFlush = false) {
     }),
     {
       name: 'habits-rpg-save',
-      version: 36,
+      version: 37,
       storage: debounced.storage,
       // v2: cleared stale battle/dungeon for the combat rework.
       // v3: habits gained status/log + new frequency/scoring fields.
@@ -266,6 +267,11 @@ export function createGameStore(bindGlobalFlush = false) {
       // v36: Tactics bestiary (entry-screen "How to play") — new top-level `tacticsSeenFoes`
       //      (enemy templateIds the player has faced). Backfills to [] on existing saves via
       //      the default merge — spiritGroveSeen/v32 idiom, no explicit merge line needed.
+      // v37: Homestead orphan-project heal (TOWN-02) — saves written before the demolish guard
+      //      may hold upgrade projects whose target building was demolished: invisible,
+      //      uncancellable, and blocking the queue. Drop them and refund their escrowed
+      //      materials best-effort at tiers[0] (the target's tier at queue time is
+      //      unrecoverable once the building is gone); the gold stays sunk, matching cancel.
       migrate: (persisted: unknown) => {
         const p = (persisted ?? {}) as Partial<GameState>;
         const habits = (p.habits ?? []).map((h) => {
@@ -286,6 +292,23 @@ export function createGameStore(bindGlobalFlush = false) {
           if (def.kind) return c;
           return { ...c, def: { ...def, kind: def.metric ?? 'count' } as ChallengeDef };
         });
+        // v37: drop orphaned upgrade projects (target building gone) and refund their
+        // escrowed materials into the (already key-renamed) materials record.
+        const rawTown = p.town ?? freshTown();
+        const orphans = (rawTown.queue ?? []).filter(
+          (q) => q.kind === 'upgrade' && !(rawTown.buildings ?? []).some((b) => b.id === q.buildingId),
+        );
+        for (const o of orphans) {
+          const cost = TOWN_BUILDINGS[o.key]?.tiers[0];
+          if (cost) {
+            for (const [mat, qty] of Object.entries(cost.materials)) {
+              materials[mat] = (materials[mat] ?? 0) + qty;
+            }
+          }
+        }
+        const town = orphans.length
+          ? { ...rawTown, queue: rawTown.queue.filter((q) => !orphans.includes(q)) }
+          : rawTown;
         const character = p.character
           ? {
               ...p.character,
@@ -296,7 +319,7 @@ export function createGameStore(bindGlobalFlush = false) {
               statXpTrickleAtLastLevel: p.character.statXpTrickleAtLastLevel ?? emptyStatXP(),
             }
           : p.character;
-        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, arena: null, tactics: null, created: true, hasSeenWelcome: true, trialsClearedOn: p.trialsClearedOn ?? emptyTrialsClearedOn(), bestTrialScore: p.bestTrialScore ?? emptyBestTrialScore(), dungeonHistory: p.dungeonHistory ?? [], claimedPartyQuests: p.claimedPartyQuests ?? [], earnings: p.earnings ?? freshEarningsLedger(), energyLog: p.energyLog ?? {}, mineTombstone: p.mineTombstone ?? null, mineDailyBonus: p.mineDailyBonus ?? null, reminderCardDismissed: p.reminderCardDismissed ?? false, trialAttemptNonce: p.trialAttemptNonce ?? 0, spiritGroveSeen: p.spiritGroveSeen ?? [], town: p.town ?? freshTown() } as GameState;
+        return { ...p, habits, materials, challenges, character, battle: null, dungeon: null, mining: null, forest: null, arena: null, tactics: null, created: true, hasSeenWelcome: true, trialsClearedOn: p.trialsClearedOn ?? emptyTrialsClearedOn(), bestTrialScore: p.bestTrialScore ?? emptyBestTrialScore(), dungeonHistory: p.dungeonHistory ?? [], claimedPartyQuests: p.claimedPartyQuests ?? [], earnings: p.earnings ?? freshEarningsLedger(), energyLog: p.energyLog ?? {}, mineTombstone: p.mineTombstone ?? null, mineDailyBonus: p.mineDailyBonus ?? null, reminderCardDismissed: p.reminderCardDismissed ?? false, trialAttemptNonce: p.trialAttemptNonce ?? 0, spiritGroveSeen: p.spiritGroveSeen ?? [], town } as GameState;
       },
       // Deep-merge the nested `character`/`settings` objects so fields added in later versions
       // (e.g. statLevels) always fall back to their defaults instead of being dropped by the

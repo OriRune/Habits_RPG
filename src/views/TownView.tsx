@@ -1,14 +1,16 @@
 import { useMemo, useState } from 'react';
 import { Home, Sparkles, Hammer, Check, RotateCw, X } from 'lucide-react';
+import { toISODate } from '@/engine/date';
 import { useGameStore } from '@/store/useGameStore';
 import { useToastStore } from '@/store/useToastStore';
 import { selectTownPrestige } from '@/store/selectors';
 import { TOWN_LABOR_DAILY_CAP, TOWN_BUILDINGS } from '@/content/townBuildings';
 import { TOWN_DECOR } from '@/content/townDecor';
-import { canPlace, gridSizeFor, inUnlockedLand, occupancy } from '@/engine/town';
+import { canPlace, canPlaceDecor, canMoveBuilding, footprintDims, gridSizeFor } from '@/engine/town';
 import { TownCanvas, type TownGhost } from '@/components/town/TownCanvas';
 import { TownBuildPanel } from '@/components/town/TownBuildPanel';
 import { TownBuildingCard } from '@/components/town/TownBuildingCard';
+import { TownDecorCard } from '@/components/town/TownDecorCard';
 
 /** Placement mode: a ghost footprint the player nudges with taps before committing. */
 type Placement =
@@ -25,32 +27,20 @@ function startAnchor(deeds: number, w: number, h: number): { r: number; c: numbe
   };
 }
 
-/** Decor / move validity: every footprint cell unlocked (bounds + deed) and unoccupied. */
-function footprintOk(
-  town: ReturnType<typeof useGameStore.getState>['town'],
-  r: number,
-  c: number,
-  w: number,
-  h: number,
-  excludeId?: string,
-): boolean {
-  const occ = occupancy(town, excludeId);
-  for (let dr = 0; dr < h; dr++) {
-    for (let dc = 0; dc < w; dc++) {
-      if (!inUnlockedLand(town.deeds, r + dr, c + dc)) return false;
-      if (occ.has(`${r + dr},${c + dc}`)) return false;
-    }
-  }
-  return true;
-}
-
+// Reason copy for the placement bar. Validation itself lives in the engine (canPlace /
+// canPlaceDecor / canMoveBuilding) so the ghost and the slice can never drift (TOWN-09).
 const PLACE_REASON: Record<string, string> = {
   bounds: 'Out of bounds',
   locked: 'Locked land — buy a deed',
   occupied: 'Space is occupied',
   unique: 'Already built',
+  deed: 'Needs another land deed',
   prestige: 'Prestige too low',
   queue_full: 'Build queue is full',
+  decor_cap: 'Decor limit reached',
+  type_cap: 'Too many of this decor',
+  missing: 'Cannot place here',
+  busy: 'Under construction',
 };
 
 /**
@@ -74,6 +64,7 @@ export function TownView() {
   const [panelOpen, setPanelOpen] = useState(false);
   const [placement, setPlacement] = useState<Placement | null>(null);
   const [cardId, setCardId] = useState<string | null>(null);
+  const [decorCard, setDecorCard] = useState<{ r: number; c: number } | null>(null);
 
   const wallet = useMemo(() => ({ gold, materials, unlimitedGold }), [gold, materials, unlimitedGold]);
 
@@ -86,25 +77,26 @@ export function TownView() {
     if (!placement) return { ghost: null, reason: null, rotatable: false };
     if (placement.mode === 'decor') {
       const def = TOWN_DECOR[placement.key];
-      const ok = footprintOk(town, placement.r, placement.c, def.w, def.h);
+      const res = canPlaceDecor(town, def, placement.r, placement.c);
       return {
-        ghost: { r: placement.r, c: placement.c, w: def.w, h: def.h, ok },
-        reason: ok ? null : 'Space is occupied or locked',
+        ghost: { r: placement.r, c: placement.c, w: def.w, h: def.h, ok: res.ok },
+        reason: res.ok ? null : PLACE_REASON[res.reason] ?? 'Cannot place here',
         rotatable: false,
       };
     }
     const def = TOWN_BUILDINGS[placement.key];
+    const dims = footprintDims(def, placement.rot);
     if (placement.mode === 'move') {
-      const ok = footprintOk(town, placement.r, placement.c, def.w, def.h, placement.buildingId);
+      const res = canMoveBuilding(town, placement.buildingId, placement.r, placement.c, placement.rot);
       return {
-        ghost: { r: placement.r, c: placement.c, w: def.w, h: def.h, ok },
-        reason: ok ? null : 'Space is occupied or locked',
+        ghost: { r: placement.r, c: placement.c, w: dims.w, h: dims.h, ok: res.ok },
+        reason: res.ok ? null : PLACE_REASON[res.reason] ?? 'Cannot place here',
         rotatable: !!def.rotatable,
       };
     }
     const res = canPlace(town, def, placement.r, placement.c, placement.rot);
     return {
-      ghost: { r: placement.r, c: placement.c, w: def.w, h: def.h, ok: res.ok },
+      ghost: { r: placement.r, c: placement.c, w: dims.w, h: dims.h, ok: res.ok },
       reason: res.ok ? null : PLACE_REASON[res.reason] ?? 'Cannot place here',
       rotatable: !!def.rotatable,
     };
@@ -147,19 +139,35 @@ export function TownView() {
     setPlacement((p) => (p && p.mode !== 'decor' ? { ...p, rot: p.rot === 1 ? 0 : 1 } : p));
   }
 
+  // Success toasts follow buyDeed's verify idiom: compare state before/after so a silently
+  // refused action (affordability re-check, caps) never toasts a lie (TOWN-14) — and a build
+  // that pre-banked labor finishes instantly celebrates as a completion, not a queue (TOWN-13).
   function confirmPlacement() {
     if (!placement || !ghost?.ok) return;
     if (placement.mode === 'build') {
       const def = TOWN_BUILDINGS[placement.key];
+      const before = town;
       townQueueBuild(placement.key, placement.r, placement.c, def.rotatable ? placement.rot : undefined);
-      pushToast({ text: `${def.name} queued`, color: '#e8b923' });
+      const after = useGameStore.getState().town;
+      if (after.buildings.length > before.buildings.length) {
+        pushToast({ text: `🏗️ ${def.name} complete!`, color: '#f59e0b', ttlMs: 5000 });
+      } else if (after.queue.length > before.queue.length) {
+        pushToast({ text: `${def.name} queued`, color: '#e8b923' });
+      }
     } else if (placement.mode === 'decor') {
+      const before = town.decor.length;
       townPlaceDecor(placement.key, placement.r, placement.c);
-      pushToast({ text: `${TOWN_DECOR[placement.key].name} placed`, color: '#e8b923' });
+      if (useGameStore.getState().town.decor.length > before) {
+        pushToast({ text: `${TOWN_DECOR[placement.key].name} placed`, color: '#e8b923' });
+      }
     } else {
       const def = TOWN_BUILDINGS[placement.key];
+      const before = town.buildings.find((b) => b.id === placement.buildingId);
       townMoveBuilding(placement.buildingId, placement.r, placement.c, def.rotatable ? placement.rot : undefined);
-      pushToast({ text: 'Building moved', color: '#e8b923' });
+      const after = useGameStore.getState().town.buildings.find((b) => b.id === placement.buildingId);
+      if (after && before && (after.r !== before.r || after.c !== before.c || after.rot !== before.rot)) {
+        pushToast({ text: 'Building moved', color: '#e8b923' });
+      }
     }
     setPlacement(null);
   }
@@ -168,7 +176,11 @@ export function TownView() {
     const before = town.deeds;
     townBuyDeed();
     const after = useGameStore.getState().town.deeds;
-    if (after > before) pushToast({ text: `District ${after} unlocked!`, color: '#e8b923' });
+    if (after > before) {
+      // The first three deeds unlock land; later ones are land-free charters (TOWN-06).
+      const text = after <= 3 ? `District ${after} unlocked!` : `Charter ${after - 3} commissioned!`;
+      pushToast({ text, color: '#e8b923' });
+    }
   }
 
   return (
@@ -205,7 +217,8 @@ export function TownView() {
           <div>
             <div className="text-[11px] uppercase tracking-wide text-ink-muted">Labor today</div>
             <div className="font-display font-bold text-ink">
-              {town.laborToday}/{TOWN_LABOR_DAILY_CAP}
+              {/* laborToday belongs to laborISO's day — render 0 until the first grant today (TOWN-12). */}
+              {town.laborISO === toISODate() ? town.laborToday : 0}/{TOWN_LABOR_DAILY_CAP}
             </div>
           </div>
         </div>
@@ -217,6 +230,7 @@ export function TownView() {
           ghost={ghost}
           onCellTap={placement ? nudgeGhost : undefined}
           onBuildingTap={placement ? undefined : setCardId}
+          onDecorTap={placement ? undefined : (r, c) => setDecorCard({ r, c })}
         />
       </div>
 
@@ -289,6 +303,11 @@ export function TownView() {
       {/* Building management card */}
       {cardId && !placement && (
         <TownBuildingCard buildingId={cardId} onMove={startMove} onClose={() => setCardId(null)} />
+      )}
+
+      {/* Decor management card (TOWN-19 — decor is removable, not permanent) */}
+      {decorCard && !placement && (
+        <TownDecorCard r={decorCard.r} c={decorCard.c} onClose={() => setDecorCard(null)} />
       )}
     </div>
   );
