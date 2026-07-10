@@ -4,13 +4,20 @@ import { type CombatAction } from '@/engine/combat';
 import { getWeapon } from '@/engine/weapons';
 import { getRelic, rollBoons, rollCurse } from '@/engine/relics';
 import type { StatId } from '@/engine/stats';
-import { mergeReward, DUNGEON_ENERGY_COST, combatRoomGold, bossRoomGold } from '@/engine/dungeon';
+import {
+  mergeReward,
+  DUNGEON_ENERGY_COST,
+  DUNGEON_FREE_FLOORS,
+  DUNGEON_DESCENT_COST,
+  combatRoomGold,
+  bossRoomGold,
+} from '@/engine/dungeon';
 import { generateFloorMap } from '@/engine/dungeonMap';
 import { type DungeonRun } from '@/engine/dungeonTypes';
 import { biomeForDepth } from '@/engine/biomes';
 import { getEncounter, chooseEncounter, checkChance, encounterDepthTier } from '@/engine/encounters';
 import { DUNGEON_UNLOCK_LEVEL } from '@/engine/progression';
-import { toISODate } from '@/engine/date';
+import { toISODate, now } from '@/engine/date';
 import type { GameState, DungeonRunSummary } from '../shared';
 import {
   runStatBonuses,
@@ -97,6 +104,8 @@ export const createDungeonSlice: StateCreator<
         pendingBoon: null,
         merchant: null,
         earnedXp: 0,
+        startedAt: now().getTime(),
+        energySpent: freeEnergy ? 0 : DUNGEON_ENERGY_COST,
       };
       return {
         character: {
@@ -310,8 +319,10 @@ export const createDungeonSlice: StateCreator<
       const run = s.dungeon;
       if (!run || run.status !== 'active' || !run.atCheckpoint) return s;
       const depth = run.depth + 1;
-      // Descending past floor 3 costs 1 energy (charge what's available — never block a mid-run player).
-      const chargeEnergy = depth > 3 && !s.settings.unlimitedEnergy;
+      // Descending past the covered floors costs energy — and requires actually having it
+      // (plan D1). The UI disables both descent buttons at zero; Bank & Leave stays open.
+      const chargeEnergy = depth > DUNGEON_FREE_FLOORS && !s.settings.unlimitedEnergy;
+      if (chargeEnergy && s.character.energy < DUNGEON_DESCENT_COST) return s;
       const deepestFloor = Math.max(s.deepestFloor, depth);
       const biome = biomeForDepth(depth);
       const map = generateFloorMap(depth, biome, Math.random, { deepest: s.deepestFloor });
@@ -331,6 +342,7 @@ export const createDungeonSlice: StateCreator<
         encounter: null,
         mp: run.maxMp,
         sta: run.maxSta,
+        ...(chargeEnergy ? { energySpent: (run.energySpent ?? 0) + DUNGEON_DESCENT_COST } : {}),
       };
       if (mode === 'rest') {
         // Rest: recover some HP, forgo this checkpoint's boon.
@@ -344,8 +356,8 @@ export const createDungeonSlice: StateCreator<
         deepestFloor,
         ...(chargeEnergy
           ? {
-              character: { ...s.character, energy: Math.max(0, s.character.energy - 1) },
-              ...energySpentPatch(s, 1),
+              character: { ...s.character, energy: s.character.energy - DUNGEON_DESCENT_COST },
+              ...energySpentPatch(s, DUNGEON_DESCENT_COST),
             }
           : {}),
       };
@@ -358,6 +370,7 @@ export const createDungeonSlice: StateCreator<
       // Compute final gold once — used in both the summary record and the actual reward.
       const finalGold = Math.round((run.bankedReward.gold ?? 0) * s.character.habitBonus);
       const endReason = runEndReason(run);
+      const materialsLost = Object.values(run.lostReward?.materials ?? {}).reduce((a, b) => a + b, 0);
       const summary: DungeonRunSummary = {
         depth: run.depth,
         cleared: run.cleared,
@@ -368,6 +381,12 @@ export const createDungeonSlice: StateCreator<
         roomsEntered: run.roomsEntered ?? run.roomsCleared ?? 0,
         relicCount: run.relics.length,
         goldBanked: finalGold,
+        energySpent: run.energySpent,
+        xpGranted: run.earnedXp ?? 0,
+        merchantGoldSpent: run.merchantGoldSpent ?? 0,
+        goldLost: run.lostReward?.gold ?? 0,
+        materialsLost,
+        durationMs: run.startedAt != null ? Math.max(0, now().getTime() - run.startedAt) : undefined,
       };
       const baseEarnings = s.earnings ?? freshEarningsLedger();
       const next: GameState = {
@@ -469,7 +488,11 @@ export const createDungeonSlice: StateCreator<
       if (!offer) return s;
       const free = s.settings.unlimitedGold;
       if (!free && s.character.gold < offer.cost) return s;
-      const next: DungeonRun = { ...run, merchant: run.merchant.filter((o) => o.id !== offerId) };
+      const next: DungeonRun = {
+        ...run,
+        merchant: run.merchant.filter((o) => o.id !== offerId),
+        merchantGoldSpent: (run.merchantGoldSpent ?? 0) + (free ? 0 : offer.cost),
+      };
       const patch: Partial<GameState> = {
         character: { ...s.character, gold: free ? s.character.gold : s.character.gold - offer.cost },
       };

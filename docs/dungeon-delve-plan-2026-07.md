@@ -81,25 +81,25 @@ No policy number is hard-coded in a component; every end reason and reward categ
 
 Goal: the habit → energy → bounded expedition loop is enforced and visible. Depends on 0.2/0.3.
 
-### [ ] 1.1 Enforce the descent cost (S–M) — DUN-02
+### [x] 1.1 Enforce the descent cost (S–M) — DUN-02
 In `dungeonDescend` (`dungeonSlice.ts:299-343`): when `chargeEnergy && s.character.energy < 1`, return unchanged (no-op guard, same pattern as `startDungeon`'s guard at `:72`). Remove the clamp-and-continue; `energySpentPatch` now only ever runs after a real deduction. Applies to both `'rest'` and `'pressOn'` (both descend); `dungeonBank` untouched. Tests: 0-energy descent is a no-op for both variants; 1-energy descent deducts and records exactly 1; `unlimitedEnergy` still free.
 
-### [ ] 1.2 Cost transparency at entrance and checkpoint (S)
+### [x] 1.2 Cost transparency at entrance and checkpoint (S)
 Entrance: "3⚡ covers floors 1–3 · each deeper floor costs 1⚡". Checkpoint: show "Descend — 1⚡ (you have N)" on both descent buttons; at 0⚡ disable both with "Out of energy — complete a habit, or bank and leave." Never disable Bank & Leave. Copy renders from the engine constants (0.3 rule).
 
-### [ ] 1.3 Honest per-run accounting (M)
+### [x] 1.3 Honest per-run accounting (M)
 - `DungeonRun`: add `startedAt` (via `engine/date.ts::now()`) and `energySpent` (incremented only on real deductions: entry + charged descents).
 - `DungeonRunSummary` (`gameState.ts:141`): add `energySpent`, `xpGranted` (total, from summing the run's `grantStatXp` patches — track a running total on the run), `goldLost`/`materialsLost` (from 0.3's preview at finish time), `merchantGoldSpent` (accumulate in `dungeonBuy`, `dungeonSlice.ts:451-471`), `durationMs`.
 - Persist migrate per the cross-cutting rule (same bump as 0.2 if co-released).
 - Tests: a scripted run's summary equals actual deductions/losses; suspended-run backfill.
 
-### [ ] 1.4 Streak multiplier where decisions happen (S)
+### [x] 1.4 Streak multiplier where decisions happen (S)
 Show the streak-adjusted banked-gold forecast (`habitBonus`, currently only at `DungeonView.tsx:259-260`) at the entrance and checkpoint: "Banked: 84g → **101g** with your streak ×1.2". Reuse `StreakBonusChip`.
 
-### [ ] 1.5 Close the loop after collection (S)
+### [x] 1.5 Close the loop after collection (S)
 On the collection screen: "This run: N⚡ spent · X XP · Y floors · MM:SS" (from 1.3) and a "Back to today's habits" action that switches to the Dashboard tab. (Tab state is local to `App.tsx` — thread a `onGoToHabits` callback or lift via existing navigation pattern; check how other views switch tabs first.)
 
-### [ ] 1.6 Balance report surface (S)
+### [x] 1.6 Balance report surface (S)
 No server telemetry (local-first): add a selector in `src/store/selectors.ts` aggregating dungeon history — XP/energy, XP/minute, gold/energy, average floors — surfaced in the dev/settings panel. This is the instrument DUN-12 and Phase 3 decisions read from.
 
 ### Phase 1 acceptance

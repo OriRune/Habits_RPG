@@ -134,7 +134,7 @@ const CARDS: HubCard<ExploreMode>[] = [
   },
 ];
 
-export function ExploreView() {
+export function ExploreView({ onGoToHabits }: { onGoToHabits?: () => void } = {}) {
   const [mode, setMode] = useState<ExploreMode | null>(null);
   const energy = useGameStore((s) => s.character.energy);
 
@@ -153,7 +153,7 @@ export function ExploreView() {
     <SubModeFrame backLabel="Back to Explore" onBack={() => setMode(null)}>
       {mode === 'delve'  && (
         <DungeonErrorBoundary onReset={() => setMode(null)}>
-          <DungeonView />
+          <DungeonView onGoToHabits={onGoToHabits} />
         </DungeonErrorBoundary>
       )}
       {mode === 'mine'   && <MiningView />}

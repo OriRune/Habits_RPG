@@ -154,6 +154,17 @@ export interface DungeonRunSummary {
   relicCount: number;
   /** Gold banked (post habit-streak multiplier). */
   goldBanked: number;
+  /** Energy actually deducted (entry + charged descents). Absent on pre-accounting entries. */
+  energySpent?: number;
+  /** Total stat XP granted during the run (banked immediately at resolution time). */
+  xpGranted?: number;
+  /** Persistent gold spent at merchants mid-run. */
+  merchantGoldSpent?: number;
+  /** Gold / total material units forfeited when the run ended early. */
+  goldLost?: number;
+  materialsLost?: number;
+  /** Wall-clock run length (engine/date now() at start vs. collection). */
+  durationMs?: number;
 }
 
 // ---------------------------------------------------------------------------

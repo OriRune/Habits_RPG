@@ -182,7 +182,7 @@ export default function App() {
           {tab === 'challenges' && <ChallengesView />}
           {tab === 'character'  && <CharacterView />}
           {tab === 'skills'     && <TrialsView />}
-          {tab === 'explore'    && <ExploreView />}
+          {tab === 'explore'    && <ExploreView onGoToHabits={() => setTab('habits')} />}
           {tab === 'battle'     && <BattleView />}
           {tab === 'inventory'  && <InventoryView />}
           {tab === 'party'      && <PartyView />}

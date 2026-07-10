@@ -59,6 +59,16 @@ export interface DungeonRun {
   /** Cumulative stat-XP granted to the character during this run (via grantStatXp calls).
    *  Tracked for the balance ledger; flushed to earnings.xp['dungeon'] at collectDungeon. */
   earnedXp?: number;
+  /** Epoch-ms start time (engine/date now()) — drives the run-duration readout. */
+  startedAt?: number;
+  /** Energy actually deducted this run (entry + charged descents). Never includes
+   *  clamped or bypassed (unlimitedEnergy) charges — accounting equals real deductions. */
+  energySpent?: number;
+  /** Persistent gold spent at merchants this run (outside the banked/floor retention model). */
+  merchantGoldSpent?: number;
+  /** The current floor's loot forfeited when the run ended early (exact per-category
+   *  amounts from previewRetainedReward). Absent on banked runs — nothing was lost. */
+  lostReward?: Reward;
   /**
    * Persistent per-run stat-point bonuses accumulated from triggered relics (e.g. `onShrine`
    * stacking relics). Applied inside `fighterFor` alongside flat relic effects.

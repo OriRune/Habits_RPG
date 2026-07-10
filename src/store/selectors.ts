@@ -173,6 +173,38 @@ export function selectBalanceReport(s: GameState): BalanceReport {
   return buildBalanceReport(s.earnings ?? freshEarningsLedger());
 }
 
+/**
+ * Dungeon economy readout for balance tuning (plan 1.6 / DUN-12): XP-per-energy,
+ * XP-per-minute, and gold-per-energy averaged over the run history entries that
+ * carry the Phase 1 accounting fields (older entries are skipped, never guessed).
+ * Consumed by the Settings Developer section; Phase 3 pacing decisions read this.
+ */
+export function selectDungeonEconomy(s: GameState): {
+  /** Runs in history with full accounting (energy + duration recorded). */
+  measuredRuns: number;
+  avgFloors: number;
+  xpPerEnergy: number;
+  xpPerMinute: number;
+  goldPerEnergy: number;
+} | null {
+  const runs = (s.dungeonHistory ?? []).filter(
+    (r) => r.energySpent != null && r.durationMs != null,
+  );
+  if (runs.length === 0) return null;
+  const sum = (f: (r: (typeof runs)[number]) => number) => runs.reduce((a, r) => a + f(r), 0);
+  const energy = sum((r) => r.energySpent ?? 0);
+  const xp = sum((r) => r.xpGranted ?? 0);
+  const gold = sum((r) => r.goldBanked);
+  const minutes = sum((r) => (r.durationMs ?? 0) / 60_000);
+  return {
+    measuredRuns: runs.length,
+    avgFloors: sum((r) => r.depth) / runs.length,
+    xpPerEnergy: energy > 0 ? xp / energy : 0,
+    xpPerMinute: minutes > 0 ? xp / minutes : 0,
+    goldPerEnergy: energy > 0 ? gold / energy : 0,
+  };
+}
+
 export function selectEnergySummary(s: GameState): EnergySummary {
   return buildEnergySummary(s.energyLog ?? {}, toISODate());
 }

@@ -9,6 +9,12 @@ import { type Reward } from './challenges';
 
 export const DUNGEON_ENERGY_COST = 3; // brief §7.2: "Dungeon entry = 3 Energy"
 
+/** Entry covers this many floors; every descent past them costs `DUNGEON_DESCENT_COST`.
+ *  The energy contract (plan D1): a run must stay funded by habit-earned energy — at zero
+ *  energy the only checkpoint option is Bank & Leave. All descent copy renders from these. */
+export const DUNGEON_FREE_FLOORS = 3;
+export const DUNGEON_DESCENT_COST = 1;
+
 /** Gold paid for a plain combat win — ≈ half a treasure room's base (resolveTreasure: 60+depth*10). */
 export function combatRoomGold(depth: number): number {
   return 30 + depth * 5;

@@ -127,6 +127,18 @@ describe('finishRun', () => {
     const dead = finishRun(makeRun(), 'defeated', 0);
     expect(dead.endReason).toBe('defeated');
   });
+
+  it('stamps the exact forfeited loot as lostReward', () => {
+    const ended = finishRun(
+      makeRun({ floorReward: { gold: 100, materials: { leather: 1 }, items: ['healing_potion'] } }),
+      'fled',
+      25,
+    );
+    expect(ended.lostReward?.gold).toBe(40); // kept floor(100 × 0.6) = 60
+    expect(ended.lostReward?.materials?.leather).toBe(1); // floored to zero kept
+    expect(ended.lostReward?.items).toEqual(['healing_potion']);
+    expect(ended.floorReward).toEqual({});
+  });
 });
 
 describe('resolveCurrentNode roomsCleared', () => {

@@ -3,6 +3,7 @@ import { Bell, ChevronLeft, Download, FlaskConical, BarChart3, Upload } from 'lu
 import { BalanceReportModal } from '@/components/balance/BalanceReportModal';
 import { DevStateInspector } from '@/components/dev/DevStateInspector';
 import { useGameStore } from '@/store/useGameStore';
+import { selectDungeonEconomy } from '@/store/selectors';
 import { STATS, type StatId } from '@/engine/stats';
 import type { ArenaSpeed } from '@/engine/arena';
 import { classFor } from '@/engine/classes';
@@ -376,6 +377,8 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             </Button>
           </div>
 
+          <DungeonEconomyReadout />
+
           {/* Testing tools — jump straight to level-locked content. */}
           <div className="space-y-4 border-t border-gold-deep/20 pt-3">
             <p className="text-xs font-bold uppercase tracking-wider text-ink-muted">
@@ -590,6 +593,35 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
       </div>
 
       {showBalanceReport && <BalanceReportModal onClose={() => setShowBalanceReport(false)} />}
+    </div>
+  );
+}
+
+/** Read-only dungeon economy averages (plan 1.6) — the instrument for the DUN-12 XP-weight
+ *  and Phase 3 pacing decisions. Shows only runs recorded with full Phase 1 accounting. */
+function DungeonEconomyReadout() {
+  const economy = useGameStore(selectDungeonEconomy);
+  if (!economy) return null;
+  const rows: Array<[string, string]> = [
+    ['Measured runs', `${economy.measuredRuns}`],
+    ['Avg floors', economy.avgFloors.toFixed(1)],
+    ['XP / energy', economy.xpPerEnergy.toFixed(1)],
+    ['XP / minute', economy.xpPerMinute.toFixed(1)],
+    ['Gold / energy', economy.goldPerEnergy.toFixed(1)],
+  ];
+  return (
+    <div className="border-t border-gold-deep/20 pt-3">
+      <div className="mb-1.5 font-display text-xs uppercase tracking-wider text-ink-muted">
+        Dungeon economy (recent runs)
+      </div>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-3">
+        {rows.map(([label, value]) => (
+          <span key={label} className="flex items-center justify-between gap-2 text-ink-muted">
+            {label}
+            <span className="font-display font-bold tabular-nums text-ink">{value}</span>
+          </span>
+        ))}
+      </div>
     </div>
   );
 }

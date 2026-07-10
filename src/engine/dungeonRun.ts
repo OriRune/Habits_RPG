@@ -111,7 +111,7 @@ export function finishRun(
   reason: Exclude<DungeonEndReason, 'banked'>,
   hp: number,
 ): DungeonRun {
-  const kept = scaleReward(run.floorReward, DUNGEON_RETENTION[reason]);
+  const { kept, lost } = previewRetainedReward(run, reason);
   return {
     ...run,
     hp,
@@ -120,6 +120,7 @@ export function finishRun(
     endReason: reason,
     bankedReward: mergeReward(run.bankedReward, kept),
     floorReward: {},
+    lostReward: lost,
     battle: null,
     encounter: null,
   };

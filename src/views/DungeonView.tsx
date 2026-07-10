@@ -1,10 +1,11 @@
 import type { CSSProperties } from 'react';
 import { useState } from 'react';
-import { Heart, Sparkles, Coins, Zap, Wind, ChevronsDown, DoorOpen } from 'lucide-react';
+import { Heart, Sparkles, Coins, Zap, Wind, ChevronsDown, DoorOpen, Clock } from 'lucide-react';
 import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
 import { useGameStore } from '@/store/useGameStore';
 import { selectDungeonMilestone } from '@/store/selectors';
-import { ROOM_META, DUNGEON_ENERGY_COST } from '@/engine/dungeon';
+import { ROOM_META, DUNGEON_ENERGY_COST, DUNGEON_FREE_FLOORS, DUNGEON_DESCENT_COST } from '@/engine/dungeon';
+import { now } from '@/engine/date';
 import { DUNGEON_RETENTION, runEndReason } from '@/engine/dungeonRun';
 import { getBiome } from '@/engine/biomes';
 import { getEncounter, checkChance, choiceAvailable, encounterDepthTier } from '@/engine/encounters';
@@ -64,6 +65,11 @@ function RunGauge({
 const FLEE_KEEP_PCT = Math.round(DUNGEON_RETENTION.fled * 100);
 const FALL_KEEP_PCT = Math.round(DUNGEON_RETENTION.defeated * 100);
 
+function fmtDuration(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
 function rewardIsEmpty(reward: Reward): boolean {
   const mats = Object.values(reward.materials ?? {}).filter((n) => n > 0);
   return !reward.gold && mats.length === 0 && (reward.items ?? []).length === 0 && (reward.weapons ?? []).length === 0 && (reward.gear ?? []).length === 0;
@@ -104,7 +110,7 @@ function RewardLine({ reward, empty = 'No spoils.' }: { reward: Reward; empty?: 
   );
 }
 
-export function DungeonView() {
+export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}) {
   const [showRitual, setShowRitual] = useState(false);
   const dungeon = useGameStore((s) => s.dungeon);
   const soundEnabled = useGameStore((s) => s.settings.soundEnabled);
@@ -149,11 +155,18 @@ export function DungeonView() {
             </div>
           </div>
 
-          <div className="flex items-center justify-between rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3">
-            <span className="flex items-center gap-1.5 text-sm text-ink">
-              <Zap className="h-4 w-4 text-stat-AG" /> Cost: {DUNGEON_ENERGY_COST} energy
-            </span>
-            <span className="text-sm text-ink-muted">You have {energy} ⚡</span>
+          <div className="space-y-1 rounded-md border border-gold-deep/30 bg-parchment-100/70 p-3">
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1.5 text-sm text-ink">
+                <Zap className="h-4 w-4 text-stat-AG" /> Cost: {DUNGEON_ENERGY_COST} energy
+              </span>
+              <span className="text-sm text-ink-muted">You have {energy} ⚡</span>
+            </div>
+            <div className="text-[11px] text-ink-muted">
+              Covers floors 1–{DUNGEON_FREE_FLOORS}; each deeper floor costs {DUNGEON_DESCENT_COST}⚡
+              more. Banked gold collects with your streak bonus.
+            </div>
+            <StreakBonusChip className="text-[11px] text-amber-600" />
           </div>
 
           <div className="rounded-md border border-gold-deep/30 bg-parchment-300/40 p-3 text-sm">
@@ -270,7 +283,34 @@ export function DungeonView() {
                 {dungeon.damageTaken ?? 0}
               </span>
             </span>
+            <span className="flex items-center gap-1.5 text-ink-muted">
+              <Zap className="h-3.5 w-3.5 shrink-0" />
+              Energy spent
+              <span className="ml-auto font-display font-bold tabular-nums text-ink">
+                {dungeon.energySpent ?? '—'}
+              </span>
+            </span>
+            <span className="flex items-center gap-1.5 text-ink-muted">
+              <Sparkles className="h-3.5 w-3.5 shrink-0" />
+              XP earned
+              <span className="ml-auto font-display font-bold tabular-nums text-ink">
+                {dungeon.earnedXp ?? 0}
+              </span>
+            </span>
+            <span className="flex items-center gap-1.5 text-ink-muted">
+              <Clock className="h-3.5 w-3.5 shrink-0" />
+              Time
+              <span className="ml-auto font-display font-bold tabular-nums text-ink">
+                {dungeon.startedAt != null ? fmtDuration(now().getTime() - dungeon.startedAt) : '—'}
+              </span>
+            </span>
           </div>
+          {dungeon.lostReward && !rewardIsEmpty(dungeon.lostReward) && (
+            <div>
+              <div className="mb-1 font-display text-xs uppercase tracking-wider text-ember">Left behind</div>
+              <RewardLine reward={dungeon.lostReward} />
+            </div>
+          )}
           <div>
             <div className="mb-1 font-display text-xs uppercase tracking-wider text-ink-muted">Spoils</div>
             <RewardLine reward={{ ...dungeon.bankedReward, gold: Math.round((dungeon.bankedReward.gold ?? 0) * habitBonus) }} />
@@ -279,6 +319,15 @@ export function DungeonView() {
           <Button onClick={collectDungeon} className="w-full py-2.5">
             Collect &amp; Leave
           </Button>
+          {onGoToHabits && (
+            <Button
+              variant="secondary"
+              onClick={() => { collectDungeon(); onGoToHabits(); }}
+              className="w-full py-2"
+            >
+              Collect &amp; Back to Today's Habits
+            </Button>
+          )}
         </Panel>
       </div>
     );
@@ -288,6 +337,12 @@ export function DungeonView() {
   if (dungeon.atCheckpoint) {
     const nextDepth = dungeon.depth + 1;
     const nextIsBoss = nextDepth % 5 === 0;
+    // The descent contract (plan D1): floors past the covered ones cost energy, and the
+    // store refuses a descent it can't charge — mirror that here instead of a dead tap.
+    const chargeNext = nextDepth > DUNGEON_FREE_FLOORS && !unlimitedEnergy;
+    const canDescend = !chargeNext || energy >= DUNGEON_DESCENT_COST;
+    const costTag = chargeNext ? ` · ${DUNGEON_DESCENT_COST}⚡` : '';
+    const bankedGold = dungeon.bankedReward.gold ?? 0;
     return (
       <div
         className="mx-auto max-w-2xl space-y-4 px-4 py-5"
@@ -313,17 +368,38 @@ export function DungeonView() {
           <div>
             <div className="mb-1 font-display text-xs uppercase tracking-wider text-ink-muted">Banked (safe)</div>
             <RewardLine reward={dungeon.bankedReward} empty="Nothing banked yet." />
+            {bankedGold > 0 && habitBonus > 1 && (
+              <div className="mt-1 text-[11px] text-amber-600">
+                Collects as {Math.round(bankedGold * habitBonus)}g with your streak ×{habitBonus.toFixed(2)}
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <Button variant="secondary" onClick={() => dungeonDescend('rest')} className="flex items-center justify-center gap-1.5 py-2.5">
+            <Button
+              variant="secondary"
+              onClick={() => dungeonDescend('rest')}
+              disabled={!canDescend}
+              className="flex items-center justify-center gap-1.5 py-2.5"
+            >
               {/* Show the clamped actual gain, not the nominal 40%, so Rest vs. boon is an exact choice. */}
-              <Heart className="h-4 w-4" /> Rest (+{Math.min(Math.round(dungeon.maxHp * 0.4), dungeon.maxHp - dungeon.hp)} HP)
+              <Heart className="h-4 w-4" /> Rest (+{Math.min(Math.round(dungeon.maxHp * 0.4), dungeon.maxHp - dungeon.hp)} HP){costTag}
             </Button>
-            <Button onClick={() => dungeonDescend('pressOn')} className="flex items-center justify-center gap-1.5 py-2.5">
-              <ChevronsDown className="h-4 w-4" /> Press On{nextIsBoss ? ' (Boss!)' : ''} — take a boon
+            <Button
+              onClick={() => dungeonDescend('pressOn')}
+              disabled={!canDescend}
+              className="flex items-center justify-center gap-1.5 py-2.5"
+            >
+              <ChevronsDown className="h-4 w-4" /> Press On{nextIsBoss ? ' (Boss!)' : ''} — take a boon{costTag}
             </Button>
           </div>
+          {chargeNext && (
+            <p className={cn('text-center text-[11px]', canDescend ? 'text-ink-muted' : 'text-ember')}>
+              {canDescend
+                ? `Descending costs ${DUNGEON_DESCENT_COST}⚡ — you have ${energy}.`
+                : 'Out of energy — complete a habit to descend, or bank and leave.'}
+            </p>
+          )}
           <Button variant="secondary" onClick={dungeonBank} className="flex w-full items-center justify-center gap-1.5 py-2">
             <DoorOpen className="h-4 w-4" /> Bank &amp; Leave
           </Button>

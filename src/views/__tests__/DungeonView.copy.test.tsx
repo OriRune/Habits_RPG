@@ -139,3 +139,51 @@ describe('checkpoint (DUN-17)', () => {
     expect(html).toContain(FALL_PCT);
   });
 });
+
+describe('checkpoint energy contract (DUN-02 / plan 1.2)', () => {
+  it('at zero energy past the free floors, descent is disabled but Bank & Leave is not', () => {
+    useGameStore.setState({
+      character: { ...get().character, energy: 0 },
+      dungeon: makeRun({ atCheckpoint: true, depth: 3 }),
+    });
+    const { container, getByText } = render(<DungeonView />);
+    expect(getByText(/Out of energy — complete a habit/)).toBeTruthy();
+    const buttons = [...container.querySelectorAll('button')];
+    const descend = buttons.filter((b) => /Press On|Rest \(/.test(b.textContent ?? ''));
+    expect(descend).toHaveLength(2);
+    for (const b of descend) expect(b.disabled).toBe(true);
+    const bank = buttons.find((b) => /Bank & Leave/.test(b.textContent ?? ''));
+    expect(bank?.disabled).toBe(false);
+  });
+
+  it('shows the descent cost on both buttons when the next floor is paid', () => {
+    useGameStore.setState({
+      character: { ...get().character, energy: 2 },
+      dungeon: makeRun({ atCheckpoint: true, depth: 3 }),
+    });
+    const html = renderHtml();
+    expect(html).toContain('1⚡');
+    expect(html).toContain('you have 2');
+  });
+
+  it('keeps free-floor descents unlabeled and enabled at zero energy', () => {
+    useGameStore.setState({
+      character: { ...get().character, energy: 0 },
+      dungeon: makeRun({ atCheckpoint: true, depth: 1 }),
+    });
+    const { container } = render(<DungeonView />);
+    const buttons = [...container.querySelectorAll('button')];
+    const pressOn = buttons.find((b) => /Press On/.test(b.textContent ?? ''));
+    expect(pressOn?.disabled).toBe(false);
+    expect(pressOn?.textContent).not.toContain('⚡');
+  });
+
+  it('forecasts streak-adjusted banked gold', () => {
+    useGameStore.setState({
+      character: { ...get().character, habitBonus: 1.2 },
+      dungeon: makeRun({ atCheckpoint: true, bankedReward: { gold: 100 } }),
+    });
+    const html = renderHtml();
+    expect(html).toContain('Collects as 120g');
+  });
+});
