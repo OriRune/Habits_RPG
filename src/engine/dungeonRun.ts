@@ -82,6 +82,7 @@ export function resolveCurrentNode(run: DungeonRun, hp: number, mp: number, sta:
     encounter: null,
     roomLoot: null,
     merchant: null,
+    shrineResult: null,
     // Reaching here means the room resolved successfully (flee/defeat go through finishRun).
     ...(node ? { roomsCleared: (run.roomsCleared ?? 0) + 1 } : {}),
   };
@@ -123,5 +124,6 @@ export function finishRun(
     lostReward: lost,
     battle: null,
     encounter: null,
+    shrineResult: null,
   };
 }

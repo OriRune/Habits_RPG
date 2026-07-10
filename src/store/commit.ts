@@ -36,6 +36,7 @@ import { asCraftTier, scaleGearDef, scaleWeaponDef } from '@/engine/crafting';
 import { getRelic, aggregateRelics } from '@/engine/relics';
 import { type Reward } from '@/engine/challenges';
 import { mergeReward, resolveTreasure, merchantOffers } from '@/engine/dungeon';
+import { routeDanger, dangerRewardFactor } from '@/engine/dungeonMap';
 import { townPerks } from '@/engine/town';
 import { type DungeonRun } from '@/engine/dungeonTypes';
 import { currentRoom } from '@/engine/dungeonRun';
@@ -413,6 +414,10 @@ export function enterRoom(run: DungeonRun, state: GameState): void {
       if (kept.length) loot.weapons = kept;
       else delete loot.weapons;
     }
+    // Route pricing (D2): treasure gold pays by the danger realized on this floor's path so
+    // far — grabbed before the fights it's lean, after them it's full. Materials and discrete
+    // drops stay unscaled (they're all-or-nothing in the retention model already).
+    loot.gold = Math.round((loot.gold ?? 0) * dangerRewardFactor(routeDanger(run.map, run.path)));
     run.roomLoot = loot;
     run.floorReward = mergeReward(run.floorReward, loot);
   } else if (room.type === 'merchant') {

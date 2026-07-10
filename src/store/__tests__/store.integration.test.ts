@@ -6,6 +6,7 @@ import { bossForLevel } from '@/engine/bosses';
 import { dungeonCombatStatXp } from '@/engine/combatStats';
 import { type BattleState } from '@/engine/combat';
 import { type DungeonRoom, merchantOffers, combatRoomGold, bossRoomGold } from '@/engine/dungeon';
+import { dangerRewardFactor } from '@/engine/dungeonMap';
 import { type FloorMap } from '@/engine/dungeonMap';
 import { type MineState, type MineTile } from '@/engine/mining';
 import { getWeapon, STARTER_WEAPON } from '@/engine/weapons';
@@ -844,8 +845,9 @@ describe('dungeon expeditions', () => {
     const loot = get().dungeon!.roomLoot!;
     rng.mockRestore();
     expect(loot.weapons ?? []).toHaveLength(0); // owned weapon didn't survive as dead loot
-    // base gold (60 + depth*10 = 90) + reroll (30 + 5*depth = 45) = 135
-    expect(loot.gold).toBe(135);
+    // base gold (60 + depth*10 = 90) + reroll (30 + 5*depth = 45) = 135, then route-priced
+    // by the danger realized so far (one combat on the path → ×0.85, plan D2).
+    expect(loot.gold).toBe(Math.round(135 * dangerRewardFactor(1)));
   });
 
   it('an encounter choice advances the encounter and may accrue floor loot', () => {
@@ -887,7 +889,9 @@ describe('dungeon expeditions', () => {
     expect(get().combatStats.defenseXp).toBeGreaterThan(0); // physical foe trains Defense
     expect(get().character.statXp.ST).toBeGreaterThan(0); // win grants the attack-stat XP
     expect(get().character.statXp.HP).toBeGreaterThan(0); // ...and HP for enduring the fight
-    expect(run.floorReward.gold).toBe(combatRoomGold(1)); // plain combat win pays depth-scaled gold (MINI-05)
+    // Plain combat win pays depth-scaled gold (MINI-05), route-priced by realized danger (D2):
+    // this fight is the path's only danger room → factor for danger 1.
+    expect(run.floorReward.gold).toBe(Math.round(combatRoomGold(1) * dangerRewardFactor(1)));
   });
 
   it('is gated until the dungeon unlock level (3)', () => {
@@ -935,7 +939,8 @@ describe('dungeon expeditions', () => {
     const run = get().dungeon!;
     expect(run.atCheckpoint).toBe(true);
     expect(run.status).toBe('active');
-    expect(run.bankedReward.gold).toBe(20 + combatRoomGold(1)); // floor loot (incl. combat-win gold) locked in
+    // Floor loot (incl. the route-priced combat-win gold, D2) locked in at the checkpoint.
+    expect(run.bankedReward.gold).toBe(20 + Math.round(combatRoomGold(1) * dangerRewardFactor(1)));
     expect(run.hp).toBe(18); // HP carries over — no free full heal
     expect(run.pendingBoon).toBeNull(); // the boon now comes from Press On, not floor clear
   });
@@ -965,13 +970,17 @@ describe('dungeon expeditions', () => {
     useGameStore.setState({ dungeon: makeRun({ rooms: [{ type: 'shrine' }, { type: 'combat' }] }) });
     const win = vi.spyOn(Math, 'random').mockReturnValue(0); // 0 < success chance
     get().dungeonShrine('pray');
-    expect(get().dungeon!.pendingBoon).not.toBeNull();
+    // The outcome pauses on a result panel (plan 2.5); the boon offer follows Continue.
+    expect(get().dungeon!.shrineResult?.outcome).toBe('blessed');
     win.mockRestore();
+    get().dungeonShrineContinue();
+    expect(get().dungeon!.pendingBoon).not.toBeNull();
 
     useGameStore.setState({ dungeon: makeRun({ rooms: [{ type: 'shrine' }, { type: 'combat' }] }) });
     const lose = vi.spyOn(Math, 'random').mockReturnValue(0.99); // misses → curse
     get().dungeonShrine('pray');
     expect(get().dungeon!.relics).toHaveLength(1);
+    expect(get().dungeon!.shrineResult?.outcome).toBe('cursed');
     lose.mockRestore();
   });
 
@@ -998,8 +1007,10 @@ describe('dungeon expeditions', () => {
     });
     const roll = vi.spyOn(Math, 'random').mockReturnValue(0.5);
     get().dungeonShrine('pray');
-    expect(get().dungeon!.pendingBoon).not.toBeNull(); // the run-buff carried the roll
+    expect(get().dungeon!.shrineResult?.outcome).toBe('blessed'); // the run-buff carried the roll
     roll.mockRestore();
+    get().dungeonShrineContinue();
+    expect(get().dungeon!.pendingBoon).not.toBeNull();
   });
 
   it('shrine: offering blood costs HP and guarantees a boon', () => {

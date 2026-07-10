@@ -1,12 +1,12 @@
 import type { CSSProperties } from 'react';
 import { useState } from 'react';
-import { Heart, Sparkles, Coins, Zap, Wind, ChevronsDown, DoorOpen, Clock } from 'lucide-react';
+import { Heart, Sparkles, Coins, Zap, Wind, ChevronsDown, DoorOpen, Clock, Flag } from 'lucide-react';
 import { AdventureRitualModal } from '@/components/minigame/AdventureRitualModal';
 import { useGameStore } from '@/store/useGameStore';
 import { selectDungeonMilestone } from '@/store/selectors';
-import { ROOM_META, DUNGEON_ENERGY_COST, DUNGEON_FREE_FLOORS, DUNGEON_DESCENT_COST } from '@/engine/dungeon';
+import { ROOM_META, DUNGEON_ENERGY_COST, DUNGEON_FREE_FLOORS, DUNGEON_DESCENT_COST, mergeReward } from '@/engine/dungeon';
 import { now } from '@/engine/date';
-import { DUNGEON_RETENTION, runEndReason } from '@/engine/dungeonRun';
+import { DUNGEON_RETENTION, runEndReason, previewRetainedReward } from '@/engine/dungeonRun';
 import { getBiome } from '@/engine/biomes';
 import { getEncounter, checkChance, choiceAvailable, encounterDepthTier } from '@/engine/encounters';
 import { runStatBonuses, fighterFor } from '@/store/shared';
@@ -26,6 +26,7 @@ import { Button } from '@/components/ui/Button';
 import { Sprite } from '@/components/ui/Sprite';
 import { SectionTitle } from '@/components/ui/Divider';
 import { SceneArt } from '@/components/ui/SceneArt';
+import { Modal } from '@/components/ui/Modal';
 import { BattleScene } from '@/components/combat/BattleScene';
 import { StreakBonusChip } from '@/components/character/StreakBonusChip';
 import { RelicTray } from '@/components/dungeon/RelicTray';
@@ -112,6 +113,7 @@ function RewardLine({ reward, empty = 'No spoils.' }: { reward: Reward; empty?: 
 
 export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}) {
   const [showRitual, setShowRitual] = useState(false);
+  const [confirmRetreat, setConfirmRetreat] = useState(false);
   const dungeon = useGameStore((s) => s.dungeon);
   const soundEnabled = useGameStore((s) => s.settings.soundEnabled);
   useDungeonAudio(dungeon ?? null, soundEnabled);
@@ -130,6 +132,7 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
   const dungeonAdvance = useGameStore((s) => s.dungeonAdvance);
   const dungeonBank = useGameStore((s) => s.dungeonBank);
   const dungeonDescend = useGameStore((s) => s.dungeonDescend);
+  const dungeonRetreat = useGameStore((s) => s.dungeonRetreat);
   const collectDungeon = useGameStore((s) => s.collectDungeon);
 
   // --- Entrance (no active run) ---
@@ -442,8 +445,56 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
           </div>
           <RelicTray relics={dungeon.relics} />
           <RunBuffs relics={dungeon.relics} />
+          {/* The always-available exit (plan 2.4 / DUN-10): retreat needs no flee roll. */}
+          <button
+            onClick={() => setConfirmRetreat(true)}
+            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-gold-deep/30 py-1.5 text-[11px] text-parchment-300 transition-colors hover:border-gold-deep/60 hover:text-gold-bright"
+          >
+            <Flag className="h-3.5 w-3.5" /> Retreat — end the run, keep banked loot +{' '}
+            {FLEE_KEEP_PCT}% of this floor's gold
+          </button>
         </Panel>
       )}
+
+      {confirmRetreat && !inBattle && (() => {
+        const { kept, lost } = previewRetainedReward(dungeon, 'fled');
+        const keptTotal = mergeReward(dungeon.bankedReward, kept);
+        return (
+          <Modal title="Retreat from the dungeon?" onClose={() => setConfirmRetreat(false)}>
+            <div className="space-y-3">
+              <p className="text-sm text-ink-muted">
+                Retreating always succeeds — no roll, unlike fleeing a fight. You keep everything
+                banked plus {FLEE_KEEP_PCT}% of this floor's gold and materials; the floor's item
+                drops are left behind.
+              </p>
+              <div>
+                <div className="mb-1 font-display text-xs uppercase tracking-wider text-ink-muted">You keep</div>
+                <RewardLine reward={keptTotal} empty="Nothing yet — you leave empty-handed." />
+              </div>
+              {!rewardIsEmpty(lost) && (
+                <div>
+                  <div className="mb-1 font-display text-xs uppercase tracking-wider text-ember">Left behind</div>
+                  <RewardLine reward={lost} />
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-2">
+                <Button variant="secondary" onClick={() => setConfirmRetreat(false)} className="py-2">
+                  Keep exploring
+                </Button>
+                <Button
+                  onClick={() => {
+                    setConfirmRetreat(false);
+                    dungeonRetreat();
+                  }}
+                  className="py-2"
+                >
+                  <Flag className="mr-1.5 h-4 w-4" /> Retreat
+                </Button>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
 
       {/* key on nodeId so every room entry triggers the fade-in animation */}
       <div key={dungeon.nodeId ?? 'path'} className="animate-fade-in">

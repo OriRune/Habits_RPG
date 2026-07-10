@@ -56,6 +56,11 @@ export interface DungeonRun {
   pendingBoon: string[] | null;
   /** Wares offered in a merchant room (null outside one). */
   merchant: MerchantOffer[] | null;
+  /** Outcome of a shrine prayer, shown as a result panel before the room resolves
+   *  (plan 2.5 / DUN-20). `blessed` carries its boon tier so the offer happens at
+   *  `dungeonShrineContinue` — the result panel and the boon modal never overlap.
+   *  Cleared by `resolveCurrentNode`. Absent on old saves. */
+  shrineResult?: { outcome: 'blessed' | 'cursed'; curseKey?: string; boonTier?: number } | null;
   /** Cumulative stat-XP granted to the character during this run (via grantStatXp calls).
    *  Tracked for the balance ledger; flushed to earnings.xp['dungeon'] at collectDungeon. */
   earnedXp?: number;

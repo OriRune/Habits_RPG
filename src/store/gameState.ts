@@ -348,11 +348,16 @@ export interface GameState {
   dungeonBank: () => void;
   /** Leave the checkpoint for the next floor: 'rest' (partial heal) or 'pressOn' (a boon instead). */
   dungeonDescend: (mode: 'rest' | 'pressOn') => void;
+  /** Guaranteed mid-floor exit (no flee roll) — same 'fled' retention as a combat flee.
+   *  Legal whenever no battle is seeded. */
+  dungeonRetreat: () => void;
   collectDungeon: () => void;
   /** Pick one of the offered boon relics into the run. */
   chooseBoon: (relicKey: string) => void;
   /** Shrine gamble: 'pray' (stat check → boon or curse), 'offer' (pay HP → guaranteed boon), 'leave'. */
   dungeonShrine: (choice: 'pray' | 'offer' | 'leave') => void;
+  /** Dismiss a shrine prayer's result panel: resolves the room (and offers the blessing's boon). */
+  dungeonShrineContinue: () => void;
   /** Buy a merchant offer with the player's gold (then leave the room). */
   dungeonBuy: (offerId: string) => void;
   /** Rest site: 'heal' (restore HP) or 'fortify' (a free tier-1 boon). */

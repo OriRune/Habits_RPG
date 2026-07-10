@@ -4,7 +4,7 @@
 // must present distinctly. Client-rendered (RTL) — static markup would only ever show
 // zustand's pre-hydration server snapshot, not the state the tests set.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, cleanup } from '@testing-library/react';
+import { render, cleanup, fireEvent } from '@testing-library/react';
 import { useGameStore, type DungeonRun } from '@/store/useGameStore';
 import { DUNGEON_RETENTION } from '@/engine/dungeonRun';
 import { type DungeonRoom } from '@/engine/dungeon';
@@ -185,5 +185,52 @@ describe('checkpoint energy contract (DUN-02 / plan 1.2)', () => {
     });
     const html = renderHtml();
     expect(html).toContain('Collects as 120g');
+  });
+});
+
+describe('retreat (plan 2.4 / DUN-10)', () => {
+  // A mid-floor path-choice state: active run, not at a checkpoint, no battle.
+  const midFloor = () =>
+    makeRun({
+      status: 'active',
+      nodeId: null,
+      choices: ['n0_0'],
+      bankedReward: { gold: 50 },
+      floorReward: { gold: 100 },
+    });
+
+  it('offers a retreat button in the run HUD with the engine retention share', () => {
+    useGameStore.setState({ dungeon: midFloor() });
+    const { getByText } = render(<DungeonView />);
+    expect(getByText(new RegExp(`Retreat — end the run.*${FLEE_PCT}`))).toBeTruthy();
+  });
+
+  it('the confirmation shows the exact kept and lost split before ending the run', () => {
+    useGameStore.setState({ dungeon: midFloor() });
+    const { container, getByText } = render(<DungeonView />);
+    fireEvent.click(getByText(/Retreat — end the run/));
+    expect(getByText(/Retreating always succeeds/)).toBeTruthy();
+    // Kept: 50 banked + floor(100 × 0.6) = 110 shown to the unit; 40 left behind.
+    expect(container.textContent).toContain('110');
+    expect(getByText('Left behind')).toBeTruthy();
+    expect(container.textContent).toContain('40');
+    expect(get().dungeon!.status).toBe('active'); // nothing happened yet
+
+    const confirm = [...container.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === 'Retreat',
+    )!;
+    fireEvent.click(confirm);
+    expect(get().dungeon!.status).toBe('ended');
+    expect(get().dungeon!.endReason).toBe('fled');
+    expect(get().dungeon!.bankedReward.gold).toBe(110);
+  });
+
+  it('Keep exploring dismisses the dialog without ending the run', () => {
+    useGameStore.setState({ dungeon: midFloor() });
+    const { container, getByText } = render(<DungeonView />);
+    fireEvent.click(getByText(/Retreat — end the run/));
+    fireEvent.click(getByText('Keep exploring'));
+    expect(container.textContent).not.toContain('Retreating always succeeds');
+    expect(get().dungeon!.status).toBe('active');
   });
 });

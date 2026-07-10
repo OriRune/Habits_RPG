@@ -111,28 +111,28 @@ A 0-energy character cannot start a paid floor by any path; recorded spend equal
 
 Goal: route choice is a priced decision, retreat is always possible, and the map UI carries the information. Depends on 0.2/0.3.
 
-### [ ] 2.1 Pure route-analysis helpers (M) — DUN-04, DUN-16
+### [x] 2.1 Pure route-analysis helpers (M) — DUN-04, DUN-16
 In `src/engine/dungeonMap.ts`: `enumerateRoutes(map)` (maps are small — layer widths ~2–3, exhaustive enumeration is cheap), `routeDanger(map, route)` (count of combat/elite nodes), and `classifyRoute(...)` → `{ danger: 'low'|'medium'|'high', rewardClass, dangerRoomRange }`. No RNG outcomes revealed. Deterministic tests, including the existing 10k-map simulation harness re-run to characterize the new distributions.
 
-### [ ] 2.2 Route pricing (M–L) — DUN-04, per D2
+### [x] 2.2 Route pricing (M–L) — DUN-04, per D2 — *landed: `DANGER_REWARD_FACTORS` = [0.6, 0.85, 1, 1.1, 1.2] by realized path danger, applied to treasure + combat/elite/boss gold; sim (18.5k routes): low routes earn 43% of a danger route, high ≈ 3.0× low*
 Scale floor reward rolls by realized danger: rooms resolved on a route carrying more danger yield richer treasure/gold rolls; a zero-danger route yields roughly 40–60% of a danger route's expected value (tune via simulation). Implemented in the engine (reward-roll factor from 2.1's classification of the player's chosen edges so far), never in the UI. Acceptance via simulation: across health/build states, no route class strictly dominates expected value per unit of risk; zero-combat routes remain viable but visibly poorer.
 
-### [ ] 2.3 Route UI (M) — DUN-16
+### [x] 2.3 Route UI (M) — DUN-16
 Per-route danger chips (Low/Med/High + expected reward class) from 2.1, a tap/hover detail card (rooms remaining, danger room range), an explicit current-node marker, and non-color-only differentiation (icons/patterns). Reuses `FloorMap`.
 
-### [ ] 2.4 General retreat action (M) — DUN-10, per D5
+### [x] 2.4 General retreat action (M) — DUN-10, per D5
 - Store: `dungeonRetreat()` — valid whenever no battle is active (path choice, treasure, encounter *before committing*, shrine, rest, merchant, checkpoint); calls `finishRun(run, 'fled')` with the same retention as combat flee.
 - UI: persistent "Retreat" in the run HUD; confirmation dialog rendering 0.3's exact `{kept, lost}` preview; copy distinguishes guaranteed retreat from probabilistic combat flee.
 - This also resolves the abandonment gap: a suspended run is no longer the only way to stop mid-floor. (Suspended runs themselves remain legal — resume works today; no expiry added.)
 - Tests: retreat from each eligible state stamps `fled` and matches the preview; retreat is unavailable mid-battle.
 
-### [ ] 2.5 Shrine result state (S–M) — DUN-20
+### [x] 2.5 Shrine result state (S–M) — DUN-20
 Add a result step to the shrine flow instead of the shared fall-through at `dungeonSlice.ts:448`: store a `shrineResult` on the run (or a generic `roomResult`), render a panel in `ShrineRoom.tsx` naming the outcome — on failure the curse's name, art, and exact effect — with a Continue button that then calls `resolveCurrentNode`. Reduced-motion safe. Tests: failure surfaces the rolled curse before path choice.
 
-### [ ] 2.6 Resize-aware connectors (S) — DUN-08
+### [x] 2.6 Resize-aware connectors (S) — DUN-08
 Attach a `ResizeObserver` on the `FloorMap` container (and a `window` resize fallback) that re-triggers the measurement effect (`FloorMap.tsx:68-111`), e.g. via a bump-state. Live-validate the original repro (orientation change / font swap).
 
-### [ ] 2.7 Room-weight tuning (S, ongoing)
+### [x] 2.7 Room-weight tuning (S, ongoing) — *characterized (route shares: 23% low / 44% medium / 33% high); weights left unchanged, combat fallback kept; revisit with 1.6's observed-play data*
 Re-tune generation weights using the simulation plus 1.6's observed-play report. Keep the map-wide combat fallback (`dungeonMap.ts:105-110`) as a floor.
 
 ### Phase 2 acceptance

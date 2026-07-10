@@ -134,3 +134,101 @@ export function generateFloorMap(
 
   return { nodes, layers };
 }
+
+// ---------------------------------------------------------------------------
+// Route analysis (plan 2.1) + danger-priced rewards (plan 2.2, decision D2)
+// ---------------------------------------------------------------------------
+
+/** Danger weight per room kind — an elite or boss counts double a plain fight. */
+export const DANGER_WEIGHT: Partial<Record<RoomKind, number>> = {
+  combat: 1,
+  elite: 2,
+  boss: 2,
+};
+
+export type DangerClass = 'low' | 'medium' | 'high';
+
+/** Bucket a danger score for the map UI: 0 = low, 1 = medium, 2+ = high. */
+export function classifyDanger(danger: number): DangerClass {
+  return danger <= 0 ? 'low' : danger === 1 ? 'medium' : 'high';
+}
+
+/** Loot-outlook bucket paired 1:1 with `classifyDanger` — safe routes are deliberately lean. */
+export type RewardClass = 'lean' | 'standard' | 'rich';
+export function rewardClassForDanger(danger: number): RewardClass {
+  return danger <= 0 ? 'lean' : danger === 1 ? 'standard' : 'rich';
+}
+
+/**
+ * Every complete route from `fromId` (or from each entry node) to a terminal node.
+ * Floors are tiny DAGs (≤3 layers × ≤3 nodes), so exhaustive enumeration is cheap.
+ */
+export function enumerateRoutes(map: FloorMap, fromId?: string): string[][] {
+  const starts = fromId ? [fromId] : map.layers[0];
+  const out: string[][] = [];
+  const walk = (id: string, acc: string[]) => {
+    const node = map.nodes[id];
+    if (!node) return;
+    const route = [...acc, id];
+    if (node.to.length === 0) out.push(route);
+    else for (const next of node.to) walk(next, route);
+  };
+  for (const s of starts) walk(s, []);
+  return out;
+}
+
+/** Total danger weight along a route — also works on a partial path (danger realized so far). */
+export function routeDanger(map: FloorMap, route: string[]): number {
+  return route.reduce((sum, id) => {
+    const node = map.nodes[id];
+    return sum + (node ? DANGER_WEIGHT[node.room.type] ?? 0 : 0);
+  }, 0);
+}
+
+/** A full route's danger score and its UI classification (plan 2.1's classifyRoute). */
+export function classifyRoute(
+  map: FloorMap,
+  route: string[],
+): { danger: number; dangerClass: DangerClass; rewardClass: RewardClass } {
+  const danger = routeDanger(map, route);
+  return { danger, dangerClass: classifyDanger(danger), rewardClass: rewardClassForDanger(danger) };
+}
+
+/** Range summary of every floor completion through `fromId` — feeds the route chips. */
+export interface RouteOutlook {
+  /** Distinct completions from this node (inclusive) to the checkpoint. */
+  routes: number;
+  /** Danger-weight range across those completions, counting `fromId` itself. */
+  minDanger: number;
+  maxDanger: number;
+  /** Rooms remaining including `fromId`. */
+  minRooms: number;
+  maxRooms: number;
+}
+
+export function routeOutlook(map: FloorMap, fromId: string): RouteOutlook | null {
+  const routes = enumerateRoutes(map, fromId);
+  if (routes.length === 0) return null;
+  let minDanger = Infinity, maxDanger = -Infinity, minRooms = Infinity, maxRooms = -Infinity;
+  for (const route of routes) {
+    const d = routeDanger(map, route);
+    minDanger = Math.min(minDanger, d);
+    maxDanger = Math.max(maxDanger, d);
+    minRooms = Math.min(minRooms, route.length);
+    maxRooms = Math.max(maxRooms, route.length);
+  }
+  return { routes: routes.length, minDanger, maxDanger, minRooms, maxRooms };
+}
+
+/**
+ * Gold factor by *realized* route danger (decision D2): floor loot pays out scaled by the
+ * danger weight of the rooms actually entered so far — so a zero-combat route stays legal
+ * but deliberately lean, loot grabbed after the fights pays full, and fleeing before the
+ * fight never keeps danger-priced loot. Indexed by cumulative danger, clamped to the last
+ * entry. All player-facing loot-outlook copy derives from these (never hard-code).
+ */
+export const DANGER_REWARD_FACTORS = [0.6, 0.85, 1, 1.1, 1.2] as const;
+
+export function dangerRewardFactor(danger: number): number {
+  return DANGER_REWARD_FACTORS[Math.max(0, Math.min(danger, DANGER_REWARD_FACTORS.length - 1))];
+}

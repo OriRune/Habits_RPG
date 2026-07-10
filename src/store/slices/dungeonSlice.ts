@@ -12,7 +12,7 @@ import {
   combatRoomGold,
   bossRoomGold,
 } from '@/engine/dungeon';
-import { generateFloorMap } from '@/engine/dungeonMap';
+import { generateFloorMap, routeDanger, dangerRewardFactor } from '@/engine/dungeonMap';
 import { type DungeonRun } from '@/engine/dungeonTypes';
 import { biomeForDepth } from '@/engine/biomes';
 import { getEncounter, chooseEncounter, checkChance, encounterDepthTier } from '@/engine/encounters';
@@ -52,9 +52,11 @@ export interface DungeonSlice {
   dungeonAdvance: () => void;
   dungeonBank: () => void;
   dungeonDescend: (mode: 'rest' | 'pressOn') => void;
+  dungeonRetreat: () => void;
   collectDungeon: () => void;
   chooseBoon: (relicKey: string) => void;
   dungeonShrine: (choice: 'pray' | 'offer' | 'leave') => void;
+  dungeonShrineContinue: () => void;
   dungeonBuy: (offerId: string) => void;
   dungeonRest: (choice: 'heal' | 'fortify') => void;
   dungeonLeaveRoom: () => void;
@@ -272,17 +274,20 @@ export const createDungeonSlice: StateCreator<
         const { atkShare, hpShare } = dungeonCombatStatXp(totalHp);
         statXpPatch = grantStatXp(s, { [atkStat]: atkShare, HP: hpShare });
         workingRun = { ...workingRun, earnedXp: (workingRun.earnedXp ?? 0) + atkShare + hpShare };
+        // Route pricing (D2): win gold scales by the danger realized on this floor's path so
+        // far — the current fight counts, so back-to-back danger rooms pay progressively more.
+        const dangerFactor = dangerRewardFactor(routeDanger(run.map, run.path));
         if (room.type === 'elite') {
           // Elites drop bonus gold and guarantee a boon.
           eliteWin = true;
-          workingRun = { ...workingRun, floorReward: mergeReward(workingRun.floorReward, { gold: 40 + workingRun.depth * 12 }) };
+          workingRun = { ...workingRun, floorReward: mergeReward(workingRun.floorReward, { gold: Math.round((40 + workingRun.depth * 12) * dangerFactor) }) };
         } else if (room.type === 'boss') {
           // A floor boss is the marquee payout — well above a plain combat room.
           wonBossId = b.bossId;
-          workingRun = { ...workingRun, floorReward: mergeReward(workingRun.floorReward, { gold: bossRoomGold(run.depth) }) };
+          workingRun = { ...workingRun, floorReward: mergeReward(workingRun.floorReward, { gold: Math.round(bossRoomGold(run.depth) * dangerFactor) }) };
         } else {
           // Plain combat wins pay depth-scaled gold (≈ half a treasure room).
-          workingRun = { ...workingRun, floorReward: mergeReward(workingRun.floorReward, { gold: combatRoomGold(run.depth) }) };
+          workingRun = { ...workingRun, floorReward: mergeReward(workingRun.floorReward, { gold: Math.round(combatRoomGold(run.depth) * dangerFactor) }) };
         }
         // Accumulate per-run battle statistics (using pre-heal hp so damageTaken reflects raw loss).
         workingRun = {
@@ -363,6 +368,16 @@ export const createDungeonSlice: StateCreator<
       };
     }),
 
+  dungeonRetreat: () =>
+    set((s) => {
+      const run = s.dungeon;
+      // The guaranteed exit (D5): legal anywhere a battle isn't seeded — a started fight must
+      // be resolved (win, lose, or roll the combat flee). Same retention as a combat flee, so
+      // the confirmation dialog's previewRetainedReward(run, 'fled') is exact.
+      if (!run || run.status !== 'active' || run.battle) return s;
+      return { dungeon: finishRun(run, 'fled', run.hp) };
+    }),
+
   collectDungeon: () =>
     set((s) => {
       const run = s.dungeon;
@@ -441,7 +456,8 @@ export const createDungeonSlice: StateCreator<
         // MINI-27: relic/gear/runBuff WI now count, so shrine_stone's "+WI this run" actually helps.
         const power = s.character.statLevels.WI + (runStatBonuses(s).WI ?? 0);
         if (Math.random() < checkChance(power, 6)) {
-          offerBoon(next, boonMaxTier(next.depth, s.deepestFloor));
+          // The boon offer waits for dungeonShrineContinue so the result panel shows first.
+          next.shrineResult = { outcome: 'blessed', boonTier: boonMaxTier(next.depth, s.deepestFloor) };
           shrineSucceeded = true;
         } else {
           const curse = rollCurse();
@@ -451,6 +467,8 @@ export const createDungeonSlice: StateCreator<
             next.maxHp = newMax;
             // A curse weakens — it never kills outright (clampCombatant floors newMax at 1).
             next.hp = Math.max(1, Math.min(next.hp, newMax));
+            // The curse is applied already; the result panel names it before the path choice (DUN-20).
+            next.shrineResult = { outcome: 'cursed', curseKey: curse };
           }
         }
       } else if (choice === 'offer') {
@@ -476,8 +494,22 @@ export const createDungeonSlice: StateCreator<
         }
       }
 
-      // 'leave' = no effect. In every case, resolve the room and present the next path.
+      // A prayer pauses on its result panel (dungeonShrineContinue resolves the room);
+      // 'offer' and 'leave' are deterministic, so they resolve straight to the next path.
+      if (next.shrineResult) return { dungeon: next };
       return { dungeon: resolveCurrentNode(next, next.hp, next.mp, next.sta) };
+    }),
+
+  dungeonShrineContinue: () =>
+    set((s) => {
+      const run = s.dungeon;
+      if (!run || run.status !== 'active' || !run.shrineResult) return s;
+      const result = run.shrineResult;
+      const next = resolveCurrentNode(run, run.hp, run.mp, run.sta);
+      if (result.outcome === 'blessed' && result.boonTier != null) {
+        offerBoon(next, result.boonTier);
+      }
+      return { dungeon: next };
     }),
 
   dungeonBuy: (offerId) =>
