@@ -204,6 +204,8 @@ body {
   .dungeon-scene-glow,
   .dungeon-scene-dust,
   .dungeon-scene-flame { animation: none; }
+  /* Room-entry fade (Tailwind animate-fade-in) — show instantly instead. */
+  .animate-fade-in { animation: none !important; }
 }
 
 /* Forest: pollen/dust motes gently drifting upward. */

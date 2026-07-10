@@ -31,6 +31,7 @@ import { BattleScene } from '@/components/combat/BattleScene';
 import { StreakBonusChip } from '@/components/character/StreakBonusChip';
 import { RelicTray } from '@/components/dungeon/RelicTray';
 import { RunBuffs } from '@/components/dungeon/RunBuffs';
+import { LootLedger } from '@/components/dungeon/LootLedger';
 import { FloorMap } from '@/components/dungeon/FloorMap';
 import { ShrineRoom } from '@/components/dungeon/ShrineRoom';
 import { MerchantRoom } from '@/components/dungeon/MerchantRoom';
@@ -484,10 +485,8 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
           <RunGauge icon={<Heart className="h-4 w-4 text-stat-HP" />} value={dungeon.hp} max={dungeon.maxHp} fill="#2e8a5e" />
           <RunGauge icon={<Sparkles className="h-4 w-4 text-stat-KN" />} value={dungeon.mp} max={dungeon.maxMp} fill="#3b82f6" />
           <RunGauge icon={<Wind className="h-4 w-4 text-stat-EN" />} value={dungeon.sta} max={dungeon.maxSta} fill="#c98a3a" />
-          <div className="flex items-center justify-between border-t border-gold-deep/20 pt-1.5 text-[11px] text-parchment-300">
-            <span>Banked: <RewardInline reward={dungeon.bankedReward} /></span>
-            <span>This floor: <RewardInline reward={dungeon.floorReward} /></span>
-          </div>
+          {/* Banked (safe, cool) vs this floor (exposed, warm) — plan 4.3 / DUN-09. */}
+          <LootLedger run={dungeon} />
           <RelicTray relics={dungeon.relics} />
           <RunBuffs relics={dungeon.relics} />
           {/* The always-available exit (plan 2.4 / DUN-10): retreat needs no flee roll. */}
@@ -549,6 +548,7 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
           choices={dungeon.choices}
           path={dungeon.path}
           depth={dungeon.depth}
+          biomeKey={dungeon.biomeKey}
           merchantDiscount01={townPerks(useGameStore.getState().town).merchantDiscount01}
           onChoose={dungeonChoosePath}
         />
@@ -605,17 +605,6 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
       </div>
     </div>
   );
-}
-
-function RewardInline({ reward }: { reward: Reward }) {
-  if (rewardIsEmpty(reward)) return <span className="text-parchment-300/60">—</span>;
-  const matCount = Object.values(reward.materials ?? {}).reduce((a, b) => a + b, 0);
-  const parts: string[] = [];
-  if (reward.gold) parts.push(`${reward.gold}g`);
-  if (matCount) parts.push(`${matCount} mat`);
-  const drops = (reward.items?.length ?? 0) + (reward.weapons?.length ?? 0) + (reward.gear?.length ?? 0);
-  if (drops) parts.push(`${drops} relic${drops > 1 ? 's' : ''}`);
-  return <span className="text-gold-bright">{parts.join(' · ')}</span>;
 }
 
 function PhasePips({ count, index }: { count: number; index: number }) {

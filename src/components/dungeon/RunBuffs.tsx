@@ -1,12 +1,12 @@
-// Persistent buff/curse readout for the dungeon run HUD. Lists each held relic with its
-// exact stat effect, grouped into Blessings (positive) and Curses (negative). Mirrors
-// RelicTray's compact styling — slots in directly below the relic icons.
-import { getRelic, type RelicEffect } from '@/engine/relics';
+// One aggregated bonus line for the dungeon run HUD (plan 4.4 / DUN-19): the net
+// stat totals across every held relic (curses subtract), plus one short chip per
+// triggered relic so an empty-effect relic never renders as an empty token. The
+// full per-relic breakdown, trigger descriptions, and ×N stacks live in the
+// RelicTray modal.
+import { getRelic, type RelicDef, type RelicEffect, type RelicTrigger } from '@/engine/relics';
 import { getStat, type StatId } from '@/engine/stats';
-import { Sprite } from '@/components/ui/Sprite';
-import { relicCrest } from '@/lib/sprites';
 
-/** Format a relic effect into short signed tokens: "+3 STR", "DEF +4", "+15 HP". */
+/** Format an effect into short signed tokens: "+3 STR", "DEF +4", "+15 HP". */
 function effectTokens(effect: RelicEffect): { label: string; color: string }[] {
   const tokens: { label: string; color: string }[] = [];
 
@@ -30,62 +30,74 @@ function effectTokens(effect: RelicEffect): { label: string; color: string }[] {
   return tokens;
 }
 
+/** Net static effect across all held relics — duplicates and curses included. */
+function aggregateEffect(defs: RelicDef[]): RelicEffect {
+  const statBonuses: Partial<Record<StatId, number>> = {};
+  let defense = 0;
+  let ward = 0;
+  let maxHp = 0;
+  for (const relic of defs) {
+    for (const [stat, n] of Object.entries(relic.effect.statBonuses ?? {})) {
+      statBonuses[stat as StatId] = (statBonuses[stat as StatId] ?? 0) + (n ?? 0);
+    }
+    defense += relic.effect.defense ?? 0;
+    ward += relic.effect.ward ?? 0;
+    maxHp += relic.effect.maxHp ?? 0;
+  }
+  return { statBonuses, defense, ward, maxHp };
+}
+
+/** A short chip per trigger, e.g. "+12% HP after wins" — never an empty token. */
+function triggerChip(trigger: RelicTrigger): string {
+  if (trigger.type === 'onCombatWin') {
+    return `+${Math.round(trigger.healPct * 100)}% HP after wins`;
+  }
+  if (trigger.type === 'lowHp') {
+    const parts: string[] = [];
+    if (trigger.defense) parts.push(`+${trigger.defense} DEF`);
+    for (const [stat, n] of Object.entries(trigger.statBonuses ?? {})) {
+      if (n) parts.push(`+${n} ${getStat(stat as StatId).short}`);
+    }
+    return `${parts.join(' ')} below ${Math.round(trigger.threshold * 100)}% HP`;
+  }
+  const gains = Object.entries(trigger.statBonuses)
+    .filter(([, n]) => n)
+    .map(([stat, n]) => `+${n} ${getStat(stat as StatId).short}`);
+  return `${gains.join(' ')} per shrine`;
+}
+
 export function RunBuffs({ relics }: { relics: string[] }) {
   if (relics.length === 0) return null;
 
-  const defs = relics.map((key) => getRelic(key)).filter(Boolean) as NonNullable<ReturnType<typeof getRelic>>[];
-  const blessings = defs.filter((r) => !r.curse);
-  const curses = defs.filter((r) => r.curse);
-  if (blessings.length === 0 && curses.length === 0) return null;
+  const defs = relics.map((key) => getRelic(key)).filter(Boolean) as RelicDef[];
+  const tokens = effectTokens(aggregateEffect(defs));
+  const chips = defs.filter((r) => r.trigger).map((r) => triggerChip(r.trigger!));
+  const curseCount = defs.filter((r) => r.curse).length;
+  if (tokens.length === 0 && chips.length === 0) return null;
 
   return (
-    <div className="space-y-1.5 border-t border-gold-deep/20 pt-1.5 text-[11px]">
-      {blessings.length > 0 && (
-        <RelicGroup label="Blessings" defs={blessings} />
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-gold-deep/20 pt-1.5 text-[11px]">
+      <span className="font-display text-[10px] uppercase tracking-wider text-parchment-300/80">
+        Run total
+      </span>
+      {tokens.map((t, i) => (
+        <span key={i} className="font-display tabular-nums" style={{ color: t.color }}>
+          {t.label}
+        </span>
+      ))}
+      {chips.map((chip, i) => (
+        <span
+          key={`t-${i}`}
+          className="rounded border border-gold-deep/40 bg-wood-900/60 px-1 py-px text-[10px] text-parchment-300"
+        >
+          {chip}
+        </span>
+      ))}
+      {curseCount > 0 && (
+        <span className="text-[10px] text-ember">
+          incl. {curseCount} curse{curseCount > 1 ? 's' : ''}
+        </span>
       )}
-      {curses.length > 0 && (
-        <RelicGroup label="Curses" defs={curses} />
-      )}
-    </div>
-  );
-}
-
-function RelicGroup({
-  label,
-  defs,
-}: {
-  label: string;
-  defs: NonNullable<ReturnType<typeof getRelic>>[];
-}) {
-  return (
-    <div>
-      <div className="mb-0.5 font-display uppercase tracking-wider text-ink-muted">{label}</div>
-      <div className="space-y-0.5">
-        {defs.map((relic, i) => {
-          const tokens = effectTokens(relic.effect);
-          return (
-            <div key={`${relic.key}:${i}`} className="flex items-center gap-1.5">
-              <Sprite
-                spriteKey={`relic:${relic.key}`}
-                look={relicCrest(relic.name, relic.tier, relic.curse)}
-                size="sm"
-              />
-              <span className="flex-1 text-ink-muted">{relic.name}</span>
-              <span className="flex items-center gap-1">
-                {tokens.map((t, j) => (
-                  <span
-                    key={j}
-                    className="font-display tabular-nums"
-                    style={{ color: t.color }}
-                  >
-                    {t.label}
-                  </span>
-                ))}
-              </span>
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }

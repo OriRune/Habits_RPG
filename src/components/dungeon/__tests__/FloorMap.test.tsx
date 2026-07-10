@@ -77,6 +77,66 @@ describe('current-node marker (plan 2.3)', () => {
   });
 });
 
+describe('keyboard + screen-reader access (plan 4.5)', () => {
+  // Two choosable siblings in one layer.
+  const forkMap = (): FloorMapData => ({
+    nodes: {
+      a: { id: 'a', layer: 0, room: { type: 'combat' }, to: [] },
+      b: { id: 'b', layer: 0, room: { type: 'rest' }, to: [] },
+    },
+    layers: [['a', 'b']],
+  });
+
+  it('arrow keys cycle focus through the choosable rooms, wrapping at the ends', () => {
+    const { container } = render(
+      <FloorMap map={forkMap()} choices={['a', 'b']} path={[]} depth={1} onChoose={() => {}} />,
+    );
+    const [fight, rest] = [...container.querySelectorAll('button:not([disabled])')] as HTMLButtonElement[];
+    fight.focus();
+    fireEvent.keyDown(fight, { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(rest);
+    fireEvent.keyDown(rest, { key: 'ArrowRight' }); // wraps
+    expect(document.activeElement).toBe(fight);
+    fireEvent.keyDown(fight, { key: 'ArrowLeft' }); // wraps backwards
+    expect(document.activeElement).toBe(rest);
+  });
+
+  it('labels every room with its kind and availability', () => {
+    const map = linearMap([{ type: 'combat' }, { type: 'treasure' }, { type: 'rest' }]);
+    const { container } = render(
+      <FloorMap map={map} choices={['n1_0']} path={['n0_0']} depth={1} onChoose={() => {}} />,
+    );
+    expect(container.querySelector('button[aria-label*="already visited"]')?.textContent).toContain('Fight');
+    expect(container.querySelector('button[aria-label*="available choice"]')?.textContent).toContain('Treasure');
+    expect(container.querySelector('button[aria-label*="out of reach"]')?.textContent).toContain('Rest');
+  });
+});
+
+describe('biome map frame (plan 4.2)', () => {
+  const map = () => linearMap([{ type: 'combat' }]);
+
+  it('renders a distinct decorative motif per biome', () => {
+    const motifs: Record<string, string> = { catacombs: 'skull', ruins: 'vine', frozen: 'ice' };
+    for (const [biome, motif] of Object.entries(motifs)) {
+      const { container } = render(
+        <FloorMap map={map()} choices={['n0_0']} path={[]} depth={1} biomeKey={biome} onChoose={() => {}} />,
+      );
+      const frame = container.querySelector(`[data-biome-frame="${biome}"]`)!;
+      expect(frame, biome).toBeTruthy();
+      expect(frame.getAttribute('aria-hidden')).toBe('true');
+      expect(frame.querySelectorAll(`[data-motif="${motif}"]`).length, biome).toBeGreaterThan(0);
+      cleanup();
+    }
+  });
+
+  it('renders no frame without a biome (other callers unchanged)', () => {
+    const { container } = render(
+      <FloorMap map={map()} choices={['n0_0']} path={[]} depth={1} onChoose={() => {}} />,
+    );
+    expect(container.querySelector('[data-biome-frame]')).toBeNull();
+  });
+});
+
 describe('route detail card (plan 2.3)', () => {
   it('appears on focus with rooms remaining, danger, and loot outlook', () => {
     const map = linearMap([{ type: 'combat' }, { type: 'treasure' }, { type: 'combat' }]);

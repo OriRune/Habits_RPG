@@ -5,6 +5,7 @@ import { merchantOffers } from '@/engine/dungeon';
 import type { FloorMap as FloorMapData, DangerClass, RewardClass } from '@/engine/dungeonMap';
 import { routeDanger, routeOutlook, classifyDanger, rewardClassForDanger } from '@/engine/dungeonMap';
 import { Panel } from '@/components/ui/Panel';
+import { BiomeMapFrame } from '@/components/dungeon/BiomeMapFrame';
 import { cn } from '@/lib/cn';
 
 const ROOM_ICON: Record<RoomKind, { Icon: typeof Swords; label: string; color: string }> = {
@@ -46,6 +47,7 @@ export function FloorMap({
   choices,
   path,
   depth,
+  biomeKey,
   merchantDiscount01 = 0,
   onChoose,
 }: {
@@ -54,6 +56,8 @@ export function FloorMap({
   path: string[];
   /** Current floor depth — used to price merchant previews. */
   depth: number;
+  /** Current biome — drives the decorative map frame (plan 4.2). */
+  biomeKey?: string;
   /** Homestead Trading Post discount — must match what the merchant room itself charges. */
   merchantDiscount01?: number;
   onChoose: (nodeId: string) => void;
@@ -83,6 +87,24 @@ export function FloorMap({
   const setNodeRef = (id: string) => (el: HTMLButtonElement | null) => {
     if (el) nodeRefs.current.set(id, el);
     else nodeRefs.current.delete(id);
+  };
+
+  // Keyboard route selection (plan 4.5): arrows cycle the choosable rooms; Enter/Space
+  // activate natively. Wraps at the ends so every choice is one keystroke away.
+  const moveFocus = (fromId: string, dir: 1 | -1) => {
+    const idx = choices.indexOf(fromId);
+    if (idx < 0 || choices.length < 2) return;
+    const next = choices[(idx + dir + choices.length) % choices.length];
+    nodeRefs.current.get(next)?.focus();
+  };
+  const onChoiceKeyDown = (id: string) => (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      moveFocus(id, 1);
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      moveFocus(id, -1);
+    }
   };
 
   // DUN-08: container resizes (orientation change, font swap, panel reflow) re-trigger the
@@ -150,7 +172,10 @@ export function FloorMap({
   }); // intentionally no deps — reruns on every render to stay in sync with layout
 
   return (
-    <Panel tone="parchment" className="space-y-3 p-4">
+    <Panel tone="parchment" className="relative overflow-hidden p-4">
+      {biomeKey && <BiomeMapFrame biomeKey={biomeKey} />}
+      {/* Positioned wrapper so the interactive content paints above the frame layer. */}
+      <div className="relative space-y-3">
       <div className="flex items-center justify-between">
         <div className="font-display text-sm font-bold text-ink">Choose your path</div>
         <div className="font-display text-[11px] text-ink-muted">{layerLabel}</div>
@@ -181,7 +206,7 @@ export function FloorMap({
           </svg>
         )}
         {/* Layer rows */}
-        <div className="space-y-2">
+        <div className="space-y-2" role="group" aria-label={`Floor map — ${layerLabel}`}>
           {map.layers.map((layer, li) => (
             <div key={li} className="flex items-center justify-center gap-2.5">
               {layer.map((id) => {
@@ -212,7 +237,10 @@ export function FloorMap({
                     onMouseLeave={isChoice ? () => setFocusId((cur) => (cur === id ? null : cur)) : undefined}
                     onFocus={isChoice ? () => setFocusId(id) : undefined}
                     onBlur={isChoice ? () => setFocusId((cur) => (cur === id ? null : cur)) : undefined}
-                    aria-label={`${meta.label}${isHere ? ' — you are here' : ''}${
+                    onKeyDown={isChoice ? onChoiceKeyDown(id) : undefined}
+                    aria-label={`${meta.label} room — ${
+                      isChoice ? 'available choice' : isVisited ? 'already visited' : 'out of reach'
+                    }${isHere ? ' — you are here' : ''}${
                       chip ? ` — danger ${rangeLabel(chip.lo, chip.hi, { low: 'low', medium: 'medium', high: 'high' })}` : ''
                     }`}
                     className={cn(
@@ -307,6 +335,7 @@ export function FloorMap({
         Tap a glowing room to enter it — your choice opens the paths it connects to. Riskier
         paths carry richer loot.
       </p>
+      </div>
     </Panel>
   );
 }

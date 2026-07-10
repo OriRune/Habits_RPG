@@ -42,19 +42,25 @@ function RelicDetail({ relic, count = 1 }: { relic: RelicDef; count?: number }) 
   );
 }
 
-/** Compact row of the relics held this run, shown in the dungeon HUD.
- *  Tapping any relic opens a modal listing all held relics with full detail. */
+/** How many relic icons the tray shows before collapsing into "+N" (plan 4.4 / DUN-19). */
+export const RELIC_TRAY_MAX = 8;
+
+/** Compact row of the relics held this run, shown in the dungeon HUD. Caps at
+ *  RELIC_TRAY_MAX icons + a "+N" chip so a long run can't crowd out the HUD.
+ *  Tapping any relic (or the chip) opens a modal listing all relics with full detail. */
 export function RelicTray({ relics }: { relics: string[] }) {
   const [open, setOpen] = useState(false);
   if (relics.length === 0) return null;
 
   const defs = relics.map((k) => getRelic(k)).filter(Boolean) as RelicDef[];
+  const visible = defs.slice(0, RELIC_TRAY_MAX);
+  const overflow = defs.length - visible.length;
 
   return (
     <>
       <div className="flex flex-wrap items-center gap-1.5 border-t border-gold-deep/20 pt-1.5">
         <span className="font-display text-[10px] uppercase tracking-wider text-parchment-300/80">Relics</span>
-        {defs.map((relic, i) => (
+        {visible.map((relic, i) => (
           <button
             key={`${relic.key}:${i}`}
             onClick={() => setOpen(true)}
@@ -64,6 +70,15 @@ export function RelicTray({ relics }: { relics: string[] }) {
             <Sprite spriteKey={`relic:${relic.key}`} look={relicCrest(relic.name, relic.tier, relic.curse)} size="sm" />
           </button>
         ))}
+        {overflow > 0 && (
+          <button
+            onClick={() => setOpen(true)}
+            aria-label={`${overflow} more relic${overflow > 1 ? 's' : ''} — see all`}
+            className="rounded-md border border-gold-deep/40 px-1.5 py-0.5 font-display text-[11px] font-bold text-gold-bright focus-visible:ring-1 focus-visible:ring-gold-deep"
+          >
+            +{overflow}
+          </button>
+        )}
       </div>
 
       {open && (
