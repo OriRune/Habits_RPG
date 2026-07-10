@@ -21,3 +21,6 @@ homm3_spellbook.png
 
 # Playwright MCP session artifacts (snapshots/console logs from browser-driven sessions)
 .playwright-mcp/
+
+# Local browser-playtest screenshots (Playwright MCP output)
+.playwright-shots/

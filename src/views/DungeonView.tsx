@@ -56,7 +56,7 @@ function RunGauge({
       <div className="h-3 flex-1 overflow-hidden rounded-full border border-gold-deep/50 bg-wood-900">
         <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: fill }} />
       </div>
-      <span className="font-display text-xs tabular-nums text-parchment-300">
+      <span className="font-display text-xs tabular-nums text-on-wood-hi">
         {value}/{max}
       </span>
     </div>
@@ -475,7 +475,7 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
           Depth {dungeon.depth} · {biome.name}
           {mutator && <span title={mutator.blurb}> · {mutator.name}</span>}
         </SectionTitle>
-        <span className="shrink-0 font-display text-xs text-parchment-300">
+        <span className="shrink-0 font-display text-xs text-on-wood-mid">
           {dungeon.path.length} room{dungeon.path.length === 1 ? '' : 's'} explored
         </span>
       </div>
@@ -492,7 +492,7 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
           {/* The always-available exit (plan 2.4 / DUN-10): retreat needs no flee roll. */}
           <button
             onClick={() => setConfirmRetreat(true)}
-            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-gold-deep/30 py-1.5 text-[11px] text-parchment-300 transition-colors hover:border-gold-deep/60 hover:text-gold-bright"
+            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-gold-deep/30 py-1.5 text-[11px] text-on-wood-mid transition-colors hover:border-gold-deep/60 hover:text-gold-bright"
           >
             <Flag className="h-3.5 w-3.5" /> Retreat — end the run, keep banked loot +{' '}
             {FLEE_KEEP_PCT}% of this floor's gold

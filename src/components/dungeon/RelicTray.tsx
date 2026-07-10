@@ -59,7 +59,7 @@ export function RelicTray({ relics }: { relics: string[] }) {
   return (
     <>
       <div className="flex flex-wrap items-center gap-1.5 border-t border-gold-deep/20 pt-1.5">
-        <span className="font-display text-[10px] uppercase tracking-wider text-parchment-300/80">Relics</span>
+        <span className="font-display text-[10px] uppercase tracking-wider text-on-wood-mid">Relics</span>
         {visible.map((relic, i) => (
           <button
             key={`${relic.key}:${i}`}

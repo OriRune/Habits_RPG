@@ -34,7 +34,7 @@ export function LootLedger({ run }: { run: Pick<DungeonRun, 'bankedReward' | 'fl
         <div className="flex items-center gap-1 font-display text-[10px] uppercase tracking-wider text-stat-HP">
           <Lock className="h-3 w-3 shrink-0" /> Banked · safe
         </div>
-        <div className={cn('mt-0.5', banked ? 'text-parchment-100' : 'text-parchment-300/60')}>
+        <div className={cn('mt-0.5', banked ? 'text-on-wood' : 'text-on-wood-dim')}>
           {banked ?? 'Nothing banked yet'}
         </div>
       </div>
@@ -42,11 +42,11 @@ export function LootLedger({ run }: { run: Pick<DungeonRun, 'bankedReward' | 'fl
         <div className="flex items-center gap-1 font-display text-[10px] uppercase tracking-wider text-ember-bright">
           <AlertTriangle className="h-3 w-3 shrink-0" /> This floor · exposed
         </div>
-        <div className={cn('mt-0.5', exposed ? 'text-parchment-100' : 'text-parchment-300/60')}>
+        <div className={cn('mt-0.5', exposed ? 'text-on-wood' : 'text-on-wood-dim')}>
           {exposed ?? 'Nothing at risk yet'}
         </div>
         {exposed && (
-          <div className="mt-0.5 text-[10px] leading-snug text-parchment-300/90">
+          <div className="mt-0.5 text-[10px] leading-snug text-on-wood-mid">
             Flee keeps <span className="text-gold-bright">{fledKeep.gold ?? 0}g</span> · a fall
             keeps <span className="text-gold-bright">{fallKeep.gold ?? 0}g</span>
             {drops > 0 && <> · drops are lost either way</>}

@@ -102,7 +102,7 @@ export function BiomeMapFrame({ biomeKey }: { biomeKey: string }) {
       <svg
         viewBox="0 0 96 96"
         className="absolute left-1/2 top-1/2 h-36 w-36 -translate-x-1/2 -translate-y-1/2"
-        style={{ opacity: 0.09 }}
+        style={{ opacity: 0.12 }}
         fill="none"
         stroke="currentColor"
         strokeLinecap="round"

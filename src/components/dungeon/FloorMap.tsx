@@ -22,7 +22,9 @@ const ROOM_ICON: Record<RoomKind, { Icon: typeof Swords; label: string; color: s
 // Danger chips differentiate by icon + text, not color alone (accessibility).
 const DANGER_CHIP: Record<DangerClass, { Icon: typeof Shield; label: string; className: string }> = {
   low: { Icon: Shield, label: 'Low', className: 'border-stat-HP/60 text-stat-HP' },
-  medium: { Icon: Swords, label: 'Med', className: 'border-gold-deep/60 text-gold-deep' },
+  // Med text uses the fixed stat-DX goldenrod, not themable gold-deep — gold-deep
+  // drops below readable contrast when a dark palette inverts the parchment panel.
+  medium: { Icon: Swords, label: 'Med', className: 'border-gold-deep/60 text-stat-DX' },
   high: { Icon: Skull, label: 'High', className: 'border-ember/60 text-ember' },
 };
 
@@ -317,14 +319,16 @@ export function FloorMap({
       {/* Merchant price preview — shown when a merchant is among the current choices */}
       {choices.some((id) => map.nodes[id]?.room.type === 'merchant') && (() => {
         const offers = merchantOffers(depth, merchantDiscount01);
+        // Ink text throughout — it flips with the palette; gold-deep text would go
+        // near-invisible on the dark-mode panel (borders keep the gold identity).
         return (
           <div className="rounded-md border border-gold-deep/40 bg-parchment-100/60 p-2.5 text-[11px]">
-            <div className="mb-1 font-display font-bold text-gold-deep">Merchant wares this floor</div>
+            <div className="mb-1 font-display font-bold text-ink">Merchant wares this floor</div>
             <ul className="space-y-0.5">
               {offers.map((o) => (
                 <li key={o.id} className="flex items-center justify-between gap-2">
                   <span className="text-ink">{o.label}</span>
-                  <span className="shrink-0 font-display font-bold text-gold-deep">{o.cost}g</span>
+                  <span className="shrink-0 font-display font-bold text-ink">{o.cost}g</span>
                 </li>
               ))}
             </ul>

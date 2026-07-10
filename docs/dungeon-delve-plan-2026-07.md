@@ -171,20 +171,25 @@ Goal: art and accessibility catch up to the rules. Independent of Phases 2–3 e
 Priority: curses first (`dull_blade`, `clouded_mind` — `brittle_bones`/`leaden_weight`/`cracked_idol` exist), then triggered/tier-3 (`worldroot_heart`, `dragon_scale`, `soulbound_crown`, `frostbitten_edge`, `desperate_ward`, `shrine_stone`, `bloodied_fang`, `twin_sage`), then tier-1/2 armor/trinkets (`padded_jerkin`, `runed_band`, `bone_ward`, `frost_mantle`, `aegis_charm`, `windrunner_sash`, `gilded_mask`, `shadow_mantle`, `verdant_sigil`). Match the existing PNG style in `src/assets/sprites/relics/`.
 *Landed: all 19 generated via `scripts/relic-sprites/` (SVG art → resvg at 32px native → NN ×4 to 128px, matching the pixel style); registry coverage pinned in `spriteRegistry.test.ts`; art-tracking docs updated to 38/38.*
 
-### [ ] 4.2 Biome-distinct map treatment (M)
+### [x] 4.2 Biome-distinct map treatment (M)
 Per-biome SVG frame/background for `FloorMap` beyond the translucent tint, consistent with the `DungeonSceneArt` language.
+*Landed: `BiomeMapFrame` — corner flourishes, tinted double hairline, watermark motif (bone arches / vines / ice shards), pure aria-hidden decoration; verified in-browser for all three biomes.*
 
-### [ ] 4.3 Banked vs exposed loot visualization (M) — DUN-09
+### [x] 4.3 Banked vs exposed loot visualization (M) — DUN-09
 Distinct containers for banked (safe, cool tones) vs current-floor (exposed, warm/warning tones) loot in the HUD; loss-preview coloring driven by 0.3's helper.
+*Landed: `LootLedger` — cool safe box vs warm exposed box with "Flee keeps Xg · a fall keeps Yg" from `previewRetainedReward`; replaces the inline text row.*
 
-### [ ] 4.4 HUD restructure (M) — DUN-19
+### [x] 4.4 HUD restructure (M) — DUN-19
 Capped compact relic tray (e.g. 8 + "+N") plus one aggregated stat line; full per-relic list, trigger descriptions, and `×N` stacks live in the modal only; triggered relics with empty static `effect` get their trigger text instead of an empty token. Validate on a 640px-height viewport.
+*Landed: `RELIC_TRAY_MAX` = 8 + "+N" chip; `RunBuffs` is one aggregated net-total line with short trigger chips; validated in-browser at 400×640 with 12 relics.*
 
-### [ ] 4.5 Accessibility pass (M)
+### [x] 4.5 Accessibility pass (M)
 Keyboard route selection and activation on `FloorMap`; SR labels including room kind + availability; focus order through modals/summary; contrast in all palettes; reduced-motion re-verification.
+*Landed: `Modal` gains dialog role/aria-modal/labelledby + focus-in/restore + Escape + Tab wrap; `FloorMap` arrow-key route selection + kind/availability SR labels; `animate-fade-in` honors reduced motion (verified via media emulation); dark-palette contrast fixed on the run HUD (on-wood tokens) and map preview cards (ink text). Known remainder: `RewardLine`'s gold-deep coin count is app-wide and dim in dark mode — out of dungeon scope.*
 
-### [ ] 4.6 Regression + live sign-off (M)
+### [x] 4.6 Regression + live sign-off (M)
 Screenshot coverage for entrance, path, each special room, checkpoint, flee, defeat, banked summary. Then execute the audit's live playtest checklist (§ "Live playtest checklist before sign-off") — including the depth-4 transitions at 1⚡/0⚡ that exercise 1.1.
+*Done live via Playwright (2026-07-10): entrance, path maps in all three biomes + route detail card, shrine curse result, encounter, battle (flee odds), checkpoint, retreat confirm, banked/fled/defeated summaries, biome-start selector, floor-11 starter boon, Sunless header at depth 16, all-38-relic modal, 400×640 HUD, dark palette, reduced motion. Energy checklist passed: 0⚡ at depth 3→4 disables both descents (Bank stays enabled), 1⚡ descends and deducts exactly 1. Screenshots in `.playwright-shots/` (gitignored).*
 
 ---
 

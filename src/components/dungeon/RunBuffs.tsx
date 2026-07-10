@@ -77,7 +77,7 @@ export function RunBuffs({ relics }: { relics: string[] }) {
 
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-gold-deep/20 pt-1.5 text-[11px]">
-      <span className="font-display text-[10px] uppercase tracking-wider text-parchment-300/80">
+      <span className="font-display text-[10px] uppercase tracking-wider text-on-wood-mid">
         Run total
       </span>
       {tokens.map((t, i) => (
@@ -88,7 +88,7 @@ export function RunBuffs({ relics }: { relics: string[] }) {
       {chips.map((chip, i) => (
         <span
           key={`t-${i}`}
-          className="rounded border border-gold-deep/40 bg-wood-900/60 px-1 py-px text-[10px] text-parchment-300"
+          className="rounded border border-gold-deep/40 bg-wood-900/60 px-1 py-px text-[10px] text-on-wood-hi"
         >
           {chip}
         </span>
