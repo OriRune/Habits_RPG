@@ -1,5 +1,6 @@
 import { getScene, resolveSceneImage, scenePlaceholderImage } from '@/lib/scenes';
 import { cn } from '@/lib/cn';
+import { DungeonSceneArt, hasDungeonSceneArt } from '@/components/dungeon/DungeonSceneArt';
 
 interface SceneArtProps {
   sceneKey: string;
@@ -23,11 +24,17 @@ export function SceneArt({ sceneKey, caption, size = 'md', className }: SceneArt
   const look = getScene(sceneKey);
   const cap = caption ?? look.caption;
   // Real art when registered, otherwise a generated wide "framed image box" — always an <img>.
-  const src = resolveSceneImage(sceneKey) ?? scenePlaceholderImage(look, cap, sceneKey);
+  const registeredImage = resolveSceneImage(sceneKey);
+  const useDungeonVector = hasDungeonSceneArt(sceneKey) && !registeredImage;
+  const src = registeredImage ?? (useDungeonVector ? null : scenePlaceholderImage(look, cap, sceneKey));
 
   return (
     <div className={cn('relative overflow-hidden rounded-md border-2 border-gold-deep/60', HEIGHTS[size], className)}>
-      <img src={src} alt={cap} className="h-full w-full object-cover" />
+      {useDungeonVector ? (
+        <DungeonSceneArt sceneKey={sceneKey} label={cap} />
+      ) : (
+        <img src={src!} alt={cap} className="h-full w-full object-cover" />
+      )}
       {/* Biome tint overlay — reads --biome-tint from ancestor; transparent when unset */}
       <div
         className="pointer-events-none absolute inset-0"

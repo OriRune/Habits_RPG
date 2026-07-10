@@ -176,6 +176,36 @@ body {
   100% { opacity: 0; transform: translateX(-50%) translateY(-30px) scale(0.95); }
 }
 
+/* Dungeon scene banners: ambient SVG motion only, never gameplay-critical. */
+@keyframes dungeon-scene-glow {
+  0%, 100% { opacity: 0.72; }
+  50% { opacity: 1; }
+}
+
+@keyframes dungeon-scene-dust {
+  0%, 100% { transform: translateY(5px); opacity: 0.18; }
+  50% { transform: translateY(-5px); opacity: 0.42; }
+}
+
+@keyframes dungeon-scene-flame {
+  0%, 100% { transform: translateY(1px) scale(0.97, 1); }
+  50% { transform: translateY(-2px) scale(1.03, 1.05); }
+}
+
+.dungeon-scene-glow { animation: dungeon-scene-glow 3.4s ease-in-out infinite; }
+.dungeon-scene-dust { animation: dungeon-scene-dust 7s ease-in-out infinite; }
+.dungeon-scene-flame {
+  animation: dungeon-scene-flame 1.8s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center bottom;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dungeon-scene-glow,
+  .dungeon-scene-dust,
+  .dungeon-scene-flame { animation: none; }
+}
+
 /* Forest: pollen/dust motes gently drifting upward. */
 @keyframes forest-mote-float {
   0%   { opacity: 0;    transform: translate(0, 0) scale(1); }
