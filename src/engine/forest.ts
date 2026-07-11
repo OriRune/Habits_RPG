@@ -394,6 +394,41 @@ export function canAdvance(state: ForestState): boolean {
   return tileAt(state, state.player.r, state.player.c)?.kind === 'treeline';
 }
 
+/**
+ * Whether a tap on cell (r, c) should act rather than walk: a beast to attack
+ * or a breakable tile (tree/node) to harvest — exactly what `act` resolves.
+ */
+export function tapStrikeableAt(state: ForestState, r: number, c: number): boolean {
+  if (beastAt(state, r, c)) return true;
+  const kind = tileAt(state, r, c)?.kind;
+  return kind === 'tree' || kind === 'node';
+}
+
+/** Turn in place without stepping — tap-to-shoot aims down a line the player may not be facing. */
+export function faceDir(state: ForestState, dir: Dir): ForestState {
+  if (state.status !== 'active' || state.player.facing === dir) return state;
+  return { ...state, player: { ...state.player, facing: dir } };
+}
+
+/**
+ * Direction to face for a tap on (r, c) beyond adjacency: non-null when a
+ * ranged shot fired that way would hit a beast at or before the tapped cell.
+ * Delegates the line walk to `rangedScan` so tap and keyboard can never drift.
+ */
+export function rangedTapDir(state: ForestState, r: number, c: number): Dir | null {
+  if (!state.weapon.ranged || !state.weapon.range) return null;
+  const dr = r - state.player.r;
+  const dc = c - state.player.c;
+  if ((dr !== 0) === (dc !== 0)) return null; // exactly one axis: excludes own tile + diagonals
+  const dist = Math.abs(dr) + Math.abs(dc);
+  if (dist > state.weapon.range) return null;
+  const dir: Dir = dr > 0 ? 'down' : dr < 0 ? 'up' : dc > 0 ? 'right' : 'left';
+  const { target } = rangedScan(faceDir(state, dir));
+  if (!target) return null;
+  const hitDist = Math.abs(target.r - state.player.r) + Math.abs(target.c - state.player.c);
+  return hitDist <= dist ? dir : null;
+}
+
 /** Current sight radius — wider in clearings, expanded by the Lantern boon and the Watchtower town perk. */
 export function sightRadiusFor(state: ForestState): number {
   const base = tileAt(state, state.player.r, state.player.c)?.kind === 'clearing'

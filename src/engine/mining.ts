@@ -450,6 +450,17 @@ export function canDescend(state: MineState): boolean {
   return tileAt(state, state.player.r, state.player.c)?.kind === 'shaft';
 }
 
+/**
+ * Whether a tap on cell (r, c) should strike rather than walk: a monster to
+ * attack or a breakable tile to mine — exactly the kinds `strike` resolves.
+ * Bedrock is excluded: facing it is harmless, swinging at it wastes stamina.
+ */
+export function tapStrikeableAt(state: MineState, r: number, c: number): boolean {
+  if (monsterAt(state, r, c)) return true;
+  const kind = tileAt(state, r, c)?.kind;
+  return kind === 'rock' || kind === 'ore' || kind === 'vault' || kind === 'rich_vein';
+}
+
 /** Current sight radius — base plus the Lantern boon and the Watchtower town perk. Mirrors forest.sightRadiusFor. */
 export function sightRadiusFor(state: MineState): number {
   return MINE_SIGHT_RADIUS + boonSightBonus(state.activeBoons) + (state.sightBonus ?? 0);

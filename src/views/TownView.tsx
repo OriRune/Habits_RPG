@@ -184,7 +184,7 @@ export function TownView() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-4 px-4 py-5">
+    <div className="mx-auto max-w-3xl space-y-4 px-4 py-5 lg:max-w-5xl xl:max-w-6xl">
       <div className="flex items-center gap-3">
         <span className="flex h-12 w-12 items-center justify-center rounded-md texture-wood border border-gold-deep/60 text-gold-bright">
           <Home className="h-6 w-6" />
@@ -261,7 +261,7 @@ export function TownView() {
 
       {/* Placement action bar */}
       {placement && (
-        <div className="fixed inset-x-0 bottom-0 z-40 mx-auto max-w-3xl">
+        <div className="fixed inset-x-0 bottom-0 z-40 mx-auto max-w-3xl lg:max-w-5xl xl:max-w-6xl">
           <div className="texture-parchment flex items-center gap-2 border-t-2 border-gold-deep/60 px-3 py-2 shadow-gold">
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-semibold text-ink">Place {placingName}</div>

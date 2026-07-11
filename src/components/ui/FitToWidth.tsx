@@ -1,12 +1,16 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 
 /**
- * Scales a fixed-size block of content down uniformly so it always fits the
- * available horizontal space, never scaling *up* beyond 1:1.
+ * Scales a fixed-size block of content uniformly so it always fits the
+ * available horizontal space. By default it never scales *up* beyond 1:1;
+ * pass `maxScale` to let wide desktop viewports magnify the content (the
+ * crawl boards use 1.5 — pixel art stays crisp under `image-rendering:
+ * pixelated`, and positional pointer handlers must divide by the measured
+ * scale rather than assume 1:1, see components/minigame/boardTap.ts).
  *
  * Works via CSS `transform: scale` so the content's internal coordinate system
- * (absolute positions, pixel sizes, pointer-event-free interactions) is
- * unchanged — only the visual presentation shrinks on narrow screens.
+ * (absolute positions, pixel sizes) is unchanged — only the visual
+ * presentation scales.
  *
  * Usage:
  *   <FitToWidth contentWidth={572} contentHeight={572}>
@@ -16,10 +20,13 @@ import { useLayoutEffect, useRef, useState } from 'react';
 export function FitToWidth({
   contentWidth,
   contentHeight,
+  maxScale = 1,
   children,
 }: {
   contentWidth: number;
   contentHeight: number;
+  /** Upper scale bound. Default 1 = shrink-only (the original behavior). */
+  maxScale?: number;
   children: React.ReactNode;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -31,22 +38,23 @@ export function FitToWidth({
 
     const measure = () => {
       const avail = el.clientWidth;
-      if (avail > 0) setScale(Math.min(1, avail / contentWidth));
+      if (avail > 0) setScale(Math.min(maxScale, avail / contentWidth));
     };
 
     measure(); // synchronous on mount — avoids first-render flash
+    if (typeof ResizeObserver === 'undefined') return; // jsdom
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [contentWidth]);
+  }, [contentWidth, maxScale]);
 
   return (
     <div
       ref={wrapRef}
       style={{
-        // Fill available width up to the natural content width.
+        // Fill available width up to the scaled content width.
         width: '100%',
-        maxWidth: contentWidth,
+        maxWidth: contentWidth * maxScale,
         // Collapse to the scaled height so surrounding flow isn't pushed out.
         height: contentHeight * scale,
         overflow: 'hidden',
@@ -58,7 +66,7 @@ export function FitToWidth({
         style={{
           width: contentWidth,
           height: contentHeight,
-          transform: scale < 1 ? `scale(${scale})` : undefined,
+          transform: scale !== 1 ? `scale(${scale})` : undefined,
           transformOrigin: 'top left',
         }}
       >

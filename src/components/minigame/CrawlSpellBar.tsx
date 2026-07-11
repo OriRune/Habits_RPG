@@ -7,7 +7,8 @@
 //     with an extra opacity-60 on disabled).
 //   - tooltip: mine "name — description"; forest "name (n MP) — key [i]".
 //   - layout: mine 2-line (name / [i] mp); forest 3-line ([i] / name / mp).
-//   - maxWidthClass: mine max-w-lg vs forest max-w-[600px] (a file-wide HUD constant).
+//   - maxWidth: a CSS length — both overlays pass their computed HUD-column cap so
+//     the bar tracks the board's rendered width (sizing plan Phase 1).
 
 import { getSpell, type SpellDef } from '@/engine/spells';
 import { cn } from '@/lib/cn';
@@ -42,7 +43,7 @@ export function CrawlSpellBar({
   hideWhenInactive,
   tooltip,
   layout,
-  maxWidthClass,
+  maxWidth,
 }: {
   knownSpells: string[];
   mp: number;
@@ -52,13 +53,13 @@ export function CrawlSpellBar({
   hideWhenInactive: boolean;
   tooltip: (spell: SpellDef, i: number) => string;
   layout: 'two-line' | 'three-line';
-  maxWidthClass: string;
+  maxWidth: string;
 }) {
   if (knownSpells.length === 0) return null;
   if (hideWhenInactive && status !== 'active') return null;
   const a = ACCENT[accent];
   return (
-    <div className={cn('flex w-full items-center gap-2', maxWidthClass)}>
+    <div className="flex w-full items-center gap-2" style={{ maxWidth }}>
       <span className="font-display text-[10px] uppercase tracking-wider text-parchment-300/60">Spells</span>
       {knownSpells.slice(0, 4).map((key, i) => {
         const spell = getSpell(key);

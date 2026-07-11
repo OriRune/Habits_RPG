@@ -6,6 +6,7 @@ import {
   tryMove as forestTryMove,
   tryDash as forestTryDash,
   act as forestActFn,
+  faceDir,
   castSpell as forestCastSpellFn,
   stepBeasts,
   advance as forestAdvanceFn,
@@ -38,6 +39,8 @@ export interface ForestSlice {
   /** `startStage` (co-op) pins the run to a shared stage; omitted = solo deeper-start (BAL-25). */
   beginForest: (seed?: number, startStage?: number) => void;
   forestMove: (dir: Dir) => void;
+  /** Turn in place without stepping — tap-to-shoot aiming (engine `faceDir`). */
+  forestFace: (dir: Dir) => void;
   /** `nowMs` is the caller's rAF-clock timestamp — same timebase as forestTick. */
   forestAct: (nowMs: number) => void;
   /** `nowMs` is the caller's rAF-clock timestamp — same timebase as forestTick. */
@@ -159,6 +162,13 @@ export const createForestSlice: StateCreator<
           };
         }
       }
+      return forest !== s.forest ? { forest } : s;
+    }),
+
+  forestFace: (dir) =>
+    set((s) => {
+      if (!s.forest || s.forest.status !== 'active') return s;
+      const forest = faceDir(s.forest, dir);
       return forest !== s.forest ? { forest } : s;
     }),
 

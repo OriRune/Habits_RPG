@@ -51,7 +51,7 @@ export function ForestControls({ controls }: { controls: ForestControlsApi }) {
           <button
             onPointerDown={(e) => {
               e.preventDefault();
-              controls.act();
+              controls.swing();
             }}
             onPointerUp={() => controls.releaseCharge()}
             onPointerLeave={() => controls.releaseCharge()}

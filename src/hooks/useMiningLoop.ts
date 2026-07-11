@@ -2,7 +2,7 @@
 // actual "when do we move/strike/dash/tick" logic lives in useCrawlLoop.ts; this file
 // just wires the mine's store actions and run-state accessors into a CrawlLoopCaps.
 import { useGameStore } from '@/store/useGameStore';
-import { canDescend, facedCell, facedMonsterId, type Dir, type MineState } from '@/engine/mining';
+import { canDescend, facedCell, facedMonsterId, tapStrikeableAt, type Dir, type MineState } from '@/engine/mining';
 import { useCoopStore } from '@/net/coop/session';
 import { useAuthStore } from '@/net/auth';
 import { useCrawlLoop, type CrawlLoopCaps, type CrawlLoopControls } from './useCrawlLoop';
@@ -34,6 +34,7 @@ const mineCaps: CrawlLoopCaps<MineState> = {
   canDescend,
   facedCell,
   facedTargetId: facedMonsterId,
+  tapStrikeable: tapStrikeableAt,
 
   move: (dir: Dir) => useGameStore.getState().mineMove(dir),
   strike: () => useGameStore.getState().mineStrike(),

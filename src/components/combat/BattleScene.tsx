@@ -512,7 +512,7 @@ export function BattleScene({
   }
 
   const content = (
-    <div className={cn('flex w-full flex-col gap-3', fullscreen ? 'mx-auto h-full max-w-2xl px-4 py-4' : '')}>
+    <div className={cn('flex w-full flex-col gap-3', fullscreen ? 'mx-auto h-full max-w-2xl px-4 py-4 lg:max-w-3xl' : '')}>
 
       {/* ── Battlefield — side-by-side layout ───────────────────────────────
           Player sprite + info card on the left; foe sprite (xl) + info card on the right.

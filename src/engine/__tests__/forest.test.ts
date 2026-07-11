@@ -18,6 +18,9 @@ import {
   canAdvance,
   unlockedStartStage,
   isForestSafeBankTile,
+  tapStrikeableAt,
+  faceDir,
+  rangedTapDir,
   type ForestState,
   type ForestTile,
   type ForestSnapshot,
@@ -912,5 +915,65 @@ describe('beast spawn safety (CRAWL_SPAWN_SAFE_RADIUS)', () => {
         expect(manhattan({ r: b.r, c: b.c }, forest.player)).toBeGreaterThan(CRAWL_SPAWN_SAFE_RADIUS);
       }
     }
+  });
+});
+
+describe('tapStrikeableAt (tap-to-act)', () => {
+  it('is true for beasts, trees, and nodes; false for open ground and thicket', () => {
+    const s = makeForest({
+      beasts: [{ id: 'a', key: 'wild_boar', r: 2, c: 2, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false }],
+    });
+    s.tiles[3][4] = { kind: 'tree', durability: 2, maxDurability: 2 };
+    s.tiles[4][3] = { kind: 'node', nodeKey: 'berry_bush' };
+    expect(tapStrikeableAt(s, 2, 2)).toBe(true); // beast
+    expect(tapStrikeableAt(s, 3, 4)).toBe(true); // tree
+    expect(tapStrikeableAt(s, 4, 3)).toBe(true); // node
+    expect(tapStrikeableAt(s, 4, 4)).toBe(false); // trail
+    expect(tapStrikeableAt(s, 0, 0)).toBe(false); // thicket border
+    expect(tapStrikeableAt(s, -1, 9)).toBe(false); // out of bounds
+  });
+});
+
+describe('faceDir + rangedTapDir (tap-to-shoot)', () => {
+  const BOW = getWeapon('short_bow'); // ranged, range 3
+  const boar = (id: string, r: number, c: number) =>
+    ({ id, key: 'wild_boar', r, c, hp: 10, maxHp: 10, readyAtMs: 0, asleep: false });
+
+  it('faceDir turns in place without stepping', () => {
+    const s = faceDir(makeForest(), 'up');
+    expect(s.player).toMatchObject({ r: 3, c: 3, facing: 'up' });
+  });
+
+  it('faceDir is identity when already facing that way or the run is over', () => {
+    const s = makeForest();
+    expect(faceDir(s, 'right')).toBe(s);
+    const ended = makeForest({ status: 'ended' });
+    expect(faceDir(ended, 'up')).toBe(ended);
+  });
+
+  it('resolves a beast on an orthogonal line within range', () => {
+    const s = makeForest({ weapon: BOW, beasts: [boar('a', 3, 5)] });
+    expect(rangedTapDir(s, 3, 5)).toBe('right');
+    expect(rangedTapDir(s, 1, 3)).toBe(null); // empty line up: no target, no shot
+  });
+
+  it('rejects diagonals, the own tile, out-of-range taps, and blocked lines', () => {
+    const diag = makeForest({ weapon: BOW, beasts: [boar('a', 5, 5)] });
+    expect(rangedTapDir(diag, 5, 5)).toBe(null);
+    expect(rangedTapDir(diag, 3, 3)).toBe(null); // own tile
+    const blocked = makeForest({ weapon: BOW, beasts: [boar('a', 3, 6)] });
+    expect(rangedTapDir(blocked, 3, 6)).toBe(null); // thicket border blocks the arrow
+    const short = makeForest({ weapon: { ...BOW, range: 1 }, beasts: [boar('a', 3, 5)] });
+    expect(rangedTapDir(short, 3, 5)).toBe(null); // beyond range
+  });
+
+  it('never resolves for a melee weapon', () => {
+    const s = makeForest({ beasts: [boar('a', 3, 5)] }); // starter melee blade
+    expect(rangedTapDir(s, 3, 5)).toBe(null);
+  });
+
+  it('a tap behind a nearer beast still fires (arrow hits the first beast on the line)', () => {
+    const s = makeForest({ weapon: BOW, beasts: [boar('a', 3, 4), boar('b', 3, 5)] });
+    expect(rangedTapDir(s, 3, 5)).toBe('right');
   });
 });

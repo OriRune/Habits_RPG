@@ -13,16 +13,24 @@ import { cn } from '@/lib/cn';
 import * as sfx from '@/lib/sfx';
 import { ArenaControls } from './ArenaControls';
 
-/** Cell size (px) shrinks as the board grows so every size fits the same width. */
-function sizeFor(radius: number): number {
+/** Baseline cell size (px) — shrinks as the board grows so every size fits a small screen.
+ *  Used as the pre-measure fallback and as the floor for the viewport-fitted size. */
+export function sizeFor(radius: number): number {
   return radius >= 5 ? 26 : radius >= 4 ? 30 : 34;
 }
-function boardFor(radius: number) {
-  return boardPixelSize(radius, sizeFor(radius));
+/** Largest cell size whose board fits availW×availH: probe the pixel geometry at a reference
+ *  size (boardPixelSize is linear in size) and scale. Clamped to [sizeFor(radius), 64] — never
+ *  below the proven-fits-mobile baseline, and capped so huge monitors don't get comical emoji. */
+export function fitSizeArena(radius: number, availW: number, availH: number): number {
+  const probe = boardPixelSize(radius, 100);
+  const s = 100 * Math.min(availW / probe.width, availH / probe.height);
+  return Math.max(sizeFor(radius), Math.min(64, Math.floor(s)));
 }
-function centerFor(h: Cell, radius: number): { x: number; y: number } {
-  const size = sizeFor(radius);
-  const b = boardFor(radius);
+export function boardFor(radius: number, size: number) {
+  return boardPixelSize(radius, size);
+}
+export function centerFor(h: Cell, radius: number, size: number): { x: number; y: number } {
+  const b = boardFor(radius, size);
   const p = cellToPixel(h, size);
   return { x: b.width / 2 + p.x, y: b.height / 2 + p.y };
 }
@@ -44,13 +52,13 @@ function floorTint(h: Cell): string {
 }
 
 /** Compute the nearest of 8 grid directions from pixel deltas (dx right=positive, dy down=positive). */
-function pixelDir(dx: number, dy: number): Dir {
+export function pixelDir(dx: number, dy: number): Dir {
   const angle = ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 360;
   const idx = Math.round(angle / 45) % 8;
   return (['right', 'downRight', 'down', 'downLeft', 'left', 'upLeft', 'up', 'upRight'] as Dir[])[idx];
 }
 /** Convert a click position (board-local coords) to the nearest board cell. */
-function pixelToCell(clickX: number, clickY: number, bw: number, bh: number, size: number): Cell {
+export function pixelToCell(clickX: number, clickY: number, bw: number, bh: number, size: number): Cell {
   return { x: Math.round((clickX - bw / 2) / size), y: Math.round((clickY - bh / 2) / size) };
 }
 
@@ -125,6 +133,29 @@ export function ArenaOverlay() {
   const prev = useRef<{ bossHp: number; hp: number; mp: number; dodgedAt: number; status: ArenaState['status']; phaseIndex: number } | null>(null);
   const prevMinionPos = useRef<Map<number, Cell>>(new Map());
 
+  // Viewport-fit: measure the board area and size hexes to fill it (like TacticsOverlay).
+  const boardWrapRef = useRef<HTMLDivElement>(null);
+  const [vp, setVp] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = boardWrapRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0].contentRect;
+      setVp({ w: r.width, h: r.height });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const R = arena?.radius ?? 4;
+  const SIZE = vp.w > 0 && vp.h > 0 ? fitSizeArena(R, vp.w - 16, vp.h - 16) : sizeFor(R);
+  // The damage-floater effect must read the live size without re-running on resize (its dep
+  // array stays [arena] so damage diffing isn't redone), so it reads through this ref.
+  const sizeRef = useRef(SIZE);
+  sizeRef.current = SIZE;
+  // Floats store pixel coords captured at spawn — stale once the fitted size changes.
+  useEffect(() => { setFloats([]); }, [SIZE]);
+
   // Sync mute state with the master sfx module whenever the setting changes.
   useEffect(() => { sfx.setMuted(!soundEnabled); }, [soundEnabled]);
 
@@ -136,6 +167,7 @@ export function ArenaOverlay() {
     }
     const p = prev.current;
     const R = arena.radius;
+    const size = sizeRef.current;
     const now = Date.now();
     const next: Float[] = [];
 
@@ -147,7 +179,7 @@ export function ArenaOverlay() {
         if (!currIds.has(id)) {
           const pos = prevMinionPos.current.get(id);
           if (pos) {
-            const c = centerFor(pos, R);
+            const c = centerFor(pos, R, size);
             next.push({ key: `mn-${id}-${now}`, x: c.x, y: c.y - 8, text: '💨', color: 'rgba(190,220,255,0.85)', at: now });
             sfx.play('hit');
           }
@@ -163,24 +195,24 @@ export function ArenaOverlay() {
     // Boss damage floater + hit SFX
     const bossDmg = p.bossHp - arena.bossHp;
     if (bossDmg > 0) {
-      const c = centerFor(arena.bossPos, R);
+      const c = centerFor(arena.bossPos, R, size);
       next.push({ key: `b-${now}-${Math.random()}`, x: c.x, y: c.y - 16, text: `-${Math.round(bossDmg)}`, color: '#fbbf24', at: now });
       sfx.play('hit');
     }
     // Player damage/heal floater + SFX
     const playerDmg = p.hp - arena.hp;
     if (playerDmg > 0) {
-      const c = centerFor(arena.player.pos, R);
+      const c = centerFor(arena.player.pos, R, size);
       next.push({ key: `p-${now}-${Math.random()}`, x: c.x, y: c.y - 16, text: `-${Math.round(playerDmg)}`, color: '#f87171', at: now });
       setHitAt(now);
       sfx.play('playerHurt');
     } else if (playerDmg < 0) {
-      const c = centerFor(arena.player.pos, R);
+      const c = centerFor(arena.player.pos, R, size);
       next.push({ key: `h-${now}-${Math.random()}`, x: c.x, y: c.y - 16, text: `+${Math.round(-playerDmg)}`, color: '#34d399', at: now });
     }
     // Dodge floater + SFX — lastDodgedAtMs set by strikePlayer on successful evade.
     if (arena.lastDodgedAtMs !== p.dodgedAt && arena.lastDodgedAtMs > 0) {
-      const c = centerFor(arena.player.pos, R);
+      const c = centerFor(arena.player.pos, R, size);
       next.push({ key: `dg-${now}-${Math.random()}`, x: c.x, y: c.y - 24, text: 'Dodge!', color: '#67e8f9', at: now });
       sfx.play('arenaDodge');
     }
@@ -202,11 +234,9 @@ export function ArenaOverlay() {
 
   if (!arena) return null;
 
-  const R = arena.radius;
-  const SIZE = sizeFor(R);
   const CELL = SIZE;
-  const BOARD = boardFor(R);
-  const center = (h: Cell) => centerFor(h, R);
+  const BOARD = boardFor(R, SIZE);
+  const center = (h: Cell) => centerFor(h, R, SIZE);
   const cellBox = (h: Cell): React.CSSProperties => {
     const c = center(h);
     const s = SIZE - 2;
@@ -271,7 +301,7 @@ export function ArenaOverlay() {
     const rect = boardRef.current.getBoundingClientRect();
     const clickX = clientX - rect.left;
     const clickY = clientY - rect.top;
-    const pc = centerFor(arena.player.pos, R);
+    const pc = centerFor(arena.player.pos, R, SIZE);
     const ddx = clickX - pc.x;
     const ddy = clickY - pc.y;
     if (Math.abs(ddx) < SIZE * 0.4 && Math.abs(ddy) < SIZE * 0.4) return;
@@ -348,6 +378,10 @@ export function ArenaOverlay() {
         <Gauge icon={<Zap className="h-3.5 w-3.5 text-stat-AG" />} value={arena.sta} max={arena.maxSta} fill="#b8860b" />
       </div>
 
+      {/* Board area — measured by the ResizeObserver so the board fills whatever is left
+          between the gauges and the ability bar. The board itself never shrinks (shrink-0);
+          it just gets a bigger cell size when there's room. */}
+      <div ref={boardWrapRef} className="flex min-h-0 w-full flex-1 items-center justify-center">
       {/* Arena board */}
       <div
         ref={boardRef}
@@ -448,7 +482,7 @@ export function ArenaOverlay() {
               {t.tiles[0] && (
                 <div
                   className="pointer-events-none absolute z-[7] flex items-center justify-center"
-                  style={{ ...cellBox(t.tiles[0]), color: '#fff', fontSize: 8, fontWeight: 700, fontFamily: 'monospace', letterSpacing: '0.02em', textShadow: '0 1px 2px rgba(0,0,0,0.9)' }}
+                  style={{ ...cellBox(t.tiles[0]), color: '#fff', fontSize: Math.max(8, Math.round(SIZE * 0.26)), fontWeight: 700, fontFamily: 'monospace', letterSpacing: '0.02em', textShadow: '0 1px 2px rgba(0,0,0,0.9)' }}
                 >
                   {TELEGRAPH_LABEL[t.kind]}
                 </div>
@@ -459,7 +493,7 @@ export function ArenaOverlay() {
 
         {/* Player ranged bolts */}
         {arena.projectiles.map((p) => (
-          <div key={`pj-${p.id}`} className="pointer-events-none" style={spriteBox(p.pos, 14)}>
+          <div key={`pj-${p.id}`} className="pointer-events-none" style={spriteBox(p.pos, Math.round(SIZE * 0.45))}>
             <span className="block h-full w-full rounded-full bg-cyan-300" style={{ boxShadow: '0 0 8px 2px rgba(103,232,249,0.8)' }} />
           </div>
         ))}
@@ -488,8 +522,8 @@ export function ArenaOverlay() {
               </div>
               {m.hp < m.maxHp && (
                 <div
-                  className="pointer-events-none absolute z-[9] h-[3px] w-7 -translate-x-1/2 overflow-hidden rounded-full bg-black/60"
-                  style={{ left: c.x, top: c.y - SIZE * 0.7 }}
+                  className="pointer-events-none absolute z-[9] h-[3px] -translate-x-1/2 overflow-hidden rounded-full bg-black/60"
+                  style={{ left: c.x, top: c.y - SIZE * 0.7, width: Math.round(CELL * 0.85) }}
                 >
                   <div className="h-full rounded-full bg-red-400" style={{ width: `${(m.hp / m.maxHp) * 100}%` }} />
                 </div>
@@ -575,6 +609,7 @@ export function ArenaOverlay() {
             </Button>
           </div>
         )}
+      </div>
       </div>
 
       {/* Ability bar — left-click fires + binds to left slot; right-click binds to right slot */}

@@ -1,28 +1,27 @@
-// The forest's real-time clock. It holds no game state — it just decides *when* to fire the
-// store's discrete forest actions (move / act / spell / beast tick) based on a requestAnimationFrame
-// clock and which keys/buttons are held. All rules live in the pure engine (src/engine/forest.ts).
-import { useEffect, useRef } from 'react';
+// Thin Wild Forest instantiation of the shared real-time crawler loop — the former
+// standalone forest loop is merged into useCrawlLoop.ts (the "when" logic lives there;
+// this file only wires the forest's store actions and run-state accessors into a
+// CrawlLoopCaps). Forest-specific seams: advance-instead-of-descend, shrine own-tile
+// handling, ranged guest intents (rangedBeastId), and ranged tap aiming.
+//
+// Deliberate behavior alignment from the merge: advancing at the treeline now yields
+// to an adjacent faced beast (mine's descend-priority rule) — previously Space would
+// advance mid-fight; now it attacks, matching the mine.
 import { useGameStore } from '@/store/useGameStore';
-import { canAdvance, isOnShrine, facedCell, facedBeastId, rangedBeastId, type Dir, type ForestState } from '@/engine/forest';
-import { CHARGE_SWING_COUNT, DASH_BASE_CD_MS, CHARGE_DAMAGE_MULT } from '@/engine/crawl';
-import { boonChargeReduce } from '@/engine/crawl';
+import {
+  canAdvance,
+  facedCell,
+  facedBeastId,
+  rangedBeastId,
+  isOnShrine,
+  tapStrikeableAt,
+  rangedTapDir,
+  type Dir,
+  type ForestState,
+} from '@/engine/forest';
 import { useCoopStore } from '@/net/coop/session';
 import { useAuthStore } from '@/net/auth';
-
-const KEY_DIRS: Record<string, Dir> = {
-  ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
-  w: 'up', s: 'down', a: 'left', d: 'right',
-};
-
-/**
- * The beast a co-op guest's attack intent should target: the adjacent faced
- * beast, or — with a ranged weapon — the first beast down the faced line.
- * A guest must never resolve a kill locally (the host owns the world; a local
- * kill diverges permanently since the world merge is host-authoritative), so
- * every beast this can see is routed through the AttackIntent path.
- */
-const guestTargetBeastId = (run: ForestState): string | null =>
-  facedBeastId(run) ?? rangedBeastId(run);
+import { useCrawlLoop, type CrawlLoopCaps, type CrawlLoopControls } from './useCrawlLoop';
 
 /** Fallback move cadence when run state has no moveIntervalMs (old saves). */
 const MOVE_INTERVAL_MS = 150;
@@ -31,276 +30,60 @@ const ACT_INTERVAL_MS = 240;
 /** How often we advance the beast clock (ms). */
 const BEAST_TICK_MS = 120;
 
-export interface ForestControlsApi {
-  /** Begin holding a direction (on-screen D-pad press). */
-  press: (dir: Dir) => void;
-  /** Release a held direction. */
-  release: (dir: Dir) => void;
-  /** Queue a single act (slash / gather). */
-  act: () => void;
-  /** Release a held charge (touch pointer-up/leave/cancel) — mirrors the keyboard keyup reset so
-   *  touch players can deliberately charge instead of firing one phantom heavy swing (MINI-18). */
-  releaseCharge: () => void;
-  /** Queue a dash. Fires in the currently-held direction, or facing if nothing is held. */
-  dash: () => void;
-  /** Cast a spell by key (from ability bar buttons). */
-  castSpell: (key: string) => void;
-  /** Charge progress 0–1; updated every rAF frame. Read imperatively in the overlay. */
-  chargeProgressRef: { readonly current: number };
-}
+export type ForestControlsApi = CrawlLoopControls;
+
+const forestCaps: CrawlLoopCaps<ForestState> = {
+  getRun: () => useGameStore.getState().forest,
+  isActive: (run) => run.status === 'active',
+  player: (run) => run.player,
+  knownSpells: (run) => run.knownSpells,
+  activeBoons: (run) => run.activeBoons ?? [],
+  dashCooldownMs: (run) => run.dashCooldownMs,
+  lastDashMs: (run) => run.lastDashMs,
+  moveIntervalMs: (run) => run.moveIntervalMs,
+  weaponAttackStat: (run) => run.weapon.attackStat,
+  meleePower: (run) => run.meleePower,
+  rangedPower: (run) => run.rangedPower,
+  floor: (run) => run.stage,
+  tileAt: (run, r, c) => run.tiles[r]?.[c],
+
+  canDescend: canAdvance,
+  facedCell,
+  facedTargetId: facedBeastId,
+  // A guest's attack intent can also hit the first beast down the faced ranged line —
+  // a guest must never resolve a kill locally (the host owns the world; a local kill
+  // diverges permanently since the world merge is host-authoritative).
+  intentTargetId: (run) => facedBeastId(run) ?? rangedBeastId(run),
+  tapStrikeable: tapStrikeableAt,
+  rangedTapDir,
+  face: (dir: Dir) => useGameStore.getState().forestFace(dir),
+  // Shrines are consumed from the tile underfoot; the den beast is gated to host/solo.
+  ownTile: {
+    isOn: isOnShrine,
+    act: (nowMs, isGuest) => useGameStore.getState().forestShrine(nowMs, !isGuest),
+  },
+
+  move: (dir: Dir) => useGameStore.getState().forestMove(dir),
+  strike: (nowMs) => useGameStore.getState().forestAct(nowMs),
+  strikeCharged: (nowMs) => useGameStore.getState().forestActCharged(nowMs),
+  dash: (dir: Dir, nowMs) => useGameStore.getState().forestDash(dir, nowMs),
+  cast: (spellKey, nowMs) => useGameStore.getState().forestCast(spellKey, nowMs),
+  tick: (nowMs, coPlayers) => useGameStore.getState().forestTick(nowMs, coPlayers),
+  coopClientTick: (nowMs) => useGameStore.getState().coopForestClientTick(nowMs),
+  descend: () => useGameStore.getState().forestAdvance(),
+
+  broadcastTile: (floor, r, c, tile) => {
+    const coop = useCoopStore.getState();
+    const myId = useAuthStore.getState().session?.user?.id;
+    coop.send?.({ type: 'tile', userId: myId ?? 'anon', floor, r, c, tile: tile as never });
+  },
+
+  moveIntervalFallbackMs: MOVE_INTERVAL_MS,
+  swingIntervalMs: ACT_INTERVAL_MS,
+  monsterTickMs: BEAST_TICK_MS,
+};
 
 /** Drives an active Wild Forest run. Mount once inside the run overlay. */
 export function useForestLoop(): ForestControlsApi {
-  const held = useRef<Set<Dir>>(new Set());
-  const lastDir = useRef<Dir | null>(null);
-  const actQueued = useRef(false);
-  const dashQueued = useRef(false);
-  const spellQueue = useRef<string | null>(null);
-  // Charge tracking: timestamp when Space was first pressed (reset on each new press).
-  const spaceDownAt = useRef<number | null>(null);
-  const chargeConsumed = useRef(false);
-  // Exposed to the overlay so it can render a charge bar without React re-renders.
-  const chargeProgressRef = useRef(0);
-
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      const dir = KEY_DIRS[e.key];
-      if (dir) {
-        held.current.add(dir);
-        lastDir.current = dir;
-        e.preventDefault();
-        return;
-      }
-      if (e.key === ' ' || e.key === 'Enter') {
-        if (spaceDownAt.current === null) {
-          // First press this hold: record timestamp and queue a normal act.
-          spaceDownAt.current = performance.now();
-          chargeConsumed.current = false;
-          actQueued.current = true;
-        }
-        e.preventDefault();
-        return;
-      }
-      // Shift → dash in current facing direction
-      if (e.key === 'Shift') {
-        dashQueued.current = true;
-        e.preventDefault();
-        return;
-      }
-      // Number keys 1-4 cast spell slots
-      if (e.key >= '1' && e.key <= '4') {
-        const store = useGameStore.getState();
-        const run = store.forest;
-        if (run) {
-          const idx = parseInt(e.key, 10) - 1;
-          const spell = run.knownSpells[idx];
-          if (spell) spellQueue.current = spell;
-        }
-        e.preventDefault();
-      }
-    };
-    const onKeyUp = (e: KeyboardEvent) => {
-      const dir = KEY_DIRS[e.key];
-      if (dir) { held.current.delete(dir); return; }
-      if (e.key === ' ' || e.key === 'Enter') {
-        spaceDownAt.current = null;
-        chargeConsumed.current = false;
-      }
-    };
-    // Alt-tab/window blur can drop a keyup, leaving a direction stuck held (auto-walk on return).
-    const onBlur = () => { held.current.clear(); lastDir.current = null; };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    window.addEventListener('blur', onBlur);
-
-    let raf = 0;
-    let lastMove = 0;
-    let lastAct = 0;
-    let lastTick = 0;
-    const loop = (now: number) => {
-      raf = requestAnimationFrame(loop);
-      const store = useGameStore.getState();
-      const run = store.forest;
-      if (!run || run.status !== 'active' || document.hidden) return;
-
-      // Spell cast (instant, gated by engine's SPELL_CD_MS)
-      if (spellQueue.current) {
-        store.forestCast(spellQueue.current, now);
-        spellQueue.current = null;
-      }
-
-      // Dash — fires in the currently held direction, falling back to facing.
-      if (dashQueued.current) {
-        dashQueued.current = false;
-        const heldDir =
-          lastDir.current && held.current.has(lastDir.current)
-            ? lastDir.current
-            : held.current.size > 0
-              ? [...held.current][0]
-              : null;
-        const dir = heldDir ?? run.player.facing;
-        const cd = run.dashCooldownMs ?? DASH_BASE_CD_MS;
-        const lastDash = run.lastDashMs ?? -cd;
-        if (now - lastDash >= cd) {
-          store.forestDash(dir, now);
-        }
-      }
-
-      // Co-op role for this frame (solo when not joined to a session).
-      const coop = useCoopStore.getState();
-      const inCoop = coop.joined && !!coop.session;
-      const myId = useAuthStore.getState().session?.user?.id;
-      const isHost = inCoop && coop.session!.host_id === myId;
-      const isGuest = inCoop && !isHost;
-
-      // Charge detection: if Space is still held for effectiveChargeCount intervals, fire a charged act.
-      // The Overcharge boon reduces the required hold count by 1 (minimum 1).
-      const chargeReduce = run.activeBoons ? boonChargeReduce(run.activeBoons) : 0;
-      const effectiveChargeCount = Math.max(1, CHARGE_SWING_COUNT - chargeReduce);
-      if (
-        spaceDownAt.current !== null &&
-        !chargeConsumed.current &&
-        now - spaceDownAt.current >= effectiveChargeCount * ACT_INTERVAL_MS &&
-        now - lastAct >= ACT_INTERVAL_MS
-      ) {
-        chargeConsumed.current = true;
-        lastAct = now;
-        const chargedTarget = isGuest ? guestTargetBeastId(run) : null;
-        if (canAdvance(run) && (!inCoop || isHost)) {
-          store.forestAdvance();
-        } else if (chargedTarget) {
-          const dmg = (run.weapon.attackStat === 'DX' ? run.rangedPower : run.meleePower) * CHARGE_DAMAGE_MULT;
-          coop.send?.({ type: 'attack', userId: myId ?? 'anon', monsterId: chargedTarget, dmg });
-        } else if (isOnShrine(run)) {
-          // Shrine activation: consume the tile, gate the den beast to host/solo.
-          // Broadcast the consumed tile so co-op peers see the shrine vanish (no re-activation).
-          const { r: sr, c: sc } = run.player;
-          const shrBefore = run.tiles[sr]?.[sc];
-          store.forestShrine(now, !isGuest);
-          if (inCoop) {
-            const shrAfter = useGameStore.getState().forest?.tiles[sr]?.[sc];
-            if (shrAfter && shrAfter !== shrBefore) {
-              coop.send?.({ type: 'tile', userId: myId ?? 'anon', floor: run.stage, r: sr, c: sc, tile: shrAfter });
-            }
-          }
-        } else {
-          const { r, c } = facedCell(run);
-          const before = run.tiles[r]?.[c];
-          store.forestActCharged(now);
-          if (inCoop) {
-            const after = useGameStore.getState().forest?.tiles[r]?.[c];
-            if (after && after !== before) {
-              coop.send?.({ type: 'tile', userId: myId ?? 'anon', floor: run.stage, r, c, tile: after });
-            }
-          }
-        }
-      }
-
-      // Update charge progress ref each frame so the overlay can animate a charge bar.
-      const chargeDuration = effectiveChargeCount * ACT_INTERVAL_MS;
-      chargeProgressRef.current =
-        spaceDownAt.current !== null && !chargeConsumed.current
-          ? Math.min(1, (now - spaceDownAt.current) / chargeDuration)
-          : 0;
-
-      if (actQueued.current && now - lastAct >= ACT_INTERVAL_MS) {
-        actQueued.current = false;
-        lastAct = now;
-        // Priority: push deeper (host leads) > guest attack intent > shrine > act/gather.
-        const beastId = isGuest ? guestTargetBeastId(run) : null;
-        if (canAdvance(run) && (!inCoop || isHost)) {
-          store.forestAdvance();
-        } else if (beastId) {
-          // A guest doesn't damage its local beast copy; it sends an attack intent
-          // (melee or ranged) the host resolves (so a kill + loot happen exactly once).
-          const dmg = run.weapon.attackStat === 'DX' ? run.rangedPower : run.meleePower;
-          coop.send?.({ type: 'attack', userId: myId ?? 'anon', monsterId: beastId, dmg });
-        } else if (isOnShrine(run)) {
-          // Shrine activation: consume the tile, gate the den beast to host/solo.
-          // Broadcast the consumed tile so co-op peers see the shrine vanish (no re-activation).
-          const { r: sr, c: sc } = run.player;
-          const shrBefore = run.tiles[sr]?.[sc];
-          store.forestShrine(now, !isGuest);
-          if (inCoop) {
-            const shrAfter = useGameStore.getState().forest?.tiles[sr]?.[sc];
-            if (shrAfter && shrAfter !== shrBefore) {
-              coop.send?.({ type: 'tile', userId: myId ?? 'anon', floor: run.stage, r: sr, c: sc, tile: shrAfter });
-            }
-          }
-        } else {
-          // Gather/slash the faced cell locally, then broadcast a changed node tile
-          // so harvested nodes disappear for the whole party.
-          const { r, c } = facedCell(run);
-          const before = run.tiles[r]?.[c];
-          store.forestAct(now);
-          if (inCoop) {
-            const after = useGameStore.getState().forest?.tiles[r]?.[c];
-            if (after && after !== before) {
-              coop.send?.({ type: 'tile', userId: myId ?? 'anon', floor: run.stage, r, c, tile: after });
-            }
-          }
-        }
-      }
-
-      // AG-scaled move interval from run state (falls back to constant for old saves).
-      const moveMs = run.moveIntervalMs ?? MOVE_INTERVAL_MS;
-      if (held.current.size && now - lastMove >= moveMs) {
-        // Favour the most recently pressed direction when several are held.
-        const dir =
-          lastDir.current && held.current.has(lastDir.current)
-            ? lastDir.current
-            : [...held.current][0];
-        store.forestMove(dir);
-        lastMove = now;
-      }
-      if (now - lastTick >= BEAST_TICK_MS) {
-        if (isHost) {
-          // Host simulates beasts against all players on this stage (nearest-target).
-          const coPlayers = Object.values(coop.remotePlayers)
-            .filter((p) => p.floor === run.stage)
-            .map((p) => ({ r: p.r, c: p.c }));
-          store.forestTick(now, coPlayers);
-        } else if (isGuest) {
-          // Guest advances only its own body; the host owns beast movement.
-          store.coopForestClientTick(now);
-        } else {
-          store.forestTick(now);
-        }
-        lastTick = now;
-      }
-    };
-    raf = requestAnimationFrame(loop);
-
-    return () => {
-      cancelAnimationFrame(raf);
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-      window.removeEventListener('blur', onBlur);
-      held.current.clear();
-    };
-  }, []);
-
-  return {
-    press: (dir) => {
-      held.current.add(dir);
-      lastDir.current = dir;
-    },
-    release: (dir) => held.current.delete(dir),
-    act: () => {
-      actQueued.current = true;
-      if (spaceDownAt.current === null) {
-        spaceDownAt.current = performance.now();
-        chargeConsumed.current = false;
-      }
-    },
-    releaseCharge: () => {
-      spaceDownAt.current = null;
-      chargeConsumed.current = false;
-    },
-    dash: () => { dashQueued.current = true; },
-    castSpell: (key) => {
-      spellQueue.current = key;
-    },
-    chargeProgressRef,
-  };
+  return useCrawlLoop(forestCaps);
 }

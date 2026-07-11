@@ -1,17 +1,12 @@
-// The generic real-time input loop shared by the Deep Mine and (eventually) the Wild
-// Forest (5.1). Holds no game state — it just decides *when* to fire a crawler's
-// discrete store actions (move / strike / cast / dash / monster-tick) based on a
+// The generic real-time input loop shared by the Deep Mine and the Wild Forest.
+// Holds no game state — it just decides *when* to fire a crawler's discrete store
+// actions (move / strike / cast / dash / tap-act / monster-tick) based on a
 // requestAnimationFrame clock and which keys/buttons are held. All rules live in the
 // pure engine; this is purely the "when". Game-specific bits (store action names, run
 // field access, tuning constants) come in through `CrawlLoopCaps` — see useMiningLoop.ts
-// for the mine's instantiation.
-//
-// Forest crossover (5.1 plan note): this conversion only wires up the mine side.
-// useForestLoop.ts is the other ~85%-identical twin and can adopt this hook in a
-// follow-up, but its chargeProgressRef today is a bare `number` (0-1) while this hook
-// produces mine's `{active, swings, max}` shape (mine's charge-pip UI reads
-// `swings`/`max` directly) — that shape needs to be reconciled before forest converts,
-// not assumed to already match.
+// and useForestLoop.ts for the two instantiations. Forest-only seams are the optional
+// caps: `ownTile` (shrines), `intentTargetId` (ranged guest intents), and
+// `face`/`rangedTapDir` (tap-to-shoot aiming).
 import { useEffect, useRef, type MutableRefObject } from 'react';
 import type { Dir } from '@/engine/crawl';
 import { CHARGE_SWING_COUNT, DASH_BASE_CD_MS, CHARGE_DAMAGE_MULT, boonChargeReduce } from '@/engine/crawl';
@@ -38,8 +33,13 @@ export interface CrawlLoopControls {
   dash: () => void;
   /** Cast a spell by key (from ability bar buttons). */
   castSpell: (key: string) => void;
-  /** Live charge progress for the overlay's charge-pip indicator. Read-only ref, updated every rAF frame. */
-  chargeRef: MutableRefObject<{ active: boolean; swings: number; max: number }>;
+  /** Tap a board tile: own tile = the Space context action, adjacent = face + strike
+   *  or step, farther = ranged shot when the caps support it. Invalid taps are
+   *  ignored; cadence gates match held keys so tapping can never out-pace them. */
+  tapAct: (r: number, c: number) => void;
+  /** Live charge progress for the overlay's charge indicator: mine's pip UI reads
+   *  `swings`/`max`, forest's smooth bar reads `progress01`. Read-only ref, updated every rAF frame. */
+  chargeRef: MutableRefObject<{ active: boolean; swings: number; max: number; progress01: number }>;
   /** rAF-clock timestamp of the most recent strike (normal or charged) — drives an
    *  avatar swing animation. Read-only ref; the overlay polls it, not React state, so a
    *  strike doesn't force a re-render. */
@@ -65,12 +65,25 @@ export interface CrawlLoopCaps<TRun> {
 
   canDescend: (run: TRun) => boolean;
   facedCell: (run: TRun) => { r: number; c: number };
-  /** The id of the unit (monster/beast) in the faced cell, for coop attack-intent routing. */
+  /** The id of the unit (monster/beast) in the faced cell — guards descend priority. */
   facedTargetId: (run: TRun) => string | null;
+  /** Co-op guest attack-intent target — defaults to facedTargetId. Forest widens it
+   *  to include the first beast down the faced ranged line (rangedBeastId). */
+  intentTargetId?: (run: TRun) => string | null;
+  /** Should a tap on this cell strike (mine/attack) rather than walk? */
+  tapStrikeable: (run: TRun, r: number, c: number) => boolean;
+  /** Optional own-tile context action (forest shrines) — tried after descend and the
+   *  guest attack intent, before the generic strike. The loop broadcasts the consumed
+   *  tile to the co-op party, mirroring the strike path's tile diffing. */
+  ownTile?: { isOn: (run: TRun) => boolean; act: (nowMs: number, isGuest: boolean) => void };
+  /** Turn in place without stepping (ranged tap aiming). */
+  face?: (dir: Dir) => void;
+  /** Ranged tap resolution: direction to face + fire for a beyond-adjacent tap, or null to ignore. */
+  rangedTapDir?: (run: TRun, r: number, c: number) => Dir | null;
 
   // Actions — each resolves the current run from the store internally.
   move: (dir: Dir) => void;
-  strike: () => void;
+  strike: (nowMs: number) => void;
   strikeCharged: (nowMs: number) => void;
   dash: (dir: Dir, nowMs: number) => void;
   cast: (spellKey: string, nowMs: number) => void;
@@ -96,11 +109,13 @@ export function useCrawlLoop<TRun>(caps: CrawlLoopCaps<TRun>): CrawlLoopControls
   const strikeQueued = useRef(false);
   const dashQueued = useRef(false);
   const spellQueue = useRef<string | null>(null);
+  // Board tap awaiting resolution — processed in the loop against the live run.
+  const tapQueue = useRef<{ r: number; c: number } | null>(null);
   // Charge tracking: timestamp when Space was first pressed (reset on each new press).
   const spaceDownAt = useRef<number | null>(null);
   const chargeConsumed = useRef(false);
   // Exposed to the overlay for the charge-progress indicator.
-  const chargeProgressRef = useRef<{ active: boolean; swings: number; max: number }>({ active: false, swings: 0, max: 2 });
+  const chargeProgressRef = useRef<{ active: boolean; swings: number; max: number; progress01: number }>({ active: false, swings: 0, max: 2, progress01: 0 });
   // Exposed to the overlay for the avatar swing animation.
   const swingAtRef = useRef<number>(0);
 
@@ -166,9 +181,10 @@ export function useCrawlLoop<TRun>(caps: CrawlLoopCaps<TRun>): CrawlLoopControls
     const loop = (now: number) => {
       raf = requestAnimationFrame(loop);
       const c = capsRef.current;
-      const run = c.getRun();
+      let run = c.getRun();
       if (!run || !c.isActive(run) || document.hidden) {
-        chargeProgressRef.current = { active: false, swings: 0, max: 2 };
+        chargeProgressRef.current = { active: false, swings: 0, max: 2, progress01: 0 };
+        tapQueue.current = null; // a tap must never fire into a later game state
         return;
       }
 
@@ -196,6 +212,52 @@ export function useCrawlLoop<TRun>(caps: CrawlLoopCaps<TRun>): CrawlLoopControls
         }
       }
 
+      // AG-scaled move interval from run state (falls back to constant for old saves).
+      const moveMs = c.moveIntervalMs(run) ?? c.moveIntervalFallbackMs;
+
+      // Tap-to-act: resolve a queued board tap into face / step / strike using the
+      // same cadence gates as held keys, so tapping can never out-pace holding them.
+      if (tapQueue.current) {
+        const t = tapQueue.current;
+        const p = c.player(run);
+        const dr = t.r - p.r;
+        const dc = t.c - p.c;
+        const man = Math.abs(dr) + Math.abs(dc);
+        if (man === 0) {
+          // Own tile — exactly a Space press: the strike block below applies the
+          // descend / own-tile / strike precedence.
+          tapQueue.current = null;
+          strikeQueued.current = true;
+        } else if (man === 1) {
+          if (now - lastMove >= moveMs) {
+            tapQueue.current = null;
+            const dir: Dir = dr === 1 ? 'down' : dr === -1 ? 'up' : dc === 1 ? 'right' : 'left';
+            // Decide strike-vs-step from the tapped tile BEFORE moving (an ice slide
+            // can carry the player away; the intent is what was under the finger).
+            const strikeable = c.tapStrikeable(run, t.r, t.c);
+            c.move(dir); // bump semantics: steps onto open ground, otherwise turns to face
+            lastMove = now;
+            const after = c.getRun();
+            if (!after || !c.isActive(after)) return;
+            run = after;
+            if (strikeable) strikeQueued.current = true;
+          }
+          // else: stays queued and fires when the move cadence next allows (≤150ms).
+        } else {
+          // Beyond adjacency: only a ranged tap (forest bows) can resolve it.
+          tapQueue.current = null;
+          const dir = c.rangedTapDir?.(run, t.r, t.c);
+          if (dir && c.face) {
+            c.face(dir);
+            const after = c.getRun();
+            if (after && c.isActive(after)) {
+              run = after;
+              strikeQueued.current = true;
+            }
+          }
+        }
+      }
+
       // Co-op role for this frame (solo when not joined to a session).
       const coop = useCoopStore.getState();
       const inCoop = coop.joined && !!coop.session;
@@ -209,15 +271,18 @@ export function useCrawlLoop<TRun>(caps: CrawlLoopCaps<TRun>): CrawlLoopControls
       const chargeReduce = boonChargeReduce(activeBoons);
       const effectiveChargeCount = Math.max(1, CHARGE_SWING_COUNT - chargeReduce);
 
-      // Update charge-progress ref for the overlay indicator.
+      // Update charge-progress ref for the overlay indicator (mine reads the discrete
+      // swings/max pips; forest reads the smooth progress01 bar).
       {
         const chargeActive = spaceDownAt.current !== null && !chargeConsumed.current;
+        const heldFor = now - (spaceDownAt.current ?? now);
         chargeProgressRef.current = {
           active: chargeActive,
           swings: chargeActive
-            ? Math.min(effectiveChargeCount, Math.floor((now - (spaceDownAt.current ?? now)) / c.swingIntervalMs))
+            ? Math.min(effectiveChargeCount, Math.floor(heldFor / c.swingIntervalMs))
             : 0,
           max: effectiveChargeCount,
+          progress01: chargeActive ? Math.min(1, heldFor / (effectiveChargeCount * c.swingIntervalMs)) : 0,
         };
       }
       if (
@@ -230,12 +295,26 @@ export function useCrawlLoop<TRun>(caps: CrawlLoopCaps<TRun>): CrawlLoopControls
         lastSwing = now;
         // A monster/beast in the faced cell takes priority over auto-descend — otherwise
         // standing on the shaft while fighting silently swaps Space's attack for a descend.
+        const chargedIntent = isGuest ? (c.intentTargetId ?? c.facedTargetId)(run) : null;
         if (c.canDescend(run) && !c.facedTargetId(run) && (!inCoop || isHost)) {
           c.descend();
-        } else if (isGuest && c.facedTargetId(run)) {
+        } else if (chargedIntent) {
           swingAtRef.current = now;
           const dmg = (c.weaponAttackStat(run) === 'DX' ? c.rangedPower(run) : c.meleePower(run)) * CHARGE_DAMAGE_MULT;
-          coop.send?.({ type: 'attack', userId: myId ?? 'anon', monsterId: c.facedTargetId(run)!, dmg });
+          coop.send?.({ type: 'attack', userId: myId ?? 'anon', monsterId: chargedIntent, dmg });
+        } else if (c.ownTile?.isOn(run)) {
+          // Own-tile context action (forest shrines): consume it and broadcast the
+          // changed tile so co-op peers can't re-activate it.
+          const { r: pr, c: pc } = c.player(run);
+          const before = c.tileAt(run, pr, pc);
+          c.ownTile.act(now, isGuest);
+          if (inCoop) {
+            const after0 = c.getRun();
+            const after = after0 ? c.tileAt(after0, pr, pc) : undefined;
+            if (after && after !== before) {
+              c.broadcastTile(c.floor(run), pr, pc, after);
+            }
+          }
         } else {
           swingAtRef.current = now;
           const { r, c: fc } = c.facedCell(run);
@@ -256,22 +335,35 @@ export function useCrawlLoop<TRun>(caps: CrawlLoopCaps<TRun>): CrawlLoopControls
         lastSwing = now;
         // The host leads the descent in co-op (guests follow via the world slice);
         // solo descends freely. A guest can never change the floor itself.
-        const targetId = isGuest ? c.facedTargetId(run) : null;
+        const targetId = isGuest ? (c.intentTargetId ?? c.facedTargetId)(run) : null;
         if (c.canDescend(run) && !c.facedTargetId(run) && (!inCoop || isHost)) {
           c.descend();
         } else if (targetId) {
-          // A guest doesn't damage its local copy; it sends a melee intent the host
+          // A guest doesn't damage its local copy; it sends an attack intent the host
           // resolves (so a kill + loot happen exactly once).
           swingAtRef.current = now;
           const dmg = c.weaponAttackStat(run) === 'DX' ? c.rangedPower(run) : c.meleePower(run);
           coop.send?.({ type: 'attack', userId: myId ?? 'anon', monsterId: targetId, dmg });
+        } else if (c.ownTile?.isOn(run)) {
+          // Own-tile context action (forest shrines): consume it and broadcast the
+          // changed tile so co-op peers can't re-activate it.
+          const { r: pr, c: pc } = c.player(run);
+          const before = c.tileAt(run, pr, pc);
+          c.ownTile.act(now, isGuest);
+          if (inCoop) {
+            const after0 = c.getRun();
+            const after = after0 ? c.tileAt(after0, pr, pc) : undefined;
+            if (after && after !== before) {
+              c.broadcastTile(c.floor(run), pr, pc, after);
+            }
+          }
         } else {
           // Mining/harvesting (or host/solo hitting a monster/beast). Act locally, then
           // broadcast the changed cell so the node disappears for the whole party.
           swingAtRef.current = now;
           const { r, c: fc } = c.facedCell(run);
           const before = c.tileAt(run, r, fc);
-          c.strike();
+          c.strike(now);
           if (inCoop) {
             const after0 = c.getRun();
             const after = after0 ? c.tileAt(after0, r, fc) : undefined;
@@ -282,8 +374,6 @@ export function useCrawlLoop<TRun>(caps: CrawlLoopCaps<TRun>): CrawlLoopControls
         }
       }
 
-      // AG-scaled move interval from run state (falls back to constant for old saves).
-      const moveMs = c.moveIntervalMs(run) ?? c.moveIntervalFallbackMs;
       if (held.current.size && now - lastMove >= moveMs) {
         // Favour the most recently pressed direction when several are held.
         const dir =
@@ -340,6 +430,9 @@ export function useCrawlLoop<TRun>(caps: CrawlLoopCaps<TRun>): CrawlLoopControls
     dash: () => { dashQueued.current = true; },
     castSpell: (key) => {
       spellQueue.current = key;
+    },
+    tapAct: (r, c) => {
+      tapQueue.current = { r, c };
     },
     chargeRef: chargeProgressRef,
     swingAtRef,

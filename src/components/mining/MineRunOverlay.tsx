@@ -29,6 +29,7 @@ import * as sfx from '@/lib/sfx';
 import { Button } from '@/components/ui/Button';
 import { Divider } from '@/components/ui/Divider';
 import { FitToWidth } from '@/components/ui/FitToWidth';
+import { clientToTile, createTapTracker } from '@/components/minigame/boardTap';
 import { cn } from '@/lib/cn';
 import type { Reward } from '@/engine/challenges';
 import { MineControls } from './MineControls';
@@ -47,6 +48,8 @@ import { usePartyStore } from '@/hooks/useParty';
 import { CoopToasts } from '@/components/minigame/CoopToasts';
 
 const CELL = 52;
+/** Desktop upscale cap for the board + HUD column (sizing plan Phase 1). */
+const BOARD_MAX_SCALE = 1.5;
 const MARGIN = 1;
 const RENDER_VIEW = VIEW + 2 * MARGIN;
 
@@ -284,6 +287,9 @@ export function MineRunOverlay() {
 
   // Smooth-camera refs
   const worldRef = useRef<HTMLDivElement>(null);
+  // Tap-to-act: the board frame anchors the client→tile inversion (scale via its rect).
+  const boardFrameRef = useRef<HTMLDivElement>(null);
+  const tapTracker = useRef(createTapTracker());
   const playerRef = useRef<HTMLDivElement | null>(null);
   const moverRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
   const layoutRef = useRef<SmoothCameraLayout>({
@@ -456,6 +462,14 @@ export function MineRunOverlay() {
   const boardW = Math.min(VIEW, mine.cols) * CELL;
   const boardH = Math.min(VIEW, mine.rows) * CELL;
 
+  // Desktop upscale (sizing plan Phase 1): FitToWidth may magnify the board up to
+  // 1.5× on wide viewports; the dvh budget still shrinks it on short ones. HUD rows
+  // track the same width expression so the controls stay visually attached to the
+  // board — floored at the old max-w-lg 512px so short viewports keep today's layout.
+  const boardAspect = boardW / boardH;
+  const boardCap = `min(${boardW * BOARD_MAX_SCALE}px, max(280px, calc((100dvh - 300px) * ${boardAspect})))`;
+  const hudCap = `min(${boardW * BOARD_MAX_SCALE}px, max(512px, calc((100dvh - 300px) * ${boardAspect})))`;
+
   // Directional compass — an 8-way arrow to an off-screen point of interest (null when on-screen).
   const compassTo = (target: { r: number; c: number } | null | undefined) => {
     if (!target) return null;
@@ -509,7 +523,7 @@ export function MineRunOverlay() {
     <div className="texture-wood fixed inset-0 z-50 flex flex-col items-center gap-2 overflow-auto px-4 py-3">
       <CoopToasts />
       {/* HUD */}
-      <div className="flex w-full max-w-lg items-center justify-between gap-3">
+      <div className="flex w-full items-center justify-between gap-3" style={{ maxWidth: hudCap }}>
         <span className="font-display text-sm font-bold text-gold-bright">
           {/* Keep "Floor N" atomic so a narrow HUD never wraps between label and number */}
           The Deep Mine · <span className="whitespace-nowrap">Floor {mine.floor}</span>
@@ -587,7 +601,7 @@ export function MineRunOverlay() {
       </div>
 
       {/* Haul */}
-      <div className="flex w-full max-w-lg flex-wrap items-center gap-x-3 gap-y-1 text-xs text-parchment-200">
+      <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 text-xs text-parchment-200" style={{ maxWidth: hudCap }}>
         <span className="font-display uppercase tracking-wider text-parchment-300/70">Haul</span>
         <span className="flex items-center gap-1 text-gold-bright">
           <Coins className="h-3.5 w-3.5" /> {mine.haul.gold ?? 0}
@@ -602,7 +616,7 @@ export function MineRunOverlay() {
 
       {/* Boon cache prompt — shown when the player is standing on a boon tile */}
       {mine.status === 'active' && mine.tiles[mine.player.r]?.[mine.player.c]?.kind === 'boon' && (
-        <div className="flex w-full max-w-lg items-center justify-center">
+        <div className="flex w-full items-center justify-center" style={{ maxWidth: hudCap }}>
           <span className="rounded border border-amber-600/60 bg-amber-900/40 px-3 py-1 font-display text-xs text-amber-300 animate-pulse">
             {isFirstRun
               ? '🎁 Boon cache — press [Space] to open a permanent run buff!'
@@ -613,27 +627,47 @@ export function MineRunOverlay() {
 
       {/* Tombstone prompt — shown when standing on the lost-haul marker */}
       {mine.status === 'active' && mine.tiles[mine.player.r]?.[mine.player.c]?.kind === 'tombstone' && mineTombstone && (
-        <div className="flex w-full max-w-lg items-center justify-center">
+        <div className="flex w-full items-center justify-center" style={{ maxWidth: hudCap }}>
           <span className="rounded border border-violet-600/60 bg-violet-900/40 px-3 py-1 font-display text-xs text-violet-300 animate-pulse">
             🪦 Your remains — press [Space] to recover the lost haul
           </span>
         </div>
       )}
 
-      {/* Cavern viewport — FitToWidth scales it down on narrow screens; the dvh cap
-          shrinks it on short desktop viewports so the action row stays above the fold
-          (~300px is the HUD + haul + spells + buttons + hints budget). */}
+      {/* Cavern viewport — FitToWidth scales it down on narrow screens and up to 1.5×
+          on wide ones; the dvh cap shrinks it on short desktop viewports so the action
+          row stays above the fold (~300px is the HUD + haul + spells + buttons + hints
+          budget). Tap-to-act: a clean tap (≤8px movement) inverts through the world
+          rect to a tile and lets the loop resolve face/step/strike. */}
       <div
         className="flex w-full shrink-0 justify-center"
-        style={{ maxWidth: `min(${boardW}px, max(280px, calc((100dvh - 300px) * ${boardW / boardH})))` }}
+        style={{ maxWidth: boardCap }}
       >
-      <FitToWidth contentWidth={boardW} contentHeight={boardH}>
+      <FitToWidth contentWidth={boardW} contentHeight={boardH} maxScale={BOARD_MAX_SCALE}>
       <div
+        ref={boardFrameRef}
         className="relative shrink-0 overflow-hidden rounded-md border-2 border-gold-deep/60"
         style={{
           width: boardW,
           height: boardH,
           boxShadow: 'inset 0 0 56px rgba(0,0,0,0.92), 0 0 0 1px rgba(0,0,0,0.5)',
+        }}
+        onPointerDown={(e) => tapTracker.current.down(e)}
+        onPointerCancel={() => tapTracker.current.cancel()}
+        onPointerUp={(e) => {
+          const pt = tapTracker.current.up(e);
+          if (!pt || mine.status !== 'active') return;
+          const tile = clientToTile(pt.x, pt.y, {
+            frame: boardFrameRef.current,
+            world: worldRef.current,
+            boardW,
+            cell: CELL,
+            baseR0,
+            baseC0,
+          });
+          if (tile && tile.r >= 0 && tile.r < mine.rows && tile.c >= 0 && tile.c < mine.cols) {
+            controls.tapAct(tile.r, tile.c);
+          }
         }}
       >
         {/* World container */}
@@ -1258,11 +1292,11 @@ export function MineRunOverlay() {
         hideWhenInactive
         tooltip={(spell) => `${spell.name} — ${spell.description}`}
         layout="two-line"
-        maxWidthClass="max-w-lg"
+        maxWidth={hudCap}
       />
 
       {/* Descend / leave */}
-      <div className="flex w-full max-w-lg flex-col items-center gap-1">
+      <div className="flex w-full flex-col items-center gap-1" style={{ maxWidth: hudCap }}>
         <div className="flex items-center justify-center gap-2">
           <Button
             variant={onShaft && !isCoopGuest ? 'primary' : 'secondary'}
@@ -1286,13 +1320,13 @@ export function MineRunOverlay() {
       </div>
 
       {/* Touch controls — coarse-pointer devices only; desktop plays on the keyboard */}
-      <div className="pointer-coarse-only w-full max-w-lg">
+      <div className="pointer-coarse-only w-full" style={{ maxWidth: hudCap }}>
         <MineControls controls={controls} />
       </div>
 
       {/* Keyboard hints — fine-pointer devices only (noise on phones) */}
       <p className="pointer-fine-only text-center text-[10px] text-parchment-300/50">
-        Move: arrow keys / WASD · Mine/Attack: space · Spells: 1–4 or tap above · Stand on{' '}
+        Move: arrow keys / WASD · Mine/Attack: space, or click a tile · Spells: 1–4 or tap above · Stand on{' '}
         <ChevronsDown className="inline h-3 w-3 text-cyan-300" /> shaft to descend.
       </p>
     </div>

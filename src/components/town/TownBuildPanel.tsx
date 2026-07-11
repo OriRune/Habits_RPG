@@ -108,7 +108,7 @@ export function TownBuildPanel({ town, wallet, onPickBuilding, onPickDecor, onBu
   const nextDeedCost = deedCost(town.deeds);
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-40 mx-auto max-w-3xl">
+    <div className="fixed inset-x-0 bottom-0 z-40 mx-auto max-w-3xl lg:max-w-5xl xl:max-w-6xl">
       <div className="texture-parchment max-h-[62vh] overflow-hidden rounded-t-xl border-t-2 border-gold-deep/60 shadow-gold">
         {/* Header + tabs */}
         <div className="flex items-center justify-between border-b border-gold-deep/30 px-3 pt-2">

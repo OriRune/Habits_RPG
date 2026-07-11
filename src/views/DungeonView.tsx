@@ -149,7 +149,7 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
     const starts = expeditionStarts(deepestFloor, dungeonBossesSlain);
     const startDepth = starts.includes(startAt) ? startAt : 1;
     return (
-      <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
+      <div className="mx-auto max-w-2xl space-y-4 px-4 py-5 lg:max-w-3xl">
         <SectionTitle tone="wood">Dungeon Expeditions</SectionTitle>
         <Panel tone="parchment" className="space-y-4 p-5">
           <SceneArt sceneKey="dungeon:entrance" size="lg" />
@@ -281,7 +281,7 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
   if (dungeon.status === 'ended') {
     const reason = runEndReason(dungeon);
     return (
-      <div className="mx-auto max-w-2xl space-y-4 px-4 py-5">
+      <div className="mx-auto max-w-2xl space-y-4 px-4 py-5 lg:max-w-3xl">
         <SectionTitle tone="wood">
           {reason === 'banked' ? 'Spoils Banked!' : reason === 'fled' ? 'You Escape' : 'You Fall...'}
         </SectionTitle>
@@ -390,7 +390,7 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
     const bankedGold = dungeon.bankedReward.gold ?? 0;
     return (
       <div
-        className="mx-auto max-w-2xl space-y-4 px-4 py-5"
+        className="mx-auto max-w-2xl space-y-4 px-4 py-5 lg:max-w-3xl"
         style={{ '--biome-tint': biome.tint } as CSSProperties}
       >
         <SectionTitle tone="wood">
@@ -467,7 +467,7 @@ export function DungeonView({ onGoToHabits }: { onGoToHabits?: () => void } = {}
 
   return (
     <div
-      className="mx-auto max-w-2xl space-y-4 px-4 py-5"
+      className="mx-auto max-w-2xl space-y-4 px-4 py-5 lg:max-w-3xl"
       style={{ '--biome-tint': biome.tint } as CSSProperties}
     >
       <div className="flex items-center justify-between gap-2">

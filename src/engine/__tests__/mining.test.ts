@@ -14,6 +14,7 @@ import {
   findTombstone,
   unlockedStartFloor,
   isMineSafeBankTile,
+  tapStrikeableAt,
   sightRadiusFor,
   MINE_SIGHT_RADIUS,
   MINE_DEATH_KEEP,
@@ -1244,5 +1245,25 @@ describe('monster spawn safety (CRAWL_SPAWN_SAFE_RADIUS)', () => {
         expect(manhattan({ r: m.r, c: m.c }, mine.player)).toBeGreaterThan(CRAWL_SPAWN_SAFE_RADIUS);
       }
     }
+  });
+});
+
+describe('tapStrikeableAt (tap-to-act)', () => {
+  it('is true for monsters and every kind strike can break, false elsewhere', () => {
+    const s = makeState({
+      monsters: [{ id: 'm', key: 'cave_slug', r: 2, c: 2, hp: 8, maxHp: 8, readyAtMs: 0 }],
+    });
+    s.tiles[3][4] = { kind: 'rock', durability: 2, maxDurability: 2 };
+    s.tiles[4][3] = { kind: 'ore', oreKey: 'copper_ore', durability: 2, maxDurability: 2 };
+    s.tiles[2][3] = { kind: 'vault', durability: 6, maxDurability: 6 };
+    s.tiles[3][2] = { kind: 'rich_vein', durability: 2, maxDurability: 2 };
+    expect(tapStrikeableAt(s, 2, 2)).toBe(true); // monster
+    expect(tapStrikeableAt(s, 3, 4)).toBe(true); // rock
+    expect(tapStrikeableAt(s, 4, 3)).toBe(true); // ore
+    expect(tapStrikeableAt(s, 2, 3)).toBe(true); // vault
+    expect(tapStrikeableAt(s, 3, 2)).toBe(true); // rich vein
+    expect(tapStrikeableAt(s, 4, 4)).toBe(false); // open floor
+    expect(tapStrikeableAt(s, 0, 0)).toBe(false); // bedrock
+    expect(tapStrikeableAt(s, -1, 9)).toBe(false); // out of bounds
   });
 });

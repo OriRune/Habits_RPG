@@ -24,6 +24,7 @@ import { getMaterial } from '@/engine/materials';
 import { Button } from '@/components/ui/Button';
 import { Divider } from '@/components/ui/Divider';
 import { FitToWidth } from '@/components/ui/FitToWidth';
+import { clientToTile, createTapTracker } from '@/components/minigame/boardTap';
 import { cn } from '@/lib/cn';
 import type { Reward } from '@/engine/challenges';
 import { ForestControls } from './ForestControls';
@@ -42,6 +43,8 @@ import { CoopToasts } from '@/components/minigame/CoopToasts';
 import * as sfx from '@/lib/sfx';
 
 const CELL = 52; // px per tile
+/** Desktop upscale cap for the board + HUD column (sizing plan Phase 1). */
+const BOARD_MAX_SCALE = 1.5;
 /** Extra border cells rendered around the viewport to fill gaps during smooth scroll. */
 const MARGIN = 1;
 const RENDER_VIEW = VIEW + 2 * MARGIN; // 13 rendered rows/cols
@@ -237,6 +240,9 @@ export function ForestRunOverlay() {
 
   // Smooth-camera refs
   const worldRef = useRef<HTMLDivElement>(null);
+  // Tap-to-act: the board frame anchors the client→tile inversion (scale via its rect).
+  const boardFrameRef = useRef<HTMLDivElement>(null);
+  const tapTracker = useRef(createTapTracker());
   const playerRef = useRef<HTMLDivElement | null>(null);
   const moverRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
   const layoutRef = useRef<SmoothCameraLayout>({
@@ -298,7 +304,7 @@ export function ForestRunOverlay() {
     let raf = 0;
     const tick = () => {
       raf = requestAnimationFrame(tick);
-      const p = controls.chargeProgressRef.current;
+      const p = controls.chargeRef.current.progress01;
       const el = chargeBarRef.current;
       if (!el) return;
       el.style.width = `${Math.round(p * 100)}%`;
@@ -345,6 +351,14 @@ export function ForestRunOverlay() {
   const boardW = Math.min(VIEW, forest.cols) * CELL;
   const boardH = Math.min(VIEW, forest.rows) * CELL;
 
+  // Desktop upscale (sizing plan Phase 1): FitToWidth may magnify the board up to
+  // 1.5× on wide viewports; the dvh budget still shrinks it on short ones. HUD rows
+  // track the same width expression so the controls stay visually attached to the
+  // board — floored at the old 600px so short viewports keep today's layout.
+  const boardAspect = boardW / boardH;
+  const boardCap = `min(${boardW * BOARD_MAX_SCALE}px, max(280px, calc((100dvh - 300px) * ${boardAspect})))`;
+  const hudCap = `min(${boardW * BOARD_MAX_SCALE}px, max(600px, calc((100dvh - 300px) * ${boardAspect})))`;
+
   const vr = (worldR: number) => worldR - baseR0;
   const vc = (worldC: number) => worldC - baseC0;
   const inView = (worldR: number, worldC: number) => {
@@ -385,7 +399,7 @@ export function ForestRunOverlay() {
     <div className="texture-wood fixed inset-0 z-50 flex flex-col items-center gap-2 overflow-auto px-4 py-3">
       <CoopToasts />
       {/* HUD */}
-      <div className="flex w-full max-w-[600px] items-center justify-between gap-3">
+      <div className="flex w-full items-center justify-between gap-3" style={{ maxWidth: hudCap }}>
         <span className="font-display text-sm font-bold text-gold-bright">
           {/* Keep "Depth N" atomic so a narrow HUD never wraps between label and number */}
           The Wild Forest · <span className="whitespace-nowrap">Depth {forest.stage}</span>
@@ -431,7 +445,7 @@ export function ForestRunOverlay() {
       </div>
 
       {/* Haul */}
-      <div className="flex w-full max-w-[600px] flex-wrap items-center gap-x-3 gap-y-1 text-xs text-parchment-200">
+      <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 text-xs text-parchment-200" style={{ maxWidth: hudCap }}>
         <span className="font-display uppercase tracking-wider text-parchment-300/70">Haul</span>
         <span className="flex items-center gap-1 text-gold-bright">
           <Coins className="h-3.5 w-3.5" /> {forest.haul.gold ?? 0}
@@ -446,20 +460,41 @@ export function ForestRunOverlay() {
         )}
       </div>
 
-      {/* Forest board — FitToWidth scales it down on narrow screens; the dvh cap
-          shrinks it on short desktop viewports so the action row stays above the fold
-          (~300px is the HUD + haul + spells + buttons + hints budget). */}
+      {/* Forest board — FitToWidth scales it down on narrow screens and up to 1.5× on
+          wide ones; the dvh cap shrinks it on short desktop viewports so the action row
+          stays above the fold (~300px is the HUD + haul + spells + buttons + hints
+          budget). Tap-to-act: a clean tap (≤8px movement) inverts through the world
+          rect to a tile and lets the loop resolve face/step/act (bows can tap-shoot
+          down an orthogonal line). */}
       <div
         className="flex w-full shrink-0 justify-center"
-        style={{ maxWidth: `min(${boardW}px, max(280px, calc((100dvh - 300px) * ${boardW / boardH})))` }}
+        style={{ maxWidth: boardCap }}
       >
-      <FitToWidth contentWidth={boardW} contentHeight={boardH}>
+      <FitToWidth contentWidth={boardW} contentHeight={boardH} maxScale={BOARD_MAX_SCALE}>
       <div
+        ref={boardFrameRef}
         className="relative shrink-0 overflow-hidden rounded-md border-2 border-gold-deep/60"
         style={{
           width: boardW,
           height: boardH,
           boxShadow: 'inset 0 0 48px rgba(0,0,0,0.85), 0 0 0 1px rgba(0,0,0,0.5)',
+        }}
+        onPointerDown={(e) => tapTracker.current.down(e)}
+        onPointerCancel={() => tapTracker.current.cancel()}
+        onPointerUp={(e) => {
+          const pt = tapTracker.current.up(e);
+          if (!pt || forest.status !== 'active') return;
+          const tile = clientToTile(pt.x, pt.y, {
+            frame: boardFrameRef.current,
+            world: worldRef.current,
+            boardW,
+            cell: CELL,
+            baseR0,
+            baseC0,
+          });
+          if (tile && tile.r >= 0 && tile.r < forest.rows && tile.c >= 0 && tile.c < forest.cols) {
+            controls.tapAct(tile.r, tile.c);
+          }
         }}
       >
         {/* World container — translated continuously by useSmoothCamera */}
@@ -1080,11 +1115,11 @@ export function ForestRunOverlay() {
         hideWhenInactive={false}
         tooltip={(sp, i) => `${sp.name} (${sp.mpCost} MP) — key [${i + 1}]`}
         layout="three-line"
-        maxWidthClass="max-w-[600px]"
+        maxWidth={hudCap}
       />
 
       {/* Push deeper / stash / leave */}
-      <div className="flex w-full max-w-[600px] flex-col items-center gap-1">
+      <div className="flex w-full flex-col items-center gap-1" style={{ maxWidth: hudCap }}>
         <div className="flex items-center justify-center gap-2">
           <Button
             variant={onTreeline && !isCoopGuest ? 'primary' : 'secondary'}
@@ -1135,13 +1170,13 @@ export function ForestRunOverlay() {
       </div>
 
       {/* Touch controls — coarse-pointer devices only; desktop plays on the keyboard */}
-      <div className="pointer-coarse-only w-full max-w-[600px]">
+      <div className="pointer-coarse-only w-full" style={{ maxWidth: hudCap }}>
         <ForestControls controls={controls} />
       </div>
 
       {/* Keyboard hints — fine-pointer devices only (noise on phones) */}
       <p className="pointer-fine-only text-center text-[10px] text-parchment-300/50">
-        Move: arrows/WASD · Act (slash/gather/chop): space · Spells: [1-4] · Reach the{' '}
+        Move: arrows/WASD · Act (slash/gather/chop): space, or click a tile · Spells: [1-4] · Reach the{' '}
         <Trees className="inline h-3 w-3 text-emerald-300" /> tree line to push deeper.
       </p>
     </div>

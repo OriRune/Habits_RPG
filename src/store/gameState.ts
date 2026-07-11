@@ -432,6 +432,8 @@ export interface GameState {
   beginForest: (seed?: number, startStage?: number) => void;
   /** Step/turn the forager one cell (re-lights the fog). */
   forestMove: (dir: Dir) => void;
+  /** Turn in place without stepping — tap-to-shoot aiming (engine `faceDir`). */
+  forestFace: (dir: Dir) => void;
   /** Act on the faced cell (slash a beast or gather a node).
    *  `nowMs` is the caller's rAF-clock timestamp — same timebase as forestTick. */
   forestAct: (nowMs: number) => void;

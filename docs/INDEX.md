@@ -47,6 +47,7 @@ improvement plan (recommendations). Read the analysis before the plan.
 | File | Description |
 |---|---|
 | [`forest-mining-minigame-analysis.md`](./forest-mining-minigame-analysis.md) | Combined analysis of the Deep Mine and Wild Forest crawlers (post-Phase-1 verified). Overlaps with the separate `forest-minigame-analysis.md` and `mining-minigame-analysis.md`; this combined doc is the more thorough post-Phase-1 source. |
+| [`minigame-sizing-tap-plan-2026-07.md`](./minigame-sizing-tap-plan-2026-07.md) | **Implemented same day (2026-07-10)**: desktop sizing fixes across the minigames (Mine/Forest `FitToWidth` upscale to 1.5×, Arena viewport-fit à la Tactics) plus tap-to-mine/attack controls for the crawlers, riding the `useForestLoop`→`useCrawlLoop` merge. Includes the input-pipeline and Arena geometry investigation findings. |
 
 ### Dungeon Delve
 | File | Description |
